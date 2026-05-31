@@ -210,65 +210,11 @@ bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
     return true;
 }
 
-struct block_index *add_to_block_index(struct main_state *ms,
-                                       const struct block_header *header)
-{
-    struct uint256 hash;
-    block_header_get_hash(header, &hash);
-
-    struct block_index *pindex = zcl_calloc(1, sizeof(struct block_index), "process_block_index");
-    if (!pindex)
-        return NULL;
-    block_index_init(pindex);
-
-    pindex->nVersion = header->nVersion;
-    pindex->hashMerkleRoot = header->hashMerkleRoot;
-    pindex->hashFinalSaplingRoot = header->hashFinalSaplingRoot;
-    pindex->nTime = header->nTime;
-    pindex->nBits = header->nBits;
-    pindex->nNonce = header->nNonce;
-    if (header->nSolutionSize > 0) {
-        pindex->nSolution = zcl_malloc(header->nSolutionSize, "block_solution");
-        if (pindex->nSolution)
-            memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
-        pindex->nSolutionSize = pindex->nSolution ? header->nSolutionSize : 0;
-    } else {
-        pindex->nSolution = NULL;
-        pindex->nSolutionSize = 0;
-    }
-
-    if (!block_map_insert(&ms->map_block_index, &hash, pindex)) {
-        free(pindex);
-        return block_map_find(&ms->map_block_index, &hash);
-    }
-
-    /* phashBlock points into the block_map_entry's hash storage */
-    struct block_index *found = block_map_find(&ms->map_block_index, &hash);
-    if (found) {
-        const struct uint256 *stored = block_map_find_hash(
-            &ms->map_block_index, &hash);
-        if (stored)
-            found->phashBlock = stored;
-    }
-
-    /* Link to previous block */
-    struct block_index *pprev = block_map_find(&ms->map_block_index,
-                                                &header->hashPrevBlock);
-    if (pprev) {
-        pindex->pprev = pprev;
-        pindex->nHeight = pprev->nHeight + 1;
-        block_index_build_skip(pindex);
-
-        /* Chain work = prev + work for this block */
-        struct arith_uint256 block_proof = GetBlockProof(pindex);
-        arith_uint256_add(&pindex->nChainWork, &pprev->nChainWork, &block_proof);
-    } else {
-        pindex->nHeight = 0;
-        pindex->nChainWork = GetBlockProof(pindex);
-    }
-
-    return pindex;
-}
+/* add_to_block_index() relocated to lib/validation/src/accept_block_header.c
+ * (its sole caller) in the single-engine swap so the runtime in-memory
+ * block_index producer survives the eventual process_block_core.c deletion.
+ * Behavior-preserving code motion; the declaration remains in
+ * process_block_internal.h. */
 
 void block_index_refresh_header(struct block_index *pindex,
                                 const struct block_header *header)

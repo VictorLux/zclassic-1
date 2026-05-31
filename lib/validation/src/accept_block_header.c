@@ -12,16 +12,20 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/check_block.h"
+#include "validation/chainstate.h"
 #include "validation/accept_block_header.h"
 #include "chain/pow.h"
 #include "domain/consensus/header_accept.h"
 #include "event/event.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include "process_block_internal.h"
 
@@ -214,6 +218,71 @@ static bool validate_headers_authoritative_guard(
     return validation_state_invalid(state, false, 0,
                                     "validate-headers-cutover-diverged",
                                     NULL);
+}
+
+/* Relocated verbatim from process_block_core.c (single-engine swap) so the
+ * sole runtime in-memory block_index producer — header scalars + pprev +
+ * nChainWork via block_map_insert — survives the eventual
+ * process_block_core.c deletion. Its only caller is accept_block_header()
+ * below. Declaration stays in process_block_internal.h. */
+struct block_index *add_to_block_index(struct main_state *ms,
+                                       const struct block_header *header)
+{
+    struct uint256 hash;
+    block_header_get_hash(header, &hash);
+
+    struct block_index *pindex = zcl_calloc(1, sizeof(struct block_index), "process_block_index");
+    if (!pindex)
+        return NULL;
+    block_index_init(pindex);
+
+    pindex->nVersion = header->nVersion;
+    pindex->hashMerkleRoot = header->hashMerkleRoot;
+    pindex->hashFinalSaplingRoot = header->hashFinalSaplingRoot;
+    pindex->nTime = header->nTime;
+    pindex->nBits = header->nBits;
+    pindex->nNonce = header->nNonce;
+    if (header->nSolutionSize > 0) {
+        pindex->nSolution = zcl_malloc(header->nSolutionSize, "block_solution");
+        if (pindex->nSolution)
+            memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
+        pindex->nSolutionSize = pindex->nSolution ? header->nSolutionSize : 0;
+    } else {
+        pindex->nSolution = NULL;
+        pindex->nSolutionSize = 0;
+    }
+
+    if (!block_map_insert(&ms->map_block_index, &hash, pindex)) {
+        free(pindex);
+        return block_map_find(&ms->map_block_index, &hash);
+    }
+
+    /* phashBlock points into the block_map_entry's hash storage */
+    struct block_index *found = block_map_find(&ms->map_block_index, &hash);
+    if (found) {
+        const struct uint256 *stored = block_map_find_hash(
+            &ms->map_block_index, &hash);
+        if (stored)
+            found->phashBlock = stored;
+    }
+
+    /* Link to previous block */
+    struct block_index *pprev = block_map_find(&ms->map_block_index,
+                                                &header->hashPrevBlock);
+    if (pprev) {
+        pindex->pprev = pprev;
+        pindex->nHeight = pprev->nHeight + 1;
+        block_index_build_skip(pindex);
+
+        /* Chain work = prev + work for this block */
+        struct arith_uint256 block_proof = GetBlockProof(pindex);
+        arith_uint256_add(&pindex->nChainWork, &pprev->nChainWork, &block_proof);
+    } else {
+        pindex->nHeight = 0;
+        pindex->nChainWork = GetBlockProof(pindex);
+    }
+
+    return pindex;
 }
 
 bool accept_block_header(const struct block_header *header,

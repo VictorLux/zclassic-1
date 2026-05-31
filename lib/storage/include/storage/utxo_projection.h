@@ -83,6 +83,20 @@ struct sqlite3;
 int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
                                          struct sqlite3 *legacy_db);
 
+/* Cold-start anchor-seed for fast_sync: identical to seed_from_legacy but
+ * sources the verified SHA3 UTXO snapshot from the fast_sync staging table
+ * (SNAPSYNC_STAGING_TABLE = "snapshot_staging_utxos") instead of the legacy
+ * `utxos` table. Used when a fresh datadir is seeded by FlyClient + SHA3
+ * snapshot rather than by a live coins.db: lands the snapshot directly in the
+ * authoritative projection so a subsequent boot_rebuild_from_log restores
+ * tip+UTXO purely from the log/projection with no legacy sibling read.
+ * Clears any existing rows, copies the full set in one IMMEDIATE txn, stamps
+ * last_consumed_offset to the current event-log head + anchor_seeded=1.
+ * Idempotent/one-time: refuses (returns -1) if already anchor-seeded.
+ * Returns the number of UTXOs seeded, or -1 on error/refusal. */
+int64_t utxo_projection_seed_from_snapshot(utxo_projection_t *p,
+                                           struct sqlite3 *staging_db);
+
 /* Lookup a UTXO by (txid, vout). Returns true if present; fills
  * value/script if the corresponding out-pointer is non-NULL. If the
  * caller's `script_cap` is smaller than the stored script length, the
