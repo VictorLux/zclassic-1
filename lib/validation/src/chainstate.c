@@ -276,13 +276,16 @@ bool active_chain_contains(const struct active_chain *c,
     return c->chain[bi->nHeight] == bi;
 }
 
-bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
+/* Physically assemble chain[] so chain[bi->nHeight] == bi and every lower
+ * slot holds the ancestor on bi's path (walking pprev), then set c->height
+ * = bi->nHeight. This is the structural half of active_chain_set_tip — the
+ * part every reader (active_chain_at, the stages) depends on — WITHOUT the
+ * authority set_tip notification. Returns false only on a realloc failure
+ * (which LOG_FAILs and never returns). Slots ABOVE new_height are left
+ * untouched (a later wider window can still re-expose them).  */
+static bool active_chain_fill_window(struct active_chain *c,
+                                     struct block_index *bi)
 {
-    if (!bi) {
-        c->height = -1;
-        return true;
-    }
-
     int new_height = bi->nHeight;
     if (new_height >= c->capacity) {
         int old_cap = c->capacity;
@@ -290,7 +293,7 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
         struct block_index **nc = zcl_realloc(c->chain,
             (size_t)new_cap * sizeof(struct block_index *), "active_chain");
         if (!nc)
-            LOG_FAIL("chainstate", "active_chain_set_tip: realloc failed for height %d", new_height);
+            LOG_FAIL("chainstate", "active_chain_fill_window: realloc failed for height %d", new_height);
         c->chain = nc;
         memset(&c->chain[old_cap], 0,
                (size_t)(new_cap - old_cap) * sizeof(struct block_index *));
@@ -324,15 +327,117 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
         h--;
     }
     c->height = new_height;
+    return true;
+}
+
+bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
+{
+    if (!bi) {
+        c->height = -1;
+        return true;
+    }
+
+    if (!active_chain_fill_window(c, bi))
+        return false;
 
     if (g_chain_authority.is_authoritative &&
         g_chain_authority.set_tip &&
         g_chain_authority.is_authoritative()) {
         const uint8_t *h32 = bi ? bi->phashBlock->data : NULL;
-        g_chain_authority.set_tip(new_height, h32);
+        g_chain_authority.set_tip(bi->nHeight, h32);
     }
 
     return true;
+}
+
+/* Extend the VISIBLE chain[] window forward to a most-work CANDIDATE that
+ * builds on the current tip, WITHOUT moving the authoritative (finalized)
+ * tip. This is the reducer's structural analogue of the legacy
+ * activate_best_chain assembling chain[] out to find_most_work_chain's
+ * candidate before connect_tip walks it block-by-block.
+ *
+ * It exists because the reducer's tip_finalize uses a one-block lookahead:
+ * it finalizes height H by reading active_chain_at(H+1), then collapses
+ * c->height back to H via active_chain_set_tip(new_tip). Without a separate
+ * window-extender, the lookahead for H+1 would never find H+2 and the
+ * reducer would wedge after one block. Re-extending to the candidate each
+ * tick keeps the lookahead supplied while the finalized tip advances under
+ * it.
+ *
+ * Contract:
+ *   - `candidate` MUST descend from (or equal) the current tip — the caller
+ *     (a most-work selector that refuses below-tip candidates) guarantees
+ *     this; we only assemble the path it names.
+ *   - NEVER shrinks the window: if candidate->nHeight <= c->height this is a
+ *     no-op (the finalized tip is the authority on retreat; window growth is
+ *     monotonic forward between finalizations).
+ *   - Does NOT invoke the authority set_tip callback — the finalized tip is
+ *     owned solely by tip_finalize's active_chain_set_tip. This only widens
+ *     what active_chain_at can see.
+ * Returns true on success (incl. the no-op case), false only on realloc
+ * failure (which LOG_FAILs upstream). */
+bool active_chain_extend_window(struct active_chain *c,
+                                struct block_index *candidate)
+{
+    if (!c || !candidate)
+        return true;
+    if (candidate->nHeight <= c->height)
+        return true; /* monotonic forward only — never retreat the window */
+    return active_chain_fill_window(c, candidate);
+}
+
+struct block_index *active_chain_most_work_candidate(struct active_chain *c,
+                                                      struct block_map *m)
+{
+    if (!c || !m)
+        return NULL;
+
+    struct block_index *tip = active_chain_tip(c);
+    struct block_index *best = tip;
+
+    size_t iter = 0;
+    struct block_index *pindex = NULL;
+    while (block_map_next(m, &iter, NULL, &pindex)) {
+        if (!pindex)
+            continue;
+        /* Mirror find_most_work_chain (process_block_core.c) eligibility:
+         * skip failed blocks, require at least header-tree validation, and
+         * require data availability (nChainTx>0 OR BLOCK_HAVE_DATA). */
+        if (block_has_any_failure(pindex))
+            continue;
+        if (!block_index_is_valid(pindex, BLOCK_VALID_TREE))
+            continue;
+        if (pindex->nChainTx == 0 && !(pindex->nStatus & BLOCK_HAVE_DATA))
+            continue;
+
+        if (!best || arith_uint256_compare(&pindex->nChainWork,
+                                           &best->nChainWork) > 0) {
+            /* Ancestry must be failure-free up to the current best/tip. */
+            bool chain_ok = true;
+            struct block_index *check = pindex;
+            int floor_h = best ? best->nHeight : -1;
+            while (check && check->nHeight > floor_h) {
+                if (block_has_any_failure(check)) {
+                    chain_ok = false;
+                    break;
+                }
+                if (!check->pprev && check->nHeight > 0)
+                    break; /* pprev unlinked (post-import) — stop, accept */
+                check = check->pprev;
+            }
+            if (chain_ok)
+                best = pindex;
+        }
+    }
+
+    /* Refuse a candidate strictly BELOW the current tip — the tip is
+     * canonical (matches find_most_work_chain's stale-fork guard). The
+     * window only ever grows forward; a lower-height higher-work fork is
+     * never selected here. */
+    if (tip && best && best != tip && best->nHeight < tip->nHeight)
+        return tip;
+
+    return best;
 }
 
 int active_chain_height(const struct active_chain *c)

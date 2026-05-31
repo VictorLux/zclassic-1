@@ -21,6 +21,8 @@
 
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 
 #include <sqlite3.h>
 #include <stdbool.h>
@@ -89,6 +91,38 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
         n = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return n;
+}
+
+/* Reducer chain-window extender (the missing chain-extender).
+ *
+ * The reducer's tip_finalize uses a one-block lookahead (finalize H by
+ * reading active_chain_at(H+1)) and then collapses the visible chain[]
+ * window back to the finalized height via active_chain_set_tip. Legacy
+ * keeps a wider window because activate_best_chain assembles chain[] out to
+ * find_most_work_chain's candidate before connect_tip walks it; the reducer
+ * had no equivalent and wedged after a single block.
+ *
+ * This helper restores that property: it selects the most-work candidate
+ * (side-effect-free mirror of find_most_work_chain) and forward-extends the
+ * visible chain[] window to it WITHOUT moving the authoritative tip. Both
+ * utxo_apply (forward-apply + reorg-unwind detection read active_chain_at)
+ * and tip_finalize (lookahead) call it at the top of their step_once so the
+ * window is always supplied to the height they are about to process.
+ *
+ * STRICTLY a no-op unless the reducer holds authority — the caller passes
+ * `authoritative` from its own mode gate, so under the live default (SHADOW)
+ * this never touches chain[] and legacy connect_tip remains the sole tip
+ * writer (byte-identical live behaviour). */
+static inline void reducer_extend_window_to_candidate(struct main_state *ms,
+                                                       bool authoritative)
+{
+    if (!authoritative || !ms)
+        return;
+    struct block_index *cand =
+        active_chain_most_work_candidate(&ms->chain_active,
+                                         &ms->map_block_index);
+    if (cand)
+        (void)active_chain_extend_window(&ms->chain_active, cand);
 }
 
 #endif /* ZCL_JOBS_STAGE_HELPERS_H */

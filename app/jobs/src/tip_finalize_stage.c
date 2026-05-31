@@ -472,21 +472,17 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
 
-    /* STEP 1 keystone — make tip_finalize the WRITER of the in-mem tip,
-     * not just the authority that reports it. After the log row is durable,
-     * advance the physical chain_active.chain[] array (the structure every
-     * stage READS) to new_tip. This is the only new chain[] writer outside
-     * the legacy connect_tip path.
-     *
-     * STRICTLY gated on AUTHORITATIVE: in the default SHADOW mode this is a
-     * no-op and legacy connect_tip->update_tip remains the sole tip writer,
-     * so live behaviour is UNCHANGED. Only when the operator flips
-     * tip_finalize to AUTHORITATIVE (cutover step 13, not here) does the
-     * reducer physically drive the tip forward.
-     *
-     * active_chain_set_tip re-invokes our registered authority set_tip_cb
-     * when authoritative; that only does atomic stores (update_last_advance),
-     * matching the value step_finalize stamps below — no lock re-entrancy. */
+    /* STEP 1 keystone — make tip_finalize the WRITER of the in-mem tip, not
+     * just the authority that reports it. After the log row is durable,
+     * advance the physical chain_active.chain[] array (which every stage
+     * READS) to new_tip — the only new chain[] writer outside legacy
+     * connect_tip. STRICTLY gated on AUTHORITATIVE: in the default SHADOW
+     * mode this is a no-op and legacy connect_tip->update_tip stays the sole
+     * tip writer (live behaviour UNCHANGED); only the cutover flip (step 13,
+     * not here) makes the reducer drive the tip. active_chain_set_tip
+     * re-invokes our authority set_tip_cb when authoritative — only atomic
+     * stores (update_last_advance), matching the value stamped below, no
+     * lock re-entrancy. */
     if (tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE) {
         if (!active_chain_set_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
             LOG_WARN("tip_finalize",
@@ -495,10 +491,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
             return JOB_FATAL;
         }
 
-        /* STEP 5 — tip is physically advanced; run the derived side
-         * effects (wallet+Sapling, mempool removal, MMR/MMB) legacy
-         * connect_tip does at tip-connect. AUTHORITATIVE-only (never
-         * reached in SHADOW; legacy stays the sole producer there). */
+        /* STEP 5 — tip is physically advanced; run the derived side effects
+         * (wallet+Sapling, mempool removal, MMR/MMB) legacy connect_tip does
+         * at tip-connect. AUTHORITATIVE-only (legacy is sole producer in SHADOW). */
         tip_finalize_run_post_finalize(new_tip);
     }
 
@@ -586,6 +581,11 @@ job_result_t tip_finalize_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
+    /* Chain-extender (AUTHORITATIVE-only, no-op in SHADOW): re-widen chain[]
+     * to the most-work candidate so step_finalize's one-block lookahead finds
+     * next_h+1 — its own set_tip collapses the window each step. stage_helpers.h */
+    reducer_extend_window_to_candidate(
+        g_ms, tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE);
     if (!rewind_cursor_if_active_chain_reorged(db))
         return JOB_FATAL;
     return stage_run_once(g_stage, db);

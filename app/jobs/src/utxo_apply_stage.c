@@ -364,6 +364,14 @@ job_result_t utxo_apply_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
+    /* Chain-extender: keep the visible chain[] window extended to the
+     * most-work candidate so both the reorg-unwind detection and the
+     * forward-apply below (each reads active_chain_at) see the winning
+     * branch. AUTHORITATIVE-only — keyed off the stage holding the UTXO
+     * projection authority (UTXO_AUTHOR_STAGE); a no-op under the default
+     * LEGACY author so live behaviour is unchanged (legacy owns chain[]). */
+    reducer_extend_window_to_candidate(
+        g_ms, utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
     /* B5: drain any pending stage-side reorg disconnect BEFORE the next
      * forward apply (and before tip_finalize, which the supervisor drains
      * after us, reads our cursor). Self-contained txn; on failure the

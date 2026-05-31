@@ -52,7 +52,7 @@ lib/validation/src/activate_best_chain.c:453: if (!connect_tip(state, ms, coins_
 lib/validation/src/activate_best_chain.c:510: if (!connect_tip(state, ms, coins_tip, tip_child,
 lib/validation/src/activate_best_chain.c:746: if (!disconnect_tip(state, ms, coins_tip, datadir)) {
 lib/validation/src/activate_best_chain.c:869: if (!connect_tip(state, ms, coins_tip, connect_path[i],
-lib/validation/src/chainstate.c:279:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
+lib/validation/src/chainstate.c:333:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 lib/validation/src/connect_tip.c:529: if (!coins_view_cache_flush(&view)) {
 lib/validation/src/connect_tip.c:90:bool connect_tip(struct validation_state *state,
 lib/validation/src/disconnect_tip.c:192: if (!coins_view_cache_flush(&view)) {

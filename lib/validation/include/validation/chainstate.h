@@ -100,6 +100,21 @@ struct block_index *active_chain_at(const struct active_chain *c, int height);
 bool active_chain_contains(const struct active_chain *c,
                            const struct block_index *bi);
 bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
+/* Forward-only widen of the visible chain[] window to a most-work candidate
+ * that builds on the current tip, WITHOUT moving the authoritative tip or
+ * firing the set_tip authority callback. The reducer's structural analogue
+ * of legacy activate_best_chain assembling chain[] out to find_most_work_chain's
+ * candidate. No-op when candidate->nHeight <= c->height. See chainstate.c. */
+bool active_chain_extend_window(struct active_chain *c,
+                                struct block_index *candidate);
+/* Side-effect-free most-work candidate selector over the block map, mirroring
+ * find_most_work_chain's eligibility (failure-free, >= VALID_TREE, has data,
+ * clean ancestry, refuses below-tip). Returns the current tip when no heavier
+ * eligible candidate exists, or NULL only on NULL args. Used by the reducer's
+ * window-extender; carries none of find_most_work_chain's gap-fill/logging
+ * side effects so it is safe to call every stage tick. See chainstate.c. */
+struct block_index *active_chain_most_work_candidate(struct active_chain *c,
+                                                      struct block_map *m);
 int active_chain_height(const struct active_chain *c);
 
 struct active_chain_authority {
