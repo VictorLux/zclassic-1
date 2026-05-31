@@ -623,6 +623,47 @@ bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
     return true;
 }
 
+bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
+{
+    if (height < 0 || !hash)
+        return false;
+
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        /* Not wired (very early boot, or unit tests without a progress
+         * store). The cold-start seed is best-effort: the legacy node.db
+         * promote still carries the snapshot during cutover. */
+        return false;
+    }
+    if (!ensure_log_schema(db))
+        return false;
+
+    struct uint256 tip_hash;
+    memcpy(tip_hash.data, hash, 32);
+
+    /* Durable finalize-log row at the anchor height (ok=1, tip_hash) so a
+     * later boot_rebuild_from_log resolves the anchor as the tip via
+     * tip_finalize_stage_finalized_tip_at. Zero work-delta / utxo-size:
+     * the snapshot anchor has no per-block apply accounting (it is a
+     * cryptographically-verified set, not a connected block). */
+    if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash))
+        return false;
+
+    /* Advance the durable stage cursor to height+1 so the stage resumes
+     * at the next height and the rebuild reads cursor-1 == anchor. */
+    if (g_stage && !stage_set_cursor(g_stage, db, (uint64_t)height + 1)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] anchor seed: cursor stamp to %d failed",
+                 height + 1);
+        return false;
+    }
+
+    /* Seed the runtime authoritative tip so readers see the anchor
+     * immediately, not only after the next boot. */
+    update_last_advance(height, hash);
+    return true;
+}
+
 void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
                                          void *user)
 {

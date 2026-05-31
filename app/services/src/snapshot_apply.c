@@ -29,11 +29,65 @@
 #include "validation/main_constants.h"
 #include "validation/sync_evidence_policy.h"
 #include "validation/contextual_check_tx.h"
+#include "storage/utxo_projection.h"
+#include "jobs/tip_finalize_stage.h"
+#include "jobs/block_header_emit.h"
 
 #include "snapshot_sync_internal.h"
 
 #include <string.h>
 #include <stdio.h>
+
+/* ── Cold-start single-engine seed ───────────────────────── */
+
+/* Seed the authoritative log/projection engine from the verified
+ * snapshot so a node that fast-synced on a cold datadir restores its
+ * tip + UTXO set purely from the log on the next boot (no legacy
+ * coins.db / node.db read). Best-effort and additive during cutover:
+ * the legacy node.db `utxos` promote above still carries the set, so a
+ * failure here is logged but never aborts the snapshot activation.
+ *
+ *   1. Bulk-seed the UTXO projection from the verified staging table.
+ *   2. Emit ONE anchor EV_BLOCK_HEADER so block_index_projection records
+ *      the anchor as a HAVE_DATA / VALID_SCRIPTS tip for the boot fold.
+ *   3. Durably stamp the tip_finalize cursor + finalize-log row at the
+ *      anchor height so boot_rebuild_from_log seeds the tip from it. */
+static void snapsync_seed_single_engine(struct node_db *ndb,
+                                        const struct snapshot_sync_service *svc)
+{
+    /* (1) UTXO projection seed from the verified staging table (node.db).
+     * NULL global projection (unit tests / not-yet-wired) → skip. */
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (proj) {
+        int64_t seeded = utxo_projection_seed_from_snapshot(proj, ndb->db);
+        if (seeded < 0)
+            LOG_WARN("snapshot_sync",
+                     "single-engine seed: utxo projection seed failed "
+                     "(h=%d) — legacy node.db utxos still authoritative",
+                     svc->offered_height);
+    }
+
+    /* (2) One anchor EV_BLOCK_HEADER. We carry only the anchor hash +
+     * height (the snapshot offer has no full block header), exactly like
+     * chain_restore_create_anchor's metadata-only anchor. nStatus marks
+     * it HAVE_DATA + VALID_SCRIPTS so the boot fold treats it as a
+     * finalize-eligible tip. */
+    struct block_index anchor;
+    block_index_init(&anchor);
+    struct uint256 anchor_hash;
+    memcpy(anchor_hash.data, svc->offered_block_hash, 32);
+    anchor.phashBlock = &anchor_hash;
+    anchor.nHeight    = svc->offered_height;
+    anchor.nStatus    = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+    block_index_emit_header_event(&anchor, "snapshot", NULL, NULL);
+
+    /* (3) Durable tip cursor + finalize-log row at the anchor height. */
+    if (!tip_finalize_stage_seed_anchor(svc->offered_height,
+                                        svc->offered_block_hash))
+        LOG_WARN("snapshot_sync",
+                 "single-engine seed: tip cursor anchor seed skipped/failed "
+                 "(h=%d)", svc->offered_height);
+}
 
 /* ── Stage promotion ─────────────────────────────────────── */
 
@@ -60,6 +114,10 @@ struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
         return ZCL_ERR(-4, "activate: failed to promote staged utxos");
     if (node_db_utxo_count(ndb) != (int64_t)local_count)
         return ZCL_ERR(-5, "activate: active/staged UTXO count mismatch");
+    /* Cold-start single-engine seed (additive): land the verified
+     * snapshot into the authoritative log/projection engine + tip cursor
+     * BEFORE the staging table is discarded below. Best-effort. */
+    snapsync_seed_single_engine(ndb, svc);
     /* Record the verified snapshot anchor as pending recovery metadata.
      * The publishable coins_best_block cursor is written only by
      * chain_state_repository during evidenced tip activation. */

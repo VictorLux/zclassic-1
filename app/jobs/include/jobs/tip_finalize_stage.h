@@ -49,6 +49,16 @@ struct sqlite3;
 bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
                                          uint8_t out_hash[32]);
 
+/* Cold-start fast_sync seed: durably record the snapshot anchor at
+ * `height` (hash) as a finalized tip in tip_finalize_log and advance the
+ * stage cursor to height+1, so the next boot_rebuild_from_log restores
+ * the tip purely from the log/cursor. Also seeds the runtime
+ * authoritative tip. Best-effort, non-fatal: returns false (no mutation
+ * beyond the log row) if the progress store / stage are not yet wired —
+ * the legacy node.db promote still carries the snapshot during cutover.
+ * `hash` is the 32-byte snapshot anchor block hash. */
+bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32]);
+
 job_result_t tip_finalize_stage_step_once(void);
 int tip_finalize_stage_drain(int max_steps);
 
