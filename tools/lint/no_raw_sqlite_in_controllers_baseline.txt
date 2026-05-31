@@ -16,8 +16,6 @@ app/controllers/src/blockchain_controller_admin.c
 app/controllers/src/blockchain_controller.c
 app/controllers/src/blockchain_controller_chain.c
 app/controllers/src/dbquery_controller.c
-app/controllers/src/explorer_controller.c
-app/controllers/src/explorer_controller_tx.c
 app/controllers/src/file_controller_export.c
 app/controllers/src/legacy_import.c
 app/controllers/src/projection_diff_controller.c

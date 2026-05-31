@@ -62,6 +62,13 @@ bool db_block_load_solution_by_height(struct node_db *ndb, int height,
 
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
 int db_block_max_height(struct node_db *ndb);
+/* Max stored block height regardless of block status (no status>=3 filter).
+ * The block explorer uses this for its native chain-height fallback when no
+ * main_state is attached (e.g. the standalone GTK browser): it wants the
+ * highest height present in the `blocks` table irrespective of validation
+ * status. Returns -1 when the db is closed or the table is empty, so callers
+ * can treat "< 1" as "no chain". */
+int db_block_max_height_any_status(struct node_db *ndb);
 int db_block_count(struct node_db *ndb);
 
 /* ── Relationships ─────────────────────────────────────────────── */

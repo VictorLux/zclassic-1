@@ -2,10 +2,12 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Explorer transaction page: /explorer/tx/{txid}.
- * See explorer_controller_internal.h for shared declarations and
- * controllers/explorer_internal.h for the EXPLORER_HEADER / APPEND
- * macros. */
+/* Explorer transaction CONTROLLER: /explorer/tx/{txid}. Thin parse-delegate
+ * glue — it parses the request, fetches the transaction (mempool / tx index /
+ * on-disk block, or via the RPC proxy), packs the already-computed fields
+ * into the view structs, and hands them to the view shape
+ * (app/views/src/explorer_tx_view.c). Controllers must not build views.
+ * See explorer_controller_internal.h for shared declarations. */
 
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
@@ -24,10 +26,11 @@
 #include "primitives/transaction.h"
 #include "script/standard.h"
 #include "storage/disk_block_io.h"
-#include "util/ar_step_readonly.h"
+#include "util/safe_alloc.h"
 #include "util/template.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
+#include "views/explorer_tx_view.h"
 #include "views/format_helpers.h"
 #include "views/wallet_templates_gen.h"
 #include "zslp/slp.h"
@@ -43,72 +46,49 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
     if (!zcl_is_hex_string(param, 64))
         return 0;
 
-    size_t off = 0;
     char buf[262144];
 
     char params[128];
     snprintf(params, sizeof(params), "[\"%s\", 1]", param);
     int n = rpc_call("getrawtransaction", params, buf, sizeof(buf));
-    if (n <= 0 || strstr(buf, "\"error\":null") == NULL) {
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Transaction Not Found</h2>"
-            "<p>TxID: <code>%s</code></p>" EXPLORER_FOOTER, param);
-    }
+    if (n <= 0 || strstr(buf, "\"error\":null") == NULL)
+        return explorer_view_tx_not_found_rpc(param, r, max);
 
     /* Extract the result object — find "result":{ */
     const char *result = strstr(buf, "\"result\":{");
     if (!result) result = buf;
 
-    int64_t confirmations = json_extract_int(result, "confirmations");
-    int64_t blk_height = json_extract_int(result, "height");
-    int64_t tx_size = json_extract_int(result, "size");
-    int64_t version = json_extract_int(result, "version");
-    int64_t locktime = json_extract_int(result, "locktime");
+    struct explorer_tx_rpc_view_data d;
+    memset(&d, 0, sizeof(d));
+    snprintf(d.txid, sizeof(d.txid), "%s", param);
+    d.confirmations = json_extract_int(result, "confirmations");
+    d.block_height = json_extract_int(result, "height");
+    d.size = json_extract_int(result, "size");
+    d.version = json_extract_int(result, "version");
+    d.locktime = json_extract_int(result, "locktime");
+
     int64_t expiry = json_extract_int(result, "expiryheight");
+    d.has_expiry = expiry > 0;
+    d.expiry = expiry;
+
     double value_balance = json_extract_real(result, "valuebalance");
-
-    char blockhash[65] = "";
-    json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
-
-    APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
-    off += explorer_emit_nav((char *)r + off, max - off, NULL);
-
-    APPEND(off, r, max,
-        "<h2>Transaction</h2>"
-        "<div class='card'><div class='grid'>"
-        "<div class='label'>TxID</div><div class='val hash'>%s</div>"
-        "<div class='label'>Confirmations</div><div class='val'>%" PRId64 "</div>"
-        "<div class='label'>Size</div><div class='val'>%" PRId64 " bytes</div>"
-        "<div class='label'>Version</div><div class='val'>%" PRId64 "</div>"
-        "<div class='label'>Lock Time</div><div class='val'>%" PRId64 "</div>",
-        param, confirmations, tx_size, version, locktime);
-
-    if (blockhash[0])
-        APPEND(off, r, max,
-            "<div class='label'>Block</div><div class='val hash'>"
-            "<a href='/explorer/block/%s'>%.16s...</a> (height %" PRId64 ")</div>",
-            blockhash, blockhash, blk_height);
-    if (expiry > 0)
-        APPEND(off, r, max,
-            "<div class='label'>Expiry Height</div><div class='val'>%" PRId64 "</div>", expiry);
     if (value_balance != 0.0) {
-        char vb[32];
-        zcl_format_zcl(vb, sizeof(vb), (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
-        APPEND(off, r, max,
-            "<div class='label'>Value Balance</div><div class='val amount'>%s ZCL</div>", vb);
+        d.has_value_balance = true;
+        zcl_format_zcl(d.value_balance, sizeof(d.value_balance),
+                       (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
     }
 
-    APPEND(off, r, max, "</div></div>");
+    json_extract_str(result, "blockhash", d.blockhash, sizeof(d.blockhash));
+    d.has_block = d.blockhash[0] != '\0';
 
     /* Parse vout array for outputs */
+    struct explorer_tx_rpc_out_row *out_rows = NULL;
+    size_t num_out_rows = 0;
     const char *vout = strstr(result, "\"vout\":[");
     if (vout) {
-        APPEND(off, r, max, "<h2>Outputs</h2><div class='io-box'>");
+        d.has_outputs = true;
 
-        /* Walk through vout entries — look for "n": and "value": and "addresses": */
-        const char *p = vout;
+        /* Find the end of the vout array. */
         const char *vout_end = NULL;
         int brace_depth = 0;
         for (const char *q = vout + 7; *q; q++) {
@@ -117,87 +97,75 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
         }
         if (!vout_end) vout_end = buf + n;
 
-        /* Find each {"value": entry */
-        p = vout;
-        int out_idx = 0;
-        while (p < vout_end && off + 512 < max) {
+        /* Count "value": entries to size the row array. */
+        size_t cap = 0;
+        for (const char *p = vout; p < vout_end; ) {
             const char *val_str = strstr(p, "\"value\":");
             if (!val_str || val_str >= vout_end) break;
-
-            double val = strtod(val_str + 8, NULL);
-            char val_fmt[32];
-            zcl_format_zcl(val_fmt, sizeof(val_fmt), (int64_t)(val * (double)ZATOSHI_PER_ZCL));
-
-            /* Try to find address */
-            char addr[64] = "";
-            const char *addr_start = strstr(val_str, "\"addresses\":[\"");
-            if (addr_start && addr_start < vout_end && addr_start - val_str < 500) {
-                addr_start += 14;
-                const char *addr_end = strchr(addr_start, '"');
-                if (addr_end && (size_t)(addr_end - addr_start) < sizeof(addr)) {
-                    memcpy(addr, addr_start, (size_t)(addr_end - addr_start));
-                    addr[(size_t)(addr_end - addr_start)] = '\0';
-                }
-            }
-
-            /* Check for OP_RETURN */
-            bool is_opreturn = (strstr(val_str, "\"type\":\"nulldata\"") != NULL &&
-                                strstr(val_str, "\"type\":\"nulldata\"") < vout_end &&
-                                strstr(val_str, "\"type\":\"nulldata\"") - val_str < 500);
-
-            if (is_opreturn) {
-                APPEND(off, r, max,
-                    "<div class='io-row'><div class='io-idx'>%d</div>"
-                    "<div class='io-addr' style='color:#888'>OP_RETURN</div>"
-                    "<div class='io-val'>%s ZCL</div></div>",
-                    out_idx, val_fmt);
-            } else if (addr[0]) {
-                APPEND(off, r, max,
-                    "<div class='io-row'><div class='io-idx'>%d</div>"
-                    "<div class='io-addr'><a href='/explorer/address/%s'>%s</a></div>"
-                    "<div class='io-val'>%s ZCL</div></div>",
-                    out_idx, addr, addr, val_fmt);
-            } else {
-                APPEND(off, r, max,
-                    "<div class='io-row'><div class='io-idx'>%d</div>"
-                    "<div class='io-addr' style='color:#666'>Unknown</div>"
-                    "<div class='io-val'>%s ZCL</div></div>",
-                    out_idx, val_fmt);
-            }
-
-            out_idx++;
+            cap++;
             p = val_str + 8;
         }
-        APPEND(off, r, max, "</div>");
+
+        if (cap > 0) {
+            out_rows = zcl_malloc(cap * sizeof(*out_rows), "explorer.tx.rpc.out_rows");
+            const char *p = vout;
+            int out_idx = 0;
+            while (p < vout_end && num_out_rows < cap) {
+                const char *val_str = strstr(p, "\"value\":");
+                if (!val_str || val_str >= vout_end) break;
+
+                double val = strtod(val_str + 8, NULL);
+                struct explorer_tx_rpc_out_row *row = &out_rows[num_out_rows];
+                memset(row, 0, sizeof(*row));
+                row->index = out_idx;
+                zcl_format_zcl(row->value, sizeof(row->value),
+                               (int64_t)(val * (double)ZATOSHI_PER_ZCL));
+
+                /* Try to find address */
+                char addr[64] = "";
+                const char *addr_start = strstr(val_str, "\"addresses\":[\"");
+                if (addr_start && addr_start < vout_end && addr_start - val_str < 500) {
+                    addr_start += 14;
+                    const char *addr_end = strchr(addr_start, '"');
+                    if (addr_end && (size_t)(addr_end - addr_start) < sizeof(addr)) {
+                        memcpy(addr, addr_start, (size_t)(addr_end - addr_start));
+                        addr[(size_t)(addr_end - addr_start)] = '\0';
+                    }
+                }
+
+                /* Check for OP_RETURN */
+                bool is_opreturn = (strstr(val_str, "\"type\":\"nulldata\"") != NULL &&
+                                    strstr(val_str, "\"type\":\"nulldata\"") < vout_end &&
+                                    strstr(val_str, "\"type\":\"nulldata\"") - val_str < 500);
+
+                if (is_opreturn) {
+                    row->kind = EXPLORER_TX_IO_OP_RETURN;
+                } else if (addr[0]) {
+                    row->kind = EXPLORER_TX_IO_ADDRESS;
+                    snprintf(row->addr, sizeof(row->addr), "%s", addr);
+                } else {
+                    row->kind = EXPLORER_TX_IO_UNKNOWN;
+                }
+
+                num_out_rows++;
+                out_idx++;
+                p = val_str + 8;
+            }
+        }
     }
+    d.out_rows = out_rows;
+    d.num_out_rows = num_out_rows;
 
     /* Shielded data */
-    int64_t vShieldedSpend = 0, vShieldedOutput = 0, vJoinSplit = 0;
     const char *ss = strstr(result, "\"vShieldedSpend\":[");
-    if (ss) { for (const char *q = ss; *q && *q != ']'; q++) if (*q == '{') vShieldedSpend++; }
+    if (ss) { for (const char *q = ss; *q && *q != ']'; q++) if (*q == '{') d.shielded_spend++; }
     const char *so = strstr(result, "\"vShieldedOutput\":[");
-    if (so) { for (const char *q = so; *q && *q != ']'; q++) if (*q == '{') vShieldedOutput++; }
+    if (so) { for (const char *q = so; *q && *q != ']'; q++) if (*q == '{') d.shielded_output++; }
     const char *js = strstr(result, "\"vjoinsplit\":[");
-    if (js) { for (const char *q = js; *q && *q != ']'; q++) if (*q == '{') vJoinSplit++; }
+    if (js) { for (const char *q = js; *q && *q != ']'; q++) if (*q == '{') d.joinsplit++; }
 
-    if (vShieldedSpend > 0 || vShieldedOutput > 0 || vJoinSplit > 0) {
-        APPEND(off, r, max, "<h2>Shielded Data</h2><div class='card'><div class='grid'>");
-        if (vShieldedSpend > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Spends</div><div class='val'>%" PRId64 "</div>",
-                vShieldedSpend);
-        if (vShieldedOutput > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Outputs</div><div class='val'>%" PRId64 "</div>",
-                vShieldedOutput);
-        if (vJoinSplit > 0)
-            APPEND(off, r, max,
-                "<div class='label'>JoinSplits</div><div class='val'>%" PRId64 "</div>",
-                vJoinSplit);
-        APPEND(off, r, max, "</div></div>");
-    }
-
-    APPEND(off, r, max, EXPLORER_FOOTER);
+    size_t off = explorer_view_tx_rpc(&d, r, max);
+    free(out_rows);
     return off;
 }
 
@@ -210,11 +178,7 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
         return serve_tx_rpc(param, r, max);
     if (!ctx->main_state || !zcl_is_hex_string(param, 64) ||
         !explorer_param_is_printable_ascii(param))
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Invalid Transaction ID</h2>"
-            "<p>Expected 64 hex characters.</p>" EXPLORER_FOOTER);
+        return explorer_view_tx_invalid(r, max);
 
     struct uint256 txhash;
     uint256_set_hex(&txhash, param);
@@ -262,211 +226,131 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
         if (rpc_result > 0) return rpc_result;
         char safe_param[256];
         html_escape(safe_param, sizeof(safe_param), param ? param : "");
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Transaction Not Found</h2>"
-            "<p>TxID: <code>%s</code></p>"
-            "<p style='color:#666'>Not in mempool or tx index.</p>" EXPLORER_FOOTER, safe_param);
+        return explorer_view_tx_not_found(safe_param, r, max);
     }
 
-    size_t off = 0;
     int tip = active_chain_height(&ctx->main_state->chain_active);
-    int confirmations = in_mempool ? 0 : (block_height >= 0 ? tip - block_height + 1 : 0);
 
-    APPEND(off, r, max, EXPLORER_HEADER("Transaction"));
-    off += explorer_emit_nav((char *)r + off, max - off, NULL);
+    struct explorer_tx_view_data d;
+    memset(&d, 0, sizeof(d));
 
     /* Header info */
-    char txid_hex[65];
-    uint256_get_hex(&tx.hash, txid_hex);
+    uint256_get_hex(&tx.hash, d.txid);
+    d.in_mempool = in_mempool;
+    d.confirmations = in_mempool ? 0 : (block_height >= 0 ? tip - block_height + 1 : 0);
+
+    if (block_height >= 0) {
+        d.has_block = true;
+        d.block_height = block_height;
+        format_with_commas(d.block_height_fmt, sizeof(d.block_height_fmt), block_height);
+    }
+
+    d.version = tx.version;
+    d.overwintered = tx.overwintered;
 
     /* Compute serialized size */
     struct byte_stream bs;
     stream_init(&bs, 512);
     transaction_serialize(&tx, &bs);
-    size_t tx_size = bs.size;
+    d.size = bs.size;
     stream_free(&bs);
 
-    APPEND(off, r, max,
-        "<h2>Transaction</h2>"
-        "<div class='card'><div class='grid'>"
-        "<div class='label'>TxID</div><div class='val hash'>%s</div>"
-        "<div class='label'>Status</div><div class='val'>%s</div>"
-        "<div class='label'>Confirmations</div><div class='val'>%d</div>",
-        txid_hex,
-        in_mempool ? "<span class='tag tag-mempool'>Mempool</span>" : "Confirmed",
-        confirmations);
+    d.lock_time = tx.lock_time;
 
-    if (block_height >= 0) {
-        char bh_fmt[32];
-        format_with_commas(bh_fmt, sizeof(bh_fmt), block_height);
-        APPEND(off, r, max,
-            "<div class='label'>Block</div><div class='val'>"
-            "<a href='/explorer/block/%d'>%s</a></div>",
-            block_height, bh_fmt);
+    if (tx.overwintered && tx.expiry_height > 0) {
+        d.has_expiry = true;
+        d.expiry_height = tx.expiry_height;
     }
-
-    APPEND(off, r, max,
-        "<div class='label'>Version</div><div class='val'>%d%s</div>"
-        "<div class='label'>Size</div><div class='val'>%zu bytes</div>"
-        "<div class='label'>Lock Time</div><div class='val'>%u</div>",
-        tx.version, tx.overwintered ? " (Overwinter)" : "",
-        tx_size, tx.lock_time);
-
-    if (tx.overwintered && tx.expiry_height > 0)
-        APPEND(off, r, max,
-            "<div class='label'>Expiry Height</div><div class='val'>%u</div>",
-            tx.expiry_height);
 
     /* Value balance for Sapling */
     if (tx.overwintered && tx.version >= 4) {
-        char vb[32];
-        zcl_format_zcl(vb, sizeof(vb), tx.value_balance);
-        APPEND(off, r, max,
-            "<div class='label'>Value Balance</div><div class='val amount'>%s ZCL</div>",
-            vb);
+        d.has_value_balance = true;
+        zcl_format_zcl(d.value_balance, sizeof(d.value_balance), tx.value_balance);
     }
 
-    APPEND(off, r, max, "</div></div>");
-
     /* Inputs */
-    APPEND(off, r, max, "<h2>Inputs (%zu)</h2><div class='io-box'>", tx.num_vin);
-    for (size_t i = 0; i < tx.num_vin && off + 512 < max; i++) {
+    d.num_vin = tx.num_vin;
+    struct explorer_tx_in_row *in_rows = NULL;
+    if (tx.num_vin > 0)
+        in_rows = zcl_malloc(tx.num_vin * sizeof(*in_rows), "explorer.tx.in_rows");
+    for (size_t i = 0; i < tx.num_vin; i++) {
+        struct explorer_tx_in_row *in = &in_rows[i];
+        memset(in, 0, sizeof(*in));
+        in->index = i;
         if (transaction_is_coinbase(&tx) && i == 0) {
-            char subsidy[32];
-            int64_t reward = block_height >= 0 ? get_block_subsidy(block_height, &chain_params_get()->consensus) : 0;
-            zcl_format_zcl(subsidy, sizeof(subsidy), reward);
-            APPEND(off, r, max,
-                "<div class='io-row'>"
-                "<div class='io-idx'>%zu</div>"
-                "<div class='io-addr'><span class='tag tag-cb'>Coinbase</span> "
-                "Block reward</div>"
-                "<div class='io-val'>%s ZCL</div></div>",
-                i, subsidy);
+            in->is_coinbase = true;
+            int64_t reward = block_height >= 0 ?
+                get_block_subsidy(block_height, &chain_params_get()->consensus) : 0;
+            zcl_format_zcl(in->subsidy, sizeof(in->subsidy), reward);
         } else {
-            char prev_hash[65];
-            uint256_get_hex(&tx.vin[i].prevout.hash, prev_hash);
-            char prev_short[18];
-            snprintf(prev_short, sizeof(prev_short), "%.8s...%.4s",
-                     prev_hash, prev_hash + 60);
+            uint256_get_hex(&tx.vin[i].prevout.hash, in->prev_hash);
+            snprintf(in->prev_short, sizeof(in->prev_short), "%.8s...%.4s",
+                     in->prev_hash, in->prev_hash + 60);
+            in->prev_n = tx.vin[i].prevout.n;
 
-            /* Look up previous output value from tx_outputs table */
-            char in_val[32] = "?";
-            if (ctx->node_db && ctx->node_db->db) {
-                sqlite3_stmt *vs = NULL;
-                if (sqlite3_prepare_v2(ctx->node_db->db,
-                        "SELECT value FROM tx_outputs WHERE txid=? AND vout=?",
-                        -1, &vs, NULL) == SQLITE_OK && vs) {
-                    sqlite3_bind_blob(vs, 1, tx.vin[i].prevout.hash.data, 32, SQLITE_STATIC);
-                    sqlite3_bind_int(vs, 2, (int)tx.vin[i].prevout.n);
-                    if (AR_STEP_ROW_READONLY(vs) == SQLITE_ROW) {
-                        int64_t prev_val = sqlite3_column_int64(vs, 0);
-                        zcl_format_zcl(in_val, sizeof(in_val), prev_val);
-                    }
-                    sqlite3_finalize(vs);
-                }
-            }
-
-            if (in_val[0] != '?') {
-                APPEND(off, r, max,
-                    "<div class='io-row'>"
-                    "<div class='io-idx'>%zu</div>"
-                    "<div class='io-addr'><a href='/explorer/tx/%s'>%s</a>:%u</div>"
-                    "<div class='io-val'>%s ZCL</div></div>",
-                    i, prev_hash, prev_short, tx.vin[i].prevout.n, in_val);
-            } else {
-                APPEND(off, r, max,
-                    "<div class='io-row'>"
-                    "<div class='io-idx'>%zu</div>"
-                    "<div class='io-addr'><a href='/explorer/tx/%s'>%s</a>:%u</div>"
-                    "<div class='io-val' style='color:#666'>?</div></div>",
-                    i, prev_hash, prev_short, tx.vin[i].prevout.n);
+            /* Look up previous output value via the tx_index model (the
+             * raw tx_outputs read lives in db_tx_output_value). */
+            int64_t prev_val = 0;
+            if (db_tx_output_value(ctx->node_db, tx.vin[i].prevout.hash.data,
+                                   tx.vin[i].prevout.n, &prev_val)) {
+                in->have_value = true;
+                zcl_format_zcl(in->value, sizeof(in->value), prev_val);
             }
         }
     }
-    APPEND(off, r, max, "</div>");
+    d.in_rows = in_rows;
+    d.num_in_rows = tx.num_vin;
 
     /* Outputs */
     int64_t total_out = 0;
-    APPEND(off, r, max, "<h2>Outputs (%zu)</h2><div class='io-box'>", tx.num_vout);
-    for (size_t i = 0; i < tx.num_vout && off + 512 < max; i++) {
-        char val[32];
-        zcl_format_zcl(val, sizeof(val), tx.vout[i].value);
+    d.num_vout = tx.num_vout;
+    struct explorer_tx_out_row *out_rows = NULL;
+    if (tx.num_vout > 0)
+        out_rows = zcl_malloc(tx.num_vout * sizeof(*out_rows), "explorer.tx.out_rows");
+    for (size_t i = 0; i < tx.num_vout; i++) {
+        struct explorer_tx_out_row *o = &out_rows[i];
+        memset(o, 0, sizeof(*o));
+        o->index = i;
+        zcl_format_zcl(o->value, sizeof(o->value), tx.vout[i].value);
         total_out += tx.vout[i].value;
+        o->script_size = tx.vout[i].script_pub_key.size;
 
         /* Try to extract destination address */
         char addr_str[64] = "";
         struct tx_destination dest;
         memset(&dest, 0, sizeof(dest));
-        if (script_extract_destination(&tx.vout[i].script_pub_key, &dest)) {
+        if (script_extract_destination(&tx.vout[i].script_pub_key, &dest))
             addr_encode(addr_str, sizeof(addr_str), &dest);
-        }
 
         /* Check for OP_RETURN */
         bool is_op_return = (tx.vout[i].script_pub_key.size > 0 &&
                              tx.vout[i].script_pub_key.data[0] == 0x6a); /* OP_RETURN */
 
         if (is_op_return) {
-            APPEND(off, r, max,
-                "<div class='io-row'>"
-                "<div class='io-idx'>%zu</div>"
-                "<div class='io-addr' style='color:#888'>OP_RETURN (%zu bytes)</div>"
-                "<div class='io-val'>%s ZCL</div></div>",
-                i, tx.vout[i].script_pub_key.size, val);
+            o->kind = EXPLORER_TX_IO_OP_RETURN;
         } else if (addr_str[0]) {
-            APPEND(off, r, max,
-                "<div class='io-row'>"
-                "<div class='io-idx'>%zu</div>"
-                "<div class='io-addr'><a href='/explorer/address/%s'>%s</a></div>"
-                "<div class='io-val'>%s ZCL</div></div>",
-                i, addr_str, addr_str, val);
+            o->kind = EXPLORER_TX_IO_ADDRESS;
+            snprintf(o->addr, sizeof(o->addr), "%s", addr_str);
         } else {
-            APPEND(off, r, max,
-                "<div class='io-row'>"
-                "<div class='io-idx'>%zu</div>"
-                "<div class='io-addr' style='color:#666'>Non-standard script (%zu bytes)</div>"
-                "<div class='io-val'>%s ZCL</div></div>",
-                i, tx.vout[i].script_pub_key.size, val);
+            o->kind = EXPLORER_TX_IO_UNKNOWN;
         }
     }
-    {
-        char tot[32];
-        zcl_format_zcl(tot, sizeof(tot), total_out);
-        APPEND(off, r, max,
-            "<div class='io-row' style='font-weight:bold;border-top:1px solid #333'>"
-            "<div class='io-idx'></div><div class='io-addr'>Total</div>"
-            "<div class='io-val'>%s ZCL</div></div>", tot);
-    }
-    APPEND(off, r, max, "</div>");
+    d.out_rows = out_rows;
+    d.num_out_rows = tx.num_vout;
+    zcl_format_zcl(d.total_out, sizeof(d.total_out), total_out);
 
     /* Shielded data */
-    if (tx.num_shielded_spend > 0 || tx.num_shielded_output > 0 || tx.num_joinsplit > 0) {
-        APPEND(off, r, max, "<h2>Shielded Data</h2><div class='card'><div class='grid'>");
-        if (tx.num_shielded_spend > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Spends</div><div class='val'>%zu</div>",
-                tx.num_shielded_spend);
-        if (tx.num_shielded_output > 0)
-            APPEND(off, r, max,
-                "<div class='label'>Sapling Outputs</div><div class='val'>%zu</div>",
-                tx.num_shielded_output);
-        if (tx.num_joinsplit > 0) {
-            int64_t js_in = 0, js_out = 0;
-            for (size_t j = 0; j < tx.num_joinsplit; j++) {
-                js_in += tx.v_joinsplit[j].vpub_old;
-                js_out += tx.v_joinsplit[j].vpub_new;
-            }
-            char jsi[32], jso[32];
-            zcl_format_zcl(jsi, sizeof(jsi), js_in);
-            zcl_format_zcl(jso, sizeof(jso), js_out);
-            APPEND(off, r, max,
-                "<div class='label'>JoinSplits</div><div class='val'>%zu</div>"
-                "<div class='label'>vpub_old (t&rarr;z)</div><div class='val amount'>%s ZCL</div>"
-                "<div class='label'>vpub_new (z&rarr;t)</div><div class='val amount'>%s ZCL</div>",
-                tx.num_joinsplit, jsi, jso);
+    d.num_shielded_spend = tx.num_shielded_spend;
+    d.num_shielded_output = tx.num_shielded_output;
+    d.num_joinsplit = tx.num_joinsplit;
+    if (tx.num_joinsplit > 0) {
+        int64_t js_in = 0, js_out = 0;
+        for (size_t j = 0; j < tx.num_joinsplit; j++) {
+            js_in += tx.v_joinsplit[j].vpub_old;
+            js_out += tx.v_joinsplit[j].vpub_new;
         }
-        APPEND(off, r, max, "</div></div>");
+        zcl_format_zcl(d.joinsplit_in, sizeof(d.joinsplit_in), js_in);
+        zcl_format_zcl(d.joinsplit_out, sizeof(d.joinsplit_out), js_out);
     }
 
     /* ZSLP token data */
@@ -474,64 +358,39 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
         struct slp_message slp;
         if (slp_parse(tx.vout[0].script_pub_key.data,
                       tx.vout[0].script_pub_key.size, &slp)) {
-            APPEND(off, r, max,
-                "<h2><span class='tag tag-slp'>ZSLP Token</span></h2>"
-                "<div class='card'><div class='grid'>");
-
             if (slp.type == SLP_TX_GENESIS) {
-                char qty[32];
-                snprintf(qty, sizeof(qty), "%" PRIu64, slp.initial_quantity);
-                char safe_ticker[128], safe_name[256];
-                html_escape(safe_ticker, sizeof(safe_ticker), slp.ticker);
-                html_escape(safe_name, sizeof(safe_name), slp.name);
-                APPEND(off, r, max,
-                    "<div class='label'>Type</div><div class='val'>GENESIS</div>"
-                    "<div class='label'>Ticker</div><div class='val' style='color:#ff88ff'>%s</div>"
-                    "<div class='label'>Name</div><div class='val'>%s</div>"
-                    "<div class='label'>Decimals</div><div class='val'>%u</div>"
-                    "<div class='label'>Initial Supply</div><div class='val'>%s</div>",
-                    safe_ticker, safe_name, slp.decimals, qty);
+                d.slp.kind = EXPLORER_TX_SLP_GENESIS;
+                html_escape(d.slp.ticker, sizeof(d.slp.ticker), slp.ticker);
+                html_escape(d.slp.name, sizeof(d.slp.name), slp.name);
+                d.slp.decimals = slp.decimals;
+                snprintf(d.slp.initial_supply, sizeof(d.slp.initial_supply),
+                         "%" PRIu64, slp.initial_quantity);
                 if (slp.document_url[0]) {
-                    char safe_url[512];
-                    html_escape(safe_url, sizeof(safe_url), slp.document_url);
-                    APPEND(off, r, max,
-                        "<div class='label'>Document URL</div><div class='val'>%s</div>",
-                        safe_url);
+                    d.slp.has_doc_url = true;
+                    html_escape(d.slp.doc_url, sizeof(d.slp.doc_url), slp.document_url);
                 }
             } else if (slp.type == SLP_TX_SEND) {
-                char token_id_hex[65];
-                uint256_get_hex(&slp.token_id, token_id_hex);
-                APPEND(off, r, max,
-                    "<div class='label'>Type</div><div class='val'>SEND</div>"
-                    "<div class='label'>Token ID</div><div class='val hash'>"
-                    "<a href='/explorer/tx/%s'>%s</a></div>",
-                    token_id_hex, token_id_hex);
-                for (int q = 0; q < slp.num_outputs; q++) {
-                    char qlbl[32];
-                    snprintf(qlbl, sizeof(qlbl), "Output %d", q + 1);
-                    APPEND(off, r, max,
-                        "<div class='label'>%s</div><div class='val'>%" PRIu64 "</div>",
-                        qlbl, slp.output_quantities[q]);
-                }
+                d.slp.kind = EXPLORER_TX_SLP_SEND;
+                uint256_get_hex(&slp.token_id, d.slp.token_id);
+                d.slp.num_outputs = slp.num_outputs;
+                for (int q = 0; q < slp.num_outputs &&
+                         q < (int)(sizeof(d.slp.output_quantities) /
+                                   sizeof(d.slp.output_quantities[0])); q++)
+                    d.slp.output_quantities[q] = slp.output_quantities[q];
             } else if (slp.type == SLP_TX_MINT) {
-                char token_id_hex[65];
-                uint256_get_hex(&slp.token_id, token_id_hex);
-                char qty[32];
-                snprintf(qty, sizeof(qty), "%" PRIu64, slp.additional_quantity);
-                APPEND(off, r, max,
-                    "<div class='label'>Type</div><div class='val'>MINT</div>"
-                    "<div class='label'>Token ID</div><div class='val hash'>"
-                    "<a href='/explorer/tx/%s'>%s</a></div>"
-                    "<div class='label'>Quantity</div><div class='val'>%s</div>",
-                    token_id_hex, token_id_hex, qty);
+                d.slp.kind = EXPLORER_TX_SLP_MINT;
+                uint256_get_hex(&slp.token_id, d.slp.token_id);
+                snprintf(d.slp.mint_quantity, sizeof(d.slp.mint_quantity),
+                         "%" PRIu64, slp.additional_quantity);
             }
-
-            APPEND(off, r, max, "</div></div>");
         }
     }
 
+    size_t off = explorer_view_tx(&d, r, max);
+
+    free(in_rows);
+    free(out_rows);
     transaction_free(&tx);
     block_free(&blk);
-    APPEND(off, r, max, EXPLORER_FOOTER);
     return off;
 }

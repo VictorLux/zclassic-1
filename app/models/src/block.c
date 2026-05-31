@@ -517,6 +517,20 @@ int db_block_max_height(struct node_db *ndb)
     return h;
 }
 
+int db_block_max_height_any_status(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open) return -1;
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT MAX(height) FROM blocks",
+        -1);
+    int h = -1;
+    if (AR_STEP_ROW(s))
+        h = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return h;
+}
+
 int db_block_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;

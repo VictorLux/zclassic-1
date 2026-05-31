@@ -45,6 +45,14 @@ bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,
 int db_tx_find_by_block(struct node_db *ndb, const uint8_t block_hash[32],
                         struct db_tx_index *out, size_t max);
 
+/* Look up the value (zatoshis) of a previously-indexed transaction output
+ * by its (txid, vout). Reads the tx_index `tx_outputs` table — the block
+ * explorer uses it to label a transaction input with the value of the
+ * output it spends. Returns true and writes *out_value when a matching
+ * row exists; returns false (leaving *out_value untouched) otherwise. */
+bool db_tx_output_value(struct node_db *ndb, const uint8_t txid[32],
+                        uint32_t vout, int64_t *out_value);
+
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* belongs_to :block — find the block this tx is in */

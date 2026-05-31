@@ -224,6 +224,18 @@ int db_tx_find_by_block(struct node_db *ndb, const uint8_t block_hash[32],
     return count;
 }
 
+bool db_tx_output_value(struct node_db *ndb, const uint8_t txid[32],
+                        uint32_t vout, int64_t *out_value)
+{
+    if (!ndb || !ndb->open || !txid || !out_value)
+        return false;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_ONE_BOOL(ndb, s,
+        "SELECT value FROM tx_outputs WHERE txid=? AND vout=?",
+        (AR_BIND_BLOB(s, 1, txid, 32), AR_BIND_INT(s, 2, (int)vout)),
+        (*out_value = AR_COL_INT(s, 0)));
+}
+
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* belongs_to :block */
