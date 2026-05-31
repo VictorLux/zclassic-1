@@ -6,15 +6,7 @@
  *   zcl_sql                — SELECT-only passthrough to node.db
  *   zcl_node_log           — reverse-scan node.log on the server side
  *   zcl_state              — generic *_dump_state_json dispatcher
- *   zcl_mempool_projection_diff — mempool projection vs legacy mempool table
- *   zcl_peers_projection_diff — peers projection vs legacy peer table
- *   zcl_znam_projection_diff  — znam projection vs legacy znam tables
- *   zcl_wallet_projection_diff — wallet projection vs legacy wallet view tables
- *   zcl_contacts_projection_diff — contacts projection vs legacy contacts
- *   zcl_onion_announcements_projection_diff — onion projection vs legacy table
- *   zcl_hodl_history_projection_diff — hodl projection vs legacy hodl_history
  *   zcl_probe_zclassicd    — drift check against local zclassicd
- *   zcl_diff_with_legacy   — composite "are we tracking?" verdict
  *   zcl_profile            — per-thread /proc CPU sampler
  *   zcl_replay_dump        — MCP request/response replay buffer
  *   zcl_replay_exec        — re-execute a recorded MCP request
@@ -124,15 +116,6 @@ static int h_zcl_conditions(const struct mcp_request *req,
                                "dumpstate", "mcp.conditions");
 }
 
-/* ── projection diff pass-throughs (Phase 4d shadow-vs-legacy) ── */
-DEFINE_PT(h_zcl_peers_projection_diff,        "peersprojectiondiff",              "mcp.diag")
-DEFINE_PT(h_zcl_mempool_projection_diff,      "mempoolprojectiondiff",            "mcp.diag")
-DEFINE_PT(h_zcl_znam_projection_diff,         "znamprojectiondiff",               "mcp.diag")
-DEFINE_PT(h_zcl_wallet_projection_diff,       "walletprojectiondiff",             "mcp.diag")
-DEFINE_PT(h_zcl_contacts_projection_diff,     "contactsprojectiondiff",           "mcp.diag")
-DEFINE_PT(h_zcl_onion_announcements_projection_diff, "onionannouncementsprojectiondiff", "mcp.diag")
-DEFINE_PT(h_zcl_hodl_history_projection_diff, "hodlhistoryprojectiondiff",        "mcp.diag")
-
 /* ── zcl_probe_zclassicd ─────────────────────────────────────── */
 
 /* Drift detection against the local zclassicd (legacy C++ impl). Picks a
@@ -173,100 +156,6 @@ static int h_zcl_probe_zclassicd(const struct mcp_request *req,
     free(pjson);
     return mcp_return_rpc_body_ctx(res, out, "probezclassicd", "mcp.diag",
                                     "h=%d", height);
-}
-
-/* ── zcl_diff_with_legacy ────────────────────────────────────── */
-
-/* Tiny helper: pull "key":true out of a JSON-ish string. The integer
- * twin lives in controllers.h as mcp_scan_int_field. Not a real parser
- * — we only read fields we know our own RPCs emit. */
-static bool diag_scan_bool(const char *body, const char *key)
-{
-    if (!body || !key) return false;
-    char needle[64];
-    int n = snprintf(needle, sizeof(needle), "\"%s\":", key);
-    if (n <= 0 || (size_t)n >= sizeof(needle)) return false;
-    const char *p = strstr(body, needle);
-    if (!p) return false;
-    p += (size_t)n;
-    while (*p == ' ') p++;
-    return strncmp(p, "true", 4) == 0;
-}
-
-/* One-call "are we tracking zclassicd?" check. Composes getmirrorstatus
- * (height delta + lag) with probezclassicd at local_tip-6, derives a
- * single-word verdict so an operator can answer "did my change converge?"
- * without composing four RPCs by hand. */
-static int h_zcl_diff_with_legacy(const struct mcp_request *req,
-                                  struct mcp_response *res)
-{
-    (void)req;
-
-    char *mstatus = mcp_node_rpc("getmirrorstatus", NULL);
-    if (!mstatus) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "getmirrorstatus returned null — mirror service down?");
-        LOG_ERR("mcp.diag", "diff_with_legacy: getmirrorstatus null");
-        return 0;
-    }
-    int local_h    = (int)mcp_scan_int_field(mstatus, "local_height");
-    int legacy_h   = (int)mcp_scan_int_field(mstatus, "legacy_height");
-    int lag        = (int)mcp_scan_int_field(mstatus, "lag");
-    bool reachable = diag_scan_bool(mstatus, "reachable");
-
-    char *probe = NULL;
-    int probe_h = -1;
-    bool hash_match = false;
-    if (reachable && local_h > 100) {
-        probe_h = local_h - 6;
-        struct mcp_params p;
-        mcp_params_init(&p);
-        mcp_params_push_int(&p, probe_h);
-        char *pjson = mcp_params_to_json(&p);
-        probe = pjson ? mcp_node_rpc("probezclassicd", pjson) : NULL;
-        free(pjson);
-        if (probe) hash_match = diag_scan_bool(probe, "match");
-    }
-
-    const char *verdict;
-    if (!reachable)                  verdict = "legacy_unreachable";
-    else if (probe && !hash_match)   verdict = "diverged";
-    else if (lag == 0 && hash_match) verdict = "converged";
-    else if (lag > 0 && lag <= 10)   verdict = "tracking";
-    else if (lag > 10)               verdict = "lagging";
-    else                             verdict = "unknown";
-
-    size_t cap = 8192;
-    char *out = zcl_malloc(cap, "diff_with_legacy_body");
-    if (!out) {
-        free(mstatus); free(probe);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for diff_with_legacy response");
-        LOG_ERR("mcp.diag", "malloc failed for diff_with_legacy (%zu)", cap);
-        return 0;
-    }
-    snprintf(out, cap,
-        "{\"verdict\":\"%s\","
-         "\"local_height\":%d,"
-         "\"legacy_height\":%d,"
-         "\"lag\":%d,"
-         "\"reachable\":%s,"
-         "\"probe_height\":%d,"
-         "\"hash_match\":%s,"
-         "\"mirror_status\":%s,"
-         "\"probe_zclassicd\":%s}",
-        verdict, local_h, legacy_h, lag,
-        reachable ? "true" : "false",
-        probe_h,
-        hash_match ? "true" : "false",
-        mstatus,
-        probe ? probe : "null");
-
-    free(mstatus); free(probe);
-    res->body = out;
-    return 0;
 }
 
 /* ── zcl_profile — per-thread CPU sampler ─────────────────────
@@ -626,36 +515,6 @@ static const struct mcp_tool_route k_routes[] = {
       "Self-heal condition engine state: registered conditions, active "
       "flags, remedy attempts, outcomes, clear counts, and thresholds.",
       NULL, 0, h_zcl_conditions, 0, NULL },
-    { "zcl_peers_projection_diff", "ops",
-      "Compare Phase 4d peers_projection against the legacy peers table: "
-      "row counts plus recent peer samples.",
-      NULL, 0, h_zcl_peers_projection_diff, 0, NULL },
-    { "zcl_mempool_projection_diff", "ops",
-      "Compare Phase 4d mempool_projection against the legacy mempool "
-      "table: row counts, aggregate weight, and tx samples.",
-      NULL, 0, h_zcl_mempool_projection_diff, 0, NULL },
-    { "zcl_znam_projection_diff", "ops",
-      "Compare Phase 4d-4 znam_projection against the legacy znam tables "
-      "(znam_names + znam_addr_records + znam_text_records): per-table row "
-      "counts plus first_diff if any.",
-      NULL, 0, h_zcl_znam_projection_diff, 0, NULL },
-    { "zcl_wallet_projection_diff", "ops",
-      "Compare Phase 4d-3 wallet_projection against legacy public wallet "
-      "view tables: address/tx/UTXO/note counts plus total value. "
-      "first_diff is a category name only.",
-      NULL, 0, h_zcl_wallet_projection_diff, 0, NULL },
-    { "zcl_contacts_projection_diff", "ops",
-      "Compare Phase 4d-5 contacts_projection against the legacy contacts "
-      "table: row counts plus first_diff if any.",
-      NULL, 0, h_zcl_contacts_projection_diff, 0, NULL },
-    { "zcl_onion_announcements_projection_diff", "ops",
-      "Compare Phase 4d-5 onion_announcements_projection against the "
-      "legacy onion_announcements table: row counts plus first_diff if any.",
-      NULL, 0, h_zcl_onion_announcements_projection_diff, 0, NULL },
-    { "zcl_hodl_history_projection_diff", "ops",
-      "Compare Phase 4d-5 hodl_history_projection against the legacy "
-      "hodl_history table: row counts plus first_diff if any.",
-      NULL, 0, h_zcl_hodl_history_projection_diff, 0, NULL },
     { "zcl_probe_zclassicd", "ops",
       "Drift detection: ask the local zclassicd (independent ZClassic "
       "impl) for getblockhash(H) and compare to our block_index. Picks a "
@@ -664,13 +523,6 @@ static const struct mcp_tool_route k_routes[] = {
       p_probe_zclassicd,
       PARAM_COUNT(p_probe_zclassicd),
       h_zcl_probe_zclassicd, 0, NULL },
-    { "zcl_diff_with_legacy", "ops",
-      "One-call \"are we tracking zclassicd?\" check. Composes mirror "
-      "status (height delta + lag) with a probe_zclassicd hash compare "
-      "at local_tip-6, returns a single-word verdict (converged / "
-      "tracking / lagging / diverged / legacy_unreachable) plus the "
-      "raw inputs for triage.",
-      NULL, 0, h_zcl_diff_with_legacy, 0, NULL },
     { "zcl_node_log", "ops",
       "Reverse-scan node.log server-side with regex + level filter. Avoids "
       "downloading the 56 MB log just to grep. Returns newest matches first.",

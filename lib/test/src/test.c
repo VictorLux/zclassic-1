@@ -235,12 +235,6 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "shadow_replay_proof") == 0) {
-        printf("[test] ZCL_TEST_ONLY=shadow_replay_proof — running only\n");
-        printf("\n=== shadow_replay_proof subset complete: %d failure(s) ===\n",
-               failures);
-        return failures ? 1 : 0;
-    }
     if (only && strcmp(only, "crypto_registry") == 0) {
         printf("[test] ZCL_TEST_ONLY=crypto_registry — running crypto registry only\n");
         failures += test_crypto_registry();

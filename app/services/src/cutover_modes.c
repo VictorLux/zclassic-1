@@ -3,7 +3,6 @@
 #include "services/cutover_modes.h"
 
 #include "platform/time_compat.h"
-#include "adapters/inbound/shadow_conservation.h"
 #include "json/json.h"
 
 #include <stdatomic.h>
@@ -219,24 +218,6 @@ bool cutover_dump_state_json(struct json_value *out, const char *key)
                      CUTOVER_CANARY_WATCH_SECS);
     json_push_kv(out, "canary", &canary);
     json_free(&canary);
-
-    /* Shadow-pipeline conservation: best-effort observe-only counters
-     * (fed == diffed at quiesce). conserved is a snapshot of the predicate;
-     * a transient fed > diffed while blocks are in flight is expected and
-     * is not a true violation (see shadow_conservation.h). */
-    unsigned long fed = 0, diffed = 0, skipped = 0;
-    bool conserved = shadow_conservation_ok(&fed, &diffed, &skipped);
-    struct json_value cons;
-    json_init(&cons);
-    json_set_object(&cons);
-    json_push_kv_bool(&cons, "conserved", conserved);
-    json_push_kv_int(&cons, "fed", (int64_t)fed);
-    json_push_kv_int(&cons, "diffed", (int64_t)diffed);
-    json_push_kv_int(&cons, "skipped", (int64_t)skipped);
-    json_push_kv_str(&cons, "law",
-                     "fed == diffed (every fed block diffed)");
-    json_push_kv(out, "conservation", &cons);
-    json_free(&cons);
 
     json_push_kv_str(out, "ready_gate",
                      "see cutoverpreflight RPC for full ready breakdown");

@@ -40,7 +40,6 @@
 #include "services/chain_evidence_controller.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
-#include "services/cutover_modes.h"
 #include "services/node_health_service.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/body_persist_stage.h"
@@ -48,7 +47,6 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
-#include "jobs/conservation_diff_job.h"
 #include "services/chain_tip_watchdog.h"
 #include "framework/condition.h"
 #include "storage/block_index_projection.h"
@@ -386,6 +384,28 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
     return true;
 }
 
+/* ── RPC: getmirrorstatus ──────────────────────────────────────────
+ *
+ * Backs the `zcl_mirror_status` MCP tool — the legacy_mirror monitor.
+ * Relocated here when the projection-diff/cutover comparison apparatus
+ * was deleted; it is a surviving single-engine introspection surface,
+ * not comparison apparatus.
+ */
+bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "getmirrorstatus\n"
+        "\nReturn legacy mirror sync status.\n"
+        "\nResult: zclassic23_height/hash, zclassicd_height/hash, lag, "
+        "reachable, mirror_running, last_catchup, last_error, "
+        "headers_added, blocks_applied.");
+
+    json_set_object(result);
+    return legacy_mirror_sync_dump_state_json(result, NULL);
+}
+
 /* ── RPC: dumpstate <subsystem> [key] ────────────────────────────── */
 
 typedef bool (*dump_fn)(struct json_value *out, const char *key);
@@ -444,9 +464,6 @@ static const struct dump_entry g_dumpers[] = {
                      "Wave S utxo_apply shadow stage: cursor, UTXO delta counters, log rows" },
     { "tip_finalize", tip_finalize_dump_state_json,
                      "Wave S tip_finalize shadow stage: cursor, finalize counters, log rows" },
-    { "conservation_diff", conservation_diff_job_dump_state_json,
-                     "cutover Item 3 conservation diff Job: cursor, diffed_total, "
-                     "last_advance/blocked height (drives the fed==diffed law)" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
@@ -455,12 +472,6 @@ static const struct dump_entry g_dumpers[] = {
                      "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
     { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
                      "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },
-    { "cutover",     cutover_dump_state_json,
-                     "cutover flip readiness in one call: per-stage modes "
-                     "(header_admit/validate_headers shadow|authoritative), "
-                     "authoritative_active, canary change anchor, and shadow "
-                     "conservation (fed/diffed/skipped/conserved). Full ready "
-                     "gate breakdown stays on the cutoverpreflight RPC." },
     { "condition_engine", condition_engine_dump_state_json,
                      "self-heal engine: registered conditions with active/cleared status, attempts, thresholds" },
     { "long_op",     long_op_dump_state_json,

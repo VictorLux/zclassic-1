@@ -8,7 +8,7 @@
  *   Performance: zcl_benchmark, zcl_dbstats
  *
  * Low-level diagnostic primitives (zcl_sql, zcl_state, zcl_node_log,
- * zcl_profile, zcl_probe_zclassicd, zcl_diff_with_legacy, zcl_replay_*)
+ * zcl_profile, zcl_probe_zclassicd, zcl_replay_*)
  * live in diagnostics_controller.c. */
 
 #include "../controllers.h"
@@ -290,62 +290,6 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
     return mcp_return_rpc_body(res,
                                 mcp_node_rpc(m, json_get_str_or(req->args, "params", NULL)),
                                 m ? m : "(null)", "mcp.ops");
-}
-
-static int h_zcl_cutovermode(const struct mcp_request *req,
-                             struct mcp_response *res)
-{
-    const struct json_value *stage_v = json_get(req->args, "stage");
-    const struct json_value *mode_v = json_get(req->args, "mode");
-    const char *stage = stage_v ? json_get_str(stage_v) : NULL;
-    const char *mode = mode_v ? json_get_str(mode_v) : NULL;
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    if (stage && stage[0]) {
-        mcp_params_push_str(&p, stage);
-        if (mode && mode[0])
-            mcp_params_push_str(&p, mode);
-    }
-    char *params = mcp_params_to_json(&p);
-    if (!params) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for cutovermode params");
-        LOG_ERR("mcp.ops", "malloc failed for cutovermode params");
-        return -1;  // raw-return-ok:logged-oom
-    }
-
-    char *out = mcp_node_rpc("cutovermode", params);
-    free(params);
-    return mcp_return_rpc_body(res, out, "cutovermode", "mcp.ops");
-}
-
-static int h_zcl_cutoverpreflight(const struct mcp_request *req,
-                                  struct mcp_response *res)
-{
-    const struct json_value *start_v = json_get(req->args, "start_height");
-    const struct json_value *end_v = json_get(req->args, "end_height");
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    if (start_v) {
-        mcp_params_push_int(&p, json_get_int(start_v));
-        if (end_v)
-            mcp_params_push_int(&p, json_get_int(end_v));
-    }
-    char *params = mcp_params_to_json(&p);
-    if (!params) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for cutoverpreflight params");
-        LOG_ERR("mcp.ops", "malloc failed for cutoverpreflight params");
-        return -1;  // raw-return-ok:logged-oom
-    }
-
-    char *out = mcp_node_rpc("cutoverpreflight", params);
-    free(params);
-    return mcp_return_rpc_body(res, out, "cutoverpreflight", "mcp.ops");
 }
 
 /* zcl_kpi — single call that returns every subsystem KPI. Used by
@@ -838,22 +782,6 @@ static const struct mcp_param_spec p_rpc[] = {
     { "params", MCP_PARAM_STR, false, "JSON params array",
       0, 0, 0, 0, NULL, "\"[]\"" },
 };
-static const struct mcp_param_spec p_cutovermode[] = {
-    { "stage", MCP_PARAM_STR, false,
-      "Cutover stage to read or set",
-      0, 0, 0, 32, "header_admit,validate_headers,all", NULL },
-    { "mode", MCP_PARAM_STR, false,
-      "Runtime mode to set when stage is present",
-      0, 0, 0, 32, "shadow,authoritative", NULL },
-};
-static const struct mcp_param_spec p_cutoverpreflight[] = {
-    { "start_height", MCP_PARAM_INT, false,
-      "Optional header_admit diff start height (-1 = auto)",
-      -1, INT32_MAX, 0, 0, NULL, "-1" },
-    { "end_height", MCP_PARAM_INT, false,
-      "Optional header_admit diff end height (-1 = auto)",
-      -1, INT32_MAX, 0, 0, NULL, "-1" },
-};
 static const struct mcp_param_spec p_postmortem_list[] = {
     { "dir", MCP_PARAM_STR, false, "Capsule directory",
       0, 0, 0, 512, NULL, NULL },
@@ -943,21 +871,6 @@ static const struct mcp_tool_route k_routes[] = {
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* arbitrary RPC — skip in self_test */ },
-    { "zcl_cutovermode", "ops",
-      "Read or set guarded runtime cutover modes for header_admit and "
-      "validate_headers. With no args it reads modes; with stage+mode it "
-      "sets modes. Authoritative requires stage=all; partial stage requests "
-      "are only for shadow reverts. Change responses include the local height "
-      "and next canary target height used for soak tracking. Destructive "
-      "because authoritative mode changes live chain ownership.",
-      p_cutovermode, PARAM_COUNT(p_cutovermode), h_zcl_cutovermode,
-      .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* runtime mode setter */ },
-    { "zcl_cutoverpreflight", "ops",
-      "Read-only C-3 cutover preflight: runtime modes, header_admit "
-      "recent shadow parity, header/validate cursor lag, safety guard, "
-      "runtime canary state, blockers, and a conservative ready boolean.",
-      p_cutoverpreflight, PARAM_COUNT(p_cutoverpreflight),
-      h_zcl_cutoverpreflight, 0, NULL },
     { "zcl_syncdiag", "ops",
       "Deep sync diagnostics: sync state, chain height, best header "
       "height, peer max height, header gap, watchdog status and "

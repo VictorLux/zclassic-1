@@ -216,22 +216,6 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
 void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
                                 int64_t zcl23_count);
 
-/* Shadow divergence gauges (I-7b / I-8 / I-9). Updated when the
- * zcl_diff_with_legacy_shadow MCP route runs. divergence_count is the
- * number of divergent heights observed in the most-recent diff window
- * (0 == clean). first_divergent_height is the first height that
- * disagreed in that window (-1 == none). last_diff_unixtime is when
- * the route last produced these values (0 == never).
- *
- * The gauges intentionally model the *latest* result rather than a
- * historical sum: the I-9 soak protocol is "alert if divergence_count
- * > 0 sustained for N seconds" and "alert if last_diff_unixtime stale
- * by > M seconds" — both conditions reduce cleanly from the latest
- * snapshot. */
-void mcp_metrics_set_shadow_divergence(int64_t divergence_count,
-                                       int64_t first_divergent_height,
-                                       int64_t last_diff_unixtime);
-
 #ifdef __cplusplus
 }
 #endif

@@ -46,24 +46,21 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL      112 /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL      98  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
-                                 * +1 I-9 (revamp): zcl_diff_with_legacy_shadow;
-                                 * +1 S-11 mini-diff: zcl_diff_staged_header_admit;
                                  * +1 framework Phase 0: zcl_conditions;
-                                 * +1 Phase 4b: zcl_utxo_projection_diff (24h cutover gate);
-                                 * +1 Phase 4c: zcl_block_index_diff (24h cutover gate);
-                                 * +1 Phase 4d-1: zcl_mempool_projection_diff;
-                                 * +1 Phase 4d-4: zcl_znam_projection_diff;
-                                 * +1 Phase 4d-3: zcl_wallet_projection_diff
-                                 * +3 Phase 4d-5 small projection diff tools
                                  * +2 Phase 6b postmortem capsule tools
-                                 * +1 cutover runtime mode control
-                                 * +1 cutover preflight
-                                 * +1 cutover PROVE Tier-1: zcl_replay_verify */
-#define EXPECTED_OPS        47  /* + zcl_rebuild_recent (bounded recovery);
+                                 * +1 cutover PROVE Tier-1: zcl_replay_verify
+                                 *
+                                 * Stage 4 of the legacy-engine purge removed the
+                                 * comparison/cutover surfaces (-14): zcl_cutovermode,
+                                 * zcl_cutoverpreflight, zcl_diff_with_legacy,
+                                 * zcl_diff_with_legacy_shadow, zcl_diff_staged_header_admit,
+                                 * zcl_utxo_projection_diff, zcl_block_index_diff, and the
+                                 * 7 *_projection_diff tools. */
+#define EXPECTED_OPS        37  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -77,19 +74,18 @@
                                  * syncdiag, replay_dump, replay_exec,
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
-                                 * + zcl_mempool_projection_diff (Phase 4d-1)
-                                 * + zcl_znam_projection_diff (Phase 4d-4)
-                                 * + zcl_wallet_projection_diff (Phase 4d-3)
-                                 * + small projection diffs (Phase 4d-5)
                                  * + zcl_postmortem_list/replay (Phase 6b)
-                                 * + zcl_cutovermode/preflight */
-#define EXPECTED_CHAIN      20  /* + chain_tip + reorg_history
-                                 * + zcl_diff_with_legacy_shadow (I-9 revamp)
-                                 * + zcl_diff_staged_header_admit (S-11 mini-diff)
-                                 * + zcl_utxo_projection_diff (Phase 4b 24h cutover gate)
-                                 * + zcl_block_index_diff (Phase 4c 24h cutover gate)
+                                 *
+                                 * Stage 4 purge removed -10 ops tools: zcl_cutovermode,
+                                 * zcl_cutoverpreflight, zcl_diff_with_legacy, and the
+                                 * 7 *_projection_diff tools. */
+#define EXPECTED_CHAIN      16  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (cutover PROVE Tier-1)
-                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery) */
+                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
+                                 *
+                                 * Stage 4 purge removed -4 chain tools:
+                                 * zcl_diff_with_legacy_shadow, zcl_diff_staged_header_admit,
+                                 * zcl_utxo_projection_diff, zcl_block_index_diff. */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20
@@ -336,7 +332,6 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_swap_chains", "zcl_market_list",
             "zcl_tools_list", "zcl_self_test", "zcl_logtail",
             "zcl_rpc", "zcl_postmortem_list", "zcl_postmortem_replay",
-            "zcl_cutovermode", "zcl_cutoverpreflight",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
             if (mcp_router_find(k[i]) == NULL) {
@@ -442,121 +437,6 @@ static int test_zcl_status_no_params(void)
         ASSERT(contains(r->description, "chain advance source scoring"));
         PASS();
     } _test_next:;
-    return failures;
-}
-
-static char *mock_cutovermode_rpc(const char *method, const char *params_json)
-{
-    if (strcmp(method, "cutovermode") == 0) {
-        if (!params_json || strcmp(params_json, "[]") == 0)
-            return strdup("{\"changed\":false,\"header_admit\":\"shadow\","
-                          "\"validate_headers\":\"shadow\"}");
-        if (strcmp(params_json,
-                   "[\"validate_headers\",\"authoritative\"]") == 0)
-            return strdup("{\"changed\":true,\"header_admit\":\"shadow\","
-                          "\"validate_headers\":\"authoritative\"}");
-    }
-    if (strcmp(method, "cutoverpreflight") == 0) {
-        if (strcmp(params_json, "[100,200]") == 0)
-            return strdup("{\"ready\":true,\"header_admit_diff\":{"
-                          "\"status\":\"CONVERGED\"},\"blockers\":[]}");
-    }
-    return strdup("{\"error\":\"unexpected params\"}");
-}
-
-static int test_zcl_cutovermode_shape_and_dispatch(void)
-{
-    int failures = 0;
-    TEST("controllers: zcl_cutovermode has enums and dispatches typed params") {
-        register_all();
-        const struct mcp_tool_route *r = mcp_router_find("zcl_cutovermode");
-        ASSERT(r != NULL);
-        ASSERT(strcmp(r->domain, "ops") == 0);
-        ASSERT((r->flags & MCP_TOOL_FLAG_DESTRUCTIVE) != 0);
-        ASSERT(r->num_params == 2);
-        ASSERT(strcmp(r->params[0].name, "stage") == 0);
-        ASSERT(r->params[0].required == false);
-        ASSERT(r->params[0].type == MCP_PARAM_STR);
-        ASSERT_STR_EQ(r->params[0].enum_csv,
-                      "header_admit,validate_headers,all");
-        ASSERT(strcmp(r->params[1].name, "mode") == 0);
-        ASSERT(r->params[1].required == false);
-        ASSERT(r->params[1].type == MCP_PARAM_STR);
-        ASSERT_STR_EQ(r->params[1].enum_csv, "shadow,authoritative");
-
-        mcp_rpc_client_set_test_hook(mock_cutovermode_rpc);
-
-        struct json_value args = {0};
-        json_set_object(&args);
-        char *body = mcp_router_dispatch("zcl_cutovermode", &args);
-        ASSERT(body != NULL);
-        ASSERT(contains(body, "\"changed\":false"));
-        ASSERT(contains(body, "\"validate_headers\":\"shadow\""));
-        free(body);
-        json_free(&args);
-
-        ASSERT(json_read(&args,
-                         "{\"stage\":\"validate_headers\","
-                         "\"mode\":\"authoritative\"}",
-                         strlen("{\"stage\":\"validate_headers\","
-                                "\"mode\":\"authoritative\"}")));
-        body = mcp_router_dispatch("zcl_cutovermode", &args);
-        ASSERT(body != NULL);
-        ASSERT(contains(body, "\"changed\":true"));
-        ASSERT(contains(body, "\"validate_headers\":\"authoritative\""));
-        free(body);
-        json_free(&args);
-
-        ASSERT(json_read(&args,
-                         "{\"stage\":\"validate_headers\","
-                         "\"mode\":\"invalid\"}",
-                         strlen("{\"stage\":\"validate_headers\","
-                                "\"mode\":\"invalid\"}")));
-        body = mcp_router_dispatch("zcl_cutovermode", &args);
-        ASSERT(body != NULL);
-        ASSERT(contains(body, "\"error\":{"));
-        ASSERT(contains(body, "mode"));
-        free(body);
-        json_free(&args);
-        mcp_rpc_client_set_test_hook(NULL);
-        PASS();
-    } _test_next:;
-    mcp_rpc_client_set_test_hook(NULL);
-    return failures;
-}
-
-static int test_zcl_cutoverpreflight_shape_and_dispatch(void)
-{
-    int failures = 0;
-    TEST("controllers: zcl_cutoverpreflight is read-only typed preflight") {
-        register_all();
-        const struct mcp_tool_route *r =
-            mcp_router_find("zcl_cutoverpreflight");
-        ASSERT(r != NULL);
-        ASSERT(strcmp(r->domain, "ops") == 0);
-        ASSERT((r->flags & MCP_TOOL_FLAG_DESTRUCTIVE) == 0);
-        ASSERT(r->num_params == 2);
-        ASSERT(strcmp(r->params[0].name, "start_height") == 0);
-        ASSERT(r->params[0].type == MCP_PARAM_INT);
-        ASSERT(r->params[0].required == false);
-        ASSERT(strcmp(r->params[1].name, "end_height") == 0);
-        ASSERT(r->params[1].type == MCP_PARAM_INT);
-        ASSERT(r->params[1].required == false);
-
-        mcp_rpc_client_set_test_hook(mock_cutovermode_rpc);
-        struct json_value args = {0};
-        ASSERT(json_read(&args, "{\"start_height\":100,\"end_height\":200}",
-                         strlen("{\"start_height\":100,\"end_height\":200}")));
-        char *body = mcp_router_dispatch("zcl_cutoverpreflight", &args);
-        ASSERT(body != NULL);
-        ASSERT(contains(body, "\"ready\":true"));
-        ASSERT(contains(body, "\"status\":\"CONVERGED\""));
-        free(body);
-        json_free(&args);
-        mcp_rpc_client_set_test_hook(NULL);
-        PASS();
-    } _test_next:;
-    mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -1140,7 +1020,7 @@ static int test_destructive_tools_registered(void)
             "zcl_rescanblockchain", "zcl_replaywalletfromchain",
             "zcl_dumpprivkey", "zcl_addnode", "zcl_pingpeer",
             "zcl_name_register", "zcl_msg_send", "zcl_market_offer",
-            "zcl_swap_initiate", "zcl_cutovermode",
+            "zcl_swap_initiate",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
             if (mcp_router_find(k[i]) == NULL) {
@@ -1670,8 +1550,6 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
-    failures += test_zcl_cutovermode_shape_and_dispatch();
-    failures += test_zcl_cutoverpreflight_shape_and_dispatch();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_includes_dominant_blocker();

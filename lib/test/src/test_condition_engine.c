@@ -310,8 +310,6 @@ int test_condition_engine(void)
             "snapshot_negotiation_stalled",
             "snapshot_failed_reset",
             "snapshot_complete_resume",
-            "cutover_no_forward_progress",
-            "cutover_canary_complete",
             "have_data_unreadable",
             "orphan_utxo_above_tip",
             "tip_fork_stale",
@@ -322,10 +320,6 @@ int test_condition_engine(void)
         ok = ok && conditions && json_size(conditions) == (size_t)expected_count;
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
-        ok = ok &&
-             condition_engine_has_registered("cutover_no_forward_progress");
-        ok = ok &&
-             condition_engine_has_registered("cutover_canary_complete");
         ok = ok &&
              condition_engine_has_registered("have_data_unreadable");
         ok = ok && !condition_engine_has_registered("not_a_condition");

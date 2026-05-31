@@ -103,13 +103,6 @@ static _Atomic int64_t  g_mirror_lag_critical_seconds = 0;
 static _Atomic int64_t  g_node_magicbean_peer_count;
 static _Atomic int64_t  g_node_zcl23_peer_count;
 
-/* Shadow divergence gauges (I-9 soak). All start at -1 / 0 so a node
- * that has never run a diff renders as "stale/unknown" rather than
- * "clean". */
-static _Atomic int64_t  g_shadow_divergence_count = -1;
-static _Atomic int64_t  g_shadow_first_divergent_height = -1;
-static _Atomic int64_t  g_shadow_last_diff_unixtime = 0;
-
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
  * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
@@ -294,15 +287,6 @@ void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
 {
     atomic_store(&g_node_magicbean_peer_count, magicbean_count);
     atomic_store(&g_node_zcl23_peer_count, zcl23_count);
-}
-
-void mcp_metrics_set_shadow_divergence(int64_t divergence_count,
-                                       int64_t first_divergent_height,
-                                       int64_t last_diff_unixtime)
-{
-    atomic_store(&g_shadow_divergence_count, divergence_count);
-    atomic_store(&g_shadow_first_divergent_height, first_divergent_height);
-    atomic_store(&g_shadow_last_diff_unixtime, last_diff_unixtime);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -806,21 +790,6 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
      * MCP tool; Prometheus gets the numeric gauges so dashboards can
      * alert on class-level pressure (e.g. permanent>0 is always an
      * operator-escalation event). */
-    int64_t sdiv  = atomic_load(&g_shadow_divergence_count);
-    int64_t sfdh  = atomic_load(&g_shadow_first_divergent_height);
-    int64_t sdiff = atomic_load(&g_shadow_last_diff_unixtime);
-    pos = append(buf, cap, pos,
-        "# HELP zcl_shadow_divergence_count Divergent heights in the most-recent shadow diff (-1 = never run)\n"
-        "# TYPE zcl_shadow_divergence_count gauge\n"
-        "zcl_shadow_divergence_count %lld\n"
-        "# HELP zcl_shadow_first_divergent_height First divergent height in the most-recent shadow diff (-1 = clean or never run)\n"
-        "# TYPE zcl_shadow_first_divergent_height gauge\n"
-        "zcl_shadow_first_divergent_height %lld\n"
-        "# HELP zcl_shadow_last_diff_unixtime When the diff route last produced these values (0 = never)\n"
-        "# TYPE zcl_shadow_last_diff_unixtime gauge\n"
-        "zcl_shadow_last_diff_unixtime %lld\n",
-        (long long)sdiv, (long long)sfdh, (long long)sdiff);
-
     int active_total = blocker_count_active();
     int active_perm  = blocker_count_by_class(BLOCKER_PERMANENT);
     int active_trans = blocker_count_by_class(BLOCKER_TRANSIENT);

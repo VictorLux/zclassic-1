@@ -29,22 +29,10 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "dumpstate",     diag_rpc_dumpstate,     true },
-        { "control", "cutovermode",   diag_rpc_cutovermode,   true },
-        { "control", "cutoverpreflight", diag_rpc_cutoverpreflight, true },
         { "control", "getnodelog",    diag_rpc_getnodelog,    true },
         { "control", "dbquery",       diag_rpc_dbquery,       true },
         { "control", "probezclassicd", diag_rpc_probezclassicd, true },
         { "control", "getmirrorstatus", diag_rpc_getmirrorstatus, true },
-        { "control", "peersprojectiondiff", diag_rpc_peersprojectiondiff, true },
-        { "control", "mempoolprojectiondiff", diag_rpc_mempoolprojectiondiff, true },
-        { "control", "znamprojectiondiff",  diag_rpc_znamprojectiondiff,  true },
-        { "control", "walletprojectiondiff", diag_rpc_walletprojectiondiff, true },
-        { "control", "contactsprojectiondiff",
-          diag_rpc_contactsprojectiondiff, true },
-        { "control", "onionannouncementsprojectiondiff",
-          diag_rpc_onionannouncementsprojectiondiff, true },
-        { "control", "hodlhistoryprojectiondiff",
-          diag_rpc_hodlhistoryprojectiondiff, true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

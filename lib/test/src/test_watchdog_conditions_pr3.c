@@ -26,8 +26,6 @@
 void register_peer_floor_violated(void);
 void register_sync_violation_lag(void);
 void register_snapshot_offer_ready(void);
-void register_cutover_no_forward_progress(void);
-void register_cutover_canary_complete(void);
 
 struct fake_clock_pr3 {
     _Atomic int64_t wall_ms;
@@ -68,8 +66,6 @@ static void reset_pr3(struct connman *cm,
     peer_floor_violated_test_reset();
     sync_violation_lag_test_reset();
     snapshot_offer_ready_test_reset();
-    cutover_no_forward_progress_test_reset();
-    cutover_canary_complete_test_reset();
     cutover_modes_test_reset();
     memset(cm, 0, sizeof(*cm));
     memset(dm, 0, sizeof(*dm));
@@ -250,141 +246,6 @@ int test_watchdog_conditions_pr3(void)
         ok = ok && sync_get_state() == SYNC_AT_TIP;
         ok = ok && condition_engine_get_active_count() == 0;
         WDP3_CHECK("snapshot offer ready ignores at-tip state", ok);
-        cleanup_pr3();
-    }
-
-    {
-        struct fake_clock_pr3 clock;
-        fake_clock_install(&clock, 5000);
-        struct connman cm;
-        struct download_manager dm;
-        struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
-        bool ok = true;
-        register_cutover_no_forward_progress();
-
-        struct block_index tip = {0};
-        tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
-        sync_monitor_on_block_connected(100);
-
-        struct p2p_node peer = {0};
-        peer.id = 1;
-        peer.starting_height = 101;
-        peer.state = PEER_ACTIVE;
-        struct p2p_node *peers[1] = { &peer };
-        cm.manager.nodes = peers;
-        cm.manager.num_nodes = 1;
-
-        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-
-        condition_engine_tick();
-        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 0;
-        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE;
-        ok = ok && validate_headers_get_mode() ==
-             VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-
-        fake_clock_set(&clock, 5181);
-        condition_engine_tick();
-        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 1;
-        ok = ok && header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW;
-        ok = ok && validate_headers_get_mode() ==
-             VALIDATE_HEADERS_MODE_SHADOW;
-        ok = ok && condition_engine_get_unresolved_count() == 1;
-
-        struct block_index next = {0};
-        next.nHeight = 101;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &next);
-        sync_monitor_on_block_connected(101);
-        condition_engine_tick();
-        ok = ok && condition_engine_get_active_count() == 0;
-        WDP3_CHECK("cutover guard reverts stuck authoritative stages", ok);
-        cleanup_pr3();
-    }
-
-    {
-        struct fake_clock_pr3 clock;
-        fake_clock_install(&clock, 6000);
-        struct connman cm;
-        struct download_manager dm;
-        struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
-        bool ok = true;
-        register_cutover_no_forward_progress();
-
-        struct block_index tip = {0};
-        tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
-        sync_monitor_on_block_connected(100);
-
-        struct p2p_node peer = {0};
-        peer.id = 1;
-        peer.starting_height = 100;
-        peer.state = PEER_ACTIVE;
-        struct p2p_node *peers[1] = { &peer };
-        cm.manager.nodes = peers;
-        cm.manager.num_nodes = 1;
-
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-        fake_clock_set(&clock, 6181);
-        condition_engine_tick();
-        ok = ok && cutover_no_forward_progress_test_remedy_calls() == 0;
-        ok = ok && validate_headers_get_mode() ==
-             VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-        WDP3_CHECK("cutover guard ignores at-tip authoritative mode", ok);
-        cleanup_pr3();
-    }
-
-    {
-        struct fake_clock_pr3 clock;
-        fake_clock_install(&clock, 7000);
-        struct connman cm;
-        struct download_manager dm;
-        struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
-        bool ok = true;
-        register_cutover_canary_complete();
-
-        struct block_index tip = {0};
-        tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
-        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
-                                          CUTOVER_STAGE_MODE_AUTHORITATIVE);
-        cutover_modes_record_change(100, 100, 101, 1);
-
-        condition_engine_tick();
-        bool armed = cutover_canary_complete_test_remedy_calls() == 0 &&
-                     header_admit_get_mode() ==
-                         HEADER_ADMIT_MODE_AUTHORITATIVE &&
-                     validate_headers_get_mode() ==
-                         VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-        WDP3_CHECK("cutover canary remains armed before target", armed);
-
-        struct block_index next = {0};
-        next.nHeight = 101;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &next);
-        fake_clock_set(&clock, 7001);
-        condition_engine_tick();
-        
-        /* The canary matched with no divergence. It clears the canary and locks in 
-         * authoritative mode. It does not revert. */
-        bool locked_in =
-            cutover_canary_complete_test_remedy_calls() == 1 &&
-            header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE &&
-            validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-        WDP3_CHECK("cutover canary locks in authoritative mode on success", locked_in);
-
-        /* Advance clock past witness window to allow the condition to clear.
-         * The witness will fail (because authoritative mode is still active),
-         * but since the canary target was cleared, detect() will return false,
-         * causing the engine to clear the condition. */
-        fake_clock_set(&clock, 7010);
-        condition_engine_tick();
-        
-        bool cleared = condition_engine_get_active_count() == 0;
-        WDP3_CHECK("cutover canary clears after success", cleared);
-        
         cleanup_pr3();
     }
 

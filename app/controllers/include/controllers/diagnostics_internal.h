@@ -33,26 +33,10 @@ const char *diag_datadir(void);
 bool diag_rpc_dumpstate(const struct json_value *params, bool help,
                         struct json_value *result);
 
-/* The native chain-evidence dump, registered in g_dumpers and also
- * consumed directly by the cutover preflight snapshot. `out` must be a
- * fresh json_value; the function sets it to an object. */
+/* The native chain-evidence dump, registered in g_dumpers. `out` must be
+ * a fresh json_value; the function sets it to an object. */
 bool diag_chain_evidence_dump_state_json(struct json_value *out,
                                          const char *key);
-
-/* cutover_controller.c */
-bool diag_rpc_cutovermode(const struct json_value *params, bool help,
-                          struct json_value *result);
-/* cutover_controller_preflight.c — split out of cutover_controller.c to
- * keep each file under the app/ file-size ceiling. */
-bool diag_rpc_cutoverpreflight(const struct json_value *params, bool help,
-                               struct json_value *result);
-
-/* Canary-state snapshot, shared between cutover_controller.c (the
- * cutovermode RPC) and cutover_controller_preflight.c. Defined in
- * cutover_controller.c. `out` is set to an object; `health` may be NULL. */
-struct node_health_snapshot;
-void cutover_push_canary_state(struct json_value *out,
-                               const struct node_health_snapshot *health);
 
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,
@@ -66,23 +50,10 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
 bool diag_rpc_probezclassicd(const struct json_value *params, bool help,
                              struct json_value *result);
 
-/* projection_diff_controller.c */
+/* projection_diff_controller.c — getmirrorstatus is a keeper (legacy
+ * mirror monitor); the per-table *projectiondiff RPC surfaces are deleted
+ * (stage 4). The implementing .c file is removed in a later stage. */
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
                               struct json_value *result);
-bool diag_rpc_peersprojectiondiff(const struct json_value *params, bool help,
-                                  struct json_value *result);
-bool diag_rpc_mempoolprojectiondiff(const struct json_value *params, bool help,
-                                    struct json_value *result);
-bool diag_rpc_znamprojectiondiff(const struct json_value *params, bool help,
-                                 struct json_value *result);
-bool diag_rpc_walletprojectiondiff(const struct json_value *params, bool help,
-                                   struct json_value *result);
-bool diag_rpc_contactsprojectiondiff(const struct json_value *params,
-                                     bool help, struct json_value *result);
-bool diag_rpc_onionannouncementsprojectiondiff(const struct json_value *params,
-                                               bool help,
-                                               struct json_value *result);
-bool diag_rpc_hodlhistoryprojectiondiff(const struct json_value *params,
-                                        bool help, struct json_value *result);
 
 #endif /* ZCL_DIAGNOSTICS_INTERNAL_H */

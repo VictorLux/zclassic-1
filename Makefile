@@ -45,17 +45,12 @@ ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include \
 ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c) \
 	$(wildcard adapters/inbound/src/*.c)
 
-# Mutator layer (single-thread loop + bounded input queue).
-# The runtime spine — every state change flows through it.
-MUTATOR_INCLUDES = -Imutator/include
-MUTATOR_SRCS = $(wildcard mutator/src/*.c)
-
 # MCP router + future controllers (schema-driven tool dispatch)
 MCP_INCLUDES = -Itools
 MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 	$(wildcard tools/mcp/views/*.c)
 
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MUTATOR_SRCS) $(MCP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
 ALL_OBJS = $(ALL_SRCS:.c=.o)
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
@@ -67,7 +62,7 @@ WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
 CFLAGS = -std=c23 -O3 -march=native -flto=auto -Wall -Wextra -Werror -pedantic \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MUTATOR_INCLUDES) $(MCP_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
@@ -166,7 +161,6 @@ mock_rpc: tools/mock_rpc.c
 $(eval $(call BUILD_NODE_TOOL,wallet_sim,tools/wallet_sim.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_check,tools/wallet_check.c,-lm))
 $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp))
-$(eval $(call BUILD_NODE_TOOL,shadow_replay_proof,tools/shadow_replay_proof.c))
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim
