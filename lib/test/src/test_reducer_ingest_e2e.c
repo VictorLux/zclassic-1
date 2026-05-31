@@ -572,8 +572,15 @@ int test_reducer_ingest_e2e(void)
      * never pass the stateless Equihash gate (so the accept path below is
      * legitimately exercised at the stage level, not the front door). */
     {
-        /* tip_finalize default is SHADOW here (no env open yet). */
-        RIE_CHECK("front-door: default mode is SHADOW (dormant)",
+        /* Post-flip (step 13) the production default is AUTHORITATIVE — the
+         * reducer is the live engine. */
+        RIE_CHECK("front-door: default mode is AUTHORITATIVE (post-flip)",
+                  reducer_is_authoritative());
+
+        /* Exercise the SHADOW-refuses-ingest path explicitly: the controller's
+         * guard must still refuse before any mutation when SHADOW. */
+        tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
+        RIE_CHECK("front-door: explicit SHADOW disables reducer",
                   !reducer_is_authoritative());
 
         struct rie_branch B;

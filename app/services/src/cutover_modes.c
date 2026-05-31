@@ -12,7 +12,14 @@
 #define CUTOVER_MODE_VALIDATE_HEADERS  0x02u
 #define CUTOVER_MODE_TIP_FINALIZE      0x04u
 
-static _Atomic unsigned g_header_pipeline_modes = 0;
+/* CUTOVER FLIP (step 13): the staged header pipeline is now the AUTHORITATIVE
+ * default. All three stages (header_admit, validate_headers, tip_finalize)
+ * default to authoritative; the legacy engine is no longer the default writer.
+ * `cutover_modes_revert_all_to_shadow()` / `cutover_modes_test_reset()` still
+ * fall back to 0 (full SHADOW) for an explicit clean-slate baseline. */
+static _Atomic unsigned g_header_pipeline_modes =
+    (CUTOVER_MODE_HEADER_ADMIT | CUTOVER_MODE_VALIDATE_HEADERS |
+     CUTOVER_MODE_TIP_FINALIZE);
 static _Atomic int g_cutover_has_change;
 static _Atomic int64_t g_cutover_change_unix;
 static _Atomic int64_t g_cutover_change_height;

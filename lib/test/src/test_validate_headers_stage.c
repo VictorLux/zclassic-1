@@ -268,9 +268,9 @@ int test_validate_headers_stage(void)
 
     /* ── cutover mode defaults and input validation ───────────────── */
     {
-        VH_CHECK("mode: default is shadow",
+        VH_CHECK("mode: default is authoritative (post-flip, step 13)",
                  validate_headers_get_mode() ==
-                     VALIDATE_HEADERS_MODE_SHADOW);
+                     VALIDATE_HEADERS_MODE_AUTHORITATIVE);
         validate_headers_set_mode((validate_headers_mode_t)999);
         VH_CHECK("mode: invalid value maps to shadow",
                  validate_headers_get_mode() ==

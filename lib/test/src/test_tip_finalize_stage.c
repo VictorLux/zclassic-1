@@ -234,6 +234,12 @@ static int tf_setup(const char *tag, int log_rows,
                          upstream_fail_height))
         return 3;
     if (!tip_finalize_stage_init(ms)) return 4;
+    /* These are unit tests of the SHADOW shadow-drain mechanics (cursor +
+     * log rows, no chain[] mutation). Post-flip (step 13) the production
+     * default is AUTHORITATIVE, so pin SHADOW here to preserve the unit
+     * semantics; the authoritative tip-write path is covered end-to-end by
+     * test_reducer_ingest_e2e. */
+    tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
     tip_finalize_stage_set_utxo_counter(fake_utxo_count, sc);
     return 0;
 }

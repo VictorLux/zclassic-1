@@ -82,13 +82,13 @@ struct utxo_projection {
 static _Atomic(utxo_projection_t *) g_projection = NULL;
 static _Atomic(event_log_t *)       g_event_log  = NULL;
 
-/* B3 single-writer authority. LEGACY (default) keeps today's behavior:
- * update_coins() authors the UTXO events as the legacy connect path
- * runs. STAGE hands authorship to utxo_apply_stage and makes the
- * legacy emitters no-op — exactly one writer to the projection. The
- * flip itself is B7 (cutover canary); default stays LEGACY so the live
- * node is byte-for-byte unchanged until then. */
-static _Atomic int g_author = (int)UTXO_AUTHOR_LEGACY;
+/* B3 single-writer authority. CUTOVER FLIP (step 13): STAGE is now the
+ * default — utxo_apply_stage authors the UTXO events and the legacy
+ * emitters no-op, so exactly one writer (the reducer) drives the
+ * projection. LEGACY keeps the prior behavior, where update_coins()
+ * authors the events as the legacy connect path runs (selectable via
+ * utxo_projection_set_author for explicit-fallback paths and tests). */
+static _Atomic int g_author = (int)UTXO_AUTHOR_STAGE;
 
 void utxo_projection_set_author(utxo_author_t who)
 {
