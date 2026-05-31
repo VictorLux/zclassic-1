@@ -174,10 +174,29 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
      * only means "don't pre-filter on relay heuristics". This is a
      * non-authoritative recovery wrapper around the same validated
      * accept path as rpc_submitblock / msg_blocks — it introduces no new
-     * consensus writer, so it carries the scoped one-write-path marker. */
-    /* one-write-path-ok:rebuild-recent-recovery */
-    bool ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, // one-write-path-ok:rebuild-recent-recovery
-                                cp, &blk, true, ctx->datadir);
+     * consensus writer, so it carries the scoped one-write-path marker.
+     *
+     * Takeover step 11: gate the block-intake on the single consistent
+     * reducer_is_authoritative() gate (steps 7-10). When AUTHORITATIVE the
+     * synchronous reducer_ingest_block(boot_activation_controller(), &blk,
+     * REDUCER_SRC_REPAIR, force=true, &state) drives the eight Wave-S stages
+     * and fills the SAME validation_state; otherwise the unchanged legacy
+     * process_new_block path runs. Either branch returns the same bool
+     * verdict into `ok` and fills `state`, so the rebuild_recent contract
+     * (byte-exact UTXO via the validated accept path) is preserved verbatim.
+     * Under the live default (SHADOW) reducer_is_authoritative() is false,
+     * so this recovery primitive stays on legacy process_new_block until the
+     * cutover flip (step 13) — keeping the byte-exact UTXO recovery doctrine
+     * intact this phase. */
+    bool ok;
+    if (reducer_is_authoritative()) {
+        ok = reducer_ingest_block(boot_activation_controller(), &blk,
+                                  REDUCER_SRC_REPAIR, true, &state);
+    } else {
+        /* one-write-path-ok:rebuild-recent-recovery */
+        ok = process_new_block(&state, ctx->main_state, ctx->coins_tip, // one-write-path-ok:rebuild-recent-recovery
+                               cp, &blk, true, ctx->datadir);
+    }
     block_free(&blk);
 
     if (!ok) {
