@@ -35,6 +35,7 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "services/utxo_audit_service.h"
 #include "storage/block_index_db.h"
+#include "storage/utxo_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
@@ -330,18 +331,15 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
         "gettxoutsetinfo\n"
         "\nReturns statistics about the UTXO set.\n");
 
-    if (!ctx->node_db || !ctx->node_db->open) {
-        json_set_str(result, "Coins database not available");
-        LOG_FAIL("blockchain", "gettxoutsetinfo: coins database not available");
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (!proj) {
+        json_set_str(result, "UTXO projection not available");
+        LOG_FAIL("blockchain", "gettxoutsetinfo: UTXO projection not available");
     }
     if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
         LOG_FAIL("blockchain", "gettxoutsetinfo: chain not loaded or no tip");
     }
-
-    /* Flush in-memory UTXO cache to SQLite for accurate totals */
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
@@ -350,17 +348,8 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
     int64_t num_txs = 0;
     int64_t num_txouts = 0;
 
-    /* Query UTXO set from SQLite */
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT COUNT(DISTINCT txid), COUNT(*), COALESCE(SUM(value),0)"
-        " FROM utxos", -1, &s, NULL);
-    if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        num_txs = sqlite3_column_int64(s, 0);
-        num_txouts = sqlite3_column_int64(s, 1);
-        total_amount = sqlite3_column_int64(s, 2);
-    }
-    sqlite3_finalize(s);
+    /* UTXO set statistics from the log-derived projection (single engine). */
+    utxo_projection_setinfo(proj, &num_txs, &num_txouts, &total_amount);
 
     json_set_object(result);
     json_push_kv_int(result, "height", tip_height);
@@ -391,29 +380,31 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
         "\nComputes SHA3-256 hash over the entire UTXO set in canonical order.\n"
         "This is a deterministic commitment that two nodes can compare.\n");
 
-    if (!ctx->node_db || !ctx->node_db->open) {
-        json_set_str(result, "Database not available");
-        LOG_FAIL("blockchain", "getutxocommitment: database not available");
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (!proj) {
+        json_set_str(result, "UTXO projection not available");
+        LOG_FAIL("blockchain", "getutxocommitment: UTXO projection not available");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
         LOG_FAIL("blockchain", "getutxocommitment: chain not loaded");
     }
 
-    /* Flush coins cache first */
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
-
     uint8_t sha3_hash[32];
     uint64_t count = 0;
     int64_t t0 = (int64_t)platform_time_wall_time_t();
-    utxo_commitment_sha3_compute(ctx->node_db->db, sha3_hash, &count);
+    if (utxo_projection_commitment(proj, sha3_hash) != 0) {
+        json_set_str(result, "commitment failed");
+        LOG_FAIL("blockchain", "getutxocommitment: projection commitment failed");
+    }
+    count = utxo_projection_count(proj);
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
 
-    /* Save checkpoint */
-    utxo_commitment_sha3_save(ctx->node_db->db, sha3_hash, tip, count);
+    /* Save checkpoint (harmless node.db metadata; not load-bearing for reads). */
+    if (ctx->node_db && ctx->node_db->open)
+        utxo_commitment_sha3_save(ctx->node_db->db, sha3_hash, tip, count);
 
     char hex[65];
     HexStr(sha3_hash, 32, false, hex, sizeof(hex));
@@ -527,13 +518,19 @@ bool rpc_verifycheckpoint(const struct json_value *params, bool help,
         return true;
     }
 
-    /* Flush coins cache */
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (!proj) {
+        json_set_str(result, "UTXO projection not available");
+        LOG_FAIL("blockchain", "verifycheckpoint: UTXO projection not available");
+    }
 
     uint8_t sha3_hash[32];
     uint64_t count = 0;
-    utxo_commitment_sha3_compute(ctx->node_db->db, sha3_hash, &count);
+    if (utxo_projection_commitment(proj, sha3_hash) != 0) {
+        json_set_str(result, "commitment failed");
+        LOG_FAIL("blockchain", "verifycheckpoint: projection commitment failed");
+    }
+    count = utxo_projection_count(proj);
 
     bool match = (memcmp(sha3_hash, cp->sha3_hash, 32) == 0);
 
