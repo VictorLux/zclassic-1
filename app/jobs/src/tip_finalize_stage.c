@@ -1,13 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h.
- *
- * S-9 consumes utxo_apply_log and records the live tip-finalize event.
- * It writes only tip_finalize_log plus its stage cursor in progress.kv. */
+ * S-9 consumes utxo_apply_log and records the live tip-finalize event; it
+ * writes only tip_finalize_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
+#include "tip_finalize_post_step.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -494,6 +494,12 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                 "height=%d — chain[] not advanced", next_h);
             return JOB_FATAL;
         }
+
+        /* STEP 5 — tip is physically advanced; run the derived side
+         * effects (wallet+Sapling, mempool removal, MMR/MMB) legacy
+         * connect_tip does at tip-connect. AUTHORITATIVE-only (never
+         * reached in SHADOW; legacy stays the sole producer there). */
+        tip_finalize_run_post_finalize(new_tip);
     }
 
     atomic_fetch_add(&g_finalized_total, 1);
