@@ -33,6 +33,28 @@
 #include "util/log_macros.h"
 #include "util/blocker.h"
 
+/* ── Reducer-as-ingest (DORMANT this phase) includes ───────────────
+ * The synchronous reducer wrapper drives the eight Wave-S Job stages and
+ * the stateless check_block gate, then reads back the verdict from the
+ * freshly-written stage log rows. None of these are reached under the live
+ * default (SHADOW): reducer_ingest_block has NO live caller yet (steps
+ * 7-12) and short-circuits unless tip_finalize is AUTHORITATIVE. */
+#include "consensus/validation.h"
+#include "validation/check_block.h"
+#include "primitives/block.h"
+#include "chain/chain.h"
+#include "core/uint256.h"
+#include "storage/progress_store.h"
+#include "services/header_admit_inbox.h"
+#include "jobs/header_admit_stage.h"
+#include "jobs/validate_headers_stage.h"
+#include "jobs/body_fetch_stage.h"
+#include "jobs/body_persist_stage.h"
+#include "jobs/script_validate_stage.h"
+#include "jobs/proof_validate_stage.h"
+#include "jobs/utxo_apply_stage.h"
+#include "jobs/tip_finalize_stage.h"
+
 /* The single typed blocker this authority owns. When the active tip is
  * below the most-work *valid-header* chain and this tick could not advance,
  * we MUST name the blocker (height + why + escape) instead of returning to a
@@ -493,6 +515,188 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     }
 
     zcl_mutex_unlock(&ctl->mutex);
+}
+
+/* ── Reducer-as-ingest (DORMANT this phase) ────────────────────────
+ *
+ * The synchronous block-intake wrapper that drives the eight Wave-S Job
+ * stages instead of legacy activate_best_chain. ADDED ONLY this phase —
+ * there is NO live caller (msg_blocks / mining / submitblock / rebuild
+ * stay on process_new_block; those repoints are steps 7-12). Under the
+ * live default (tip_finalize SHADOW) the AUTHORITATIVE guard short-circuits
+ * every entry, so this is unreachable dead code and activate_best_chain
+ * stays the sole live block-connect engine. */
+
+/* Drain the eight stage step bodies once, in pipeline order — the SAME
+ * order and the SAME *_stage_drain functions the per-stage supervisor
+ * children tick (staged_sync_supervisor.c). Returns total advances across
+ * all eight. A single pass; the caller loops to convergence. */
+static int reducer_drain_all_stages(int max_steps_per_stage)
+{
+    int advanced = 0;
+    advanced += header_admit_stage_drain(max_steps_per_stage);
+    advanced += validate_headers_stage_drain(max_steps_per_stage);
+    advanced += body_fetch_stage_drain(max_steps_per_stage);
+    advanced += body_persist_stage_drain(max_steps_per_stage);
+    advanced += script_validate_stage_drain(max_steps_per_stage);
+    advanced += proof_validate_stage_drain(max_steps_per_stage);
+    advanced += utxo_apply_stage_drain(max_steps_per_stage);
+    advanced += tip_finalize_stage_drain(max_steps_per_stage);
+    return advanced;
+}
+
+/* Loop reducer_drain_all_stages to convergence within a bounded mutex-held
+ * latency budget (mirrors the activate_best_chain deferred-drain budget at
+ * activation_request_connect). Stops when a full pass advances nothing or
+ * the budget/round-cap is hit. Returns the total advances. */
+static int reducer_drain_to_convergence(void)
+{
+    const int64_t drain_budget_us = 2000 * 1000; /* 2s, same as legacy */
+    const int     drain_hard_cap  = 4096;
+    const int     per_stage_batch = 100;
+    int64_t       start_us        = GetTimeMicros();
+    int           total           = 0;
+    for (int round = 0; round < drain_hard_cap; round++) {
+        int adv = reducer_drain_all_stages(per_stage_batch);
+        total += adv;
+        if (adv == 0)
+            break;
+        if (GetTimeMicros() - start_us > drain_budget_us)
+            break;
+    }
+    return total;
+}
+
+int reducer_kick(struct chain_activation_controller *ctl)
+{
+    if (!ctl)
+        return 0;
+    /* AUTHORITATIVE-gated: a no-op in SHADOW so live behaviour is
+     * unchanged. The supervisor tickers still drive the SHADOW pipeline. */
+    if (tip_finalize_get_mode() != TIP_FINALIZE_MODE_AUTHORITATIVE)
+        return 0;
+
+    zcl_mutex_lock(&ctl->mutex);
+    int advanced = reducer_drain_to_convergence();
+    zcl_mutex_unlock(&ctl->mutex);
+    return advanced;
+}
+
+/* Map the freshly-written stage log rows for `height`/`hash` into `out`.
+ * Returns true iff the block landed finalized (ok=1) at `height` with the
+ * expected hash. Header-level rejects (validate_headers_log ok=0) and a
+ * non-landed block surface as MODE_INVALID with the recorded reason, so
+ * validation_state_is_valid()/the reject string flow synchronously to the
+ * caller — exactly the contract msg_blocks/submitblock expect today. */
+static bool reducer_read_back_verdict(int height,
+                                      const struct uint256 *hash,
+                                      struct validation_state *out)
+{
+    sqlite3 *pdb = progress_store_db();
+
+    /* Header-level reject: a validate_headers_log row with ok=0 carries the
+     * PoW/Equihash/version fail reason. Surface it as the verdict. */
+    struct validate_headers_window_report rep;
+    if (validate_headers_stage_window_report(height, height, &rep) &&
+        rep.failed_count > 0) {
+        validation_state_dos(out, 100, false, REJECT_INVALID,
+                             rep.first_fail_reason[0]
+                                 ? rep.first_fail_reason
+                                 : "header-validation-failed",
+                             false, NULL);
+        return false;
+    }
+
+    /* The block landed iff tip_finalize durably recorded a finalized (ok=1)
+     * tip row at `height` whose hash matches the ingested block. */
+    uint8_t finalized[32];
+    if (pdb &&
+        tip_finalize_stage_finalized_tip_at(pdb, height, finalized) &&
+        memcmp(finalized, hash->data, 32) == 0) {
+        return true; /* out left MODE_VALID by the caller's init */
+    }
+
+    /* Not finalized at this height: stateful reject (utxo/finalize) or the
+     * stages have not yet converged. Report the most-specific reason the
+     * stages recorded; the absence of a landed row IS the reject witness. */
+    validation_state_invalid(out, false, REJECT_INVALID,
+                             "block-not-finalized-by-reducer", NULL);
+    return false;
+}
+
+bool reducer_ingest_block(struct chain_activation_controller *ctl,
+                          struct block *pblock,
+                          enum reducer_source source,
+                          bool force,
+                          struct validation_state *out)
+{
+    (void)source; /* informational; `force` carries the live semantics */
+
+    if (!out)
+        return false;
+    validation_state_init(out);
+
+    if (!ctl || !pblock)
+        return validation_state_error(out, "reducer-null-arg");
+
+    /* AUTHORITATIVE-gated. In SHADOW (the live default) the reducer is not
+     * the engine — refuse rather than silently no-op, so a stray call can
+     * never be mistaken for an accept. There is no live caller this phase. */
+    if (tip_finalize_get_mode() != TIP_FINALIZE_MODE_AUTHORITATIVE)
+        return validation_state_error(out, "reducer-not-authoritative");
+
+    /* (1) Stateless gate FIRST, inline, BEFORE any log/stage mutation —
+     * exactly as process_new_block:1022. A garbage block is rejected with
+     * the verdict already in `out`; nothing is admitted to the inbox. The
+     * `force`/requested flag does not relax the stateless checks (legacy
+     * check_block is unconditional too); it gates the relay pre-filters
+     * inside the admit producer path, not this gate. */
+    if (!check_block(pblock, out, ctl->params, true, true, true)) {
+        LOG_FAIL("reducer", "check_block failed: %s",
+                 out->reject_reason[0] ? out->reject_reason : "unknown");
+        return false;
+    }
+
+    /* (2) Push the header + raw bytes into the header_admit_inbox so the
+     * AUTHORITATIVE producer path (step 2) can CREATE the block_index entry
+     * without legacy accept_block_header. Hash-hint is the block hash. */
+    struct uint256 block_hash;
+    block_get_hash(pblock, &block_hash);
+
+    struct header_admit_msg msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.hash = block_hash;
+    msg.observed_unix = (int64_t)GetTime();
+    msg.has_header = true;
+    msg.header = pblock->header;
+    /* height hint: one past the prev block's height when known, else -1
+     * (admit verifies against the active chain regardless of the hint). */
+    msg.height = -1;
+    if (!mailbox_header_admit_push(&msg)) {
+        /* Inbox full: cannot admit this block right now. Not a consensus
+         * reject — report a transient error so the caller can retry. */
+        return validation_state_error(out, "header-admit-inbox-full");
+    }
+
+    /* (3) Drain the eight stage step bodies synchronously under the SAME
+     * mutex activate_best_chain serializes on, ahead of the 2s supervisor
+     * tickers, so a single at-tip block reaches tip_finalize within the
+     * call. The reorg disconnect (step 4) is driven from inside utxo_apply
+     * when a better fork is selected. */
+    zcl_mutex_lock(&ctl->mutex);
+    (void)force; /* relay pre-filter gating lives in the admit producer */
+    (void)reducer_drain_to_convergence();
+
+    /* Determine the height the just-ingested block should occupy: the
+     * active tip after the drain (tip_finalize set it in AUTHORITATIVE
+     * mode). If the block did not land, this is the prior tip and the
+     * read-back's hash compare fails → reject verdict. */
+    struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
+    int target_h = tip ? tip->nHeight : 0;
+    zcl_mutex_unlock(&ctl->mutex);
+
+    /* (4) Read back the verdict from the freshly-written log rows. */
+    return reducer_read_back_verdict(target_h, &block_hash, out);
 }
 
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */

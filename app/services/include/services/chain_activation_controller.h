@@ -168,6 +168,70 @@ void activation_request_connect(struct chain_activation_controller *ctl,
  * Also exposed for diagnostics and tests. */
 int activation_drain_deferred(struct chain_activation_controller *ctl);
 
+/* ── Reducer-as-ingest (DORMANT this phase) ────────────────────── */
+
+/* Where an incoming block came from. Mirrors the force/requested
+ * semantics of the legacy process_new_block callers: P2P/compact arrive
+ * unrequested (force=false, relay pre-filters apply); SUBMIT/MINED/REPAIR
+ * are locally requested (force=true, relay pre-filters skipped). The
+ * source is informational for now — the force flag is the live arg. */
+enum reducer_source {
+    REDUCER_SRC_P2P = 0,       /* msg_blocks full block */
+    REDUCER_SRC_COMPACT,       /* msg_compact reassembled block */
+    REDUCER_SRC_SUBMIT,        /* submitblock RPC */
+    REDUCER_SRC_MINED,         /* internal miner */
+    REDUCER_SRC_REPAIR,        /* rebuild_recent recovery */
+};
+
+/* reducer_ingest_block — the synchronous block-intake entry that drives
+ * the eight Wave-S Job stages instead of legacy activate_best_chain.
+ *
+ * Contract (mirrors process_new_block's synchronous accept/reject):
+ *   1. check_block (stateless PoW/merkle/structure) runs FIRST, inline,
+ *      BEFORE any log/stage mutation. A garbage block is rejected with a
+ *      verdict in `out` and the function returns false — exactly as
+ *      process_new_block:1022 does, giving the P2P/submit caller its
+ *      DoS/ban reason without polluting the stage log.
+ *   2. The header (+raw bytes) is pushed into the header_admit_inbox so
+ *      the reducer's producer path (step 2) can build the block_index.
+ *   3. Under ctl->mutex (the same serialization point activate_best_chain
+ *      uses), the eight stage step bodies are drained synchronously for
+ *      the target height range — including a reorg disconnect when a
+ *      better fork is selected (step 4) — ahead of the 2s supervisor
+ *      tickers, so a single block reaches AT_TIP within the call.
+ *   4. The freshly-written validate_headers_log / tip_finalize_log rows
+ *      for the target height are read back and mapped into `out`
+ *      (validation_state) so validation_state_is_valid() / the reject
+ *      reason flow synchronously to the caller.
+ *
+ * Returns true iff the block landed on the active chain (out is MODE_VALID);
+ * false on any stateless or stateful reject (out carries the reason).
+ *
+ * AUTHORITATIVE-gated and DORMANT this phase: there is no live caller yet
+ * (msg_blocks / mining / submitblock / rebuild stay on process_new_block —
+ * those repoints are steps 7-12). Under the live default (tip_finalize +
+ * utxo author SHADOW/LEGACY) this is unreachable dead code; activate_best_chain
+ * remains the sole live block-connect engine.
+ *
+ * `force` carries the requested/relay-pre-filter semantics (force=true for
+ * SUBMIT/MINED/REPAIR). `out` must be a caller-owned validation_state. */
+bool reducer_ingest_block(struct chain_activation_controller *ctl,
+                          struct block *pblock,
+                          enum reducer_source source,
+                          bool force,
+                          struct validation_state *out);
+
+/* reducer_kick — wake the reducer to walk the best chain with no new block
+ * (the Group-2 NULL-block "connect to best tip now" path). Drains the eight
+ * stage step bodies once under ctl->mutex so cursor-driven catch-up makes
+ * progress without waiting for the next 2s supervisor tick. Returns the
+ * number of stage advances across all eight stages this kick produced.
+ *
+ * DORMANT this phase: no live caller (the Group-2 callers funnel into the
+ * reducer only at step 14). AUTHORITATIVE-gated: a no-op (returns 0) unless
+ * tip_finalize is AUTHORITATIVE, so SHADOW behaviour is unchanged. */
+int reducer_kick(struct chain_activation_controller *ctl);
+
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */
 
 struct utxo_wipe_decision {
