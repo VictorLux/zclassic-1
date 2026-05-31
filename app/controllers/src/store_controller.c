@@ -11,9 +11,6 @@ static bool store_csrf_verify(const char *context, const char *provided);
 static bool store_parse_access_query(const char *path,
                                      char *addr, size_t addr_max,
                                      char *token, size_t token_max);
-static int64_t store_chain_tip_height(sqlite3 *db);
-static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
-                                      int64_t min_height);
 static bool store_mark_order_paid(const char *datadir,
                                   int64_t order_id,
                                   int status);
@@ -232,45 +229,6 @@ static bool store_parse_access_query(const char *path,
 
     return store_validate_access_addr(addr) &&
            store_validate_access_token(token);
-}
-
-static int64_t store_chain_tip_height(sqlite3 *db)
-{
-    sqlite3_stmt *s = NULL;
-    int64_t tip_height = 0;
-
-    if (!db)
-        return 0;
-    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks",
-                           -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        tip_height = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
-    return tip_height;
-}
-
-static int64_t store_received_payment(sqlite3 *db, const char *pay_addr,
-                                      int64_t min_height)
-{
-    sqlite3_stmt *s = NULL;
-    int64_t received = 0;
-
-    if (!db || !pay_addr || !pay_addr[0])
-        return 0;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
-            "WHERE spent_txid IS NULL AND address = ? "
-            "AND block_height IS NOT NULL AND block_height <= ?",
-            -1, &s, NULL) != SQLITE_OK || !s)
-        return 0;
-
-    sqlite3_bind_text(s, 1, pay_addr, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 2, min_height);
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        received = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
-    return received;
 }
 
 static bool store_mark_order_paid(const char *datadir,
@@ -558,7 +516,6 @@ void store_process_payments(const char *datadir)
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
     if (!node_db_open(&ndb, db_path)) return;
-    sqlite3 *db = ndb.db;
 
     struct db_store_pending_payment pending_orders[64];
     int pending_count = db_store_order_list_pending_payments(&ndb,
@@ -581,11 +538,11 @@ void store_process_payments(const char *datadir)
          * Fallback: match by exact amount (for placeholder z-addresses). */
         /* Require minimum 3 confirmations to prevent reorg-based
          * double-spend: payment reversed but tokens already minted. */
-        int64_t tip_height = store_chain_tip_height(db);
+        int64_t tip_height = db_store_chain_tip_height(&ndb);
         int64_t min_height = tip_height - 3; /* 3 confirmations */
 
         /* Primary: per-address query with confirmation depth */
-        int64_t received = store_received_payment(db, pay_addr, min_height);
+        int64_t received = db_store_received_payment(&ndb, pay_addr, min_height);
 
         /* Only match by z-address — never fall back to amount matching.
          * Amount-only matching is dangerous: could match unrelated

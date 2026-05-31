@@ -87,6 +87,7 @@ bool db_store_product_find_active(struct node_db *ndb, int64_t id,
                                   struct db_store_product *out);
 int db_store_product_list_active(struct node_db *ndb,
                                  struct db_store_product *out, size_t max);
+int db_store_product_count(struct node_db *ndb);
 bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o);
 bool db_store_order_find_view(struct node_db *ndb, int64_t id,
                               struct db_store_order_view *out);
@@ -97,5 +98,17 @@ int db_store_order_list_pending_payments(struct node_db *ndb,
                                          size_t max,
                                          int64_t min_created_at);
 bool db_store_order_mark_paid(struct node_db *ndb, int64_t id, int status);
+
+/* Payment-check reads. The store payment processor needs the current
+ * chain tip (to compute confirmation depth) and the confirmed shielded
+ * balance received at a one-time order z-address. These read the
+ * consensus `blocks` table and the wallet `wallet_sapling_notes` table
+ * with store-specific semantics (no block status filter on the tip; a
+ * confirmation-depth ceiling on received notes), so the SQL lives here
+ * in the store model rather than in the controller. Both return 0 on
+ * any error or no-row. */
+int64_t db_store_chain_tip_height(struct node_db *ndb);
+int64_t db_store_received_payment(struct node_db *ndb, const char *pay_addr,
+                                  int64_t max_height);
 
 #endif

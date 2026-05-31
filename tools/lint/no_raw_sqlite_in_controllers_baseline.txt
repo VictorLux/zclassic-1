@@ -25,8 +25,6 @@ app/controllers/src/repair_controller.c
 app/controllers/src/repair_controller_utxo.c
 app/controllers/src/snapshot_controller.c
 app/controllers/src/snapshot_controller_txindex.c
-app/controllers/src/store_controller.c
-app/controllers/src/store_controller_schema.c
 app/controllers/src/sync_controller_blocks.c
 app/controllers/src/sync_controller_import.c
 app/controllers/src/wallet_controller.c

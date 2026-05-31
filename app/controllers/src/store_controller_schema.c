@@ -13,11 +13,8 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
     /* Load products from {datadir}/store/products.json if it exists,
      * otherwise seed with demo products. This lets node operators
      * customize their store by editing a simple JSON file. */
-    sqlite3_stmt *cnt = NULL;
-    sqlite3_prepare_v2(db, "SELECT count(*) FROM products", -1, &cnt, NULL);
-    bool empty = (AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW &&
-                  sqlite3_column_int(cnt, 0) == 0);
-    sqlite3_finalize(cnt);
+    struct node_db cnt_ndb = { .db = db, .open = true };
+    bool empty = (db_store_product_count(&cnt_ndb) == 0);
 
     if (empty && datadir) {
         char json_path[1024];

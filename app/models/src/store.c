@@ -192,6 +192,15 @@ int db_store_product_list_active(struct node_db *ndb,
     return count;
 }
 
+int db_store_product_count(struct node_db *ndb)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open)
+        return 0;
+    AR_QUERY_COUNT_BOUND(ndb, s, "SELECT count(*) FROM products", (void)0);
+}
+
 bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
 {
     sqlite3_stmt *s = NULL;
@@ -344,4 +353,27 @@ bool db_store_order_mark_paid(struct node_db *ndb, int64_t id, int status)
     }
     AR_FINALIZE(s);
     return true;
+}
+
+int64_t db_store_chain_tip_height(struct node_db *ndb)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open)
+        return 0;
+    AR_QUERY_INT64_BOUND(ndb, s, "SELECT MAX(height) FROM blocks", (void)0);
+}
+
+int64_t db_store_received_payment(struct node_db *ndb, const char *pay_addr,
+                                  int64_t max_height)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !pay_addr || !pay_addr[0])
+        return 0;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value), 0) FROM wallet_sapling_notes "
+        "WHERE spent_txid IS NULL AND address = ? "
+        "AND block_height IS NOT NULL AND block_height <= ?",
+        (AR_BIND_TEXT(s, 1, pay_addr), AR_BIND_INT(s, 2, max_height)));
 }
