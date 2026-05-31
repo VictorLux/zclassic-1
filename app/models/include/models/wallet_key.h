@@ -46,6 +46,12 @@ bool db_wallet_key_delete(struct node_db *ndb, const uint8_t pubkey_hash[20]);
 bool db_wallet_key_exists(struct node_db *ndb, const uint8_t pubkey_hash[20]);
 int db_wallet_key_count(struct node_db *ndb);
 
+/* Copy the first wallet key's 20-byte pubkey_hash into out (LIMIT 1, the
+ * same arbitrary "any key" the API wallet panel encodes as the display
+ * address). Returns false when the db is closed, no key exists, or the
+ * stored hash is not exactly 20 bytes; out is left untouched on false. */
+bool db_wallet_key_first_pubkey_hash(struct node_db *ndb, uint8_t out[20]);
+
 /* Load all wallet keys into a callback. Returns count loaded. */
 typedef void (*wallet_key_cb)(const struct db_wallet_key *key, void *ctx);
 int db_wallet_key_each(struct node_db *ndb, wallet_key_cb cb, void *ctx);

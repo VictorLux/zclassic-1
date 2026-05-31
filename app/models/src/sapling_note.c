@@ -308,6 +308,43 @@ int db_sapling_note_list_all(struct node_db *ndb,
         wallet_tx_read_spent_txid(s, 11, &out[count]));
 }
 
+/* Read one coinanalysis row. Mirrors the original controller column-by-
+ * column, including the "encode z-address only when both diversifier and
+ * pk_d are present" guard so the emitted address (empty vs derived) is
+ * byte-identical even on a malformed NULL-blob row. */
+static void sapling_note_read_analysis_row(sqlite3_stmt *s,
+                                            struct db_sapling_note *n)
+{
+    memset(n, 0, sizeof(*n));
+    AR_READ_BLOB(s, 0, n->txid, 32);
+    n->output_index = (uint32_t)AR_COL_INT(s, 1);
+    n->value = AR_COL_INT(s, 2);
+    n->block_height = (int)AR_COL_INT(s, 3);
+    wallet_tx_read_spent_txid(s, 4, n);
+    const void *ndiv = sqlite3_column_blob(s, 5);
+    const void *npkd = sqlite3_column_blob(s, 6);
+    AR_READ_BLOB(s, 5, n->diversifier, 11);
+    AR_READ_BLOB(s, 6, n->pk_d, 32);
+    n->witness_height = (int)AR_COL_INT(s, 7);
+    if (ndiv && npkd)
+        sapling_encode_payment_address(n->diversifier, n->pk_d,
+                                       "zs", n->address, sizeof(n->address));
+}
+
+int db_sapling_note_list_all_analysis(struct node_db *ndb,
+                                      struct db_sapling_note *out, size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT txid, output_index, value, block_height, spent_txid,"
+        " diversifier, pk_d, witness_height"
+        " FROM wallet_sapling_notes ORDER BY block_height",
+        out, max,
+        (void)0,
+        sapling_note_read_analysis_row(s, &out[count]));
+}
+
 bool db_sapling_note_save_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    const uint8_t *witness_blob, size_t blob_len,
@@ -404,4 +441,48 @@ bool db_sapling_note_key(struct node_db *ndb, const struct db_sapling_note *n,
                          struct db_sapling_key *out)
 {
     return db_sapling_key_find_by_ivk(ndb, n->ivk, out);
+}
+
+/* ── WalletTx/WalletUTXO read accessors (overflow from wallet_tx.c) ──
+ * These two transparent-side reads live here because wallet_tx.c is at
+ * the E1 file-size ceiling; this split shares wallet_tx_internal.h and
+ * the same node_db, so it is the established overflow home for wallet
+ * model accessors. */
+
+int64_t db_wallet_tx_total_fees(struct node_db *ndb, int *fee_paying_count)
+{
+    if (fee_paying_count) *fee_paying_count = 0;
+    if (!ndb || !ndb->open)
+        return 0;
+    sqlite3_stmt *s = NULL;
+    int64_t total = 0;
+    int count = 0;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT fee FROM wallet_transactions WHERE from_me = 1 AND fee > 0",
+        0);
+    while (AR_STEP_ROW(s)) {
+        total += AR_COL_INT(s, 0);
+        count++;
+    }
+    AR_FINALIZE(s);
+    if (fee_paying_count) *fee_paying_count = count;
+    return total;
+}
+
+int db_wallet_utxo_recent_activity(struct node_db *ndb,
+                                   struct db_wallet_activity *out, size_t max)
+{
+    if (!ndb->open) return 0;
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT wu.value, wu.height, COALESCE(b.time,0)"
+        " FROM wallet_utxos wu"
+        " LEFT JOIN blocks b ON b.height=wu.height"
+        " WHERE wu.spent_txid IS NULL"
+        " ORDER BY wu.height DESC LIMIT ?",
+        out, max,
+        AR_BIND_INT(s, 1, (int)max),
+        out[count].value = AR_COL_INT(s, 0);
+        out[count].height = (int)AR_COL_INT(s, 1);
+        out[count].time = AR_COL_INT(s, 2));
 }

@@ -301,6 +301,25 @@ int db_wallet_key_count(struct node_db *ndb)
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM wallet_keys");
 }
 
+bool db_wallet_key_first_pubkey_hash(struct node_db *ndb, uint8_t out[20])
+{
+    if (!ndb || !ndb->open || !out)
+        return false;
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s,
+        "SELECT pubkey_hash FROM wallet_keys LIMIT 1");
+    bool ok = false;
+    if (AR_STEP_ROW(s)) {
+        const void *pkh = sqlite3_column_blob(s, 0);
+        if (pkh && AR_COL_BYTES(s, 0) == 20) {
+            memcpy(out, pkh, 20);
+            ok = true;
+        }
+    }
+    AR_FINALIZE(s);
+    return ok;
+}
+
 /* ── Row Deserialization ──────────────────────────────────────── */
 
 static void row_to_wallet_key(sqlite3_stmt *s, struct db_wallet_key *k)

@@ -71,6 +71,13 @@ int db_block_max_height(struct node_db *ndb);
 int db_block_max_height_any_status(struct node_db *ndb);
 int db_block_count(struct node_db *ndb);
 
+/* Connected-tip height + block time in one read (status>=3), each
+ * COALESCE'd to 0 so an empty chain yields 0/0 rather than NULL. Used by
+ * the API wallet panel for confirmation/now display. Returns false only
+ * when the db is closed; *_out are zeroed on every non-row path. */
+bool db_block_tip_height_and_time(struct node_db *ndb,
+                                  int64_t *height_out, int64_t *time_out);
+
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* has_many :transactions — find all txids in this block */

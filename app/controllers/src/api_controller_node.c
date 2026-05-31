@@ -24,7 +24,10 @@
 #include "event/event.h"
 #include "keys/key_io.h"
 #include "models/database.h"
+#include "models/block.h"
 #include "models/file_service.h"
+#include "models/wallet_key.h"
+#include "models/wallet_tx.h"
 #include "net/download.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/node_health_service.h"
@@ -35,13 +38,11 @@
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
-#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -544,62 +545,32 @@ size_t api_serve_wallet(uint8_t *response, size_t response_max)
         return api_json_error(response, response_max, JSON_500_HEADERS,
                           "No database");
     }
-    sqlite3 *db = ndb->db;
-    sqlite3_stmt *s = NULL;
 
     /* Balance — use wallet_utxos (correct spent tracking) */
-    int64_t transparent = 0;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value),0) FROM wallet_utxos"
-            " WHERE spent_txid IS NULL",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-            transparent = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
+    int64_t transparent = db_wallet_utxo_balance(ndb);
+    int64_t shielded = db_sapling_note_balance(ndb);
 
-    int64_t shielded = 0;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(SUM(value),0) FROM wallet_sapling_notes"
-            " WHERE spent_txid IS NULL", -1, &s, NULL) == SQLITE_OK && s) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-            shielded = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-
-    /* Address */
+    /* Address — encode the first wallet key's pubkey hash */
     char address[128] = "";
-    if (sqlite3_prepare_v2(db,
-            "SELECT pubkey_hash FROM wallet_keys LIMIT 1",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-            const void *pkh = sqlite3_column_blob(s, 0);
-            if (pkh && sqlite3_column_bytes(s, 0) == 20) {
-                struct tx_destination dest;
-                dest.type = DEST_KEY_ID;
-                memcpy(dest.id.key.id.data, pkh, 20);
-                const unsigned char pk[] = {0x1C, 0xB8};
-                const unsigned char sc[] = {0x1C, 0xBD};
-                encode_destination(&dest, pk, 2, sc, 2,
-                                   address, sizeof(address));
-            }
-        }
-        sqlite3_finalize(s);
+    uint8_t pkh[20];
+    if (db_wallet_key_first_pubkey_hash(ndb, pkh)) {
+        struct tx_destination dest;
+        dest.type = DEST_KEY_ID;
+        memcpy(dest.id.key.id.data, pkh, 20);
+        const unsigned char pk[] = {0x1C, 0xB8};
+        const unsigned char sc[] = {0x1C, 0xBD};
+        encode_destination(&dest, pk, 2, sc, 2,
+                           address, sizeof(address));
     }
 
     /* Chain height + latest block time */
     int64_t height = 0, block_time = 0;
-    if (sqlite3_prepare_v2(db,
-            "SELECT COALESCE(MAX(height),0), COALESCE(MAX(time),0)"
-            " FROM blocks WHERE status>=3", -1, &s, NULL) == SQLITE_OK && s) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-            height = sqlite3_column_int64(s, 0);
-            block_time = sqlite3_column_int64(s, 1);
-        }
-        sqlite3_finalize(s);
-    }
+    db_block_tip_height_and_time(ndb, &height, &block_time);
 
     /* Activity — last 20 wallet UTXOs with timestamps */
+    struct db_wallet_activity activity[20];
+    int activity_count = db_wallet_utxo_recent_activity(ndb, activity, 20);
+
     size_t w = 0;
     char *buf = (char *)response;
     w += (size_t)snprintf(buf + w, response_max - w,
@@ -616,25 +587,15 @@ size_t api_serve_wallet(uint8_t *response, size_t response_max)
         address, (long long)height,
         (long long)block_time, (long long)platform_time_wall_time_t());
 
-    if (sqlite3_prepare_v2(db,
-            "SELECT wu.value, wu.height, COALESCE(b.time,0)"
-            " FROM wallet_utxos wu"
-            " LEFT JOIN blocks b ON b.height=wu.height"
-            " WHERE wu.spent_txid IS NULL"
-            " ORDER BY wu.height DESC LIMIT 20",
-            -1, &s, NULL) == SQLITE_OK && s) {
-        bool first = true;
-        while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW &&
-               w + 100 < response_max) {
-            if (!first) buf[w++] = ',';
-            first = false;
-            w += (size_t)snprintf(buf + w, response_max - w,
-                "{\"value\":%lld,\"height\":%d,\"time\":%lld}",
-                (long long)sqlite3_column_int64(s, 0),
-                sqlite3_column_int(s, 1),
-                (long long)sqlite3_column_int64(s, 2));
-        }
-        sqlite3_finalize(s);
+    bool first = true;
+    for (int i = 0; i < activity_count && w + 100 < response_max; i++) {
+        if (!first) buf[w++] = ',';
+        first = false;
+        w += (size_t)snprintf(buf + w, response_max - w,
+            "{\"value\":%lld,\"height\":%d,\"time\":%lld}",
+            (long long)activity[i].value,
+            activity[i].height,
+            (long long)activity[i].time);
     }
 
     w += (size_t)snprintf(buf + w, response_max - w, "]}");

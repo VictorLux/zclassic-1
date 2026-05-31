@@ -10,8 +10,6 @@
 #
 # Per-line exception: add // raw-controller-sql-ok on the offending line.
 # Format: one relative path per line; lines starting with # are comments.
-app/controllers/include/controllers/explorer_internal.h
-app/controllers/src/api_controller_node.c
 app/controllers/src/blockchain_controller_admin.c
 app/controllers/src/blockchain_controller.c
 app/controllers/src/blockchain_controller_chain.c
@@ -26,6 +24,5 @@ app/controllers/src/sync_controller_blocks.c
 app/controllers/src/sync_controller_import.c
 app/controllers/src/wallet_controller.c
 app/controllers/src/wallet_controller_keys.c
-app/controllers/src/wallet_rescan_controller_coins.c
 app/controllers/src/wallet_scan.c
 app/controllers/src/wallet_shielded_controller.c

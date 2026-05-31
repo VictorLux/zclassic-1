@@ -121,25 +121,14 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
     struct json_value z_arr = {0};
     json_set_array(&z_arr);
 
-    /* Query all sapling notes from SQLite (both spent and unspent) */
-    sqlite3_stmt *z_stmt = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT txid, output_index, value, block_height, spent_txid,"
-        " diversifier, pk_d, witness_height"
-        " FROM wallet_sapling_notes ORDER BY block_height",
-        -1, &z_stmt, NULL);
-    while (z_stmt && AR_STEP_ROW_READONLY(z_stmt) == SQLITE_ROW) {
-        const uint8_t *ntxid = sqlite3_column_blob(z_stmt, 0);
-        int nidx = sqlite3_column_int(z_stmt, 1);
-        int64_t nval = sqlite3_column_int64(z_stmt, 2);
-        int nheight = sqlite3_column_int(z_stmt, 3);
-        const uint8_t *spent_by = sqlite3_column_blob(z_stmt, 4);
-        int spent_len = sqlite3_column_bytes(z_stmt, 4);
-        const uint8_t *ndiv = sqlite3_column_blob(z_stmt, 5);
-        const uint8_t *npkd = sqlite3_column_blob(z_stmt, 6);
-        int wheight = sqlite3_column_int(z_stmt, 7);
-
-        bool is_spent = (spent_by && spent_len == 32);
+    /* Query all sapling notes (both spent and unspent) via the model. */
+    static struct db_sapling_note z_notes[8192];
+    int z_note_count = db_sapling_note_list_all_analysis(ctx->node_db,
+                                                         z_notes, 8192);
+    for (int zi = 0; zi < z_note_count; zi++) {
+        const struct db_sapling_note *n = &z_notes[zi];
+        int64_t nval = n->value;
+        bool is_spent = n->is_spent;
         z_total_received += nval;
         if (!is_spent) {
             z_balance += nval;
@@ -152,54 +141,34 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
         json_set_object(&ze);
 
         char txid_hex[65];
-        if (ntxid) {
-            wallet_txid_hex_le(ntxid, txid_hex);
-        } else {
-            txid_hex[0] = '\0';
-        }
+        wallet_txid_hex_le(n->txid, txid_hex);
         json_push_kv_str(&ze, "txid", txid_hex);
-        json_push_kv_int(&ze, "output_index", nidx);
+        json_push_kv_int(&ze, "output_index", (int)n->output_index);
 
-        char z_addr[128];
-        if (ndiv && npkd)
-            sapling_encode_payment_address(ndiv, npkd,
-                                            "zs", z_addr, sizeof(z_addr));
-        else
-            z_addr[0] = '\0';
-        json_push_kv_str(&ze, "address", z_addr);
+        json_push_kv_str(&ze, "address", n->address);
 
         char zamt[32];
         format_amount(nval, zamt, sizeof(zamt));
         json_push_kv_str(&ze, "amount", zamt);
-        json_push_kv_int(&ze, "block_height", nheight);
+        json_push_kv_int(&ze, "block_height", n->block_height);
         json_push_kv_str(&ze, "status", is_spent ? "spent" : "unspent");
 
         if (is_spent) {
             char spent_hex[65];
-            wallet_txid_hex_le(spent_by, spent_hex);
+            wallet_txid_hex_le(n->spent_txid, spent_hex);
             json_push_kv_str(&ze, "spent_by", spent_hex);
         }
 
-        if (wheight > 0)
-            json_push_kv_int(&ze, "witness_height", wheight);
+        if (n->witness_height > 0)
+            json_push_kv_int(&ze, "witness_height", n->witness_height);
 
         json_push_back(&z_arr, &ze);
         json_free(&ze);
     }
-    if (z_stmt) sqlite3_finalize(z_stmt);
 
     /* Fee accounting from wallet transactions */
-    int64_t total_fees = 0;
     int tx_count = 0;
-    sqlite3_stmt *fee_stmt = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT fee FROM wallet_transactions WHERE from_me = 1 AND fee > 0",
-        -1, &fee_stmt, NULL);
-    while (fee_stmt && AR_STEP_ROW_READONLY(fee_stmt) == SQLITE_ROW) {
-        total_fees += sqlite3_column_int64(fee_stmt, 0);
-        tx_count++;
-    }
-    if (fee_stmt) sqlite3_finalize(fee_stmt);
+    int64_t total_fees = db_wallet_tx_total_fees(ctx->node_db, &tx_count);
 
     /* Summary */
     char amt[32];

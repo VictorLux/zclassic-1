@@ -537,6 +537,27 @@ int db_block_count(struct node_db *ndb)
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM blocks");
 }
 
+bool db_block_tip_height_and_time(struct node_db *ndb,
+                                  int64_t *height_out, int64_t *time_out)
+{
+    if (height_out) *height_out = 0;
+    if (time_out) *time_out = 0;
+    if (!ndb || !ndb->open)
+        return false;
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s,
+        "SELECT COALESCE(MAX(height),0), COALESCE(MAX(time),0)"
+        " FROM blocks WHERE status>=3");
+    bool ok = false;
+    if (AR_STEP_ROW(s)) {
+        if (height_out) *height_out = AR_COL_INT(s, 0);
+        if (time_out) *time_out = AR_COL_INT(s, 1);
+        ok = true;
+    }
+    AR_FINALIZE(s);
+    return ok;
+}
+
 /* ── Relationships ─────────────────────────────────────────────── */
 
 /* has_many :transactions */

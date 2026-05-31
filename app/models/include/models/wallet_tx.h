@@ -53,6 +53,11 @@ bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
 int db_wallet_tx_count(struct node_db *ndb);
 void db_wallet_tx_free(struct db_wallet_tx *t);
 
+/* Sum of fees over from-me transactions with a positive fee, and the
+ * count of such fee-paying transactions (via fee_paying_count, if non-NULL).
+ * Returns 0 / sets count 0 on a closed db. */
+int64_t db_wallet_tx_total_fees(struct node_db *ndb, int *fee_paying_count);
+
 /* Read-only projection for raw wallet transactions ordered by height desc.
  * Intended for controller/service scans that need deserializable tx blobs
  * without owning SQL directly. Caller must free rows with
@@ -116,6 +121,20 @@ int db_wallet_utxo_list_unspent(struct node_db *ndb,
 /* List all wallet UTXOs (spent + unspent). Returns count. */
 int db_wallet_utxo_list_all(struct node_db *ndb,
                             struct db_wallet_utxo *out, size_t max);
+
+/* Recent wallet activity row: the value/height of an unspent wallet UTXO
+ * joined with its block time (0 when the block row is absent). Powers the
+ * API wallet panel's "activity" list. */
+struct db_wallet_activity {
+    int64_t value;
+    int height;
+    int64_t time;
+};
+
+/* List the most-recent unspent wallet UTXOs (height DESC) with block time,
+ * up to max rows. Returns count written to out. */
+int db_wallet_utxo_recent_activity(struct node_db *ndb,
+                                   struct db_wallet_activity *out, size_t max);
 
 /* Coin selection: unspent, non-coinbase (or mature coinbase). */
 int db_wallet_utxo_select_coins(struct node_db *ndb, int64_t target,
@@ -218,6 +237,15 @@ int db_sapling_note_list_unspent_for_ivk(struct node_db *ndb,
 /* List all notes (spent + unspent). Returns count. */
 int db_sapling_note_list_all(struct node_db *ndb,
                               struct db_sapling_note *out, size_t max);
+
+/* List all notes for the coinanalysis RPC: a narrower projection
+ * (txid, output_index, value, block_height, spent_txid, diversifier,
+ * pk_d, witness_height) ordered by block_height ASC, with the z-address
+ * derived (HRP "zs") only when diversifier+pk_d are present. The other
+ * struct fields (rcm/memo/ivk/cm/nullifier) are left zeroed. Returns
+ * count written to out. */
+int db_sapling_note_list_all_analysis(struct node_db *ndb,
+                                      struct db_sapling_note *out, size_t max);
 
 /* Save/load witness data for a Sapling note */
 bool db_sapling_note_save_witness(struct node_db *ndb,
