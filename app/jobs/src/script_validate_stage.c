@@ -20,6 +20,9 @@
 #include "script/interpreter.h"
 #include "script/script_flags.h"
 #include "storage/disk_block_io.h"
+#include "storage/event_log.h"
+#include "storage/event_log_payloads.h"
+#include "storage/event_log_singleton.h"
 #include "storage/progress_store.h"
 #include "storage/txdb.h"
 #include "util/log_macros.h"
@@ -76,6 +79,8 @@ static _Atomic uint64_t g_inputs_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
+static _Atomic uint64_t g_header_event_emit_total = 0;
+static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 
 static bool read_tx_from_index(const struct uint256 *txid,
                                struct transaction *tx)
@@ -289,6 +294,91 @@ static void validate_block_scripts(const struct block *blk, int height,
     }
 }
 
+/* ── EV_BLOCK_HEADER re-emit (single-engine BLOCKER 1 PIECE 4) ───────────
+ *
+ * After script_validate raises the in-memory block_index validity level to
+ * BLOCK_VALID_SCRIPTS, the projection must learn that scripts verified —
+ * otherwise a projection-driven boot rebuild would never see VALID_SCRIPTS
+ * and tip_finalize.preconditions_ok (tip_finalize_stage.c:262) would never
+ * pass post-restart. Mirrors the step-3/step-4 emitter (sources scalars from
+ * the in-memory `struct block_index`); EV_BLOCK_HEADER into
+ * block_index_projection is idempotent (INSERT OR REPLACE keyed on hash), so
+ * re-emitting with the updated nStatus is harmless. Best-effort/counted,
+ * never fatal — exactly the block_index_db.c / header_admit / body_persist
+ * semantics. The legacy VALID_SCRIPTS setter (connect_tip.c:158/642) is left
+ * in place; this is additive. */
+static void emit_block_header_event_from_bi(const struct block_index *bi)
+{
+    if (!bi || !bi->phashBlock)
+        return;
+
+    event_log_t *log = event_log_singleton();
+    if (!log) {
+        /* Not wired yet (early boot, or unit tests). The projection
+         * catches up once boot completes — not a hard failure. */
+        return;
+    }
+
+    if (bi->nSolutionSize > EV_BLOCK_HEADER_MAX_SOLUTION) {
+        LOG_WARN("script_validate",
+                 "[script_validate] header emit: solution size %zu > max %u "
+                 "for h=%d; skipping",
+                 bi->nSolutionSize, (unsigned)EV_BLOCK_HEADER_MAX_SOLUTION,
+                 bi->nHeight);
+        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    struct ev_block_header h;
+    memset(&h, 0, sizeof(h));
+    memcpy(h.hash, bi->phashBlock->data, 32);
+    if (bi->pprev && bi->pprev->phashBlock)
+        memcpy(h.hashPrev, bi->pprev->phashBlock->data, 32);
+    /* else: genesis — hashPrev stays all-zero (memset above) */
+    h.height        = bi->nHeight;
+    h.nStatus       = bi->nStatus;
+    h.nFile         = bi->nFile;
+    h.nDataPos      = bi->nDataPos;
+    h.nUndoPos      = bi->nUndoPos;
+    h.nTime         = bi->nTime;
+    h.nBits         = bi->nBits;
+    memcpy(h.nNonce, bi->nNonce.data, 32);
+    memcpy(h.hashMerkleRoot, bi->hashMerkleRoot.data, 32);
+    memcpy(h.hashFinalSaplingRoot, bi->hashFinalSaplingRoot.data, 32);
+    h.nVersion      = bi->nVersion;
+    h.nTx           = bi->nTx;
+    h.nSolutionSize = (uint16_t)bi->nSolutionSize;
+
+    size_t bufcap = ev_block_header_wire_size(h.nSolutionSize);
+    uint8_t stackbuf[256 + 1344];  /* fixed 200 + max solution 1344 */
+    if (bufcap > sizeof(stackbuf)) {
+        /* Shouldn't happen — capped above. Defensive bail. */
+        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+    size_t written = 0;
+    if (!ev_block_header_serialize(&h, bi->nSolution, stackbuf, bufcap,
+                                   &written)) {
+        LOG_WARN("script_validate",
+                 "[script_validate] header emit: serialize failed h=%d",
+                 bi->nHeight);
+        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+
+    uint64_t off = event_log_append(log, EV_BLOCK_HEADER, stackbuf, written);
+    if (off == UINT64_MAX) {
+        atomic_fetch_add_explicit(&g_header_event_emit_fail_total, 1,
+                                  memory_order_relaxed);
+        return;
+    }
+    atomic_fetch_add_explicit(&g_header_event_emit_total, 1,
+                              memory_order_relaxed);
+}
+
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
@@ -370,6 +460,19 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                     next_h, fail_vin);
     } else {
         atomic_fetch_add(&g_verified_total, 1);
+        /* Single-engine BLOCKER 1 PIECE 4: raise the in-memory validity
+         * level to BLOCK_VALID_SCRIPTS — the bit tip_finalize.preconditions_ok
+         * (tip_finalize_stage.c:262) HARD-REQUIRES and that connect_tip.c
+         * (a delete target) is the only current setter of. Same idiom as
+         * connect_tip.c:157-158/641-642: VALID_SCRIPTS is the validity LEVEL
+         * stored in the low BLOCK_VALID_MASK bits (not an OR-able flag), so
+         * clear the mask then set the level. Then re-emit EV_BLOCK_HEADER so
+         * the projection persists the new nStatus (survives restart). bi is
+         * the live in-memory entry from active_chain_at (:329); blk was freed
+         * above but bi is independent. Additive — the legacy setter stays. */
+        bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK)
+                      | BLOCK_VALID_SCRIPTS;
+        emit_block_header_event_from_bi(bi);
     }
 
     if (!log_insert(db, next_h, status, ok, summary.tx_count,
@@ -452,6 +555,8 @@ void script_validate_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    atomic_store(&g_header_event_emit_total, (uint64_t)0);
+    atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -534,6 +639,10 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_inputs_verified_total));
     json_push_kv_int (out, "inputs_failed_total",
                       (int64_t)atomic_load(&g_inputs_failed_total));
+    json_push_kv_int (out, "header_event_emit_total",
+                      (int64_t)atomic_load(&g_header_event_emit_total));
+    json_push_kv_int (out, "header_event_emit_fail_total",
+                      (int64_t)atomic_load(&g_header_event_emit_fail_total));
     json_push_kv_int (out, "last_advance_height",
                       atomic_load(&g_last_advance_height));
     json_push_kv_int (out, "last_step_unix", last);
