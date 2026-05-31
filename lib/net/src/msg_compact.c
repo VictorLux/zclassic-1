@@ -13,6 +13,7 @@
 #include "net/peer_scoring.h"
 #include "storage/disk_block_io.h"
 #include "validation/process_block.h"
+#include "services/chain_activation_controller.h"
 #include "consensus/validation.h"
 #include "event/event.h"
 #include "util/log_macros.h"
@@ -57,8 +58,21 @@ static void compact_submit_block(struct msg_processor *mp,
 
     struct validation_state state;
     validation_state_init(&state);
-    process_new_block(&state, mp->main_state, mp->coins_tip,
-                      mp->params, blk, false, mp->datadir);
+    /* Compact-block intake: when the reducer is authoritative (cutover
+     * step 13, NOT yet flipped — SHADOW default = false), the synchronous
+     * reducer_ingest_block drives the eight Wave-S stages on the
+     * reassembled block and fills the SAME validation_state. Otherwise the
+     * unchanged legacy process_new_block path runs. Either way the verdict
+     * in `state` preserves the exact already-seen / DoS-scoring contract
+     * below. force=false mirrors the relay-pre-filter semantics of the
+     * full-block P2P intake site (msg_blocks). */
+    if (reducer_is_authoritative()) {
+        reducer_ingest_block(boot_activation_controller(), blk,
+                             REDUCER_SRC_COMPACT, false, &state);
+    } else {
+        process_new_block(&state, mp->main_state, mp->coins_tip,
+                          mp->params, blk, false, mp->datadir);
+    }
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];

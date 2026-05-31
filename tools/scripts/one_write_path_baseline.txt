@@ -28,7 +28,7 @@ lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coin
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
 lib/mining/src/miner.c:224: return process_new_block(&state, ms, coins_tip, params, pblock, true,
 lib/net/src/msg_blocks.c:335: process_new_block(&state, mp->main_state, mp->coins_tip,
-lib/net/src/msg_compact.c:60: process_new_block(&state, mp->main_state, mp->coins_tip,
+lib/net/src/msg_compact.c:73: process_new_block(&state, mp->main_state, mp->coins_tip,
 lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/coins_view_sqlite.h:54:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/utxo_projection.h:50:void utxo_projection_set_author(utxo_author_t who);
