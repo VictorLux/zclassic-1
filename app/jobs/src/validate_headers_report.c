@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * validate_headers_report — read-only SQL reporting over the
- * validate_headers_log table. Extracted verbatim from
- * validate_headers_stage.c (pure refactor, behaviour byte-identical).
+ * validate_headers_log table.
  * None of this is on the Job's advance-or-block path; it only summarises
  * already-written rows for diagnostics. */
 

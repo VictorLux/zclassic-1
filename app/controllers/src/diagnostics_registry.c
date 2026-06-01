@@ -386,10 +386,9 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
 
 /* ── RPC: getmirrorstatus ──────────────────────────────────────────
  *
- * Backs the `zcl_mirror_status` MCP tool — the legacy_mirror monitor.
- * Relocated here when the old comparison apparatus
- * was deleted; it is a surviving single-engine introspection surface,
- * not comparison apparatus.
+ * Backs the `zcl_mirror_status` MCP tool: the legacy_mirror monitor.
+ * Relocated here when the old comparison apparatus was deleted; this remains
+ * the production drift-detection introspection surface.
  */
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
                               struct json_value *result)

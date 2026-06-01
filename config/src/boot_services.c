@@ -1646,8 +1646,8 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
 }
 
 /* Idempotent open of the block_index_projection (the log-derived
- * authoritative source for the single-engine boot rebuild,
- * load_block_index_from_projection). Like boot_ensure_log_and_utxo_projection
+ * authoritative source for load_block_index_from_projection). Like
+ * boot_ensure_log_and_utxo_projection
  * this is hoisted so boot.c can open + publish + catch up the projection
  * BEFORE the block-index load (which optionally rebuilds from it under
  * -rebuildfromlog), well before app_init_services runs. Called twice: once

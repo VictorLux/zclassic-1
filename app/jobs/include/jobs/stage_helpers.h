@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * stage_helpers — shared static-inline helpers for the eight Job stages
- * in app/jobs/src. These are the verbatim de-duplications of helpers that
- * were copy-pasted across the stage files; behaviour is byte-identical to
- * the per-file copies they replace.
+ * in app/jobs/src.
  *
  *   stage_cursor_persisted    — read the DURABLY committed cursor of an
  *                               upstream stage from the stage_cursor table.
@@ -12,9 +10,8 @@
  *   stage_log_row_count       — SELECT COUNT(*) over a stage's log table
  *                               for the *_dump_state_json observability.
  *
- * Each takes a `tag` argument so the LOG_WARN attribution stays the
- * stage name ("body_persist", "script_validate", …) — byte-identical to
- * what each call site logged before the fold. */
+ * Each takes a `tag` argument so LOG_WARN attribution stays with the calling
+ * stage name ("body_persist", "script_validate", ...). */
 
 #ifndef ZCL_JOBS_STAGE_HELPERS_H
 #define ZCL_JOBS_STAGE_HELPERS_H
@@ -99,11 +96,7 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * reading active_chain_at(H+1)) and then collapses the visible chain[]
  * window back to the finalized height via active_chain_move_window_tip, then
  * publishes the authority through the reducer's explicit tip publication.
- * The old single-engine path kept a wider window by assembling chain[] out to
- * find_most_work_chain's candidate before block-by-block validation; the
- * reducer had no equivalent and wedged after a single block.
- *
- * This helper restores that property: it selects the most-work candidate
+ * This helper selects the most-work candidate
  * (side-effect-free mirror of find_most_work_chain) and forward-extends the
  * visible chain[] window to it WITHOUT moving the authoritative tip. Both
  * utxo_apply (forward-apply + reorg-unwind detection read active_chain_at)

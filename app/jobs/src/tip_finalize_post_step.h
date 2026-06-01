@@ -7,9 +7,7 @@
  * tip connection but are not reducer cursor authority:
  * wallet transaction sync + Sapling trial-decrypt/note-persist, nullifier
  * spend marking, mempool removal of confirmed txs, and the MMR/MMB appends.
- * Split out of tip_finalize_stage.c to keep that file under the E1 800-LOC
- * ceiling (the lifted block carries the heavy wallet/mempool/controller
- * includes). Internal to app/jobs/src — not a public jobs/ API. */
+ * Internal to app/jobs/src — not a public jobs/ API. */
 
 #ifndef ZCL_JOBS_TIP_FINALIZE_POST_STEP_H
 #define ZCL_JOBS_TIP_FINALIZE_POST_STEP_H

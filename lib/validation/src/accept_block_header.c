@@ -148,11 +148,10 @@ bool accept_block_header_check_bits_match(
                                 reason, false, NULL);
 }
 
-/* Relocated verbatim from process_block_core.c (single-engine swap) so the
- * sole runtime in-memory block_index producer — header scalars + pprev +
- * nChainWork via block_map_insert — survives the eventual
- * process_block_core.c deletion. Its only caller is accept_block_header()
- * below. Declaration stays in process_block_internal.h. */
+/* The reducer still needs one runtime in-memory block_index producer:
+ * header scalars, pprev, and nChainWork via block_map_insert. Its only caller
+ * is accept_block_header() below. Declaration stays in
+ * process_block_internal.h. */
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header)
 {

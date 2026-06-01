@@ -117,7 +117,7 @@
 
 static struct main_state g_state;
 static struct coins_view_sqlite g_coins_sqlite;
-/* Read authority for the coins_tip cache backing (single-engine, step 8):
+/* Read authority for the coins_tip cache backing:
  * a read-only coins_view over the log-derived UTXO projection. The legacy
  * g_coins_sqlite is still opened for legacy damage-recovery best-block reads
  * below; retiring that fallback is remaining one-write-path debt. */
@@ -1742,7 +1742,7 @@ bool app_init(struct app_context *ctx)
         /* LDB UTXO import deferred to post-block-index (see below). */
     }
 
-    /* Single-engine read authority (step 8): the coins_tip RAM cache
+    /* Projection-backed read authority: the coins_tip RAM cache
      * resolves misses against the log-derived UTXO projection, not the
      * legacy coins.db `utxos` table. utxo_projection_open publishes the
      * process-global handle; it normally happens later in
@@ -1763,9 +1763,9 @@ bool app_init(struct app_context *ctx)
     coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);
 
     /* Hoist the block_index_projection open next to the log/utxo projection
-     * so the single-engine boot rebuild (load_block_index_from_projection,
-     * under -rebuildfromlog) has the caught-up projection available BEFORE
-     * the block-index load below. The phase-4 fan-out re-call in
+     * so load_block_index_from_projection (under -rebuildfromlog) has the
+     * caught-up projection available BEFORE the block-index load below.
+     * The phase-4 fan-out re-call in
      * boot_start_projection_storage is a no-op reuse (first opener wins).
      * Non-fatal if it cannot open: -rebuildfromlog simply falls through to
      * the legacy loaders. */
@@ -1844,7 +1844,7 @@ bool app_init(struct app_context *ctx)
     {
         bool loaded = false;
 
-        /* Single-engine cold-start (-rebuildfromlog): rebuild the in-memory
+        /* Event-log cold-start (-rebuildfromlog): rebuild the in-memory
          * block index + active tip purely from the log-derived projection,
          * so boot no longer reads the legacy flat/SQLite/LevelDB loaders, the
          * zclassicd-LDB import, or the legacy UTXO importer. The projection

@@ -717,7 +717,7 @@ static void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
-    printf("                      projection (single-engine cold-start; opt-in)\n");
+    printf("                      projection (cold-start opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
     printf("  -bench-regress      Fail if bench-history numeric rows regress >20%%\n");
     printf("  -help               This help\n\n");

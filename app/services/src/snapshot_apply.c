@@ -9,7 +9,7 @@
  * block_map, active_chain, coins_tip, and pindex_best_header all
  * move together.
  *
- * Pure code-motion split from snapshot_sync_service.c. */
+ * Snapshot activation owns the durable promotion boundary. */
 
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_restore_executor.h"
@@ -38,7 +38,7 @@
 #include <string.h>
 #include <stdio.h>
 
-/* ── Cold-start single-engine seed ───────────────────────── */
+/* ── Cold-start event-log seed ───────────────────────────── */
 
 /* Seed the authoritative log/projection engine from the verified
  * snapshot so a node that fast-synced on a cold datadir restores its
@@ -52,8 +52,8 @@
  *      the anchor as a HAVE_DATA / VALID_SCRIPTS tip for the boot fold.
  *   3. Durably stamp the tip_finalize cursor + finalize-log row at the
  *      anchor height so boot_rebuild_from_log seeds the tip from it. */
-static void snapsync_seed_single_engine(struct node_db *ndb,
-                                        const struct snapshot_sync_service *svc)
+static void snapsync_seed_projection_boot(struct node_db *ndb,
+                                          const struct snapshot_sync_service *svc)
 {
     /* (1) UTXO projection seed from the verified staging table (node.db).
      * NULL global projection (unit tests / not-yet-wired) → skip. */
@@ -62,7 +62,7 @@ static void snapsync_seed_single_engine(struct node_db *ndb,
         int64_t seeded = utxo_projection_seed_from_snapshot(proj, ndb->db);
         if (seeded < 0)
             LOG_WARN("snapshot_sync",
-                     "single-engine seed: utxo projection seed failed "
+                     "event-log seed: utxo projection seed failed "
                      "(h=%d) — legacy node.db utxos still authoritative",
                      svc->offered_height);
     }
@@ -85,7 +85,7 @@ static void snapsync_seed_single_engine(struct node_db *ndb,
     if (!tip_finalize_stage_seed_anchor(svc->offered_height,
                                         svc->offered_block_hash))
         LOG_WARN("snapshot_sync",
-                 "single-engine seed: tip cursor anchor seed skipped/failed "
+                 "event-log seed: tip cursor anchor seed skipped/failed "
                  "(h=%d)", svc->offered_height);
 }
 
@@ -114,10 +114,10 @@ struct zcl_result snapsync_stage_promote_active_internal(struct node_db *ndb,
         return ZCL_ERR(-4, "activate: failed to promote staged utxos");
     if (node_db_utxo_count(ndb) != (int64_t)local_count)
         return ZCL_ERR(-5, "activate: active/staged UTXO count mismatch");
-    /* Cold-start single-engine seed (additive): land the verified
+    /* Cold-start event-log seed (additive): land the verified
      * snapshot into the authoritative log/projection engine + tip cursor
      * BEFORE the staging table is discarded below. Best-effort. */
-    snapsync_seed_single_engine(ndb, svc);
+    snapsync_seed_projection_boot(ndb, svc);
     /* Record the verified snapshot anchor as pending recovery metadata.
      * The publishable coins_best_block cursor is written only by
      * chain_state_repository during evidenced tip activation. */

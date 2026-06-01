@@ -148,6 +148,17 @@ node soak.
   the remaining wallet/explorer view fragments plus the adjacent explorer block
   controller and rejects generic stale parity wording such as `byte-identical`,
   `prior inline`, and `not a redesign`.
+- Job-stage helper comments now describe current reducer-stage ownership
+  instead of B2/single-engine/parity/code-motion scaffold. The scaffold-label
+  lint guard now covers the stage helpers, block-header emit helper, body
+  persist, header admit, validate-headers helper/report/internal seams, and
+  tip-finalize post-step helper, and rejects stale `B2:`, `copy-pasted`,
+  `Precedent:`, and generic `single-engine` wording.
+- Production-wide cold-start boot/projection comments and CLI help now say
+  event-log or reducer path instead of `single-engine`; snapshot activation's
+  local cold-start seed helper was renamed to the event-log projection boot
+  seed, and the source scan is clean for that retired term outside the lint
+  gate vocabulary.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2646,6 +2657,40 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   running, no listener existed on ports `8023`, `8033`, `18232`, or `8232`,
   and the last 20 minutes of `zclassic23` journal output had no entries. This
   is a failed live sample, not a refactor completion proof.
+- App/jobs scaffold scan after the Job-stage purpose-comment cleanup: clean
+  for `B2:`, `byte-identical`, `byte-identically`, `copy-pasted`, `verbatim`,
+  `pure refactor`, `pre-split`, `Split out of`, `file-size ceiling`,
+  `Precedent`, `single-engine`, `Single-engine`, `BLOCKER 1 PIECE`, and
+  `PIECE 1`.
+- Production-wide `single-engine` source scan after the boot/projection wording
+  cleanup: clean across C/H files outside `test_make_lint_gates.c`, where the
+  forbidden term is kept only as lint-gate vocabulary.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened Job-stage/scaffold-label guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the Job-stage and generic `single-engine` guard; `0/1` group failed
+  in 11.0s.
+- `make -j$(nproc)`: pass after the Job-stage and boot/projection terminology
+  cleanup.
+- `make lint`: pass after the Job-stage and boot/projection terminology
+  cleanup; all zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the Job-stage and
+  boot/projection terminology cleanup, `0/279` groups failed in 56.0s.
+- Post-status doc/scans after the Job-stage cleanup: `git diff --check`
+  passed, `tools/scripts/check_doc_accuracy.sh` passed, the zero-baseline /
+  allowlist scan found no non-comment entries in the ratcheted baseline files,
+  the production C/H scan under app controllers, services, jobs, conditions,
+  supervisors, models, lib, and MCP found no `shadow`, `cutover`,
+  `projection-diff`, or `projection_diff` terminology, and the app/jobs stale
+  scaffold scan remained clean.
+- Live sample attempt at 2026-06-01 16:41:04 UTC after the Job-stage cleanup:
+  no continuity proof was available. `systemctl --user` could not connect to
+  the user bus, `./tools/zcl-rpc getblockcount` and `gettxoutsetinfo` exited
+  with code 7, no `zclassic23` process was running, no listener existed on
+  ports `8023`, `8033`, `8233`, `18232`, or `8232`, and the last 20 minutes of
+  `zclassic23` journal output had no entries. This is a failed live sample, not
+  a refactor completion proof; the service was not restarted and the 8023 port
+  expectation was preserved.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

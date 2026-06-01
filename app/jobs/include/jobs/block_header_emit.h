@@ -2,11 +2,9 @@
  *
  * Shared EV_BLOCK_HEADER emitter for the reducer stages.
  *
- * The single-engine reducer stages (header_admit, body_persist,
- * script_validate) each emit EV_BLOCK_HEADER for an in-memory
- * `struct block_index` as they raise its nStatus, so block_index_projection
- * persists the live chain-index state. They previously each carried an
- * identical 71-line copy of this mapping; this is the one definition.
+ * The reducer stages that raise in-memory `struct block_index` status emit
+ * EV_BLOCK_HEADER through this helper, so block_index_projection persists the
+ * live chain-index state from one shared mapping.
  *
  * Sources scalars from the in-memory `struct block_index` (not the
  * disk_block_index that lib/storage/block_index_db.c serializes). hashPrev is

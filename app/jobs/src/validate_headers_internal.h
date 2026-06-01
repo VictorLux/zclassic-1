@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * validate_headers_internal — sibling-private declarations shared between
- * validate_headers_stage.c (the Job) and its extracted helper TUs
- * (validate_headers_validator.c, validate_headers_report.c).
- *
- * NOT a public header. Behaviour is byte-identical to the pre-split
- * monolith; functions were moved verbatim and only made non-static. */
+ * validate_headers_stage.c (the Job) and its helper translation units
+ * (validate_headers_validator.c, validate_headers_report.c). This is not a
+ * public header. */
 
 #ifndef ZCL_VALIDATE_HEADERS_INTERNAL_H
 #define ZCL_VALIDATE_HEADERS_INTERNAL_H

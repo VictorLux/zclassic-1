@@ -68,7 +68,7 @@ static int cmp_height(const void *a, const void *b)
  * nChainWork, nChainTx, skip links, cached branch id, and failed-child
  * propagation from each entry's (already-linked) pprev. Lifted verbatim
  * from load_block_index's post-load loop; shared by the legacy LevelDB
- * loader and the single-engine projection rebuild so both compute the
+ * loader and the event-log projection rebuild so both compute the
  * pointer-graph-derived fields identically. Declared in
  * services/block_index_loader.h (internal cross-TU helper). */
 void block_index_forward_pass(struct block_index **sorted,

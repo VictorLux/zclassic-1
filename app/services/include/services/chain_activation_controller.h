@@ -184,14 +184,13 @@ enum reducer_source {
     REDUCER_SRC_REPAIR,        /* rebuild_recent recovery */
 };
 
-/* reducer_is_authoritative — always true after the single-engine cleanup.
- * Live block-intake call sites use the reducer pipeline, not the historical
- * single-engine intake path. */
+/* reducer_is_authoritative — always true after the reducer cleanup. Live
+ * block-intake call sites use the reducer pipeline, not the historical intake
+ * path. */
 bool reducer_is_authoritative(void);
 
 /* reducer_ingest_block — the synchronous block-intake entry that drives
- * the eight Wave-S Job stages instead of the historical single-engine
- * activation path.
+ * the eight Wave-S Job stages instead of the historical activation path.
  *
  * Contract (mirrors the historical synchronous accept/reject behavior):
  *   1. check_block (stateless PoW/merkle/structure) runs FIRST, inline,

@@ -400,11 +400,9 @@ static job_result_t step_admit(struct stage_step_ctx *c)
                  next_h);
         return JOB_FATAL;
     }
-    /* Single-engine PIECE 1: 2nd EV_BLOCK_HEADER emitter, alongside
-     * the legacy block_index_db.c writer. Idempotent (INSERT OR
-     * REPLACE in block_index_projection); best-effort, never fatal —
-     * emit AFTER the VALID_TREE promotion so the persisted nStatus
-     * reflects it. */
+    /* Idempotent block-index projection update; best-effort, never fatal.
+     * Emit after the VALID_TREE promotion so the persisted nStatus reflects
+     * it. */
     block_index_emit_header_event(bi, "header_admit",
                                   &g_header_event_emit_total,
                                   &g_header_event_emit_fail_total);

@@ -513,7 +513,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
 /* ── Reducer-as-ingest ──────────────────────────────────────────────
  *
  * The synchronous block-intake wrapper that drives the eight Wave-S Job
- * stages instead of the historical single-engine activation path. */
+ * stages instead of the historical activation path. */
 
 /* Drain the eight stage step bodies once, in pipeline order — the SAME
  * order and the SAME *_stage_drain functions the per-stage supervisor

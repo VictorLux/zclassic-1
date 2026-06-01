@@ -49,9 +49,9 @@ struct app_context {
     bool no_bg_validation;     /* -nobgvalidation : skip background proof verification */
     bool no_legacy_auto_import;/* -nolegacyimport : do not auto-read ~/.zclassic */
     bool boot_from_log;        /* -rebuildfromlog : rebuild block index + tip from
-                                 * the event-log block_index_projection (single-engine
-                                 * cold-start) instead of the legacy flat/SQLite/LevelDB
-                                 * loaders + zclassicd-LDB + UTXO importer. Opt-in;
+                                 * the event-log block_index_projection instead of
+                                 * the legacy flat/SQLite/LevelDB loaders,
+                                 * zclassicd-LDB, and UTXO importer. Opt-in;
                                  * default false so the live boot is unchanged. */
     const char *external_ip;   /* -externalip=IP : advertise this address to peers */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check

@@ -131,14 +131,14 @@ bool app_init_services(struct app_context *ctx,
 void boot_stop_db_service_kernel(void);
 
 /* Idempotent open of the append-only event_log + utxo_projection (the read
- * authority for the single-engine UTXO path). Called early from app_init so
+ * authority for the UTXO projection path). Called early from app_init so
  * the coins_tip read view can bind to utxo_projection_get_global() before
  * app_init_services runs, then again (no-op reuse) from the phase-4 fan-out.
  * Returns the published projection or NULL. */
 utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir);
 
 /* Idempotent open of the block_index_projection (log-derived source for the
- * single-engine boot rebuild). Hoisted so boot.c can open + publish + catch
+ * event-log boot rebuild). Hoisted so boot.c can open + publish + catch
  * up before the block-index load; the phase-4 fan-out call is a no-op reuse.
  * Requires the event log already published. Returns the projection or NULL. */
 struct block_index_projection;

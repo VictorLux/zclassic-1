@@ -41,10 +41,9 @@ typedef enum {
 /* Define a stage's bounded drain entry point. Every stage's drain is the
  * same loop: step up to `max_steps` times, stopping at the first
  * non-JOB_ADVANCED result, returning the count of advances. This macro
- * defines `<prefix>_stage_drain(int)` calling `<prefix>_stage_step_once()`,
- * folding the 8 byte-identical copies into one. (Precedent: activerecord.h
- * already defines multiline function-body macros.) The prototype still
- * lives in each stage header; only the .c body becomes this invocation. */
+ * defines `<prefix>_stage_drain(int)` calling `<prefix>_stage_step_once()`.
+ * The prototype still lives in each stage header; only the .c body becomes
+ * this invocation. */
 #define STAGE_DRAIN_IMPL(prefix)                                  \
     int prefix##_stage_drain(int max_steps) {                     \
         if (max_steps <= 0) return 0;                             \

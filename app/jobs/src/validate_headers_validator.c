@@ -1,10 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * validate_headers_validator — default header validator for the
- * validate_headers Job. Extracted verbatim from validate_headers_stage.c
- * (pure refactor, behaviour byte-identical). Reconstructs the block
- * header from the in-memory or persisted block index and checks PoW
- * target + Equihash solution. No cursor logic lives here. */
+ * validate_headers Job. Reconstructs the block header from the in-memory or
+ * persisted block index and checks PoW target plus Equihash solution. No
+ * cursor logic lives here. */
 
 #include "validate_headers_internal.h"
 

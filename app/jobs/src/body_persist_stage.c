@@ -151,7 +151,7 @@ static bool verify_merkle_root(const struct block *blk)
     return uint256_eq(&root, &blk->header.hashMerkleRoot);
 }
 
-/* B2: emit the validated block body into the append-only event log.
+/* Emit the validated block body into the append-only event log.
  * Best-effort event emission: any failure (log not wired, serialize/append
  * error) is counted and logged, never propagated to the stage result. The body
  * bytes are the canonical block_serialize() wire form, so a replay consumer
@@ -312,16 +312,14 @@ static job_result_t step_persist(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    /* B2: the body is read, hashes to its header, and merkle-checks —
-     * emit it into the append-only log before freeing. */
+    /* The body is read, hashes to its header, and merkle-checks; emit it into
+     * the append-only log before freeing. */
     emit_block_body_event(&blk, &disk_hash, next_h);
 
-    /* Single-engine BLOCKER 1 PIECE 3: the body has landed on disk and
-     * round-tripped (hash + merkle verified), so mark BLOCK_HAVE_DATA on the
-     * in-memory block_index entry — mirrors disk_block_io.c
-     * set_have_data_verified (left in place; this is additive). Then re-emit
-     * EV_BLOCK_HEADER for bi with the updated nStatus so the projection
-     * persists the HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). */
+    /* The body has landed on disk and round-tripped (hash + merkle verified),
+     * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
+     * EV_BLOCK_HEADER with updated nStatus so the projection persists the
+     * HAVE_DATA bit (idempotent INSERT OR REPLACE keyed on hash). */
     bi->nStatus |= BLOCK_HAVE_DATA;
     block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
 

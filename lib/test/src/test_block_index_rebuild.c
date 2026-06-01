@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit test for load_block_index_from_projection() — the single-engine
+ * Unit test for load_block_index_from_projection() — the event-log
  * boot rebuild (event_log -> block_index_projection -> in-memory map +
  * tip seeded from the tip_finalize cursor).
  *
