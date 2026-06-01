@@ -65,10 +65,9 @@ If the node is not running, record that explicitly before claiming live proof.
   legacy bool compatibility call sites to `struct zcl_result` as adjacent files
   are split or touched.
 - E6 write-path debt:
-  the low-level `coins_view_cache_flush` API/implementation, the remaining
-  `coins_view_sqlite_batch_write_ex()` SQLite writer entry point, and
-  process-block flush-policy write paths. Current E6 baseline: 5 write
-  surfaces.
+  the remaining `coins_view_sqlite_batch_write_ex()` SQLite writer entry
+  point and process-block flush-policy write paths. Current E6 baseline:
+  3 write surfaces.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk

@@ -134,9 +134,9 @@ bool connect_block(const struct block *block,
             /* Low-level: bypasses csr — `view` here is a stack-local
              * scratchpad (see process_block.c:817) that wraps coins_tip
              * as backing. The real tip commit runs in
-             * process_block_commit_tip() → csr_commit_tip() after
-             * coins_view_cache_flush() propagates this view to the
-             * global coins_tip. There is no block_map / active_chain
+             * process_block_commit_tip() → csr_commit_tip() after the flush
+             * policy propagates this view to the global coins_tip. There is
+             * no block_map / active_chain
              * mutation here; this is a single-field write inside an
              * in-flight block apply. */
             coins_view_cache_set_best_block(view, &block_hash);
@@ -651,8 +651,8 @@ bool connect_block(const struct block *block,
     /* Low-level: bypasses csr — `view` is a stack-local scratchpad
      * (process_block.c:817) wrapping coins_tip as backing. The real
      * tip commit happens in update_tip() → process_block_commit_tip()
-     * → csr_commit_tip() after coins_view_cache_flush() promotes this
-     * view's pending writes to the global coins_tip. */
+     * → csr_commit_tip() after the flush policy promotes this view's
+     * pending writes to the global coins_tip. */
     coins_view_cache_set_best_block(view, &block_hash);
 
     event_emitf(EV_BLOCK_CONNECT_DONE, 0,
@@ -809,8 +809,8 @@ bool disconnect_block(const struct block *block,
         /* Low-level: bypasses csr — `view` is the stack-local scratchpad
          * built by disconnect_tip (process_block.c:1426). The global tip
          * commit happens in disconnect_tip → update_tip(pprev) →
-         * process_block_commit_tip() → csr_commit_tip() after
-         * coins_view_cache_flush() propagates this view to coins_tip. */
+         * process_block_commit_tip() → csr_commit_tip() after the flush
+         * policy propagates this view to coins_tip. */
         coins_view_cache_set_best_block(view, pindex->pprev->phashBlock);
     }
 

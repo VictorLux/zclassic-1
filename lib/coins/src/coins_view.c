@@ -319,7 +319,8 @@ void coins_view_cache_as_view(struct coins_view *out,
     out->impl = cache;
 }
 
-bool coins_view_cache_flush(struct coins_view_cache *c)
+#ifdef ZCL_TESTING
+bool coins_view_cache_flush_for_testing(struct coins_view_cache *c)
 {
     if (!c->base.vtable || !c->base.vtable->batch_write)
         return false;
@@ -354,6 +355,7 @@ bool coins_view_cache_flush(struct coins_view_cache *c)
     }
     return ok;
 }
+#endif
 
 void coins_view_cache_clear(struct coins_view_cache *c)
 {

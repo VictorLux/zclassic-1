@@ -348,7 +348,7 @@ static int t_clean_view_advances(void)
  * Q3): for every txid T in the coins view, the block that created
  * T's outputs must be on the active chain. Concretely: after
  * `disconnect_block(B)` runs on a scratch view wrapping a parent
- * cache, AND `coins_view_cache_flush(scratch)` propagates the
+ * cache, AND `coins_view_cache_flush_for_testing(scratch)` propagates the
  * disconnect to the parent, the parent MUST NO LONGER report
  * `coins_view_cache_have_coins` for any tx in B.
  *
@@ -455,7 +455,7 @@ static int t_disconnect_block_purges_coinbase_from_backing(void)
 
         /* Flush the scratch into the parent — the propagation step
          * that, per the postmortem, must purge the coinbase. */
-        ASSERT(coins_view_cache_flush(&scratch));
+        ASSERT(coins_view_cache_flush_for_testing(&scratch));
 
         /* The invariant — TODAY THIS FAILS.  The parent still
          * reports the coinbase as unspent because
@@ -688,7 +688,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
 
         update_coins(&blk.vtx[0], &parent, coinbase_height);
         coins_view_cache_set_best_block(&parent, &blk_hash);
-        ASSERT(coins_view_cache_flush(&parent));
+        ASSERT(coins_view_cache_flush_for_testing(&parent));
 
         const uint8_t *cb_txid = blk.vtx[0].hash.data;
         ASSERT_EQ(p14_count_utxos_by_txid(cvs.db, cb_txid), 1);
@@ -706,7 +706,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
         validation_state_init(&vs);
         ASSERT(disconnect_block(&blk, &vs, &blk_idx,
                                  &scratch, &empty_undo));
-        ASSERT(coins_view_cache_flush(&scratch));
+        ASSERT(coins_view_cache_flush_for_testing(&scratch));
 
         /* The load-bearing flush: parent → SQLite.  Pre-fix, this
          * would have been vulnerable to the same SAVEPOINT
@@ -714,7 +714,7 @@ static int t_p14_flush_under_shared_cursor_lands_tombstone(void)
          * an external subsystem's writer.  Post-fix, it runs on
          * the dedicated `cvs.db` and is immune to the shared
          * handle's state. */
-        ASSERT(coins_view_cache_flush(&parent));
+        ASSERT(coins_view_cache_flush_for_testing(&parent));
 
         /* Tombstone DELETE landed — the coinbase row is gone from
          * SQLite, not just from the in-memory tombstone map.  The

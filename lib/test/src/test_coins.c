@@ -477,7 +477,7 @@ int test_coins(void)
         coins_view_cache_set_best_block(&child, &block_hash);
 
         /* Flush child to parent */
-        bool ok = coins_view_cache_flush(&child);
+        bool ok = coins_view_cache_flush_for_testing(&child);
 
         /* Child should be empty after flush */
         ok = ok && (coins_map_count(&child.cache_coins) == 0);
@@ -719,7 +719,7 @@ int test_coins(void)
 
     printf("coins_view_sqlite: flush retains cache on failure... ");
     {
-        /* The coins_view_cache_flush must NOT clear the cache when
+        /* The test-only coins view cache flush must NOT clear the cache when
          * batch_write returns false. Verify via the null-view pattern. */
         struct coins_view null_view;
         memset(&null_view, 0, sizeof(null_view));
@@ -736,7 +736,7 @@ int test_coins(void)
         entry->coins.height = 500;
 
         /* Flush will fail because null_view has no batch_write */
-        bool flush_ok = coins_view_cache_flush(&cache);
+        bool flush_ok = coins_view_cache_flush_for_testing(&cache);
         /* Flush should fail */
         bool ok = !flush_ok;
         /* Cache should still have the entry (not cleared) */

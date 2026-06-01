@@ -128,7 +128,7 @@ static int cvp_test_connect_backing_parity(utxo_projection_t *p)
             coins_free(&cT);
         }
         /* U is fully spent → not present in either backing; nothing to seed. */
-        CVP_CHECK("db flush", coins_view_cache_flush(&wc));
+        CVP_CHECK("db flush", coins_view_cache_flush_for_testing(&wc));
         coins_view_cache_free(&wc);
     }
 

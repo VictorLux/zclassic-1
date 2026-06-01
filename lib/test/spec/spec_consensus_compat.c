@@ -174,7 +174,7 @@ static int test_cc_flush_success_clears(void) {
         struct uint256 txid; memset(txid.data, 0x42, 32);
         struct coins_cache_entry *e = coins_view_cache_modify_new(&child, &txid);
         coins_alloc(&e->coins, 1); e->coins.vout[0].value = 999;
-        ASSERT(coins_view_cache_flush(&child));
+        ASSERT(coins_view_cache_flush_for_testing(&child));
         ASSERT(coins_map_count(&child.cache_coins) == 0);
         ASSERT(coins_view_cache_have_coins(&parent, &txid));
         PASS();
@@ -193,7 +193,7 @@ static int test_cc_flush_failure_retains(void) {
         struct uint256 txid; memset(txid.data, 0x77, 32);
         struct coins_cache_entry *e = coins_view_cache_modify_new(&cache, &txid);
         coins_alloc(&e->coins, 1); e->coins.vout[0].value = 555;
-        ASSERT(!coins_view_cache_flush(&cache));
+        ASSERT(!coins_view_cache_flush_for_testing(&cache));
         ASSERT(coins_map_count(&cache.cache_coins) > 0);
         ASSERT(coins_view_cache_have_coins(&cache, &txid));
         PASS();

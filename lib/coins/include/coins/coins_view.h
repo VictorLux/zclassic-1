@@ -160,7 +160,9 @@ struct coins_cache_entry *coins_view_cache_modify(struct coins_view_cache *c,
                                                    const struct uint256 *txid);
 struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c,
                                                        const struct uint256 *txid);
-bool coins_view_cache_flush(struct coins_view_cache *c);
+#ifdef ZCL_TESTING
+bool coins_view_cache_flush_for_testing(struct coins_view_cache *c);
+#endif
 
 /* Clear all cached entries without flushing to backing store.
  * Used during reorg recovery to discard stale UTXO cache entries.

@@ -248,7 +248,7 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         }
     } else {
 #ifdef ZCL_TESTING
-        ok = coins_view_cache_flush( // one-write-path-ok:test-only-flush-fallback
+        ok = coins_view_cache_flush_for_testing(
             coins_tip);
 #else
         LOG_FAIL("flush",
