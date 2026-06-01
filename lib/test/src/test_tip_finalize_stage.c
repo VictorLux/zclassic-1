@@ -195,6 +195,20 @@ static bool log_tip_hash_at(sqlite3 *db, int height, struct uint256 *out)
     return found;
 }
 
+static uint64_t cursor_at(sqlite3 *db, const char *name)
+{
+    sqlite3_stmt *st = NULL;
+    uint64_t out = 0;
+    if (sqlite3_prepare_v2(db,
+        "SELECT cursor FROM stage_cursor WHERE name = ?",
+        -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW)
+        out = (uint64_t)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
 static bool fake_utxo_count(int height_after, int64_t *out_count, void *user)
 {
     struct synth_chain_tf *sc = user;
@@ -307,6 +321,20 @@ int test_tip_finalize_stage(void)
         TF_CHECK("stale_cursor: setup", ok_setup);
         TF_CHECK("stale_cursor: cursor anchored above restored tip",
                  tip_finalize_stage_cursor() == 6);
+        TF_CHECK("stale_cursor: header_admit anchored",
+                 cursor_at(progress_store_db(), "header_admit") == 6);
+        TF_CHECK("stale_cursor: validate_headers anchored",
+                 cursor_at(progress_store_db(), "validate_headers") == 6);
+        TF_CHECK("stale_cursor: body_fetch anchored",
+                 cursor_at(progress_store_db(), "body_fetch") == 6);
+        TF_CHECK("stale_cursor: body_persist anchored",
+                 cursor_at(progress_store_db(), "body_persist") == 6);
+        TF_CHECK("stale_cursor: script_validate anchored",
+                 cursor_at(progress_store_db(), "script_validate") == 6);
+        TF_CHECK("stale_cursor: proof_validate anchored",
+                 cursor_at(progress_store_db(), "proof_validate") == 6);
+        TF_CHECK("stale_cursor: utxo_apply anchored",
+                 cursor_at(progress_store_db(), "utxo_apply") == 6);
         TF_CHECK("stale_cursor: public height remains restored tip",
                  active_chain_height(&ms.chain_active) == 5);
         int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];

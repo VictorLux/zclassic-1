@@ -1,11 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h.
- * Consumes utxo_apply_log and records the live tip-finalize event; it
- * writes only tip_finalize_log plus its stage cursor in progress.kv. */
+ * Consumes utxo_apply_log and records the live tip-finalize event. Trusted
+ * bootstrap anchors also align upstream stage cursors so a restored tip cannot
+ * deadlock behind historical reducer cursors. */
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_anchor.h"
 #include "jobs/stage_helpers.h"
 #include "tip_finalize_post_step.h"
 
@@ -265,10 +267,12 @@ static bool anchor_cursor_to_authority(sqlite3 *db, int height,
     int64_t rows = stage_log_row_count(db, STAGE_NAME, "tip_finalize_log");
     if (require_prior_progress && cursor == 0 && rows <= 0)
         return true;
-    if (cursor >= target)
-        return true;
     if (!ensure_authority_anchor_row(db, height, hash))
         return false;
+    if (!stage_anchor_upstream_cursors_to(db, target, STAGE_NAME, reason))
+        return false;
+    if (cursor >= target)
+        return true;
     if (!stage_set_cursor(g_stage, db, target)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] authority anchor cursor failed from=%llu to=%llu reason=%s",
@@ -693,6 +697,10 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
 
     /* Snapshot/trusted anchors have no per-block work or UTXO delta. */
     if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash))
+        return false;
+
+    if (!stage_anchor_upstream_cursors_to(db, (uint64_t)height + 1u,
+                                          STAGE_NAME, "seed_anchor"))
         return false;
 
     /* Resume after the anchor; rebuild reads cursor-1 == anchor. */

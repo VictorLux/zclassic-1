@@ -352,3 +352,45 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
     pthread_mutex_unlock(&s->lock);
     return true;
 }
+
+bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
+                                      uint64_t value)
+{
+    if (!db || !name || name[0] == '\0')
+        LOG_FAIL("stage", "set_named_cursor: invalid arg db=%p name=%p",
+                 (void *)db, (const void *)name);
+
+    if (!stage_table_ensure(db))
+        return false;
+
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[stage] set_named_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+
+    uint64_t current = 0;
+    if (!cursor_read(db, name, &current)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    if (current >= value) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return true;
+    }
+
+    if (!cursor_write_locked(db, name, value)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[stage] set_named_cursor COMMIT: %s\n",  // obs-ok:stage-commit-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    return true;
+}

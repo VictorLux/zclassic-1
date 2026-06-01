@@ -37,7 +37,7 @@ static struct block_index *target_index(struct main_state *ms, int target)
 static bool detect_have_data_unreadable(void)
 {
     int64_t tip_age = sync_monitor_tip_advance_age();
-    if (tip_age < 60)
+    if (tip_age >= 0 && tip_age < 60)
         return false;
 
     struct main_state *ms = condition_engine_main_state();

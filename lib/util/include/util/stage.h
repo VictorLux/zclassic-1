@@ -114,4 +114,11 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db);
  * Intended for replaying a known-good cursor on import. */
 bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value);
 
+/* Stamp a cursor row when the stage object is not locally available.
+ * Used by trusted bootstrap/restore anchors that must align a pipeline
+ * boundary before the stage's next tick reloads the persisted cursor. This
+ * never rewinds: if the stored cursor is already >= value it is a no-op. */
+bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
+                                      uint64_t value);
+
 #endif /* ZCL_UTIL_STAGE_H */

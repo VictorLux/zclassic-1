@@ -129,7 +129,7 @@ int test_have_data_unreadable(void)
         register_have_data_unreadable();
 
         /* Tip just advanced (age ~0 < 60) — even a torn block must not fire. */
-        sync_monitor_test_set_tip_advance_ts(0); /* sentinel: age = -1 */
+        sync_monitor_test_set_tip_advance_ts(platform_time_wall_unix());
 
         struct block_index *tip = block_map_find(&ms.map_block_index,
                                                  &hashes[9]);
@@ -140,6 +140,37 @@ int test_have_data_unreadable(void)
         bool ok = condition_engine_get_active_count() == 0;
         ok = ok && have_data_unreadable_test_remedy_calls() == 0;
         HDU_CHECK("fresh tip (age<60) -> detect false, no remedy", ok);
+
+        condition_engine_set_main_state(NULL);
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+        main_state_free(&ms);
+    }
+
+    /* ── 1b. Unknown tip age is not fresh. A restored/snapshot boot may not
+     *      have observed a block-connected callback yet; if tip+1 is
+     *      provably unreadable, clear the bogus HAVE_DATA flag anyway. ── */
+    {
+        condition_engine_reset_for_testing();
+        have_data_unreadable_test_reset();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        hdu_build_chain(&ms, 10, hashes); /* tip h=9 */
+        condition_engine_set_main_state(&ms);
+        register_have_data_unreadable();
+
+        struct block_index *tip = block_map_find(&ms.map_block_index,
+                                                 &hashes[9]);
+        struct block_index *torn = hdu_insert_torn(&ms, 10, &torn_hash, tip);
+
+        sync_monitor_test_set_tip_advance_ts(0); /* sentinel: age unknown */
+        condition_engine_tick();
+
+        bool ok = have_data_unreadable_test_remedy_calls() == 1;
+        ok = ok && (torn->nStatus & BLOCK_HAVE_DATA) == 0;
+        HDU_CHECK("unknown tip age + torn block -> remedy clears HAVE_DATA",
+                  ok);
 
         condition_engine_set_main_state(NULL);
         condition_engine_reset_for_testing();

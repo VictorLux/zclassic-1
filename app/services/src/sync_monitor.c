@@ -82,6 +82,15 @@ void sync_monitor_set_context(struct connman *cm,
     g_condition_dm = dm;
     g_condition_ms = ms;
     condition_engine_set_main_state(ms);
+
+    if (ms && atomic_load(&g_last_block_connected_ts) == 0) {
+        int height = active_chain_height(&ms->chain_active);
+        if (height >= 0) {
+            atomic_store(&g_last_block_connected_ts,
+                         (int64_t)platform_time_wall_time_t());
+            atomic_store(&g_last_block_connected_height, height);
+        }
+    }
 }
 
 struct connman *sync_monitor_connman(void)
