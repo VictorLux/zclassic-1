@@ -12,10 +12,8 @@
 /* Status / introspection seam for the block-source policy stateful runtime.
  * The status read (block_source_policy_get_status), the per-source and
  * per-decision JSON serializers, and the zcl_state dumper
- * (block_source_policy_dump_state_json). Re-homed verbatim from the
- * dissolved chain_advance_coordinator shell (B8); split out of
- * block_source_policy_runtime.c along the status seam to respect the E1
- * file-size ceiling (D5). Behavior-preserving. */
+ * (block_source_policy_dump_state_json). Runtime mutation, persistence, and
+ * decision recording stay in sibling files. */
 
 #include "block_source_policy_internal.h"
 

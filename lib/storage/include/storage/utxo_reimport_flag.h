@@ -2,8 +2,6 @@
  *
  * utxo_reimport_flag — durable "needs reimport" sentinel.
  *
- * Phase 3 dissolve of utxo_recovery_service.c (PR-1).
- *
  * Background
  * ----------
  * When `process_block.c` self-heal sees N consecutive UTXO validation

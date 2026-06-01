@@ -361,12 +361,10 @@ static bool boot_header_probe_start(void *ctx)
             return false;
         }
     }
-    /* Phase 3 dissolve PR-1: register the polling cadence as a
-     * supervised Job in the network domain instead of using the
-     * shared heartbeat ring. Same 30 s cadence, same RPC, same
-     * accept_block_header path — just owned by the supervisor so
-     * `zcl_state subsystem=supervisor` shows last_tick_age_us +
-     * ticks_run for the poll. */
+    /* Register the polling cadence as a supervised Job in the network
+     * domain. Same 30 s cadence, same RPC, same accept_block_header path;
+     * the supervisor owns liveness so `zcl_state subsystem=supervisor`
+     * exposes last_tick_age_us and ticks_run for the poll. */
     header_probe_poll_register();
     if (header_probe_poll_is_registered()) {
         printf("[header-probe] poll Job registered with net supervisor\n");

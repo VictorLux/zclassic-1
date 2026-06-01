@@ -1417,9 +1417,8 @@ bool connman_run_message_cycle(struct connman *cm)
         }
     }
 
-    /* Phase 3: release refs under cs_nodes.
-     *
-     * also drain deferred_free here. The socket thread's
+    /* Release refs under cs_nodes and drain deferred_free here. The socket
+     * thread's
      * sweep runs only once per outer loop (potentially many ms); when
      * we've just dropped refs we are exactly the right moment to free
      * any deferred nodes whose refs went to zero. Without this drain the

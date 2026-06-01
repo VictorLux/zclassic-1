@@ -131,8 +131,7 @@ const char *cac_decision_result_name(enum cac_decision_result result);
 void block_source_policy_plan(const struct cac_plan_input *in,
                               struct cac_decision *out);
 
-/* Stateful block-source decision surface (re-homed from the dissolved
- * chain_advance_coordinator shell, B8). This layer does not connect
+/* Stateful block-source decision surface. This layer does not connect
  * blocks. It scores candidate advance sources (native P2P, snapshots,
  * local import, zclassicd mirror) and makes the trust/fallback decision
  * explicit before the lower-level chain_advance() path applies anything

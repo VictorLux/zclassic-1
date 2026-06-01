@@ -3,10 +3,8 @@
 /* Decision seam for the block-source policy stateful runtime. The three
  * public decision predicates (peer-floor recovery, snapshot-offer,
  * local-header refill), plus the shared decision recorder and decision-event
- * emitter they drive. Re-homed verbatim from the dissolved
- * chain_advance_coordinator shell (B8); split out of
- * block_source_policy_runtime.c along the decision seam to respect the E1
- * file-size ceiling (D5). Behavior-preserving. */
+ * emitter they drive. Runtime mutation, persistence, and status
+ * serialization stay in sibling files. */
 
 #include "block_source_policy_internal.h"
 

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain restore executor — applies restore plans to mutable chain state.
- * Split from chain_restore_service.c as Phase 3 dissolve PR-2a code motion. */
+ * Chain restore executor - applies verified restore plans to mutable chain
+ * state through the chain-state repository. */
 
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_planner.h"

@@ -1,15 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-/* Stateful block-source decision runtime — the live state, lifecycle,
+/* Stateful block-source decision runtime: the live state, lifecycle,
  * runtime-input builder, projection-deferral counter, and the shared mirror
- * blocker classifier for the block-source policy. Re-homed verbatim from the
- * dissolved chain_advance_coordinator shell (B8). The pure scoring/name/plan
- * policy lives in block_source_policy.c; the cohesive stateful siblings are:
+ * blocker classifier for the block-source policy. The pure
+ * scoring/name/plan policy lives in block_source_policy.c; the cohesive
+ * stateful siblings are:
  *   - block_source_policy_persist.c   : node.db persist/restore
  *   - block_source_policy_decisions.c : decision predicates + event/record
  *   - block_source_policy_status.c    : status read + zcl_state JSON dumper
- * Split out of the oversized runtime file along its cohesive seams to
- * respect the E1 file-size ceiling (D5). Behavior-preserving. */
+ * This file owns runtime state; siblings own persistence, decisions, and
+ * status so each file keeps one clear framework purpose. */
 
 #include "block_source_policy_internal.h"
 
@@ -47,8 +47,7 @@
     BSP_STATE_PREFIX "last_projection_deferred_reason"
 
 /* ---------------------------------------------------------------------------
- * Stateful block-source decision surface (re-homed from the dissolved
- * chain_advance_coordinator shell, B8). Behavior-preserving.
+ * Stateful block-source decision surface.
  * --------------------------------------------------------------------------- */
 
 struct bsp_state g_bsp;

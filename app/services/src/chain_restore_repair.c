@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain Restore Repair — post-restore block index and active-chain repair.
- * See docs/dissolve/chain_restore_service.md for architecture overview. */
+ * Chain Restore Repair - post-restore block index and active-chain repair.
+ * This seam rebuilds the active chain from disk-backed candidates and keeps
+ * repair decisions separate from restore-plan execution. */
 
 #include "services/chain_restore_repair.h"
 #include "services/chain_restore_boot_snapshot.h"

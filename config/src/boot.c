@@ -1776,8 +1776,7 @@ bool app_init(struct app_context *ctx)
      * migrations can go through csr_commit_tip() and get all six
      * sources of truth updated atomically under one mutex. Wallet
      * scan height is unwired (NULL) — the wallet manages its own
-     * scan state and we don't want to tempt callers into driving it
-     * through the repository until Phase 3. */
+     * scan state and must not be driven through the repository. */
     csr_init(csr_instance(),
              &g_state.map_block_index,
              &g_state.chain_active,

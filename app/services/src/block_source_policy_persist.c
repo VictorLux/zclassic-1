@@ -2,10 +2,8 @@
 
 /* Persistence seam for the block-source policy stateful runtime.
  * node.db persist/restore of the last decision, per-source snapshots, and
- * the projection-deferral counter. Re-homed verbatim from the dissolved
- * chain_advance_coordinator shell (B8); split out of
- * block_source_policy_runtime.c along the persistence seam to respect the
- * E1 file-size ceiling (D5). Behavior-preserving. */
+ * the projection-deferral counter. Runtime mutation, decision recording, and
+ * status serialization stay in sibling files. */
 
 #include "block_source_policy_internal.h"
 

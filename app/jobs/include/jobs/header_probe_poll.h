@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * header_probe_poll — Job (Wave S / Phase 3 dissolve PR-1).
+ * header_probe_poll - network-supervised header polling Job.
  *
  * Periodic supervisor child that drives header_probe's
  * polling cadence through header_probe_tick_once(), with a typed
@@ -18,9 +18,7 @@
  *
  * Boot wiring: call `header_probe_poll_register()` from
  * `config/src/boot_services.c` after `header_probe_init()`. The
- * supervisor must already be started (Round 5 supervisor tree).
- *
- * See the header_probe dissolve plan § PR-1. */
+ * network supervisor tree must already be started. */
 
 #ifndef ZCL_JOB_HEADER_PROBE_POLL_H
 #define ZCL_JOB_HEADER_PROBE_POLL_H

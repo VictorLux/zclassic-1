@@ -14,11 +14,10 @@
 #include "validation/main_state.h"
 #include "process_block_internal.h"
 
-/* add_to_block_index() relocated to lib/validation/src/accept_block_header.c
- * (its sole caller) in the single-engine swap so the runtime in-memory
- * block_index producer survives the eventual process_block_core.c deletion.
- * Behavior-preserving code motion; the declaration remains in
- * process_block_internal.h. */
+/* add_to_block_index() lives in lib/validation/src/accept_block_header.c
+ * with its sole caller so header admission owns the runtime in-memory
+ * block_index producer. The declaration remains in
+ * process_block_internal.h for validation-internal callers. */
 
 struct block_index *find_most_work_chain(struct main_state *ms)
 {

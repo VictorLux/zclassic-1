@@ -19,7 +19,8 @@ node soak.
 - Production C/H surfaces no longer describe active reducer read-model paths as
   shadow/cutover/projection-diff infrastructure, and they no longer use the
   deleted single-engine block-connection names for current reducer behavior;
-  remaining historical wording is test/doc context only.
+  stale Phase/PR/dissolve scaffold labels are also gone from guarded
+  production comments. Remaining historical wording is test/doc context only.
 - E1, E2, E6, supervisor, E7, typed-blocker, controller raw-SQL adoption,
   lib-layering, and raw allocation debt are at zero grandfathered entries.
   Remaining refactor work is now code-shape cleanup, process-block splitting,
@@ -114,6 +115,11 @@ node soak.
   `lib/validation/`, and `tools/mcp/` no longer call active projection paths
   shadow/cutover/projection-diff machinery. UTXO projection emit helpers are
   now named `*_projection`, not `*_shadow`.
+- Production comments in the header-probe Job, UTXO reimport flag,
+  chain-restore seams, block-source policy seams, process-block core, boot
+  wiring, and connman now describe current ownership/purpose instead of old
+  Phase/PR/dissolve code-motion scaffolding. `test_make_lint_gates` now has a
+  guard for those stale labels.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2442,6 +2448,31 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `zclassic23` or `zclassicd` process was running, and no listener existed on
   ports `18232`, `8232`, or `8033`. This is a failed live sample, not a refactor
   completion proof.
+- `make -j$(nproc)`: pass after removing stale Phase/PR/dissolve scaffold
+  comments from production C/H files.
+- `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
+  adding the scaffold-label lint-gate coverage.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  adding the guard that production comments name current purpose instead of old
+  refactor scaffold labels.
+- `./test_parallel --timeout=180`: pass after the production scaffold-label
+  cleanup, `0/279` groups failed in 56.0s.
+- `make lint`: pass after the production scaffold-label cleanup; E1, E2, E6,
+  E7, framework-shape, supervisor, typed-blocker, lib-layering, controller
+  raw-SQL, raw-allocation, and doc-accuracy gates remain clean with zero
+  grandfathered entries.
+- `git diff --check`: pass, and the production C/H scan for
+  `Phase 3 dissolve`, `dissolve PR`, `PR-*`, `docs/dissolve`,
+  `dissolved chain_advance_coordinator`, `Re-homed verbatim`,
+  `Behavior-preserving`, `until Phase 3`, `Phase 3 unblocks`, and
+  `Phase 3: release refs` is clean.
+- Live sample attempt at 2026-06-01 15:37 UTC after the production
+  scaffold-label cleanup: no continuity proof was available. `systemctl --user`
+  could not connect to the user bus, `./tools/zcl-rpc getblockcount` and
+  `gettxoutsetinfo` exited with code 7, no `zclassic23` process was running,
+  no listener existed on ports `8023`, `8033`, `18232`, or `8232`, and the last
+  20 minutes of `zclassic23` journal output had no entries. This is a failed
+  live sample, not a refactor completion proof.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

@@ -2302,6 +2302,60 @@ static int t_process_block_split_uses_reducer_language(void)
     return failures;
 }
 
+static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("production comments name purpose, not refactor scaffold labels") {
+        const char *files[] = {
+            "config/src/boot_services.c",
+            "config/src/boot.c",
+            "lib/storage/include/storage/utxo_reimport_flag.h",
+            "lib/validation/include/validation/process_block.h",
+            "lib/validation/src/process_block_core.c",
+            "lib/net/src/connman.c",
+            "app/jobs/include/jobs/header_probe_poll.h",
+            "app/services/include/services/block_source_policy.h",
+            "app/services/src/block_source_policy_runtime.c",
+            "app/services/src/block_source_policy_status.c",
+            "app/services/src/block_source_policy_persist.c",
+            "app/services/src/block_source_policy_decisions.c",
+            "app/services/src/chain_restore_executor.c",
+            "app/services/src/chain_restore_repair.c",
+        };
+        const char *stale[] = {
+            "Phase 3 dissolve",
+            "dissolve PR",
+            "PR-",
+            "docs/dissolve",
+            "dissolved chain_advance_coordinator",
+            "Re-homed verbatim",
+            "Behavior-preserving",
+            "until Phase 3",
+            "Phase 3 unblocks",
+            "Phase 3: release refs",
+        };
+
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[PATH_MAX];
+            ASSERT(repo_path(path, sizeof(path), files[i]) == 0);
+            ASSERT(read_entire_file(path, &buf) == 0);
+            for (size_t j = 0; j < sizeof(stale) / sizeof(stale[0]); j++) {
+                if (strstr(buf, stale[j])) {
+                    fprintf(stderr, "stale scaffold label %s still present in %s\n",
+                            stale[j], files[i]);
+                    ASSERT(strstr(buf, stale[j]) == NULL);
+                }
+            }
+            free(buf);
+            buf = NULL;
+        }
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_deleted_engine_names_absent_from_production_sources(void)
 {
     int failures = 0;
@@ -2402,6 +2456,7 @@ int test_make_lint_gates(void)
     failures += t_header_peer_votes_are_callback_injected();
     failures += t_process_block_node_db_access_is_runtime_owned();
     failures += t_process_block_split_uses_reducer_language();
+    failures += t_production_comments_do_not_carry_refactor_scaffold_labels();
     failures += t_deleted_engine_names_absent_from_production_sources();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
