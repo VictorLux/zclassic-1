@@ -50,8 +50,6 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "util/log_macros.h"
-#include "services/chain_evidence_controller.h"
-#include "services/chain_state_repository.h"
 #include "validation/checkpoint.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
@@ -80,6 +78,10 @@ struct zcl_result chain_set_active_tip(struct main_state *ms,
 static pthread_mutex_t g_gap_fill_kick_lock = PTHREAD_MUTEX_INITIALIZER;
 static process_block_gap_fill_kick_fn g_gap_fill_kick;
 static void *g_gap_fill_kick_ctx;
+static pthread_mutex_t g_tip_publication_lock = PTHREAD_MUTEX_INITIALIZER;
+static process_block_commit_tip_fn g_commit_tip_hook;
+static process_block_clear_tip_fn g_clear_tip_hook;
+static void *g_tip_publication_ctx;
 
 void process_block_set_gap_fill_kick(process_block_gap_fill_kick_fn fn,
                                      void *ctx)
@@ -102,6 +104,76 @@ static void process_block_kick_gap_fill(void)
 
     if (fn)
         fn(ctx);
+}
+
+void process_block_set_tip_publication_hooks(
+    process_block_commit_tip_fn commit_tip,
+    process_block_clear_tip_fn clear_tip,
+    void *ctx)
+{
+    pthread_mutex_lock(&g_tip_publication_lock);
+    g_commit_tip_hook = commit_tip;
+    g_clear_tip_hook = clear_tip;
+    g_tip_publication_ctx = ctx;
+    pthread_mutex_unlock(&g_tip_publication_lock);
+}
+
+static enum process_block_tip_publish_result process_block_publish_tip(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    struct block_index *new_tip,
+    const char *reason,
+    bool update_header_tip,
+    bool persist_coins_best,
+    const struct process_block_tip_evidence *verified)
+{
+    process_block_commit_tip_fn fn;
+    void *ctx;
+
+    pthread_mutex_lock(&g_tip_publication_lock);
+    fn = g_commit_tip_hook;
+    ctx = g_tip_publication_ctx;
+    pthread_mutex_unlock(&g_tip_publication_lock);
+
+    if (!fn)
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED;
+    return fn(ctx, ms, coins_tip, new_tip, reason, update_header_tip,
+              persist_coins_best, verified);
+}
+
+static enum process_block_tip_publish_result process_block_clear_tip(
+    struct main_state *ms,
+    const char *reason)
+{
+    process_block_clear_tip_fn fn;
+    void *ctx;
+
+    pthread_mutex_lock(&g_tip_publication_lock);
+    fn = g_clear_tip_hook;
+    ctx = g_tip_publication_ctx;
+    pthread_mutex_unlock(&g_tip_publication_lock);
+
+    if (!fn)
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED;
+    return fn(ctx, ms, reason);
+}
+
+static const char *process_block_tip_publish_result_name(
+    enum process_block_tip_publish_result result)
+{
+    switch (result) {
+    case PROCESS_BLOCK_TIP_PUBLISH_OK:
+        return "ok";
+    case PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED:
+        return "not_initialized";
+    case PROCESS_BLOCK_TIP_PUBLISH_REJECTED_DB_BUSY:
+        return "db_busy";
+    case PROCESS_BLOCK_TIP_PUBLISH_REJECTED_PERSIST:
+        return "persist";
+    case PROCESS_BLOCK_TIP_PUBLISH_REJECTED:
+    default:
+        return "rejected";
+    }
 }
 
 /* ── File-local state owned by the disk write path ───────────── */
@@ -735,12 +807,12 @@ bool process_block_test_tip_is_best_work(const struct main_state *ms,
 }
 #endif
 
-static struct chain_evidence_record process_block_verified_tip_evidence(
+static struct process_block_tip_evidence process_block_verified_tip_evidence(
     const struct main_state *ms,
     const struct block_index *tip,
     bool block_bytes_hash_checked)
 {
-    struct chain_evidence_record evidence = {0};
+    struct process_block_tip_evidence evidence = {0};
     evidence.header_ancestry_linked =
         process_block_header_ancestry_linked(tip);
     evidence.chainwork_recomputed =
@@ -757,110 +829,65 @@ bool process_block_commit_tip(struct main_state *ms,
                               const char *reason,
                               bool update_header_tip,
                               bool persist_coins_best,
-                              const struct chain_evidence_record *verified)
+                              const struct process_block_tip_evidence *verified)
 {
 #ifndef ZCL_TESTING
     (void)coins_tip;
 #endif
-    struct trace_span *csr_span = trace_start("csr.commit_tip");
-    trace_attr_int(csr_span, "height", new_tip ? new_tip->nHeight : -1);
-    trace_attr_str(csr_span, "reason", reason ? reason : "");
+    struct trace_span *tip_span = trace_start("process_block.publish_tip");
+    trace_attr_int(tip_span, "height", new_tip ? new_tip->nHeight : -1);
+    trace_attr_str(tip_span, "reason", reason ? reason : "");
 
     if (!new_tip || !new_tip->phashBlock) {
-        trace_set_status(csr_span, TRACE_STATUS_ERROR);
-        trace_attr_str(csr_span, "error", "null_tip");
-        trace_end(csr_span);
-        LOG_FAIL("validation", "commit_chain_state_tip called with null tip or null phashBlock");
+        trace_set_status(tip_span, TRACE_STATUS_ERROR);
+        trace_attr_str(tip_span, "error", "null_tip");
+        trace_end(tip_span);
+        LOG_FAIL("validation", "process_block_commit_tip called with null tip or null phashBlock");
     }
 
-    if (verified && process_block_node_db_internal() && csr_instance()->initialized) {
-        struct chain_evidence_controller authority;
-        struct chain_evidence_controller_tip_request req = {
-            .new_tip = new_tip,
-            .utxo_max_height = new_tip->nHeight,
-            .update_header_tip = update_header_tip,
-            .reason = reason ? reason : "process_block.commit_tip",
-            .verified = *verified,
-        };
-        chain_evidence_controller_init(&authority, process_block_node_db_internal(),
-                                       csr_instance());
-        enum chain_evidence_controller_result ar =
-            chain_evidence_controller_promote_tip(&authority, &req);
-        if (ar == CEC_OK) {
-            trace_end(csr_span);
-            return true;
-        }
-        fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                "process_block: evidence controller rejected tip "
-                "promotion (%s) reason=%s h=%d\n",
-                chain_evidence_controller_result_name(ar),
-                reason ? reason : "", new_tip->nHeight);
-        trace_set_status(csr_span, TRACE_STATUS_ERROR);
-        trace_attr_str(csr_span, "error",
-                       chain_evidence_controller_result_name(ar));
-        trace_end(csr_span);
-        return false;
-    }
-
-    struct chain_state_rollback_authorization rollback_auth = {
-        .source = CSR_ROLLBACK_SOURCE_VALIDATION,
-        .decision = POLICY_ALLOW,
-        .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
-        .to_height = new_tip->nHeight,
-        .max_depth = INT64_MAX,
-        .evidence_class = "validation_path_vetted",
-        .reason = reason ? reason : "process_block.commit_tip",
-    };
-    struct chain_state_commit commit = {
-        .new_tip             = new_tip,
-        .new_coins_best      = *new_tip->phashBlock,
-        .expected_utxo_count = 0,
-        .update_header_tip   = update_header_tip,
-        .persist_coins_best  = persist_coins_best,
-        .rollback_auth       = &rollback_auth,
-        .wallet_scan_height  = -1,
-        .reason              = reason,
-    };
-
-    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
-    if (rc == CSR_OK) {
-        trace_end(csr_span);
+    enum process_block_tip_publish_result pr =
+        process_block_publish_tip(ms, coins_tip, new_tip, reason,
+                                  update_header_tip, persist_coins_best,
+                                  verified);
+    if (pr == PROCESS_BLOCK_TIP_PUBLISH_OK) {
+        trace_end(tip_span);
         return true;
     }
 
 #ifdef ZCL_TESTING
-    if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-        /* Test harness path: the singleton was never wired. Use the
-         * canonical helper so events still fire. */
+    if (pr == PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED) {
+        /* Test harness path: no boot publication hook was wired. Use
+         * the canonical helper so events still fire. */
         (void)chain_set_active_tip(ms, new_tip, TIP_FROM_CONNECT,
-                             reason ? reason : "csr_uninit_fallback");
+                             reason ? reason : "tip_hook_uninit_fallback");
         if (update_header_tip) ms->pindex_best_header = new_tip;
         if (coins_tip) coins_view_cache_set_best_block(coins_tip,
                                                         new_tip->phashBlock);
-        trace_attr_str(csr_span, "fallback", "raw_setters");
-        trace_end(csr_span);
+        trace_attr_str(tip_span, "fallback", "raw_setters");
+        trace_end(tip_span);
         return true;
     }
 #endif
 
-    /* Real validation failure. The csr has already emitted
-     * EV_CHAIN_TIP_REJECTED; shout too so this shows up in the
-     * node log even when events are disabled. */
+    /* Real validation failure. The boot-owned publisher has already
+     * emitted structured rejection detail; shout too so this shows up
+     * in the node log even when events are disabled. */
     fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "process_block: csr rejected tip commit (%s) reason=%s h=%d\n",
-            csr_result_name(rc), reason, new_tip->nHeight);
-    if (rc == CSR_REJECTED_DB_BUSY)
+            "process_block: tip publisher rejected commit (%s) reason=%s h=%d\n",
+            process_block_tip_publish_result_name(pr), reason, new_tip->nHeight);
+    if (pr == PROCESS_BLOCK_TIP_PUBLISH_REJECTED_DB_BUSY)
         mirror_consensus_record_blocker("db-writer-busy");
-    else if (rc == CSR_REJECTED_PERSIST)
+    else if (pr == PROCESS_BLOCK_TIP_PUBLISH_REJECTED_PERSIST)
         mirror_consensus_record_blocker("csr-persist-failed");
-    trace_set_status(csr_span, TRACE_STATUS_ERROR);
-    trace_attr_str(csr_span, "error", csr_result_name(rc));
-    trace_end(csr_span);
+    trace_set_status(tip_span, TRACE_STATUS_ERROR);
+    trace_attr_str(tip_span, "error",
+                   process_block_tip_publish_result_name(pr));
+    trace_end(tip_span);
     return false;
 }
 
-/* propagate csr rejection to caller. Previously this function
- * was void — if process_block_commit_tip returned false (csr refused
+/* Propagate tip-publisher rejection to caller. Previously this function
+ * was void — if process_block_commit_tip returned false (CSR refused
  * the commit for coins_mismatch / tip_not_in_index / stale_index /
  * etc.), the failure was silently discarded. connect_tip kept
  * returning true while the in-memory chain tip stayed at the old
@@ -874,7 +901,7 @@ bool process_block_commit_tip(struct main_state *ms,
 bool update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     if (pindex_new) {
-        struct chain_evidence_record evidence =
+        struct process_block_tip_evidence evidence =
             process_block_verified_tip_evidence(ms, pindex_new, true);
         /* coins_tip is NULL here on purpose: the pre-migration
          * update_tip never set coins_best_block (connect_block had
@@ -889,30 +916,18 @@ bool update_tip(struct main_state *ms, struct block_index *pindex_new)
         /* Disconnect past genesis — empty the chain. No commit to
          * make, but still route the concrete publication through CSR
          * so active-tip clears use the same promotion boundary. */
-        struct chain_state_rollback_authorization rollback_auth = {
-            .source = CSR_ROLLBACK_SOURCE_VALIDATION,
-            .decision = POLICY_ALLOW,
-            .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
-            .to_height = -1,
-            .max_depth = INT64_MAX,
-            .evidence_class = "validation_disconnect_complete",
-            .reason = "disconnect_past_genesis",
-        };
-        struct chain_state_clear_commit clear = {
-            .rollback_auth = &rollback_auth,
-            .reason = "disconnect_past_genesis",
-        };
-        enum csr_result rc = csr_clear_active_tip(csr_instance(), &clear);
+        enum process_block_tip_publish_result pr =
+            process_block_clear_tip(ms, "disconnect_past_genesis");
 #ifdef ZCL_TESTING
-        if (rc == CSR_REJECTED_NOT_INITIALIZED) {
+        if (pr == PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED) {
             (void)chain_set_active_tip(ms, NULL, TIP_FROM_DISCONNECT,
                                  "disconnect_past_genesis");
         } else
 #endif
-        if (rc != CSR_OK) {
+        if (pr != PROCESS_BLOCK_TIP_PUBLISH_OK) {
             fprintf(stderr,
-                    "validation: csr rejected active-tip clear (%s)\n",
-                    csr_result_name(rc));
+                    "validation: tip publisher rejected active-tip clear (%s)\n",
+                    process_block_tip_publish_result_name(pr));
             return false;
         }
     }

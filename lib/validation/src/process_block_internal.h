@@ -25,7 +25,6 @@ struct block_index;
 struct transaction;
 struct uint256;
 struct validation_state;
-struct chain_evidence_record;
 struct coins_view_sqlite;
 struct incremental_merkle_tree;
 struct block_tree_db;
@@ -166,7 +165,6 @@ extern unsigned int g_last_block_file_size; /* defined in process_block_core.c *
  * find_most_work_chain + process_block_commit_tip are called by
  * activate_best_chain (still in core.c) as well. */
 struct coins_view_cache;
-struct chain_evidence_record;
 bool block_index_hydrate_from_disk(struct block_index *pindex,
                                    const char *datadir);
 struct block_index *find_most_work_chain(struct main_state *ms);
@@ -176,7 +174,7 @@ bool process_block_commit_tip(struct main_state *ms,
                               const char *reason,
                               bool update_header_tip,
                               bool persist_coins_best,
-                              const struct chain_evidence_record *verified);
+                              const struct process_block_tip_evidence *verified);
 
 /* WS-6.5: helpers exposed for activate_best_chain.c. */
 bool process_block_verify_active_tip_child_on_disk(

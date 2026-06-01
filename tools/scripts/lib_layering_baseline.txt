@@ -17,5 +17,3 @@
 # Format: <file>:<exact #include directive>
 # Order: alphabetical by file path (regenerate via the script if needed).
 lib/net/src/msgprocessor_snapshot.c:#include "services/snapshot_sync_service.h"
-lib/validation/src/process_block_core.c:#include "services/chain_evidence_controller.h"
-lib/validation/src/process_block_core.c:#include "services/chain_state_repository.h"

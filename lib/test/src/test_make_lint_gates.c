@@ -1670,9 +1670,14 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/tx_index.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_evidence_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
         ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks") != NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_clear_tip") != NULL);
         free(buf);
         buf = NULL;
 
@@ -1696,8 +1701,12 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_gap_fill_kick") != NULL);
         ASSERT(strstr(buf, "gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "boot_process_block_commit_tip") != NULL);
+        ASSERT(strstr(buf, "boot_process_block_clear_tip") != NULL);
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick(boot_gap_fill_kick, svc)") != NULL);
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(boot_process_block_commit_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(NULL, NULL, NULL)") != NULL);
         PASS();
     } _test_next:;
     free(buf);

@@ -20,6 +20,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 
 /* ── Tiny block_index fixture ─────────────────────────────────
@@ -58,6 +59,65 @@ static void csr_fix_free(struct csr_fixture *f)
     coins_view_cache_free(&f->coins_tip);
     active_chain_free(&f->chain);
     block_map_free(&f->bm);
+}
+
+static enum process_block_tip_publish_result
+test_process_block_tip_result(enum csr_result rc)
+{
+    switch (rc) {
+    case CSR_OK:
+        return PROCESS_BLOCK_TIP_PUBLISH_OK;
+    case CSR_REJECTED_NOT_INITIALIZED:
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED;
+    case CSR_REJECTED_DB_BUSY:
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED_DB_BUSY;
+    case CSR_REJECTED_PERSIST:
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED_PERSIST;
+    default:
+        return PROCESS_BLOCK_TIP_PUBLISH_REJECTED;
+    }
+}
+
+static enum process_block_tip_publish_result test_process_block_commit_tip(
+    void *ctx,
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    struct block_index *new_tip,
+    const char *reason,
+    bool update_header_tip,
+    bool persist_coins_best,
+    const struct process_block_tip_evidence *verified)
+{
+    (void)ctx;
+    (void)coins_tip;
+    (void)verified;
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_TEST,
+        .decision = POLICY_ALLOW,
+        .from_height = ms ? active_chain_height(&ms->chain_active) : -1,
+        .to_height = new_tip ? new_tip->nHeight : -1,
+        .max_depth = INT64_MAX,
+        .evidence_class = "test_process_block_tip_publication",
+        .reason = reason ? reason : "test_process_block_commit_tip",
+    };
+    struct uint256 new_coins_best;
+    memset(&new_coins_best, 0, sizeof(new_coins_best));
+    if (new_tip && new_tip->phashBlock)
+        new_coins_best = *new_tip->phashBlock;
+
+    struct chain_state_commit commit = {
+        .new_tip = new_tip,
+        .new_coins_best = new_coins_best,
+        .expected_utxo_count = 0,
+        .update_header_tip = update_header_tip,
+        .persist_coins_best = persist_coins_best,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = reason,
+    };
+
+    return test_process_block_tip_result(csr_commit_tip(csr_instance(),
+                                                        &commit));
 }
 
 /* Append one block at height = previous + 1. Each block hash is the
@@ -1285,7 +1345,7 @@ static int t_singleton_init_wires_fixture(void)
 
 /* live-outage regression — pre-patch, update_tip was `static
  * void` and silently discarded the bool return from
- * process_block_commit_tip. When the csr refused a commit (any of
+ * process_block_commit_tip. When the tip publisher refused a commit (any of
  * CSR_REJECTED_COINS_MISMATCH / _TIP_NOT_IN_INDEX / _STALE_INDEX /
  * ...), connect_tip still returned true, active_chain_tip kept
  * pointing at the old block, and every inbound block re-emitted
@@ -1294,8 +1354,8 @@ static int t_singleton_init_wires_fixture(void)
  * events per second until the download queue buffered the node to
  * 6 GB RSS and SIGABRT.
  *
- * The regression wires the csr singleton to an empty block_map,
- * hands update_tip a block_index NOT in the map (so csr will
+ * The regression wires the csr singleton behind the test publisher,
+ * hands update_tip a block_index NOT in the map (so the publisher will
  * respond CSR_REJECTED_TIP_NOT_IN_INDEX), and asserts the caller
  * observes false. Without the patch the wrapper would silently
  * return true. */
@@ -1326,7 +1386,10 @@ static int t_p71_update_tip_propagates_csr_rejection(void)
     struct main_state ms;
     memset(&ms, 0, sizeof(ms));
 
+    process_block_set_tip_publication_hooks(test_process_block_commit_tip,
+                                            NULL, NULL);
     bool returned = process_block_test_update_tip(&ms, &orphan);
+    process_block_set_tip_publication_hooks(NULL, NULL, NULL);
 
     uint64_t after_rej = 0;
     for (int i = 0; i < CSR_NUM_RESULTS; i++)

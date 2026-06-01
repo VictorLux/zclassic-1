@@ -75,6 +75,49 @@ typedef void (*process_block_gap_fill_kick_fn)(void *ctx);
 void process_block_set_gap_fill_kick(process_block_gap_fill_kick_fn fn,
                                      void *ctx);
 
+struct process_block_tip_evidence {
+    bool header_ancestry_linked;
+    bool chainwork_recomputed;
+    bool nakamoto_selected_best_work;
+    bool block_bytes_hash_checked;
+    bool utxo_sha3_verified;
+    bool mmb_flyclient_proof_verified;
+    bool chunk_hash_coverage_verified;
+    bool full_validation_complete;
+};
+
+enum process_block_tip_publish_result {
+    PROCESS_BLOCK_TIP_PUBLISH_OK = 0,
+    PROCESS_BLOCK_TIP_PUBLISH_REJECTED_NOT_INITIALIZED,
+    PROCESS_BLOCK_TIP_PUBLISH_REJECTED_DB_BUSY,
+    PROCESS_BLOCK_TIP_PUBLISH_REJECTED_PERSIST,
+    PROCESS_BLOCK_TIP_PUBLISH_REJECTED,
+};
+
+/* Boot-owned publication hooks for active-tip changes. Validation owns
+ * connect/selection decisions; boot owns the app service/repository boundary
+ * that publishes those decisions. */
+typedef enum process_block_tip_publish_result
+(*process_block_commit_tip_fn)(
+    void *ctx,
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    struct block_index *new_tip,
+    const char *reason,
+    bool update_header_tip,
+    bool persist_coins_best,
+    const struct process_block_tip_evidence *verified);
+
+typedef enum process_block_tip_publish_result
+(*process_block_clear_tip_fn)(void *ctx,
+                              struct main_state *ms,
+                              const char *reason);
+
+void process_block_set_tip_publication_hooks(
+    process_block_commit_tip_fn commit_tip,
+    process_block_clear_tip_fn clear_tip,
+    void *ctx);
+
 /* Configure the coins flush policy (short-term → long-term layer bridge).
  * block_interval=0 disables block-based flushing (default).
  * During IBD, set block_interval=1000 for aggressive batching. */
@@ -97,8 +140,8 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
 void set_sapling_checkpoint_datadir(const char *datadir);
 
 /* test-only surface: drives update_tip directly so a unit test
- * can verify csr_commit_tip rejection propagates to the caller.
- * Returns false if the csr refused the commit; returns true if the
+ * can verify tip-publisher rejection propagates to the caller.
+ * Returns false if the publisher refused the commit; returns true if the
  * tip was advanced (or cleared, when pindex_new == NULL). Do NOT
  * call from production code — go through connect_tip / disconnect_tip. */
 bool process_block_test_update_tip(struct main_state *ms,
@@ -115,7 +158,7 @@ bool process_block_test_update_tip(struct main_state *ms,
  * Stages fire in order:
  *   PBCS_AFTER_CONNECT_BLOCK     in-mem coins view mutated, nothing on disk
  *   PBCS_AFTER_COINS_VIEW_FLUSH  coins cache → coins_tip (RAM), still no disk
- *   PBCS_AFTER_UPDATE_TIP        csr_commit_tip done; in-memory tip advanced
+ *   PBCS_AFTER_UPDATE_TIP        tip publisher done; in-memory tip advanced
  *   PBCS_AFTER_BLOCK_INDEX_WRITE LevelDB block_index entry durable
  *   PBCS_AFTER_COINS_DISK_FLUSH  coins.db UTXOs durable and not ahead of index
  *

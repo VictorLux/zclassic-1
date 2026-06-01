@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 3 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 1 grandfathered include, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -294,6 +294,13 @@ node soak.
   longer includes the gap-fill service or chain-tip service and keeps only the
   real chain-evidence/chain-state-repository app edges. The lib-to-app include
   baseline is down from 11 to 3.
+- Process-block tip publication is now boot-owned through
+  `process_block_set_tip_publication_hooks()`. Validation passes
+  `process_block_tip_evidence` over the hook boundary, while boot translates
+  that evidence to the chain-evidence controller / CSR app services and owns
+  the test fallback. `lib/validation/src/process_block_core.c` no longer
+  includes chain-evidence or chain-state-repository headers, and the
+  lib-to-app include baseline is down from 3 to 1.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -398,11 +405,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 3 grandfathered lib-to-app includes.
+  with 1 grandfathered lib-to-app include:
+  `lib/net/src/msgprocessor_snapshot.c` still includes the snapshot-sync
+  service.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
-  block-index hydration, tip commit, and failed-child propagation.
+  block-index hydration, tip-publication hook dispatch, and failed-child
+  propagation.
 
 ## Next Work Order
 
@@ -419,33 +429,34 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after removing stale `process_block_core.c` app
-  includes and boot-injecting the mutex-protected gap-fill wakeup hook.
+- `make -j$(nproc)`: pass after moving process-block tip publication behind
+  boot-owned hooks and updating the validation trace label to
+  `process_block.publish_tip`.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner
-  for the new process-block layering lint-gate assertions.
+  for the new process-block tip-publication boundary and lint-gate assertions.
 - `git diff --check`: pass.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
-- `tools/scripts/check_lib_layering.sh`: pass with 3 grandfathered
+- `tools/scripts/check_lib_layering.sh`: pass with 1 grandfathered
   lib-to-app includes and no new violations.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations; only existing `boot_services.c`
   `coins_view_cache_flush()` baseline line numbers shifted after adding the
-  boot-owned gap-fill callback.
+  boot-owned process-block tip publication callback/helper code.
 - Focused filtered tests passed:
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
   `./test_parallel --only=validation --timeout=120 --verbose`,
   `./test_parallel --only=chain_state_repo --timeout=120 --verbose`,
   `./test_parallel --only=process_block --timeout=120 --verbose`, and
   `./test_parallel --only=chain --timeout=120 --verbose`.
-- `make lint`: pass after the process-block layering cleanup; E1, E2,
+- `make lint`: pass after the process-block tip-publication cleanup; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
-  surfaces, and lib-layering is 3 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the process-block layering
-  cleanup, `0/279` groups failed in 56.0s.
-- Quick live sample attempt at 2026-06-01 10:21:38 UTC after the
-  process-block layering cleanup did not prove live-node health: no
+  surfaces, and lib-layering is 1 grandfathered include.
+- `./test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
+  `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 10:45:24 UTC after the
+  process-block tip-publication cleanup did not prove live-node health: no
   `zclassic23` process was running, `zcl-rpc` exited 7 for both
   `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or
   `18232` listener, the previous 20 minutes of `zclassic23.service` journal
