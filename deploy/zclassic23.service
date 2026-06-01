@@ -35,22 +35,18 @@ EnvironmentFile=-%h/.config/zclassic23/env
 
 ExecStart=%h/zclassic23/zclassic23 \
     -datadir=%h/.zclassic-c23 \
-    -port=8033 \
+    -port=8023 \
     -rpcport=18232 \
     -listen \
     -txindex \
     -tor \
-    -shadow \
     $ZCL_EXTERNALIP_FLAG \
     $ZCL_ADDNODE_FLAGS \
     -showmetrics=0
-# -shadow (revamp-I-9): starts the new mutator + shadow_feeder so every
-# legacy-accepted block is mirrored into <datadir>/blocks.shadow and
-# validated through the new pipeline. Observable via:
-#   * Prometheus: zcl_shadow_divergence_count gauge
-#   * MCP:        zcl_diff_with_legacy_shadow (compares legacy ~/.zclassic
-#                 vs the in-process shadow log)
-# Remove when Epoch I-10 lands (the flag flip makes shadow the primary).
+# Local dev/operator port contract: zclassic23 listens on 8023 so a sibling
+# legacy zclassicd/zcashd can own the historical ZClassic/Zcash ports. The
+# node still dials external ZClassic peers on their advertised ports through
+# addrman/addnode; this setting controls only our local listener.
 # Restart=always (not on-failure) so the self-recovery escape hatch in
 # process_block.c (g_shutdown_requested=1 after 10 consecutive UTXO
 # failures at the same height) causes a systemd restart.  That restart

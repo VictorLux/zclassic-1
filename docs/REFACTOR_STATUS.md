@@ -586,6 +586,12 @@ node soak.
   scaffold labels. The scaffold-label guard now covers the revalidation
   headers/source plus the chain supervisor header and rejects the retired
   Wave-M label across the guarded production comment set.
+- `docs/PROJECT_OVERVIEW.md` now records the current tracked file inventory,
+  framework-shape purpose map, active legacy lifecycle, and deprecated/retired
+  surfaces for the next developer. The deploy service template now keeps the
+  local zclassic23 listener on `8023` and drops the stale no-op `-shadow`
+  comparison flag/comment so future deploys do not conflict with a sibling
+  zclassicd/zcashd listener.
 
 ## Active Debt
 
@@ -663,6 +669,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- Runtime/status sample at 2026-06-01 18:14 UTC: zclassic23 was active under
+  user systemd with PID 3030320, local P2P `8023`, RPC `18232`, and no local
+  `8033` listener owned by zclassic23. RPC returned height 3,130,701 and best
+  hash `00001c91107ae83de903678cc3891cd82e59d9b37c4d7bbcf283f7212dd763c8`;
+  `gettxoutsetinfo` reported 1,361,783 UTXOs. The legacy mirror was running
+  but blocked on `zclassicd:8232` being unreachable (`rpc-unreachable`), not on
+  a port conflict.
 - Failed-block revalidation label scan after the revalidation/supervisor
   cleanup: clean for `Wave M` / `Wave-M` across the touched revalidation,
   chain-supervisor, activation-controller, and boot-service files.

@@ -26,7 +26,8 @@ work is cleanup and hardening:
 5. Prove the result with clean build/lint/tests and a live node soak.
 
 `docs/FRAMEWORK.md` is the architecture. `docs/REFACTOR_STATUS.md` is the live
-debt board.
+debt board. `docs/PROJECT_OVERVIEW.md` is the directory/file-purpose and
+deprecation map for the next developer.
 
 ---
 
