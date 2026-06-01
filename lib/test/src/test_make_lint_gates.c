@@ -1363,6 +1363,9 @@ static int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(strstr(buf, "db_file_service_save") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/file_service.h") == NULL);
+        ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
+        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
         PASS();
     } _test_next:;
@@ -1477,6 +1480,33 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_net_sync_planners_are_lib_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("net sync planners use lib-owned contract") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_headers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
+        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/sync/include/sync/sync_planner.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "struct sync_header_processing_plan") != NULL);
+        ASSERT(strstr(buf, "struct sync_stall_recovery") != NULL);
+        ASSERT(strstr(buf, "syncsvc_plan_periodic_getheaders") != NULL);
+        ASSERT(strstr(buf, "syncsvc_assign_peer_blocks") != NULL);
+        ASSERT(strstr(buf, "services/") == NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1686,6 +1716,7 @@ int test_make_lint_gates(void)
     failures += t_tx_wallet_sync_is_callback_injected();
     failures += t_p2p_block_submit_is_callback_injected();
     failures += t_flyclient_proof_builder_is_callback_injected();
+    failures += t_net_sync_planners_are_lib_owned();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_sha3_window_tool_check_contract();

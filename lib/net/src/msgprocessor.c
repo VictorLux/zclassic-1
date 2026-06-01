@@ -34,12 +34,11 @@
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
+#include "sync/sync_planner.h"
 /* lib/net still reaches the controller-owned manifest cache for P2P file
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
  * the remaining controller dependency is the cache ownership boundary. */
 #include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
-#include "services/block_sync_service.h"
-#include "services/header_sync_service.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "config/runtime.h"

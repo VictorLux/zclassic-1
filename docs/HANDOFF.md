@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 28 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 24 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -116,8 +116,10 @@ If the node is not running, record that explicitly before claiming live proof.
   persistence is now callback-injected from boot, so `msgprocessor.c` no longer
   includes the node DB model header or the FileService model. Snapshot-sync
   service accessors now live in `msgprocessor_snapshot.c`, so
-  `msgprocessor.c` no longer includes the snapshot sync service. Keep
-  shrinking it; do not add new entries.
+  `msgprocessor.c` no longer includes the snapshot sync service. Header/block
+  sync planner contracts now live in `lib/sync/include/sync/sync_planner.h`,
+  so `msgprocessor.c` and `msg_headers.c` no longer include the header/block
+  sync app service headers. Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 28 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 24 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -223,6 +223,12 @@ node soak.
   already belongs. Generic message-processor orchestration no longer includes
   the snapshot sync service, and the lib-to-app include baseline is down from
   29 to 28.
+- Header/block sync planner contracts now live in
+  `lib/sync/include/sync/sync_planner.h`, with the app service headers kept as
+  compatibility wrappers. `lib/net/src/msgprocessor.c` and
+  `lib/net/src/msg_headers.c` now use the lib-owned planner contract instead
+  of the header/block sync app service headers, and the lib-to-app include
+  baseline is down from 28 to 24.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -327,7 +333,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 28 grandfathered lib-to-app includes.
+  with 24 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -348,6 +354,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after moving the sync planner API contract into
+  `lib/sync/include/sync/sync_planner.h`.
+- `make test_parallel`: pass after rebuilding the parallel runner for the new
+  lint-gate ownership assertions.
+- `tools/scripts/check_lib_layering.sh`: pass with 24 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=header_sync --timeout=120 --verbose`,
+  `./test_parallel --only=sync_service --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`, and
+  `./test_parallel --only=integrity --timeout=120 --verbose`.
+- `make lint`: pass after the sync planner contract move; E1, E2, supervisor,
+  E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
+  remain at zero active debt, E6 is 24 grandfathered write surfaces, and
+  lib-layering is 24 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the sync planner contract move,
+  `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 08:10:13 UTC after the sync planner
+  contract move did not prove live-node health: `systemctl --user is-active
+  zclassic23` could not connect to the user bus, `zcl-rpc` returned connection
+  failure, `ss` showed no `zclassic23`, `8023`, `8033`, or `18232` listener,
+  and a read-only journal sample reported `zclassic23.service` was OOM-killed
+  at 2026-06-01 07:58:58 UTC. The service was not restarted because this slice
+  was constrained to read-only live checks.
 - `make -j$(nproc)`: pass after moving snapshot-sync accessors into
   `lib/net/src/msgprocessor_snapshot.c`.
 - `make test_parallel`: pass after rebuilding the parallel runner for the new
