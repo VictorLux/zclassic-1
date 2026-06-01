@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * HTLC script builder/parser and swap state management.
+ * HTLC script builder/parser.
  * Cross-chain atomic swaps: ZCL, BTC, LTC, DOGE.
  *
  * Contract script format derived from dcrdex (Decred DEX):
@@ -19,14 +19,8 @@
 #include "core/hash.h"
 #include "core/random.h"
 #include "encoding/base58.h"
-#include "models/activerecord.h"
-#include "models/database.h"
-#include "models/swap_contract.h"
-#include "util/ar_step_readonly.h"
-#include "util/log_macros.h"
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
 
 /* ── Chain Parameters ───────────────────────────────────────────── *
  * Address version bytes from dcrdex dex/networks/{ltc,doge,zcl}/params.go.
@@ -324,181 +318,4 @@ void swap_compute_id(const char *my_addr, const char *counter_addr,
     for (int i = 0; i < 32; i++)
         sprintf(out + i * 2, "%02x", hash[i]);
     out[64] = '\0';
-}
-
-/* ── SQLite Persistence ─────────────────────────────────────────── */
-
-/* Single source of truth for the zswp_contracts column list. Position-coupled
- * to row_to_swap() and the db_swap_save() bind sequence (columns 0..15). */
-#define SWAP_COLS \
-    "swap_id,role,state,chain,secret_hash,secret,amount,locktime," \
-    "my_address,counter_address,funding_txid,funding_vout," \
-    "redeem_script,redeem_script_len,p2sh_address,created_at"
-
-bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
-{
-    if (!ndb || !ndb->open) LOG_FAIL("htlc", "db_swap_save: db not open");
-    if (!swap) LOG_FAIL("htlc", "db_swap_save: swap is NULL");
-
-    struct ar_callbacks *cbs = db_swap_contract_callbacks();
-    AR_VALIDATE_RECORD(cbs, "swap_contract", swap, db_swap_contract_validate);
-    if (!ar_run_before_save(cbs, (void *)swap))
-        return false;
-
-    const char *sql =
-        "INSERT OR REPLACE INTO zswp_contracts(" SWAP_COLS ")"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) LOG_FAIL("htlc", "db_swap_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
-
-    sqlite3_bind_text(s, 1, swap->swap_id, -1, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, swap->role);
-    sqlite3_bind_int(s, 3, swap->state);
-    sqlite3_bind_int(s, 4, swap->chain);
-    sqlite3_bind_blob(s, 5, swap->secret_hash, 32, SQLITE_STATIC);
-    if (swap->has_secret)
-        sqlite3_bind_blob(s, 6, swap->secret, 32, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(s, 6);
-    sqlite3_bind_int64(s, 7, swap->amount);
-    sqlite3_bind_int(s, 8, (int)swap->locktime);
-    sqlite3_bind_text(s, 9, swap->my_address, -1, SQLITE_STATIC);
-    sqlite3_bind_text(s, 10, swap->counter_address, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 11, swap->funding_txid, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 12, (int)swap->funding_vout);
-    sqlite3_bind_blob(s, 13, swap->redeem_script, (int)swap->redeem_script_len,
-                      SQLITE_STATIC);
-    sqlite3_bind_int(s, 14, (int)swap->redeem_script_len);
-    sqlite3_bind_text(s, 15, swap->p2sh_address, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 16, swap->created_at);
-
-    bool ok = AR_STEP_DONE(s);
-    sqlite3_finalize(s);
-    if (ok) ar_run_after_save(cbs, (void *)swap);
-    return ok;
-}
-
-static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
-{
-    memset(out, 0, sizeof(*out));
-    const char *str = (const char *)sqlite3_column_text(s, 0);
-    if (str) snprintf(out->swap_id, sizeof(out->swap_id), "%s", str);
-
-    out->role = (enum swap_role)sqlite3_column_int(s, 1);
-    out->state = (enum swap_state)sqlite3_column_int(s, 2);
-    out->chain = (enum swap_chain)sqlite3_column_int(s, 3);
-
-    const void *blob = sqlite3_column_blob(s, 4);
-    if (blob) memcpy(out->secret_hash, blob, 32);
-
-    blob = sqlite3_column_blob(s, 5);
-    if (blob) { memcpy(out->secret, blob, 32); out->has_secret = true; }
-
-    out->amount = sqlite3_column_int64(s, 6);
-    out->locktime = (uint32_t)sqlite3_column_int(s, 7);
-
-    str = (const char *)sqlite3_column_text(s, 8);
-    if (str) snprintf(out->my_address, sizeof(out->my_address), "%s", str);
-
-    str = (const char *)sqlite3_column_text(s, 9);
-    if (str) snprintf(out->counter_address, sizeof(out->counter_address),
-                      "%s", str);
-
-    blob = sqlite3_column_blob(s, 10);
-    if (blob) memcpy(out->funding_txid, blob, 32);
-
-    out->funding_vout = (uint32_t)sqlite3_column_int(s, 11);
-
-    blob = sqlite3_column_blob(s, 12);
-    int rlen = sqlite3_column_int(s, 13);
-    if (blob && rlen > 0 && rlen <= 256) {
-        memcpy(out->redeem_script, blob, (size_t)rlen);
-        out->redeem_script_len = (size_t)rlen;
-    }
-
-    str = (const char *)sqlite3_column_text(s, 14);
-    if (str) snprintf(out->p2sh_address, sizeof(out->p2sh_address), "%s", str);
-
-    out->created_at = sqlite3_column_int64(s, 15);
-}
-
-bool db_swap_find(struct node_db *ndb, const char *swap_id,
-                  struct swap_contract *out)
-{
-    if (!ndb || !ndb->open) return false;
-
-    const char *sql =
-        "SELECT " SWAP_COLS " FROM zswp_contracts WHERE swap_id=?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
-
-    sqlite3_bind_text(s, 1, swap_id, -1, SQLITE_STATIC);
-    bool found = false;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        row_to_swap(s, out);
-        found = true;
-    }
-    sqlite3_finalize(s);
-    return found;
-}
-
-int db_swap_list(struct node_db *ndb, struct swap_contract *out,
-                 size_t max, int state_filter)
-{
-    if (!ndb || !ndb->open) return 0;
-
-    const char *sql = (state_filter >= 0)
-        ? "SELECT " SWAP_COLS
-          " FROM zswp_contracts WHERE state=? ORDER BY created_at DESC LIMIT ?"
-        : "SELECT " SWAP_COLS
-          " FROM zswp_contracts ORDER BY created_at DESC LIMIT ?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return 0;
-
-    if (state_filter >= 0) {
-        sqlite3_bind_int(s, 1, state_filter);
-        sqlite3_bind_int(s, 2, (int)max);
-    } else {
-        sqlite3_bind_int(s, 1, (int)max);
-    }
-
-    int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
-        row_to_swap(s, &out[count]);
-        count++;
-    }
-    sqlite3_finalize(s);
-    return count;
-}
-
-bool db_swap_update_state(struct node_db *ndb, const char *swap_id,
-                          enum swap_state state, const uint8_t *secret)
-{
-    if (!ndb || !ndb->open) return false;
-
-    const char *sql = secret
-        ? "UPDATE zswp_contracts SET state=?, secret=? WHERE swap_id=?"
-        : "UPDATE zswp_contracts SET state=? WHERE swap_id=?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return false;
-
-    sqlite3_bind_int(s, 1, state);
-    if (secret) {
-        sqlite3_bind_blob(s, 2, secret, 32, SQLITE_STATIC);
-        sqlite3_bind_text(s, 3, swap_id, -1, SQLITE_STATIC);
-    } else {
-        sqlite3_bind_text(s, 2, swap_id, -1, SQLITE_STATIC);
-    }
-
-    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
-    sqlite3_finalize(s);
-    return ok;
 }

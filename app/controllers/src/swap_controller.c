@@ -6,6 +6,7 @@
 #include "platform/time_compat.h"
 #include "script/htlc.h"
 #include "znam/znam.h"
+#include "models/swap_contract.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "views/format_helpers.h"

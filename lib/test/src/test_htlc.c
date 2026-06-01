@@ -6,6 +6,7 @@
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
 #include "models/database.h"
+#include "models/swap_contract.h"
 
 int test_htlc(void)
 {

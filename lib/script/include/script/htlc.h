@@ -61,27 +61,6 @@ struct htlc_params {
     uint32_t locktime;           /* absolute block height for refund */
 };
 
-/* Swap contract (persisted) */
-struct swap_contract {
-    char     swap_id[65];        /* hex(sha256(initiator+participant+hash)) */
-    enum swap_role role;
-    enum swap_state state;
-    enum swap_chain chain;
-    uint8_t  secret_hash[32];
-    uint8_t  secret[32];         /* filled on redeem */
-    bool     has_secret;
-    int64_t  amount;             /* in zatoshis/satoshis */
-    uint32_t locktime;
-    char     my_address[64];
-    char     counter_address[64];
-    uint8_t  funding_txid[32];
-    uint32_t funding_vout;
-    uint8_t  redeem_script[256];
-    size_t   redeem_script_len;
-    char     p2sh_address[64];
-    int64_t  created_at;
-};
-
 /* ── HTLC Script Builder ────────────────────────────────────────── */
 
 /* Build an HTLC redeem script.
@@ -155,17 +134,5 @@ bool htlc_address_to_pkh(const char *address, enum swap_chain chain,
 /* Compute swap_id from participants + secret_hash */
 void swap_compute_id(const char *my_addr, const char *counter_addr,
                      const uint8_t secret_hash[32], char out[65]);
-
-/* ── SQLite Persistence ─────────────────────────────────────────── */
-
-struct node_db;
-
-bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap);
-bool db_swap_find(struct node_db *ndb, const char *swap_id,
-                  struct swap_contract *out);
-int db_swap_list(struct node_db *ndb, struct swap_contract *out,
-                 size_t max, int state_filter);
-bool db_swap_update_state(struct node_db *ndb, const char *swap_id,
-                          enum swap_state state, const uint8_t *secret);
 
 #endif
