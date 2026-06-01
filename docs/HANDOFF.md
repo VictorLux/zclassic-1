@@ -80,10 +80,12 @@ If the node is not running, record that explicitly before claiming live proof.
   `process_block_self_heal_chain_scan.c` now owns bounded active-chain disk
   scan recovery plus tx-index backfill.
   `process_block_self_heal_sqlite_tx_index.c` now owns runtime TxIndex lookup
-  recovery plus consensus-backed disk verification. Remaining process-block
-  split debt is mostly inside `process_block_self_heal.c`: scan
-  counters/tunables and hot-loop pause/reimport signaling still share one
-  file.
+  recovery plus consensus-backed disk verification.
+  `process_block_self_heal_scan_state.c` now owns scan counters/tunables, and
+  `process_block_self_heal_hot_loop.c` owns needs-reimport, activation pause,
+  and shutdown policy. Remaining process-block split debt is mostly cleanup
+  around failure tracking / injection boundaries and any stale scaffolding
+  found by the next audit.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

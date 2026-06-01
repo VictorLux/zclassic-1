@@ -349,6 +349,16 @@ node soak.
   consensus-backed disk verification, local txid verification, and UTXO
   injection for that recovery source. `process_block_self_heal.c` is down
   from 451 to 361 lines.
+- Self-heal scan counters and operator tunables moved from
+  `process_block_self_heal.c` into `process_block_self_heal_scan_state.c`.
+  The new file owns the `g_self_heal_*` atomics, public stats snapshot, and
+  `ZCL_SELF_HEAL_SCAN_*` environment parsing. `process_block_self_heal.c` is
+  down from 361 to 302 lines.
+- Self-heal hot-loop / reimport policy moved from
+  `process_block_self_heal.c` into `process_block_self_heal_hot_loop.c`.
+  The new file owns `needs_reimport` flag writes, recent-reimport detection,
+  activation-pause get/clear APIs, test trigger hooks, and shutdown requests.
+  `process_block_self_heal.c` is down from 302 to 177 lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -505,9 +515,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` now owns best-work chain
   selection only.
-- `lib/validation/src/process_block_self_heal.c` is still the next obvious
-  process-block split candidate: it combines scan counters/tunables and
-  hot-loop pause/reimport signaling.
+- `lib/validation/src/process_block_self_heal.c` now owns missing-UTXO
+  failure tracking and the shared recovered-UTXO injection helper only; keep
+  auditing it for stale helper boundaries as adjacent recovery code changes.
 
 ## Next Work Order
 
@@ -516,9 +526,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
    fixture names only when touched for adjacent work.
 3. Keep import/catchup/legacy-import code below the file-size ceiling while
    moving remaining mixed-purpose code toward the correct framework shape.
-4. Continue splitting `process_block_self_heal.c` by responsibility; likely
-   next targets are scan counters/tunables and hot-loop pause/reimport
-   signaling.
+4. Audit the now-small process-block split files for stale helper boundaries
+   and delete any remaining zero-purpose scaffolding.
 5. Keep every lint baseline empty while continuing process-block and
    mixed-purpose file cleanup.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
@@ -526,6 +535,39 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after splitting self-heal scan state and hot-loop
+  policy out of `process_block_self_heal.c`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production stale terminology search:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
+  returned no matches.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make -j$(nproc)`: pass after adding
+  `lib/validation/src/process_block_self_heal_scan_state.c` and
+  `lib/validation/src/process_block_self_heal_hot_loop.c`.
+- `make lint`: pass after the self-heal scan-state / hot-loop split; E1, E2,
+  E6, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates all report zero grandfathered entries.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  updated process-block split guard.
+- Focused filtered tests passed:
+  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
+  `./test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
+  `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
+  and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the self-heal scan-state /
+  hot-loop split, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 13:41:39 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after splitting SQLite tx-index recovery out of
   `process_block_self_heal.c`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing

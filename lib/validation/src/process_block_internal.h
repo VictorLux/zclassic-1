@@ -6,6 +6,8 @@
  * process_block_contextual_header.c, process_block_runtime_hooks.c,
  * process_block_failed_child.c,
  * process_block_self_heal.c, process_block_self_heal_chain_scan.c,
+ * process_block_self_heal_hot_loop.c,
+ * process_block_self_heal_scan_state.c,
  * process_block_self_heal_sqlite_tx_index.c,
  * process_block_self_heal_legacy_rpc.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
@@ -59,6 +61,8 @@ extern int s_utxo_fail_count;
 extern int s_utxo_fail_height;
 extern int s_utxo_hot_loop_reported_height;
 extern int s_utxo_activation_paused_height;
+
+/* Owner: process_block_self_heal_scan_state.c */
 extern _Atomic uint64_t g_self_heal_tx_index_hits;
 extern _Atomic uint64_t g_self_heal_scan_hits;
 extern _Atomic uint64_t g_self_heal_scan_exhausted;
@@ -157,6 +161,12 @@ void process_block_note_utxo_failure(struct main_state *ms,
                                      struct coins_view_cache *coins_tip,
                                      int height,
                                      const char *datadir);
+
+/* process_block_self_heal_hot_loop.c */
+void process_block_maybe_write_needs_reimport_flag(int height,
+                                                   const char *datadir);
+void process_block_maybe_trigger_hot_loop_exit(int height,
+                                               const char *datadir);
 
 /* process_block_flush_policy.c */
 struct coins_view_sqlite *process_block_coins_sqlite_ptr(void);

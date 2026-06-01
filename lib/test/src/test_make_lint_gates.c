@@ -1669,6 +1669,52 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan(")
                == NULL);
         ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_depth_limit") == NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_stats_snapshot") == NULL);
+        ASSERT(strstr(buf, "g_self_heal_scan_hits") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
+        ASSERT(strstr(buf, "last_reimport_attempted") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_hot_loop.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_maybe_write_needs_reimport_flag")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_maybe_trigger_hot_loop_exit")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_get_utxo_activation_paused_height")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_clear_utxo_activation_pause_range")
+               != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") != NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") != NULL);
+        ASSERT(strstr(buf, "last_reimport_attempted") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_scan_state.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_depth_limit") != NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_scan_enabled") != NULL);
+        ASSERT(strstr(buf, "process_block_self_heal_stats_snapshot") != NULL);
+        ASSERT(strstr(buf, "g_self_heal_scan_hits") != NULL);
+        ASSERT(strstr(buf, "ZCL_SELF_HEAL_SCAN_DEPTH") != NULL);
+        ASSERT(strstr(buf, "ZCL_SELF_HEAL_SCAN_ENABLE") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -1703,6 +1749,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "EV_SELF_HEAL_SCAN_EXHAUSTED") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
         ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
         ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         free(buf);
         buf = NULL;
