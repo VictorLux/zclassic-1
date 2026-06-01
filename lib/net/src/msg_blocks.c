@@ -12,7 +12,6 @@
 #include "net/peer_scoring.h"
 #include "net/compact_blocks.h"
 #include "storage/disk_block_io.h"
-#include "services/block_sync_service.h"
 #include "validation/process_block.h"
 #include "consensus/validation.h"
 #include "net/download.h"
@@ -61,18 +60,6 @@ static struct block_index *best_known_successor(struct main_state *ms,
     }
 
     return best;
-}
-
-static int msg_blocks_acceptance_peer_height(const struct p2p_node *node,
-                                             int header_height,
-                                             int tip_height)
-{
-    int max_height = tip_height;
-    if (header_height > max_height)
-        max_height = header_height;
-    if (node && node->starting_height > max_height)
-        max_height = node->starting_height;
-    return max_height;
 }
 
 bool process_getblocks(struct msg_processor *mp, struct p2p_node *node,
@@ -344,11 +331,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
          * re-request headers from this peer starting at our current tip.
          * This forces the peer to send us the correct chain of headers,
          * which will include the valid block at the failed height. */
-        {
-            struct sync_getheaders_action action = {0};
-            syncsvc_plan_invalid_block_getheaders(&action, sync_get_state());
-            exec_getheaders_action(mp, node, &action);
-        }
+        msg_processor_request_invalid_block_headers(mp, node);
     }
 
     if (validation_state_is_valid(&state)) {
@@ -373,19 +356,11 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         struct block_index *new_tip = active_chain_tip(
             &mp->main_state->chain_active);
         if (new_tip) {
-            struct sync_block_acceptance acceptance;
+            struct msg_block_acceptance acceptance;
             node->last_block_time = (int64_t)platform_time_wall_time_t();
             node->blocks_received++;
-            int header_height = mp->main_state->pindex_best_header
-                                    ? mp->main_state->pindex_best_header->nHeight
-                                    : new_tip->nHeight;
-            syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
-                                     new_tip->nHeight,
-                                     header_height,
-                                     new_tip->nTime,
-                                     msg_blocks_acceptance_peer_height(
-                                         node, header_height,
-                                         new_tip->nHeight));
+            msg_processor_plan_valid_block_acceptance(&acceptance, mp, node,
+                                                      new_tip);
             event_emitf(EV_BLOCK_CONNECTED, (uint32_t)node->id,
                         "h=%d", new_tip->nHeight);
             /* Let the app runtime refresh its tip-advance observers without

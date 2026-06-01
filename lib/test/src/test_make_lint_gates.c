@@ -1386,10 +1386,13 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "mp->block_submit") != NULL);
         ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
         ASSERT(strstr(buf, "msg_processor_note_block_connected") != NULL);
+        ASSERT(strstr(buf, "msg_processor_request_invalid_block_headers") != NULL);
+        ASSERT(strstr(buf, "msg_processor_plan_valid_block_acceptance") != NULL);
         ASSERT(strstr(buf, "reducer_ingest_block") == NULL);
         ASSERT(strstr(buf, "boot_activation_controller") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);

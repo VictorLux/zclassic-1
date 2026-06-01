@@ -14,10 +14,21 @@
 #include "net/net.h"
 #include "net/p2p_message.h"
 #include "core/serialize.h"
+#include "sync/sync_state.h"
 
 /* ── Forward declarations for split message handlers ──────────── */
 
 struct sync_getheaders_action;
+
+struct msg_block_acceptance {
+    bool reached_peer_tip;
+    bool should_emit_tip_updated;
+    bool should_set_sync_state;
+    enum sync_state next_sync_state;
+    bool should_set_flush_policy;
+    bool should_update_peer_state;
+    enum peer_state next_peer_state;
+};
 
 /* msg_version.c — version/verack handshake */
 void push_version(struct msg_processor *mp, struct p2p_node *node);
@@ -136,6 +147,13 @@ bool msg_blocks_should_mark_seen(const struct active_chain *chain,
 bool msg_processor_snapshot_active(const struct msg_processor *mp);
 void msg_processor_note_block_connected(const struct msg_processor *mp,
                                         int height);
+void msg_processor_request_invalid_block_headers(struct msg_processor *mp,
+                                                 struct p2p_node *node);
+void msg_processor_plan_valid_block_acceptance(
+    struct msg_block_acceptance *out,
+    const struct msg_processor *mp,
+    const struct p2p_node *node,
+    const struct block_index *new_tip);
 
 /* Shared accessors. */
 struct node_db *msg_node_db(const struct msg_processor *mp);

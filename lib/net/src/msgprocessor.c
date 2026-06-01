@@ -849,6 +849,65 @@ void msg_processor_note_block_connected(const struct msg_processor *mp,
         mp->block_connected(height, mp->block_connected_ctx);
 }
 
+void msg_processor_request_invalid_block_headers(struct msg_processor *mp,
+                                                 struct p2p_node *node)
+{
+    struct sync_getheaders_action action = {0};
+
+    syncsvc_plan_invalid_block_getheaders(&action, sync_get_state());
+    exec_getheaders_action(mp, node, &action);
+}
+
+static int msg_processor_acceptance_peer_height(
+    const struct msg_processor *mp,
+    const struct p2p_node *node,
+    int tip_height)
+{
+    int max_height = tip_height;
+
+    if (mp && mp->main_state && mp->main_state->pindex_best_header &&
+        mp->main_state->pindex_best_header->nHeight > max_height) {
+        max_height = mp->main_state->pindex_best_header->nHeight;
+    }
+    if (node && node->starting_height > max_height)
+        max_height = node->starting_height;
+    return max_height;
+}
+
+void msg_processor_plan_valid_block_acceptance(
+    struct msg_block_acceptance *out,
+    const struct msg_processor *mp,
+    const struct p2p_node *node,
+    const struct block_index *new_tip)
+{
+    struct msg_block_acceptance empty = {0};
+    struct sync_block_acceptance acceptance;
+    int header_height;
+
+    if (!out)
+        return;
+    *out = empty;
+    if (!mp || !mp->main_state || !node || !new_tip)
+        return;
+
+    header_height = mp->main_state->pindex_best_header
+        ? mp->main_state->pindex_best_header->nHeight
+        : new_tip->nHeight;
+    syncsvc_note_valid_block(&acceptance, node, sync_get_state(),
+                             new_tip->nHeight, header_height,
+                             new_tip->nTime,
+                             msg_processor_acceptance_peer_height(
+                                 mp, node, new_tip->nHeight));
+
+    out->reached_peer_tip = acceptance.reached_peer_tip;
+    out->should_emit_tip_updated = acceptance.should_emit_tip_updated;
+    out->should_set_sync_state = acceptance.should_set_sync_state;
+    out->next_sync_state = acceptance.next_sync_state;
+    out->should_set_flush_policy = acceptance.should_set_flush_policy;
+    out->should_update_peer_state = acceptance.should_update_peer_state;
+    out->next_peer_state = acceptance.next_peer_state;
+}
+
 int msg_get_height(void *ctx)
 {
     struct msg_processor *mp = (struct msg_processor *)ctx;
