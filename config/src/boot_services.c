@@ -3735,6 +3735,36 @@ static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
     printf("[shutdown] fast restart state persisted\n");
 }
 
+static bool shutdown_flush_coins_to_sqlite(struct boot_svc_ctx *svc,
+                                           const char *label)
+{
+    const char *flush_label = label ? label : "shutdown";
+    if (!svc || !svc->coins_sqlite || !svc->coins_tip) {
+        LOG_WARN("shutdown",
+                 "%s coins flush skipped: svc=%p coins_sqlite=%p "
+                 "coins_tip=%p",
+                 flush_label, (void *)svc,
+                 svc ? (void *)svc->coins_sqlite : NULL,
+                 svc ? (void *)svc->coins_tip : NULL);
+        return false;
+    }
+
+    bool ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:shutdown-single-writer
+        svc->coins_sqlite, &svc->coins_tip->cache_coins,
+        &svc->coins_tip->hash_block, &svc->coins_tip->commitment);
+    if (!ok) {
+        LOG_WARN("shutdown",
+                 "%s coins flush failed; retaining %zu dirty entries",
+                 flush_label, svc->coins_tip->cache_coins.size);
+        return false;
+    }
+
+    coins_map_free(&svc->coins_tip->cache_coins);
+    coins_map_init(&svc->coins_tip->cache_coins);
+    utxo_commitment_init(&svc->coins_tip->commitment);
+    return true;
+}
+
 static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 {
     /* Signal P2P threads to stop, then flush coins while threads wind down.
@@ -3750,7 +3780,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
      * iteration. If it was mid-connect_block, it already flushed via the
      * g_shutdown_requested handler in activate_best_chain. */
     printf("Flushing coins cache to SQLite...\n");
-    if (coins_view_cache_flush(svc->coins_tip)) {
+    if (shutdown_flush_coins_to_sqlite(svc, "network-quiesce")) {
         printf("Coins cache flushed.\n");
     } else {
         fprintf(stderr, "WARNING: Coins cache flush FAILED during shutdown!\n");
@@ -3766,7 +3796,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
     /* Final flush in case message thread connected blocks between
      * our flush and its exit */
-    coins_view_cache_flush(svc->coins_tip);
+    (void)shutdown_flush_coins_to_sqlite(svc, "final");
     coins_view_cache_free(svc->coins_tip);
     coins_view_sqlite_close(svc->coins_sqlite);
 
@@ -3901,7 +3931,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * UTXO state is safe even if the rest of shutdown is interrupted. */
     if (svc->coins_tip) {
         printf("Emergency coins flush...\n");
-        coins_view_cache_flush(svc->coins_tip);
+        (void)shutdown_flush_coins_to_sqlite(svc, "emergency");
         printf("Emergency flush done.\n");
     }
 
