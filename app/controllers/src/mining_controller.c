@@ -32,7 +32,6 @@ struct mining_context {
     struct main_state *main_state;
     struct tx_mempool *mempool;
     struct coins_view_cache *coins_tip;
-    const char *datadir;
 };
 
 static struct mining_context g_mining_ctx = {0};
@@ -42,15 +41,21 @@ static struct mining_context *mining_ctx(void)
     return &g_mining_ctx;
 }
 
+static bool mining_submit_mined_block(struct block *block)
+{
+    struct validation_state state;
+    validation_state_init(&state);
+    return reducer_ingest_block(boot_activation_controller(), block,
+                                REDUCER_SRC_MINED, true, &state);
+}
+
 void rpc_mining_set_state(struct main_state *ms, struct tx_mempool *mp,
-                           struct coins_view_cache *coins_tip,
-                           const char *datadir)
+                           struct coins_view_cache *coins_tip)
 {
     struct mining_context *ctx = mining_ctx();
     ctx->main_state = ms;
     ctx->mempool = mp;
     ctx->coins_tip = coins_tip;
-    ctx->datadir = datadir;
 }
 
 static bool rpc_getmininginfo(const struct json_value *params, bool help,
@@ -127,8 +132,7 @@ static bool rpc_generate(const struct json_value *params, bool help,
         unsigned int extra_nonce = 0;
         increment_extra_nonce(&tmpl->block, tip, &extra_nonce);
 
-        if (process_block_found(&tmpl->block, ctx->main_state,
-                                ctx->coins_tip, cp, ctx->datadir)) {
+        if (mining_submit_mined_block(&tmpl->block)) {
             struct uint256 hash;
             block_get_hash(&tmpl->block, &hash);
             char hex[65];

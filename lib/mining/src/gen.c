@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
@@ -139,9 +140,8 @@ static void *miner_thread(void *arg)
         if (try_solve_equihash(&tmpl->block, ctx->params,
                                tip->nHeight + 1)) {
             printf("Found block!\n");
-            if (process_block_found(&tmpl->block, ctx->ms,
-                                     ctx->coins_tip, ctx->params,
-                                     ctx->datadir)) {
+            if (ctx->block_found &&
+                ctx->block_found(&tmpl->block, ctx->block_found_ctx)) {
                 struct block_index *new_tip =
                     active_chain_tip(&ctx->ms->chain_active);
                 if (new_tip && new_tip->phashBlock) {
@@ -182,7 +182,7 @@ void gen_start(struct gen_context *ctx)
     for (int i = 0; i < g_num_miner_threads; i++) {
         if (thread_registry_spawn_ex("zcl_miner", miner_thread, ctx,
                                       &g_miner_threads[i]) != 0) {
-            fprintf(stderr, "gen_start: failed to start miner thread %d\n", i);
+            LOG_WARN("mining", "gen_start: failed to start miner thread %d", i);
             atomic_store(&ctx->running, false);
             for (int j = 0; j < started; j++)
                 pthread_join(g_miner_threads[j], NULL);

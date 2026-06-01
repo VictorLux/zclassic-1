@@ -9,7 +9,6 @@
 #include "validation/check_transaction.h"
 #include "validation/connect_block.h"
 #include "validation/process_block.h"
-#include "services/chain_activation_controller.h"
 #include "validation/sigops.h"
 #include "validation/update_coins.h"
 #include "validation/main_constants.h"
@@ -211,27 +210,4 @@ void increment_extra_nonce(struct block *pblock,
 
     transaction_compute_hash(cb);
     block_compute_merkle_root(pblock);
-}
-
-bool process_block_found(struct block *pblock,
-                         struct main_state *ms,
-                         struct coins_view_cache *coins_tip,
-                         const struct chain_params *params,
-                         const char *datadir)
-{
-    struct validation_state state;
-    validation_state_init(&state);
-
-    /* mined-block intake: the synchronous reducer_ingest_block drives the
-     * eight Wave-S stages and fills the validation_state. force=true mirrors
-     * the locally-mined relay-pre-filter-skipping semantics
-     * process_block_found already had. The verdict bool flows back to the
-     * mining loop. The main_state / coins_tip / params / datadir args are
-     * resolved inside the reducer from boot_activation_controller(). */
-    (void)ms;
-    (void)coins_tip;
-    (void)params;
-    (void)datadir;
-    return reducer_ingest_block(boot_activation_controller(), pblock,
-                                REDUCER_SRC_MINED, true, &state);
 }

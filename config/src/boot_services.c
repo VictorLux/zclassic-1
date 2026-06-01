@@ -703,6 +703,15 @@ static void boot_https_explorer_stop(void *ctx)
     https_server_stop();
 }
 
+static bool boot_submit_mined_block(struct block *block, void *ctx)
+{
+    (void)ctx;
+    struct validation_state state;
+    validation_state_init(&state);
+    return reducer_ingest_block(boot_activation_controller(), block,
+                                REDUCER_SRC_MINED, true, &state);
+}
+
 static bool boot_miner_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -714,8 +723,9 @@ static bool boot_miner_start(void *ctx)
     svc->gen->coins_tip = svc->coins_tip;
     svc->gen->mempool = svc->mempool;
     svc->gen->params = svc->params;
-    svc->gen->datadir = svc->datadir;
     svc->gen->num_threads = app->gen_threads > 0 ? app->gen_threads : 1;
+    svc->gen->block_found = boot_submit_mined_block;
+    svc->gen->block_found_ctx = svc;
     svc->gen->coinbase_script.size = 0;
 
     if (app->miner_address) {
@@ -2768,7 +2778,7 @@ bool app_init_services(struct app_context *ctx,
     rpc_rawtx_set_connman(svc->connman);
     register_rawtransaction_rpc_commands(svc->rpc_table);
 
-    rpc_mining_set_state(svc->state, svc->mempool, svc->coins_tip, ctx->datadir);
+    rpc_mining_set_state(svc->state, svc->mempool, svc->coins_tip);
     register_mining_rpc_commands(svc->rpc_table);
 
     rpc_misc_set_state(svc->state);

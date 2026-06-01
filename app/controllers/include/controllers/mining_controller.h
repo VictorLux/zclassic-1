@@ -12,8 +12,7 @@
 #include "coins/coins_view.h"
 
 void rpc_mining_set_state(struct main_state *ms, struct tx_mempool *mp,
-                           struct coins_view_cache *coins_tip,
-                           const char *datadir);
+                           struct coins_view_cache *coins_tip);
 
 void register_mining_rpc_commands(struct rpc_table *t);
 

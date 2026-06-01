@@ -38,10 +38,4 @@ void increment_extra_nonce(struct block *pblock,
                            struct block_index *pindex_prev,
                            unsigned int *extra_nonce);
 
-bool process_block_found(struct block *pblock,
-                         struct main_state *ms,
-                         struct coins_view_cache *coins_tip,
-                         const struct chain_params *params,
-                         const char *datadir);
-
 #endif

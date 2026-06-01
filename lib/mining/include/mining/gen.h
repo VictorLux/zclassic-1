@@ -10,13 +10,16 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 
+typedef bool (*gen_block_found_fn)(struct block *pblock, void *ctx);
+
 struct gen_context {
     struct main_state *ms;
     struct coins_view_cache *coins_tip;
     struct tx_mempool *mempool;
     const struct chain_params *params;
-    const char *datadir;
     struct script coinbase_script;
+    gen_block_found_fn block_found;
+    void *block_found_ctx;
     int num_threads;
     _Atomic bool running;
 };
