@@ -734,6 +734,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->runtime = runtime;
     mp->compact_block_submit = NULL;
     mp->compact_block_submit_ctx = NULL;
+    mp->peer_save = NULL;
+    mp->peer_save_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -772,6 +774,16 @@ void msg_processor_set_compact_block_submit(
         return;
     mp->compact_block_submit = submit;
     mp->compact_block_submit_ctx = ctx;
+}
+
+void msg_processor_set_peer_save(struct msg_processor *mp,
+                                 msg_peer_save_fn save,
+                                 void *ctx)
+{
+    if (!mp)
+        return;
+    mp->peer_save = save;
+    mp->peer_save_ctx = ctx;
 }
 
 int msg_get_height(void *ctx)

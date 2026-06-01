@@ -56,6 +56,7 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
+#include "models/peer.h"
 #include "models/utxo.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/chainparams.h"
@@ -96,6 +97,7 @@
 #include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
+#include "net/peer_lifecycle.h"
 #include <limits.h>
 #include "net/onion_service.h"
 #include "net/peer_strategy.h"
@@ -723,6 +725,72 @@ static bool boot_submit_compact_block(struct block *block,
                  (void *)block, (void *)state);
     return reducer_ingest_block(boot_activation_controller(), block,
                                 REDUCER_SRC_COMPACT, false, state);
+}
+
+struct boot_peer_save_ctx {
+    struct db_peer peer;
+    int64_t peer_id;
+    char addr[256];
+};
+
+static void boot_build_peer_record(const struct p2p_node *node,
+                                   struct db_peer *peer)
+{
+    memset(peer, 0, sizeof(*peer));
+    memcpy(peer->ip, node->addr.svc.addr.ip, 16);
+    peer->port = node->addr.svc.port;
+    peer->services = node->services;
+    peer->last_seen = (int64_t)platform_time_wall_time_t();
+    peer->is_zcl23 = peer_supports_fast_sync(node->services);
+}
+
+static bool boot_peer_save_write(struct node_db *ndb, void *ctx)
+{
+    struct boot_peer_save_ctx *save = ctx;
+    if (!ndb || !save)
+        LOG_FAIL("boot", "peer save missing ndb=%p ctx=%p",
+                 (void *)ndb, ctx);
+    bool ok = db_peer_save_advisory(ndb, &save->peer);
+    if (!ok)
+        peer_lifecycle_note_cache_skipped_addr(save->addr, save->peer_id,
+                                               "save_advisory");
+    return ok;
+}
+
+static void boot_peer_save_free(void *ctx)
+{
+    free(ctx);
+}
+
+static void boot_save_peer_advisory(const struct p2p_node *node, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    struct db_peer peer;
+    struct db_service *dbsvc = svc ? svc->db_service : NULL;
+    struct node_db *ndb = svc ? svc->node_db : NULL;
+
+    if (!svc || !node)
+        return;
+    boot_build_peer_record(node, &peer);
+
+    if (dbsvc && db_service_is_started(dbsvc)) {
+        struct boot_peer_save_ctx *save =
+            zcl_malloc(sizeof(*save), "boot.peer_save_ctx");
+        if (!save)
+            return;
+        save->peer = peer;
+        save->peer_id = node->id;
+        snprintf(save->addr, sizeof(save->addr), "%s", node->addr_name);
+        if (db_service_enqueue_write(dbsvc, boot_peer_save_write,
+                                     save, boot_peer_save_free))
+            return;
+        peer_lifecycle_note_cache_skipped(node, "enqueue_queue_full");
+        boot_peer_save_free(save);
+        return;
+    }
+
+    if (ndb && ndb->open && !db_peer_save_advisory(ndb, &peer))
+        peer_lifecycle_note_cache_skipped(node, "save_advisory");
 }
 
 static bool boot_miner_start(void *ctx)
@@ -2357,6 +2425,8 @@ bool app_init_services(struct app_context *ctx,
                        &svc->connman->manager, &svc->runtime);
     msg_processor_set_compact_block_submit(svc->msg_processor,
                                            boot_submit_compact_block, svc);
+    msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,
+                                svc);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {

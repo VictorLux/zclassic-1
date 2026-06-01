@@ -1269,16 +1269,23 @@ static int t_handshake_peer_save_is_async(void)
     char *buf = NULL;
     TEST("handshake peer persistence is advisory async write") {
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_version.c") == 0);
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "db_service_enqueue_write(dbsvc") != NULL);
         ASSERT(strstr(buf, "db_peer_save_advisory") != NULL);
-        ASSERT(strstr(buf, "msg_version.peer_save_ctx") != NULL);
+        ASSERT(strstr(buf, "boot.peer_save_ctx") != NULL);
         ASSERT(strstr(buf, "enqueue_queue_full") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped_addr") != NULL);
-        ASSERT(strstr(buf, "handshake processing") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_peer_save") != NULL);
         ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_version.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->peer_save") != NULL);
+        ASSERT(strstr(buf, "models/peer.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/peer_lifecycle.c") == 0);

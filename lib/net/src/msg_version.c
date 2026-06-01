@@ -16,14 +16,10 @@
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
 #include "net/fast_sync.h"
-#include "config/db_service.h"
-#include "models/peer.h"
-#include "models/database.h"
 #include "core/serialize.h"
 #include "util/timedata.h"
 #include "event/event.h"
 #include "util/log_macros.h"
-#include "util/safe_alloc.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -34,72 +30,13 @@ static uint8_t g_external_ip[4];
 static uint16_t g_external_port;
 static bool g_has_external_ip = false;
 
-struct msg_version_peer_save_ctx {
-    struct db_peer peer;
-    int64_t peer_id;
-    char addr[256];
-};
-
-static bool msg_version_peer_save_write(struct node_db *ndb, void *ctx)
-{
-    struct msg_version_peer_save_ctx *save = ctx;
-    if (!ndb || !save)
-        return false;
-    bool ok = db_peer_save_advisory(ndb, &save->peer);
-    if (!ok)
-        peer_lifecycle_note_cache_skipped_addr(save->addr, save->peer_id,
-                                               "save_advisory");
-    return ok;
-}
-
-static void msg_version_peer_save_free(void *ctx)
-{
-    free(ctx);
-}
-
-static void msg_version_build_peer_record(const struct p2p_node *node,
-                                          struct db_peer *peer)
-{
-    memset(peer, 0, sizeof(*peer));
-    memcpy(peer->ip, node->addr.svc.addr.ip, 16);
-    peer->port = node->addr.svc.port;
-    peer->services = node->services;
-    peer->last_seen = (int64_t)platform_time_wall_time_t();
-    peer->is_zcl23 = peer_supports_fast_sync(node->services);
-}
-
 static void msg_version_save_peer(struct msg_processor *mp,
                                   const struct p2p_node *node)
 {
-    struct db_peer peer;
-    struct db_service *dbsvc = NULL;
-    struct node_db *ndb = NULL;
-
     if (!mp || !node)
         return;
-    msg_version_build_peer_record(node, &peer);
-
-    if (mp->runtime)
-        dbsvc = mp->runtime->db_service;
-    if (dbsvc && db_service_is_started(dbsvc)) {
-        struct msg_version_peer_save_ctx *ctx =
-            zcl_malloc(sizeof(*ctx), "msg_version.peer_save_ctx");
-        if (!ctx)
-            return;
-        ctx->peer = peer;
-        ctx->peer_id = node->id;
-        snprintf(ctx->addr, sizeof(ctx->addr), "%s", node->addr_name);
-        if (db_service_enqueue_write(dbsvc, msg_version_peer_save_write,
-                                     ctx, msg_version_peer_save_free))
-            return;
-        peer_lifecycle_note_cache_skipped(node, "enqueue_queue_full");
-        msg_version_peer_save_free(ctx);
-        return;
-    }
-
-    ndb = msg_node_db(mp);
-    if (ndb && ndb->open && !db_peer_save_advisory(ndb, &peer))
-        peer_lifecycle_note_cache_skipped(node, "save_advisory");
+    if (mp->peer_save)
+        mp->peer_save(node, mp->peer_save_ctx);
 }
 
 void msg_version_set_external_ip(const char *ip_str, uint16_t port)
@@ -443,8 +380,9 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
         }
     }
 
-    /* Peer persistence is advisory; enqueue it so handshake processing
-     * is never held behind a busy SQLite writer. */
+    /* Peer persistence is advisory and caller-owned; the app shell decides
+     * whether to enqueue a model write so handshake processing stays a net
+     * protocol concern. */
     msg_version_save_peer(mp, node);
     return true;
 }

@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 57 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 55 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -90,8 +90,10 @@ If the node is not running, record that explicitly before claiming live proof.
   discovery are now callback-injected app handlers registered by boot, so
   `lib/net/src/onion_service.c` no longer includes the blog controller.
   Compact-block reducer submission is now callback-injected from boot, so
-  `lib/net/src/msg_compact.c` no longer includes the activation service. Keep
-  shrinking it; do not add new entries.
+  `lib/net/src/msg_compact.c` no longer includes the activation service.
+  Handshake peer persistence is now callback-injected from boot, so
+  `lib/net/src/msg_version.c` no longer includes the Peer model/database
+  headers. Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

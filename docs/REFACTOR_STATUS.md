@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 57 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 55 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -176,6 +176,11 @@ node soak.
   scoring, while boot maps completed compact blocks to
   `REDUCER_SRC_COMPACT`. The lib-to-app include baseline is down from 58 to
   57.
+- Handshake peer persistence is now a net-layer callback registered by boot.
+  `lib/net/src/msg_version.c` owns version/verack protocol state only, while
+  boot owns the async `db_service_enqueue_write()` /
+  `db_peer_save_advisory()` model write. The lib-to-app include baseline is
+  down from 57 to 55.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -280,7 +285,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 57 grandfathered lib-to-app includes.
+  with 55 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -301,6 +306,36 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after callback-injecting handshake peer persistence
+  from boot, removing `msg_version.c`'s Peer model/database includes, and
+  logging the boot-owned peer-save false-return path.
+- `make test_parallel`: pass after rebuilding the parallel runner for the
+  peer-save callback move and the lint-gate assertion update.
+- `tools/scripts/check_lib_layering.sh`: pass with 55 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations after updating three `boot_services.c`
+  baseline line numbers shifted by the boot-owned peer-save helper.
+- Focused filtered tests passed:
+  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`,
+  `./test_parallel --only=peer_lifecycle --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass after the peer-save callback move; E1, E2, supervisor,
+  E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
+  remain at zero active debt, E6 is 24 grandfathered write surfaces, and
+  lib-layering is 55 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the peer-save callback move,
+  `0/279` groups failed in 78.1s.
+- Quick live sample at 2026-06-01 06:05:55 UTC after the peer-save callback
+  move: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1357526`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8023` / `[::]:8023` with no `8033` listener in the sample, and a
+  journal scan over the previous 10 minutes found no low-tip regression,
+  integrity failure, OOM, fatal, segfault, assert, panic, corrupt-state, or
+  `DB_ERR_TIP_MISMATCH` signal. This is a continuity check, not the final
+  soak.
 - `make -j$(nproc)`: pass after callback-injecting compact-block reducer
   submission from boot and removing `msg_compact.c`'s activation-service
   include.
