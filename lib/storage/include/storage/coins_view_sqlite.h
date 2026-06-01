@@ -46,11 +46,9 @@ bool coins_view_sqlite_have_coins(struct coins_view_sqlite *cvs,
                                    const struct uint256 *txid);
 bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
                                        struct uint256 *hash);
-bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
-                                    struct coins_map *map_coins,
-                                    const struct uint256 *hash_block);
-/* Extended version: writes UTXO commitment atomically inside the
- * same SAVEPOINT transaction as the coins flush. Pass NULL to skip. */
+/* Flush dirty UTXO entries and optionally persist the path commitment in the
+ * same transaction. Pass NULL for `commit` when only the coins_best_block
+ * anchor should be updated. */
 bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                                        struct coins_map *map_coins,
                                        const struct uint256 *hash_block,
@@ -83,7 +81,7 @@ int coins_rewind_above_tip(sqlite3 *db, int64_t tip_height, int64_t max_rows);
  *
  * Caller obligation: the begin/commit pair must wrap any external
  * write made directly via sqlite3 on cvs->db. The internal flush
- * (coins_view_sqlite_batch_write_ex) opens its OWN transaction and
+ * (`coins_view_sqlite_batch_write_ex`) opens its OWN transaction and
  * does NOT need to be wrapped — use these only when the chain_advance
  * 9-step protocol coordinates writes on BOTH handles.
  *

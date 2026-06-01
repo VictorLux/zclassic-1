@@ -68,8 +68,8 @@ static bool csb_batch_write_impl(void *self, struct coins_map *map_coins,
      * authorship. */
     if (sb->coins_db &&
         utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        bool durable = coins_view_sqlite_batch_write( // one-write-path-ok:reducer-utxo-authority
-            sb->coins_db, map_coins, hash_block);
+        bool durable = coins_view_sqlite_batch_write_ex( // one-write-path-ok:reducer-utxo-authority
+            sb->coins_db, map_coins, hash_block, NULL);
         if (!durable)
             LOG_FAIL("coins_view_stage_backing",
                      "batch_write: STAGE-owned coins.db commit failed");

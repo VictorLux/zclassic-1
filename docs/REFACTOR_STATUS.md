@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, controller raw-SQL adoption,
   lib-layering, and raw allocation debt are at zero grandfathered entries; E6
-  is down to 21 grandfathered write surfaces, and other ratchet baselines still
+  is down to 17 grandfathered write surfaces, and other ratchet baselines still
   grandfather real debt.
 
 ## Completed Architecture Moves
@@ -335,6 +335,11 @@ node soak.
   effect. `getdataintegrity`, `gethodlwave`, and `gethodlwaveimage` scan the
   persisted read models instead of calling `coins_view_cache_flush()`, dropping
   the E6 one-write-path baseline from 24 to 21 write surfaces.
+- The redundant `coins_view_sqlite_batch_write()` compatibility wrapper was
+  deleted. Vtable, reducer-stage, and test callers now use
+  `coins_view_sqlite_batch_write_ex(..., NULL)` when no path commitment write
+  is needed, leaving one SQLite coins flush entry point and dropping the E6
+  one-write-path baseline from 21 to 17 write surfaces.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -417,7 +422,8 @@ their owning files are split or touched for adjacent debt.
 From `tools/scripts/one_write_path_baseline.txt`:
 
 - controller/admin/repair `coins_view_cache_flush` call sites
-- coins.db batch writer declarations and implementations
+- boot `coins_view_cache_flush` bootstrapping paths
+- the remaining `coins_view_sqlite_batch_write_ex()` SQLite writer entry point
 - process-block flush-policy write paths
 - the compatibility `active_chain_set_tip()` wrapper, while remaining
   production cache/window moves use `active_chain_move_window_tip()`
@@ -461,6 +467,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after deleting the redundant
+  `coins_view_sqlite_batch_write()` wrapper and routing callers through
+  `coins_view_sqlite_batch_write_ex(..., NULL)`.
+- `git diff --check`: pass.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- `tools/scripts/check_lib_layering.sh`: pass with 0 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 17 grandfathered write
+  surfaces and no new violations.
+- Focused filtered tests passed:
+  `./test_parallel --only=coins --timeout=120 --verbose` and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass after the coins SQLite wrapper deletion; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
+  17 grandfathered write surfaces.
+- `./test_parallel --timeout=180`: pass after the coins SQLite wrapper
+  deletion, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 12:02:56 UTC after the coins SQLite
+  wrapper deletion did not prove live-node health: no `zclassic23` process was
+  running, `zcl-rpc` exited 7 for both `getblockcount` and
+  `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, `18232`, or `8232`
+  listener, `systemctl --user status zclassic23` could not connect to the
+  user bus, and the recent read-only journal checks had no entries. The
+  service was not restarted; this slice stayed read-only and preserved the
+  `8023` port expectation.
 - `make -j$(nproc)`: pass after moving active-tip child discovery and disk
   verification into `process_block_tip_child.c`.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner

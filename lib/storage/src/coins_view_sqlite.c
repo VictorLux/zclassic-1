@@ -51,7 +51,8 @@ static bool cvs_batch_write_impl(void *self, struct coins_map *map_coins,
                                   const struct uint256 *hash_block)
 {
     struct coins_view_sqlite *cvs = (struct coins_view_sqlite *)self;
-    return coins_view_sqlite_batch_write(cvs, map_coins, hash_block);
+    return coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-vtable-adapter
+        cvs, map_coins, hash_block, NULL);
 }
 
 static struct coins_view_vtable cvs_vtable = {
@@ -683,14 +684,7 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
     return false;
 }
 
-/* ── batch_write: flush dirty coins_map to SQLite ──────────────── */
-
-bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
-                                    struct coins_map *map_coins,
-                                    const struct uint256 *hash_block)
-{
-    return coins_view_sqlite_batch_write_ex(cvs, map_coins, hash_block, NULL);
-}
+/* ── batch_write_ex: flush dirty coins_map to SQLite ───────────── */
 
 bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
                                        struct coins_map *map_coins,

@@ -638,7 +638,7 @@ int test_coins(void)
         coins_map_init(&cm);
         struct uint256 hash;
         uint256_set_null(&hash);
-        bool ok = !coins_view_sqlite_batch_write(&cvs, &cm, &hash);
+        bool ok = !coins_view_sqlite_batch_write_ex(&cvs, &cm, &hash, NULL);
         coins_map_free(&cm);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -647,7 +647,7 @@ int test_coins(void)
     printf("coins_view_sqlite: roundtrip flush and read back... ");
     {
         /* Create an in-memory SQLite DB, open coins_view_sqlite on it,
-         * write some UTXOs via batch_write, then read them back. */
+         * write some UTXOs via batch_write_ex, then read them back. */
         sqlite3 *db = NULL;
         int rc = sqlite3_open(":memory:", &db);
         bool ok = (rc == SQLITE_OK && db != NULL);
@@ -686,7 +686,8 @@ int test_coins(void)
                 memset(best.data, 0xBB, 32);
 
                 /* Flush to SQLite */
-                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = coins_view_sqlite_batch_write_ex(&cvs, &cm, &best,
+                                                       NULL);
 
                 /* Read back */
                 if (ok) {
@@ -752,7 +753,7 @@ int test_coins(void)
         /* THE CRITICAL TEST: coins flush works inside a foreign transaction.
          * 1. Open a sqlite3 db
          * 2. Start a foreign BEGIN TRANSACTION (like node_db batch)
-         * 3. Call coins_view_sqlite_batch_write (uses SAVEPOINT)
+         * 3. Call coins_view_sqlite_batch_write_ex (uses SAVEPOINT)
          * 4. SAVEPOINT nests inside the BEGIN, flush succeeds
          * 5. COMMIT the foreign txn, then verify UTXOs readable */
         sqlite3 *db = NULL;
@@ -797,7 +798,8 @@ int test_coins(void)
                 memset(best.data, 0xCC, 32);
 
                 /* SAVEPOINT nests inside the foreign BEGIN — flush succeeds */
-                bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                bool flush_ok = coins_view_sqlite_batch_write_ex(
+                    &cvs, &cm, &best, NULL);
                 ok = ok && flush_ok;
 
                 /* Foreign transaction is still open (SAVEPOINT doesn't end it) */
@@ -875,7 +877,8 @@ int test_coins(void)
                 struct uint256 best;
                 memset(best.data, (uint8_t)cycle, 32);
 
-                bool flush_ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                bool flush_ok = coins_view_sqlite_batch_write_ex(
+                    &cvs, &cm, &best, NULL);
                 ok = ok && flush_ok;
 
                 /* If we opened a foreign txn, commit it after flush */
@@ -943,7 +946,8 @@ int test_coins(void)
                 e->coins.height = 321;
                 e->flags = COINS_CACHE_DIRTY;
 
-                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = coins_view_sqlite_batch_write_ex(&cvs, &cm, &best,
+                                                       NULL);
                 ok = ok && coins_view_sqlite_have_coins(&cvs, &txid);
                 coins_init(&readback);
                 ok = ok && coins_view_sqlite_get_coins(&cvs, &txid, &readback);
@@ -954,7 +958,8 @@ int test_coins(void)
 
                 TEST_DB_BEGIN_TXN(db);
                 memset(best.data, 0xBC, 32);
-                ok = ok && coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = ok && coins_view_sqlite_batch_write_ex(
+                    &cvs, &cm, &best, NULL);
                 TEST_DB_COMMIT(db);
 
                 coins_map_free(&cm);
@@ -1005,7 +1010,8 @@ int test_coins(void)
                 e->flags = COINS_CACHE_DIRTY;
                 struct uint256 best;
                 memset(best.data, 0x11, 32);
-                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = coins_view_sqlite_batch_write_ex(&cvs, &cm, &best,
+                                                       NULL);
                 coins_map_free(&cm);
             }
 
@@ -1029,7 +1035,8 @@ int test_coins(void)
                 e->flags = COINS_CACHE_DIRTY;
                 struct uint256 best;
                 memset(best.data, 0x22, 32);
-                ok = coins_view_sqlite_batch_write(&cvs, &cm, &best);
+                ok = coins_view_sqlite_batch_write_ex(&cvs, &cm, &best,
+                                                       NULL);
                 coins_map_free(&cm);
             }
 

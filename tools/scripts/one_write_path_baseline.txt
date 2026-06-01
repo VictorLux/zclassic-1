@@ -19,11 +19,7 @@ config/src/boot_services.c:3769: coins_view_cache_flush(svc->coins_tip);
 config/src/boot_services.c:3904: coins_view_cache_flush(svc->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
-lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
-lib/storage/include/storage/coins_view_sqlite.h:54:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/storage/src/coins_view_sqlite.c:54: return coins_view_sqlite_batch_write(cvs, map_coins, hash_block);
-lib/storage/src/coins_view_sqlite.c:688:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
-lib/storage/src/coins_view_sqlite.c:692: return coins_view_sqlite_batch_write_ex(cvs, map_coins, hash_block, NULL);
-lib/storage/src/coins_view_sqlite.c:695:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
+lib/storage/include/storage/coins_view_sqlite.h:52:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
+lib/storage/src/coins_view_sqlite.c:689:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/validation/src/process_block_flush_policy.c:236: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:250: ok = coins_view_cache_flush(coins_tip);
