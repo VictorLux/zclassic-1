@@ -27,12 +27,6 @@
 struct dandelion_state g_dandelion;
 bool g_dandelion_init = false;
 
-static bool msg_tx_snapshot_active(const struct msg_processor *mp)
-{
-    return mp && mp->snapshot_active &&
-           mp->snapshot_active(mp->snapshot_active_ctx);
-}
-
 /* ── incoming `tx` classification + scoring ──────────────
  *
  * this helper silently upserted every deserialised tx
@@ -194,7 +188,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
             if (block_already_seen(&inv.hash))
                 continue;
             /* Don't request blocks during snapshot sync */
-            if (msg_tx_snapshot_active(mp))
+            if (msg_processor_snapshot_active(mp))
                 continue;
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);

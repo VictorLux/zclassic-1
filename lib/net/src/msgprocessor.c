@@ -732,6 +732,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->datadir = datadir;
     mp->net_mgr = net_mgr;
     mp->runtime = runtime;
+    mp->block_submit = NULL;
+    mp->block_submit_ctx = NULL;
     mp->compact_block_submit = NULL;
     mp->compact_block_submit_ctx = NULL;
     mp->peer_save = NULL;
@@ -780,6 +782,16 @@ void msg_processor_set_compact_block_submit(
     mp->compact_block_submit_ctx = ctx;
 }
 
+void msg_processor_set_block_submit(struct msg_processor *mp,
+                                    msg_block_submit_fn submit,
+                                    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->block_submit = submit;
+    mp->block_submit_ctx = ctx;
+}
+
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx)
@@ -809,6 +821,12 @@ void msg_processor_set_wallet_tx_accepted(
         return;
     mp->wallet_tx_accepted = accepted;
     mp->wallet_tx_accepted_ctx = ctx;
+}
+
+bool msg_processor_snapshot_active(const struct msg_processor *mp)
+{
+    return mp && mp->snapshot_active &&
+           mp->snapshot_active(mp->snapshot_active_ctx);
 }
 
 int msg_get_height(void *ctx)

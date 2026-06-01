@@ -715,6 +715,18 @@ static bool boot_submit_mined_block(struct block *block, void *ctx)
                                 REDUCER_SRC_MINED, true, &state);
 }
 
+static bool boot_submit_p2p_block(struct block *block,
+                                  struct validation_state *state,
+                                  void *ctx)
+{
+    (void)ctx;
+    if (!block || !state)
+        LOG_FAIL("boot", "p2p block submit missing block=%p state=%p",
+                 (void *)block, (void *)state);
+    return reducer_ingest_block(boot_activation_controller(), block,
+                                REDUCER_SRC_P2P, false, state);
+}
+
 static bool boot_submit_compact_block(struct block *block,
                                       struct validation_state *state,
                                       void *ctx)
@@ -2496,6 +2508,8 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
                        svc->coins_tip, params, ctx->datadir,
                        &svc->connman->manager, &svc->runtime);
+    msg_processor_set_block_submit(svc->msg_processor,
+                                   boot_submit_p2p_block, svc);
     msg_processor_set_compact_block_submit(svc->msg_processor,
                                            boot_submit_compact_block, svc);
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,

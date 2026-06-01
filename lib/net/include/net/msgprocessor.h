@@ -24,6 +24,9 @@ struct validation_state;
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
                                             void *ctx);
+typedef bool (*msg_block_submit_fn)(struct block *block,
+                                    struct validation_state *out,
+                                    void *ctx);
 typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_snapshot_active_fn)(void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
@@ -37,6 +40,8 @@ struct msg_processor {
     const char *datadir;
     struct net_manager *net_mgr;
     const struct app_runtime_context *runtime;
+    msg_block_submit_fn block_submit;
+    void *block_submit_ctx;
     msg_compact_block_submit_fn compact_block_submit;
     void *compact_block_submit_ctx;
     msg_peer_save_fn peer_save;
@@ -82,6 +87,9 @@ void msg_processor_set_compact_block_submit(
     struct msg_processor *mp,
     msg_compact_block_submit_fn submit,
     void *ctx);
+void msg_processor_set_block_submit(struct msg_processor *mp,
+                                    msg_block_submit_fn submit,
+                                    void *ctx);
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx);

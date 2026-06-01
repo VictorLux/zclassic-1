@@ -13,18 +13,13 @@
 #include "net/compact_blocks.h"
 #include "storage/disk_block_io.h"
 #include "services/block_sync_service.h"
-#include "services/snapshot_sync_service.h"
-#include "services/header_sync_service.h"
 #include "services/sync_monitor.h"
 #include "validation/process_block.h"
-#include "services/chain_activation_controller.h"
 #include "consensus/validation.h"
-#include "controllers/sync_controller.h"
 #include "net/download.h"
 #include "net/https_server.h"
 #include "event/event.h"
-#include "wallet/wallet.h"
-#include "models/database.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
@@ -303,7 +298,7 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
      * During NEGOTIATING: blocks fail at height 0, accumulate dos points.
      * During RECEIVING: starves P2P socket reads.
      * During VERIFYING: SHA3 computation needs uncontested SQLite. */
-    if (snapsync_is_active()) {
+    if (msg_processor_snapshot_active(mp)) {
         block_free(&blk);
         return true;
     }
@@ -322,11 +317,14 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
 
     struct validation_state state;
     validation_state_init(&state);
-    /* Block intake: the synchronous reducer_ingest_block drives the eight
-     * Wave-S stages and fills the validation_state. The verdict in `state`
-     * preserves the exact mark-seen + DoS/getheaders contract below. */
-    reducer_ingest_block(boot_activation_controller(), &blk,
-                         REDUCER_SRC_P2P, false, &state);
+    /* Block intake is owned by the app reducer/stage path injected at boot.
+     * The verdict in `state` preserves the mark-seen + DoS/getheaders
+     * contract below while keeping lib/net protocol handling app-agnostic. */
+    if (!mp || !mp->block_submit) {
+        block_free(&blk);
+        LOG_FAIL("net", "block submit callback not configured");
+    }
+    (void)mp->block_submit(&blk, &state, mp->block_submit_ctx);
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];
