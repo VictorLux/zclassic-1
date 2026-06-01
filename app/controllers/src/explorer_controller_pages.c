@@ -8,8 +8,7 @@
  *   app/views/src/explorer_stats_view.c
  *   app/views/src/explorer_factoids_view.c
  *   app/views/src/explorer_pages_view.c
- * (checklist item D2 — controllers must not build views). This file
- * retains only the request dispatch, the in-RAM page cache, and the
+ * This file retains only the request dispatch, the in-RAM page cache, and the
  * background compute-thread orchestration used by the prewarm pipeline.
  * See explorer_controller_internal.h for shared declarations. */
 
@@ -99,10 +98,10 @@ size_t cache_load(const char *name, char *buf, size_t max)
 
 #pragma GCC diagnostic pop
 
-/* serve_loading_placeholder() and the page renderers (tokens, token
- * detail, hodl, events, names, market, swaps, messages) moved to the
- * view shape in app/views/src/explorer_pages_view.c per checklist item
- * D2. The controller now parses + delegates; views render. */
+/* serve_loading_placeholder() and the page renderers (tokens, token detail,
+ * hodl, events, names, market, swaps, messages) live in
+ * app/views/src/explorer_pages_view.c. The controller parses and delegates;
+ * views render. */
 
 void *stats_compute_thread(void *arg)
 {

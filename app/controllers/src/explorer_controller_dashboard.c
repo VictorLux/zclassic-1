@@ -6,8 +6,7 @@
  * native-chain mode. The controller fetches the four header stats and
  * the latest-block rows, packs them into the view structs, and delegates
  * the HTML/HTTP assembly to the dashboard view in
- *   app/views/src/explorer_dashboard_view.c
- * (checklist item D2 — controllers must not build views). */
+ *   app/views/src/explorer_dashboard_view.c */
 
 #include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"

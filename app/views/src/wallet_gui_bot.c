@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 GUI — bot driver (Selenium-like self-test). Checklist D5
- * split: extracted from wallet_gui.c. Drives the real GTK WebKit app,
- * navigating each wallet page, executing JS, and asserting DOM text via
- * the g_bot_script scenario. Shares g_webview / g_self_test / g_bot_fail
- * and navigate() with wallet_gui.c through views/wallet_gui_internal.h.
- * Behavior is byte-identical to the original single-file definitions. */
+ * ZClassic23 GUI bot driver: drives the real GTK WebKit app, navigates wallet
+ * pages, executes JS, and asserts DOM text via the g_bot_script scenario.
+ * Shares g_webview / g_self_test / g_bot_fail and navigate() with wallet_gui.c
+ * through views/wallet_gui_internal.h. */
 
 #if defined(HAVE_WEBKIT) && defined(HAVE_GTK)
 

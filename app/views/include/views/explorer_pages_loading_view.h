@@ -2,10 +2,8 @@
  *
  * Explorer pages loading view — the auto-refreshing "Loading Token
  * Data..." placeholder served by the tokens page while its background
- * cache warms. The controller parses the request and delegates the
- * HTML/HTTP assembly here (checklist item D2 — controllers must not
- * build views). Renders byte-identically to the prior controller
- * implementation; this was a move, not a redesign. */
+ * cache warms. The controller parses the request and delegates the HTML/HTTP
+ * assembly here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_PAGES_LOADING_VIEW_H
 #define ZCL_VIEWS_EXPLORER_PAGES_LOADING_VIEW_H

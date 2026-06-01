@@ -2,8 +2,8 @@
  *
  * Explorer factoids VIEW — chain-structure sections (1-7).
  *
- * Part of the factoids page split (checklist D5). Owns the "origin,
- * emission, and ownership" half of the historian page: Genesis Story,
+ * Owns the "origin, emission, and ownership" half of the historian page:
+ * Genesis Story,
  * Network Upgrade History, Mining Era Analysis, Network Milestones,
  * All-Time Records, Supply Milestones, and Address Statistics. The
  * activity + archaeology + integrity sections (8-17) live in

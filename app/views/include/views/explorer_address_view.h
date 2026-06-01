@@ -3,11 +3,9 @@
  * Explorer address + search views. The controller parses the request,
  * decodes the address, fetches the balance + UTXO list via its existing
  * projection calls, packs the results into the structs below, and
- * delegates here. The search controller keeps the routing/dispatch logic
- * and delegates only the error/not-found page assembly here. All HTML
- * lives in this view (moved out of explorer_controller_address.c per
- * checklist item D2). Output is byte-identical to the prior controller
- * implementation. */
+ * delegates here. The search controller keeps routing/dispatch logic and
+ * delegates only the error/not-found page assembly here. All address/search
+ * HTML lives in this view. */
 
 #ifndef ZCL_VIEWS_EXPLORER_ADDRESS_VIEW_H
 #define ZCL_VIEWS_EXPLORER_ADDRESS_VIEW_H

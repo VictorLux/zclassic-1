@@ -1,15 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer HODL-wave VIEW (checklist D5 split).
+ * Explorer HODL-wave VIEW.
  *
  * Part of the explorer secondary-pages split: this TU owns the HODL-wave
  * page — the cumulative-value bisect helpers, the time-series chart
  * assembly, and explorer_view_hodl. The other secondary pages (tokens,
  * token detail, event log, names, market, swaps, messages, loading
- * placeholder) live in explorer_pages_view.c. explorer_view_hodl is
- * declared in views/explorer_pages_view.h. The chart renders
- * byte-identically to the prior single-file implementation — this was a
- * move, not a redesign. */
+ * placeholder) live in explorer_pages_view.c. explorer_view_hodl is declared
+ * in views/explorer_pages_view.h. */
 
 #include "platform/time_compat.h"
 #include "views/explorer_pages_view.h"

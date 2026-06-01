@@ -2,8 +2,8 @@
  *
  * Explorer factoids VIEW — activity, archaeology & integrity sections (8-17).
  *
- * Part of the factoids page split (checklist D5). Owns the "what the
- * chain carries and how it behaves" half of the historian page: Privacy
+ * Owns the "what the chain carries and how it behaves" half of the historian
+ * page: Privacy
  * Usage Over Time, ZSLP Token History, OP_RETURN Archaeology, Dust & UTXO
  * Analysis, Checkpoint History, Block Time Analysis, Transaction
  * Archaeology, Empty Blocks, Difficulty History, and Data Integrity. The

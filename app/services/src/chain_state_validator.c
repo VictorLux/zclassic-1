@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain State Validator — boot-time cross-check between coins_best_block
- * and active chain tip.
- *
- * Extracted from config/src/boot_index.c (boot decomposition Phase B). */
+ * Chain State Validator: boot-time cross-check between coins_best_block and
+ * active chain tip. */
 
 // one-result-type-ok:single-boot-validation-result — E2 (one way out):
 // the sole fallible entry point returns one domain type,

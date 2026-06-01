@@ -3,9 +3,8 @@
  * Diagnostics controller — the routing glue for the read-only
  * introspection RPC family used by AI agents and power-dev users.
  *
- * The concern was split out of one ~2,550-LOC mega-module into focused,
- * single-responsibility controller files; this file is now just the
- * dispatch table that wires their RPC handlers into the rpc_table:
+ * Focused diagnostics controller files own each read-only concern; this file
+ * is the dispatch table that wires their RPC handlers into the rpc_table:
  *
  *   diagnostics_registry.c          dumpstate / zcl_state + g_dumpers[]
  *                                   + controller-level state ownership

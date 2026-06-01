@@ -2,13 +2,8 @@
  *
  * Explorer secondary-page VIEWS: tokens, token detail, HODL wave, event
  * log, names, market, swaps, messages, and the shared loading
- * placeholder. View shape: controllers parse the request, pass the
- * datadir, and delegate here. All HTML/SVG page assembly lives in this
- * file (moved out of explorer_controller_pages.c per checklist item D2).
- *
- * The HODL time-series chart, ZSLP token tables, and static
- * client-rendered pages render byte-identically to the prior controller
- * implementation — this was a move, not a redesign. */
+ * placeholder. Controllers parse the request, pass the datadir, and delegate
+ * page assembly here. */
 
 #include "platform/time_compat.h"
 #include "views/explorer_pages_view.h"

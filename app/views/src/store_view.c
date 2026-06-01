@@ -1,18 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Store VIEW — ZSLP token commerce presentation layer.
- * View shape: the store controller parses + dispatches the request and
- * delegates rendering here; all read-only page assembly (product
- * list/detail, order index/status, token-gated content) plus the
- * response/format helpers live in this file (moved out of the controller
- * per checklist item D2). The render functions take already-validated
- * arguments and already-opened DB handles; they read + emit byte-identical
- * HTML / HTTP responses with no routing, auth, request-parsing, or
- * state-mutating logic — the order-creating action (serve_create_order)
- * stays in the controller. The balance check in serve_gated_content
- * delegates to zslp_balance / store_check_token_access, which remain owned
- * by the controller / service layer. No behavior change vs the original
- * single-file definitions. */
+ * View shape: the store controller parses and dispatches requests, then
+ * delegates rendering here. This file owns read-only page assembly (product
+ * list/detail, order index/status, token-gated content) plus response/format
+ * helpers. Render functions take already-validated arguments and already-open
+ * DB handles; routing, auth, request parsing, and state mutation stay in the
+ * controller. The balance check in serve_gated_content delegates to
+ * zslp_balance / store_check_token_access, which remain owned by the
+ * controller / service layer. */
 
 #include "views/store_internal.h"
 #include "controllers/zslp_controller.h"

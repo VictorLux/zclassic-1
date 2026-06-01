@@ -2,19 +2,16 @@
  *
  * Store VIEW — shared internals for the presentation-layer split.
  *
- * The store page handlers + response/format helpers are pure
- * presentation: they gather already-fetched DB rows and emit byte-exact
- * HTML / HTTP responses. They were extracted out of the store
- * controller (checklist item D2) into app/views/src/store_view.c so the
- * controller keeps only the request-dispatch + security boundary.
+ * The store page handlers and response/format helpers are pure presentation:
+ * they gather already-fetched DB rows and emit HTML / HTTP responses. The
+ * controller owns request dispatch, security checks, and state mutation.
  *
  * This header declares the moved emitters + format helpers so the
  * controller (which still routes to them with identical arguments) can
  * call them. It also carries the includes the view translation unit
  * needs. Project-internal linkage; included by store_controller*.c (via
  * controllers/store_controller_internal.h) and by store_view.c only —
- * not part of any public surface. No behavior change vs the original
- * single-file definitions. */
+ * not part of any public surface. */
 
 #ifndef ZCL_VIEWS_STORE_INTERNAL_H
 #define ZCL_VIEWS_STORE_INTERNAL_H

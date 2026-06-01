@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats VIEW — phase-1 data gathering (checklist D5 split).
+ * Explorer stats VIEW: phase-1 data gathering.
  *
  * Part of the deep-stats page split: this TU owns the heavier phase-1
  * aggregate queries that fill a struct stats_ctx / struct stats_chart_data
@@ -8,8 +8,7 @@
  * The public entry point (explorer_stats_build) and the lighter inline
  * phase-1 queries live in explorer_stats_view.c; the section emitters live
  * in explorer_stats_sections.c. Shared data structs come from
- * views/explorer_stats_internal.h. Behavior is byte-identical to the
- * original single-file definitions. */
+ * views/explorer_stats_internal.h. */
 
 #include "views/explorer_stats_internal.h"
 

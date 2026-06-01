@@ -6,9 +6,7 @@
  * from: the RPC-proxy mode and the native-chain mode. The controller
  * parses the request, fetches the data (via RPC or the in-process chain
  * accessors), packs it into the structs below, and delegates the entire
- * HTML/HTTP assembly here. View shape — controllers must not build views
- * (checklist item D2). The HTML renders byte-identically to the prior
- * controller implementation; this was a move, not a redesign. */
+ * HTML/HTTP assembly here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_DASHBOARD_VIEW_H
 #define ZCL_VIEWS_EXPLORER_DASHBOARD_VIEW_H

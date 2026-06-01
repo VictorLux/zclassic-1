@@ -4,9 +4,9 @@
 
 /* sync_controller_writers: small, transactional SQLite writers — one
  * per consensus event (wallet-tx, mempool add/remove, sapling note/
- * spend, peer, peer-score, tip set). Each entry point packages its
- * arguments into a context struct, then routes through sync_run_write()
- * for db-service serialization. Split out of sync_controller.c.
+ * spend, peer, peer-score, tip set). Each entry point packages its arguments
+ * into a context struct, then routes through sync_run_write() for db-service
+ * serialization.
  *
  * See sync_controller_internal.h for cross-file glue. */
 

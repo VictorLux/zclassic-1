@@ -5,10 +5,9 @@
  *
  * Background
  * ----------
- * Extracted from boot.c (boot decomposition Phase C). Every destructive
- * UTXO operation (wipe, import, restore) is policy-gated to prevent a
- * repeat of the 2026-04-10 incident where 1.3M UTXOs were wiped by an
- * unguarded recovery path.
+ * Every destructive UTXO operation (wipe, import, restore) is policy-gated to
+ * prevent a repeat of the 2026-04-10 incident where 1.3M UTXOs were wiped by
+ * an unguarded recovery path.
  *
  * All functions take explicit parameters — no globals.
  */

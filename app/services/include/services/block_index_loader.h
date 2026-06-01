@@ -1,15 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Block Index Loader — read/write block_index.bin flat file, SQLite cache,
- * and LevelDB block tree.
+ * Block Index Loader: block_index.bin flat cache, SQLite cache, LevelDB block
+ * tree compatibility, and projection-backed boot rebuild.
  *
  * Background
  * ----------
- * Extracted from boot_index.c (boot decomposition Phase A) to isolate
- * block-index I/O behind a clean service boundary. The three load paths
- * (flat, SQLite, LevelDB) are tried in order during boot: flat is O(1)
- * via mmap, SQLite is seconds, LevelDB is 10-15s. The first to succeed
- * wins.
+ * This service isolates block-index I/O behind a clean boundary. The flat,
+ * SQLite, and LevelDB loaders remain compatibility/fallback paths; the
+ * reducer-aligned boot path rebuilds from block_index_projection through
+ * load_block_index_from_projection().
  *
  * On-disk flat format (block_index.bin)
  * -------------------------------------
@@ -77,19 +76,19 @@ struct block_index;
 /* Forward pass over a height-sorted block_index array: recompute
  * nChainWork, nChainTx, skip links, cached branch id, and failed-child
  * propagation from each entry's (already-linked) pprev. Shared by the
- * legacy LevelDB loader (load_block_index) and the single-engine
- * projection rebuild so both compute the pointer-graph-derived fields
- * identically. `sorted` must be height-ASC ordered. */
+ * LevelDB loader (load_block_index) and the projection rebuild so both compute
+ * the pointer-graph-derived fields identically. `sorted` must be height-ASC
+ * ordered. */
 void block_index_forward_pass(struct block_index **sorted, size_t count);
 
-/* ── Single-engine boot rebuild (event_log → projection → map) ───── */
+/* ── Projection-backed boot rebuild (event_log -> projection -> map) ───── */
 
 /* Rebuild the in-memory block_index map purely from the
  * block_index_projection (the log-derived authoritative source), then
  * seed the active tip from the tip_finalize cursor in progress.kv.
  *
- * This is the single-engine replacement for the three legacy loaders
- * (flat / SQLite / LevelDB). It does NOT touch any $HOME/.zclassic path.
+ * This is the reducer-aligned boot rebuild. It does NOT touch any
+ * $HOME/.zclassic path.
  *
  * Sequence:
  *   1. block_index_projection_catch_up(bip) — drain the event log.

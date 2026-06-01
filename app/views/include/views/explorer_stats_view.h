@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats view — comprehensive blockchain statistics page.
- * Renders the full stats HTML from the read-only explorer projection.
- * Controllers parse + delegate here (checklist item D2). */
+ * Explorer stats view: comprehensive blockchain statistics rendered from the
+ * read-only explorer projection. Controllers provide request context and
+ * delegate page assembly here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_STATS_VIEW_H
 #define ZCL_VIEWS_EXPLORER_STATS_VIEW_H

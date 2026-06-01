@@ -2,8 +2,7 @@
 
 /* Internal shared surface for the block-source policy stateful runtime.
  *
- * The stateful decision surface is split across cohesive sibling .c files
- * (D5 seam-split of the oversized block_source_policy_runtime.c):
+ * The stateful decision surface is owned by cohesive sibling .c files:
  *   - block_source_policy_runtime.c   : live state, lifecycle, runtime-input
  *                                        builder, projection-deferral counter
  *   - block_source_policy_persist.c   : node.db persist/restore of decisions

@@ -1,16 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Block Index Loader — single-engine boot rebuild.
+ * Block Index Loader: projection-backed boot rebuild.
  *
  * load_block_index_from_projection() reconstructs the in-memory block
  * index map purely from the log-derived block_index_projection, then
  * seeds the active tip from the tip_finalize cursor in progress.kv. This
- * is the single-engine replacement for the three legacy loaders (flat /
- * SQLite / LevelDB) in block_index_loader.c.
+ * restores the active tip from the tip_finalize cursor in progress.kv.
  *
- * Split out of block_index_loader.c to keep each file under the app/
- * file-size ceiling; the shared height-sorted forward pass
- * (block_index_forward_pass) lives in block_index_loader.c and is
+ * This file owns projection-backed rebuild. The shared height-sorted forward
+ * pass (block_index_forward_pass) lives in block_index_loader.c and is
  * declared in services/block_index_loader.h. */
 
 #include "platform/time_compat.h"

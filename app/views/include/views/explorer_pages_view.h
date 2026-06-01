@@ -2,9 +2,9 @@
  *
  * Explorer secondary-page views: tokens, token detail, HODL wave, event
  * log, names, market, swaps, messages, and the shared loading
- * placeholder. Each renders an HTTP+HTML response into the caller's
- * buffer. Controllers parse the request, pass the datadir, and delegate
- * here (checklist item D2 — controllers must not build views). */
+ * placeholder. Each renders an HTTP+HTML response into the caller's buffer.
+ * Controllers parse the request, pass the datadir, and delegate page assembly
+ * here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_PAGES_VIEW_H
 #define ZCL_VIEWS_EXPLORER_PAGES_VIEW_H

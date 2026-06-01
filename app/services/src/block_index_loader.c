@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Block Index Loader — read/write block_index.bin flat file, SQLite cache,
- * and LevelDB block tree.
- *
- * Extracted from config/src/boot_index.c (boot decomposition Phase A). */
+ * Block Index Loader: read/write block_index.bin flat file, SQLite cache, and
+ * LevelDB block tree compatibility. */
 
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"

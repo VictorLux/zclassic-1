@@ -32,9 +32,8 @@ extern void explorer_set_rpc(const char *, const char *, int);
 
 #include "views/wallet_gui_internal.h"
 
-/* g_webview + g_self_test have external linkage so the bot driver in
- * wallet_gui_bot.c (checklist D5 split) can share them; g_bot_fail is
- * defined there and read by this file's exit code. */
+/* g_webview + g_self_test have external linkage so wallet_gui_bot.c can share
+ * them; g_bot_fail is defined there and read by this file's exit code. */
 WebKitWebView *g_webview = NULL;
 bool g_self_test = false;
 static GtkWidget *g_url_bar = NULL;

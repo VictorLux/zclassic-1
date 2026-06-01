@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats VIEW — section emitters (checklist D5 split).
+ * Explorer stats VIEW: section emitters.
  *
  * Part of the deep-stats page split: this TU owns the per-section HTML
  * emitters (emit_stats_header + emit_section_*), each appending one
@@ -9,8 +9,7 @@
  * The public entry point (explorer_stats_build), the phase-1
  * data gather, the degraded verified-summary fallback, and the chart /
  * shielded render helpers live in explorer_stats_view.c. Shared data
- * structs + emitter declarations come from views/explorer_stats_internal.h.
- * Behavior is byte-identical to the original single-file definitions. */
+ * structs + emitter declarations come from views/explorer_stats_internal.h. */
 
 #include "views/explorer_stats_internal.h"
 #include "controllers/wallet_helpers.h"

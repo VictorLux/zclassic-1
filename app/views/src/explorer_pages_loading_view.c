@@ -1,10 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer pages loading VIEW: the auto-refreshing "Loading Token
- * Data..." placeholder served by the tokens page while its background
- * cache warms. Moved out of explorer_controller_pages.c per checklist
- * item D2 (controllers must not build views). Renders byte-identically
- * to the prior controller implementation. */
+ * Explorer pages loading VIEW: the auto-refreshing "Loading Token Data..."
+ * placeholder served by the tokens page while its background cache warms. */
 
 #include "views/explorer_pages_loading_view.h"
 #include "controllers/explorer_internal.h"

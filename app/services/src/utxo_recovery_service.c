@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * UTXO Recovery Service — extracted from boot.c (Phase C).
- * All destructive UTXO operations gated through recovery_policy.
+ * UTXO Recovery Service: boot-time UTXO consistency checks and destructive
+ * recovery operations gated through recovery_policy.
  */
 
 #include "services/utxo_recovery_service.h"

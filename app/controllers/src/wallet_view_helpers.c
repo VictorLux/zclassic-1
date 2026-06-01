@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet view shared helpers — extracted from wallet_view_controller.c.
- * Global state, DB access, RPC, QR codes, HTML chrome, form parsing. */
+ * Wallet view shared helpers: global state, zclassicd RPC auth/calls, form
+ * parsing, and wallet-view initialization. */
 
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"

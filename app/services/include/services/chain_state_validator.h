@@ -5,11 +5,10 @@
  *
  * Background
  * ----------
- * Extracted from boot_index.c (boot decomposition Phase B). At boot,
- * the node must verify that the UTXO set (coins_best_block) agrees
- * with the active chain tip. If they disagree, the node must take a
- * recovery action: reimport from LevelDB, wipe and wait for P2P
- * snapshot, or reset the chain tip to match coins.
+ * At boot, the node must verify that the UTXO set (coins_best_block) agrees
+ * with the active chain tip. If they disagree, the node must take a recovery
+ * action: reimport from LevelDB, wipe and wait for P2P snapshot, or reset the
+ * chain tip to match coins.
  *
  * This service encapsulates the validation logic and returns a
  * structured decision, freeing boot.c from hosting 150+ lines of

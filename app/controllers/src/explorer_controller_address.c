@@ -5,11 +5,9 @@
 /* Explorer address + search CONTROLLER. Thin parse-delegate glue: it
  * decodes the address, fetches the balance + UTXO list via its existing
  * projection calls, packs the results into the view structs, and hands
- * them to the view shape (app/views/src/explorer_address_view.c). The
- * search handler keeps the routing/dispatch logic and delegates only the
- * error/not-found page assembly to the view (checklist item D2 —
- * controllers must not build views). See explorer_controller_internal.h
- * for shared declarations. */
+ * them to app/views/src/explorer_address_view.c. The search handler keeps the
+ * routing/dispatch logic and delegates only error/not-found page assembly to
+ * the view. See explorer_controller_internal.h for shared declarations. */
 
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"

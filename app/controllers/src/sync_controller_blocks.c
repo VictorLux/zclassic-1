@@ -2,10 +2,9 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* sync_controller_blocks: connect/disconnect-block handlers + the
- * helpers that walk a block's contents. Split out of
- * sync_controller.c. See sync_controller_internal.h for the cross-file
- * glue. */
+/* sync_controller_blocks: connect/disconnect-block handlers and helpers that
+ * walk block contents. sync_controller_internal.h owns cross-file glue for the
+ * sync controller siblings. */
 
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"

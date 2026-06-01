@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Internal seam shared across the diagnostics controller family. The
- * diagnostics concern was split out of one mega-module into focused,
- * single-responsibility controller files (registry, nodelog, dbquery, probe).
- * They share two things:
+ * Internal seam shared across the diagnostics controller family. Focused
+ * controller files (registry, nodelog, dbquery, probe) share two things:
  *
  *   - the controller-level state (`main_state` + `datadir`), owned by
  *     diagnostics_registry.c and reachable here via accessors;

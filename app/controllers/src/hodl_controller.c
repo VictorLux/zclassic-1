@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * HODL Wave analytics: UTXO age distribution, heatmaps, charts.
- * Extracted from blockchain_controller.c for file size. */
+ * HODL Wave analytics controller: UTXO age distribution, heatmaps, and
+ * charts. */
 
 #include "controllers/hodl_controller.h"
 #include "controllers/strong_params.h"

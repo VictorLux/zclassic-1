@@ -1,14 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Explorer dashboard VIEW: the /explorer landing page. Renders the
- * four-stat header row and the "Latest Blocks" table in two modes
- * (RPC-proxy and native-chain). The controller parses the request,
- * fetches the data, packs it into the view structs, and delegates the
- * entire HTML/HTTP assembly here (moved out of
- * explorer_controller_dashboard.c per checklist item D2). The HTML
- * renders byte-identically to the prior controller implementation —
- * this was a move, not a redesign. The per-row buffer-bound truncation
- * guards are preserved verbatim inside the emit loops here. */
+ * four-stat header row and the "Latest Blocks" table in two modes (RPC-proxy
+ * and native-chain). The controller parses the request, fetches the data,
+ * packs it into the view structs, and delegates the entire HTML/HTTP assembly
+ * here. The per-row buffer-bound truncation guards live inside the emit loops. */
 
 #include "platform/time_compat.h"
 #include "views/explorer_dashboard_view.h"

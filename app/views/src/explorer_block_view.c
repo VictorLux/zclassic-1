@@ -1,11 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer block VIEW: block detail page (native + RPC-proxy variants)
- * and the "block not found" error page. View shape — the controller
- * parses + fetches, this file assembles the HTML. Moved out of
- * explorer_controller_block.c per checklist item D2. Output is
- * byte-identical to the prior controller implementation; this was a
- * move, not a redesign. */
+ * Explorer block VIEW: block detail page (native + RPC-proxy variants) and
+ * the "block not found" error page. The controller parses and fetches; this
+ * file assembles the HTML. */
 
 #include "views/explorer_block_view.h"
 #include "controllers/explorer_internal.h"

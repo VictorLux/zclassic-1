@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 GUI — shared internals for the multi-TU split (checklist D5).
+ * ZClassic23 GUI shared internals for the WebKit app and self-test driver.
  *
  * The GTK/WebKit wallet GUI is split across two translation units that
  * both live in app/views/src/ and are compiled only when WebKit + GTK are
@@ -12,9 +12,8 @@
  *   - wallet_gui_bot.c — the Selenium-like bot driver (g_bot_script and
  *                        the load/JS-result callbacks) used by -self-test.
  *
- * These globals are owned by wallet_gui.c and shared with the bot driver.
- * No behavior change vs the original single-file definitions. This header
- * is only meaningful inside the HAVE_WEBKIT/HAVE_GTK guard. */
+ * These globals are owned by wallet_gui.c and shared with the bot driver. This
+ * header is only meaningful inside the HAVE_WEBKIT/HAVE_GTK guard. */
 
 #ifndef ZCL_VIEWS_WALLET_GUI_INTERNAL_H
 #define ZCL_VIEWS_WALLET_GUI_INTERNAL_H

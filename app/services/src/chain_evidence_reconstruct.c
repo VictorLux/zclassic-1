@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
-// one-result-type-ok: this is an internal seam extracted from
-// chain_evidence_controller.c, not a new service surface. Its single
-// fallible entrypoint already carries the failure reason with the
+// one-result-type-ok:internal-reconcile-seam
+// This is an internal chain-evidence reconciliation helper, not a new service
+// surface. Its single fallible entrypoint already carries the failure reason with the
 // failure via the reason_out[192] out-parameter (the caller freezes
 // with that precise string), matching the controller's existing
 // reconcile contract. struct zcl_result would not improve it.

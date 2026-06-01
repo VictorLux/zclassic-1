@@ -4,16 +4,14 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  */
-// one-result-type-ok:extracted-internal-seam internal seam extracted verbatim from
-// bg_validation_service.c, not a new service surface. The bg_validation
-// service walks the chain and converts a false return here into a logged
-// per-block validation-failure with the offending height/tx; the bool
-// keeps the hot per-input verifier branch-free. Behaviour byte-identical
-// to the pre-split monolith (already baselined).
+// one-result-type-ok:hot-script-verifier
+// Internal background-validation verifier, not a new service surface. The
+// bg_validation service walks the chain and converts a false return here into
+// a logged per-block validation failure with the offending height/tx; the bool
+// keeps the hot per-input verifier branch-free.
 /*
- * bg_validation_scripts — parallel ECDSA script-signature verification
- * for the background full-validation pass. Extracted verbatim from
- * bg_validation_service.c (pure refactor, behaviour byte-identical). */
+ * bg_validation_scripts: parallel ECDSA script-signature verification for the
+ * background full-validation pass. */
 
 #include "bg_validation_internal.h"
 

@@ -4,10 +4,8 @@
  * RPC-proxy variants) and the bad-request / not-found error pages. The
  * controller parses the request, fetches the transaction (from mempool /
  * tx index / on-disk block, or via the RPC proxy), packs the fields it has
- * already computed into the structs below, and delegates here. All HTML
- * assembly lives in this view (moved out of explorer_controller_tx.c —
- * controllers must not build views). Output is byte-identical to the prior
- * controller implementation; this was a move, not a redesign. */
+ * already computed into the structs below, and delegates all HTML assembly
+ * here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_TX_VIEW_H
 #define ZCL_VIEWS_EXPLORER_TX_VIEW_H

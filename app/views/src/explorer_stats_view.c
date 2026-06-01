@@ -1,9 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer stats VIEW — comprehensive blockchain statistics page.
- * View shape: the controller parses the request and delegates here;
- * all page assembly + read-only projection queries live in this file
- * (moved out of the controller per checklist item D2).
+ * Explorer stats VIEW: comprehensive blockchain statistics page. The
+ * controller parses the request and delegates here; page assembly and
+ * read-only projection queries live in this file.
  *
  * Performance: All aggregate data gathered in ~6 consolidated queries
  * (single-pass scans) instead of dozens of individual queries.
@@ -30,7 +29,7 @@
 /* Data structs (stats_ctx/shielded_stats/stats_chart_data), the
  * stats_q_i64 alias, and the section emitters live in
  * views/explorer_stats_internal.h + explorer_stats_sections.c
- * (checklist D5 split). */
+ * (shared stats-view internals). */
 
 /* Generate CSS for tab sections — each section needs unique IDs */
 static void stats_tab_css(char *r, size_t max, size_t *off,

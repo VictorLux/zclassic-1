@@ -1,13 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer block view — block detail page (native + RPC-proxy variants)
- * and the "block not found" error page. The controller parses the
- * request, fetches the block (via native block_index/disk or RPC), packs
- * the fields it already computed into the structs below, and delegates
- * here. All HTML assembly lives in this view (moved out of
- * explorer_controller_block.c per checklist item D2 — controllers must
- * not build views). Output is byte-identical to the prior controller
- * implementation. */
+ * Explorer block view: block detail page renderers for native and RPC-proxy
+ * data plus the "block not found" error page. The controller parses the
+ * request, fetches block data, packs the structs below, and delegates all HTML
+ * assembly here. */
 
 #ifndef ZCL_VIEWS_EXPLORER_BLOCK_VIEW_H
 #define ZCL_VIEWS_EXPLORER_BLOCK_VIEW_H

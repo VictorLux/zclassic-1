@@ -4,16 +4,14 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  */
-// one-result-type-ok:extracted-internal-seam internal seam extracted verbatim from
-// bg_validation_service.c, not a new service surface. A false return is
-// turned into a logged per-block validation-failure (with height/tx/index)
-// by the bg_validation service thread; the fprintf trail already carries
-// the precise failure reason. Behaviour byte-identical to the pre-split
-// monolith (already baselined).
+// one-result-type-ok:hot-proof-verifier
+// Internal background-validation verifier, not a new service surface. A false
+// return is turned into a logged per-block validation failure (with
+// height/tx/index) by the bg_validation service thread; the fprintf trail
+// already carries the precise failure reason.
 /*
- * bg_validation_proofs — shielded zk-SNARK / Ed25519 proof verification
- * for the background full-validation pass. Extracted verbatim from
- * bg_validation_service.c (pure refactor, behaviour byte-identical). */
+ * bg_validation_proofs: shielded zk-SNARK / Ed25519 proof verification for the
+ * background full-validation pass. */
 
 #include "bg_validation_internal.h"
 

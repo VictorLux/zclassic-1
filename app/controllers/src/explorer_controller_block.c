@@ -5,10 +5,8 @@
 /* Explorer block CONTROLLER: /explorer/block/{hash|height}. Thin
  * parse-delegate glue — it parses the request, fetches the block (via
  * the native block_index/disk path or the RPC proxy), packs the fields
- * into the view structs, and hands them to the view shape:
- *   app/views/src/explorer_block_view.c
- * (checklist item D2 — controllers must not build views). See
- * explorer_controller_internal.h for shared declarations and
+ * into the view structs, and hands them to app/views/src/explorer_block_view.c.
+ * See explorer_controller_internal.h for shared declarations and
  * controllers/explorer_internal.h for the helper inlines. */
 
 #include "controllers/explorer_controller.h"

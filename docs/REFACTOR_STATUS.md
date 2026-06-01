@@ -130,6 +130,14 @@ node soak.
   scaffold-label lint test now covers those controller files and rejects stale
   `Split out of`, `behavior byte-identical`, `behavior unchanged`,
   `pre-split monolith`, and `extracted from` wording.
+- Explorer/store/wallet GUI view headers, their thin controller seams, and the
+  related diagnostics/block-index/chain-state/bg-validation service comments
+  now describe current ownership instead of D2/D5/checklist/code-motion
+  history. The guarded scaffold-label lint test now covers those files and
+  rejects `checklist item`, `checklist D5`, `moved out of`,
+  `move, not a redesign`, `prior controller implementation`, `Extracted from`,
+  `pure refactor`, `single-engine replacement`, and boot-decomposition phase
+  wording.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2538,6 +2546,39 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   ratcheted baseline files, and the production C/H scan under app controllers,
   services, jobs, conditions, supervisors, models, lib, and MCP found no
   `shadow`, `cutover`, `projection-diff`, or `projection_diff` terminology.
+- App-layer scaffold scan after the view/service purpose-comment cleanup:
+  clean for `checklist item D2`, `checklist D5`, `D5 split`, `D5 seam`,
+  `byte-identically`, `moved out of`, `No behavior change vs the original`,
+  `behavior byte-identical`, `pre-split monolith`, `extracted from`,
+  `extracted verbatim`, `Extracted from`, `Split out of`, `split out of`,
+  `single-engine replacement`, `pure refactor`, `code motion`, `Phase C`,
+  `boot decomposition Phase`, and `for file size` under app views,
+  controllers, and services.
+- Targeted guarded-file scaffold scan after the same cleanup: clean for the
+  widened stale-label vocabulary in every newly guarded file.
+- `git diff --check`: pass after the view/service purpose-comment cleanup.
+- `make -j$(nproc)`: pass after the view/service purpose-comment cleanup.
+- `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
+  widening the scaffold-label guard to view/service files.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the production-comment guard; `0/1` group failed in 11.0s.
+- Focused coverage after the view/service purpose-comment cleanup:
+  `./test_parallel --only=explorer --timeout=120 --verbose` passed (`0/1`,
+  1.0s), `--only=store` passed (`0/10`, 2.0s), `--only=wallet_view` passed
+  (`0/2`, 1.0s), `--only=block_index` passed (`0/6`, 3.0s),
+  `--only=chain_state_validator` passed (`0/1`, 1.0s), and
+  `--only=bg_validation` passed (`0/1`, 1.0s).
+- `make lint`: pass after the view/service purpose-comment cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the view/service
+  purpose-comment cleanup, `0/279` groups failed in 56.0s.
+- Live sample attempt at 2026-06-01 16:11 UTC after the view/service
+  purpose-comment cleanup: no continuity proof was available. `systemctl
+  --user` could not connect to the user bus, `./tools/zcl-rpc getblockcount`
+  and `gettxoutsetinfo` exited with code 7, no `zclassic23` process was
+  running, no listener existed on ports `8023`, `8033`, `18232`, or `8232`,
+  and the last 20 minutes of `zclassic23` journal output had no entries. This
+  is a failed live sample, not a refactor completion proof.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.
