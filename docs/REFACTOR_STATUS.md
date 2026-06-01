@@ -342,6 +342,13 @@ node soak.
   The new file owns the active-chain disk walk, tx-index backfill, and scan
   hit/exhaustion accounting/events. `process_block_self_heal.c` is down from
   578 to 451 lines.
+- SQLite tx-index missing-UTXO recovery moved from
+  `process_block_self_heal.c` into
+  `process_block_self_heal_sqlite_tx_index.c`. The new file owns the
+  runtime-owned TxIndex hint lookup, block-map source resolution,
+  consensus-backed disk verification, local txid verification, and UTXO
+  injection for that recovery source. `process_block_self_heal.c` is down
+  from 451 to 361 lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -499,8 +506,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `lib/validation/src/process_block_core.c` now owns best-work chain
   selection only.
 - `lib/validation/src/process_block_self_heal.c` is still the next obvious
-  process-block split candidate: it combines SQLite tx-index recovery, scan
-  counters/tunables, and hot-loop pause signaling.
+  process-block split candidate: it combines scan counters/tunables and
+  hot-loop pause/reimport signaling.
 
 ## Next Work Order
 
@@ -510,7 +517,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 3. Keep import/catchup/legacy-import code below the file-size ceiling while
    moving remaining mixed-purpose code toward the correct framework shape.
 4. Continue splitting `process_block_self_heal.c` by responsibility; likely
-   next targets are SQLite tx-index recovery and hot-loop pause signaling.
+   next targets are scan counters/tunables and hot-loop pause/reimport
+   signaling.
 5. Keep every lint baseline empty while continuing process-block and
    mixed-purpose file cleanup.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
@@ -518,6 +526,36 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after splitting SQLite tx-index recovery out of
+  `process_block_self_heal.c`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production stale terminology search:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
+  returned no matches.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make -j$(nproc)`: pass after adding
+  `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  updated process-block split guard.
+- `make lint`: pass after the self-heal SQLite tx-index split; E1, E2, E6,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates all report zero grandfathered entries.
+- Focused filtered tests passed:
+  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
+  and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the self-heal SQLite tx-index
+  split, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 13:31:29 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after splitting bounded chain-scan recovery out
   of `process_block_self_heal.c`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing

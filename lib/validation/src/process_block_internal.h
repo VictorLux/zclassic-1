@@ -6,6 +6,7 @@
  * process_block_contextual_header.c, process_block_runtime_hooks.c,
  * process_block_failed_child.c,
  * process_block_self_heal.c, process_block_self_heal_chain_scan.c,
+ * process_block_self_heal_sqlite_tx_index.c,
  * process_block_self_heal_legacy_rpc.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
  * for use outside this directory; the public surface lives in
@@ -128,6 +129,7 @@ bool process_block_recover_missing_utxo_from_legacy_rpc(
     uint32_t missing_vout,
     int retry_no);
 
+/* process_block_self_heal_sqlite_tx_index.c */
 bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     struct main_state *ms,
     struct coins_view_cache *coins_tip,

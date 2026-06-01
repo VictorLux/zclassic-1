@@ -1654,7 +1654,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
                          "lib/validation/src/process_block_self_heal.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
         ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
         ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
@@ -1662,9 +1662,34 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         ASSERT(strstr(buf, "process_block_json_string") == NULL);
         ASSERT(strstr(buf, "process_block_legacy_rpc_body") == NULL);
+        ASSERT(strstr(buf,
+                      "process_block_recover_missing_utxo_from_sqlite_tx_index(")
+               == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
         ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan(")
                == NULL);
         ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_sqlite_tx_index.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf,
+                      "process_block_recover_missing_utxo_from_sqlite_tx_index")
+               != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
+        ASSERT(strstr(buf, "chain_restore_block_is_consensus_backed_on_disk")
+               != NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") != NULL);
+        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
+        ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
         free(buf);
         buf = NULL;
 

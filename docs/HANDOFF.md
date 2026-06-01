@@ -78,9 +78,12 @@ If the node is not running, record that explicitly before claiming live proof.
   selection only. `process_block_self_heal_legacy_rpc.c` now owns the
   zclassicd RPC recovery source and JSON-lite parsing.
   `process_block_self_heal_chain_scan.c` now owns bounded active-chain disk
-  scan recovery plus tx-index backfill. Remaining process-block split debt is
-  mostly inside `process_block_self_heal.c`: SQLite tx-index recovery, scan
-  counters/tunables, and hot-loop pause signaling still share one file.
+  scan recovery plus tx-index backfill.
+  `process_block_self_heal_sqlite_tx_index.c` now owns runtime TxIndex lookup
+  recovery plus consensus-backed disk verification. Remaining process-block
+  split debt is mostly inside `process_block_self_heal.c`: scan
+  counters/tunables and hot-loop pause/reimport signaling still share one
+  file.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to
