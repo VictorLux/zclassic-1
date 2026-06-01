@@ -8,6 +8,7 @@
 #include "config/db_service.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct node_db;
 struct snapshot_sync_service;
@@ -19,6 +20,13 @@ struct app_runtime_context {
     struct snapshot_sync_service *snapshot_sync;
     struct tx_mempool *mempool;
     struct wallet *wallet;
+};
+
+struct app_runtime_tx_index_hit {
+    uint8_t block_hash[32];
+    int block_height;
+    int tx_index;
+    bool used_reversed;
 };
 
 /* Runtime registry lifecycle:
@@ -41,6 +49,9 @@ void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb);
 int app_runtime_node_db_utxo_max_height(struct node_db *ndb);
+bool app_runtime_node_db_tx_index_find(struct node_db *ndb,
+                                       const uint8_t txid[32],
+                                       struct app_runtime_tx_index_hit *out);
 sqlite3 *app_runtime_query_db(void);
 struct snapshot_sync_service *app_runtime_snapshot_sync(void);
 struct tx_mempool *app_runtime_mempool(void);

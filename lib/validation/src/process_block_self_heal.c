@@ -39,7 +39,6 @@
 #include "core/serialize.h"
 #include "core/core_io.h"
 #include "event/event.h"
-#include "models/tx_index.h"
 #include "rpc/legacy_rpc_client.h"
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
@@ -330,11 +329,8 @@ bool process_block_recover_missing_utxo_from_sqlite_tx_index(
     if (!ms || !coins_tip || !txid || !datadir || !ndb)
         return false;
 
-    struct db_tx_index dbtx;
-    memset(&dbtx, 0, sizeof(dbtx));
-    bool used_reversed = false;
-    if (!db_tx_find_native_or_reversed(ndb, txid->data, &dbtx,
-                                       &used_reversed))
+    struct app_runtime_tx_index_hit dbtx;
+    if (!app_runtime_node_db_tx_index_find(ndb, txid->data, &dbtx))
         return false;
 
     struct uint256 block_hash;
@@ -392,7 +388,7 @@ bool process_block_recover_missing_utxo_from_sqlite_tx_index(
         }
     }
 
-    if (recovered && used_reversed) {
+    if (recovered && dbtx.used_reversed) {
         char txhex[65];
         uint256_get_hex(txid, txhex);
         fprintf(stderr, // obs-ok:pre-existing-diagnostic

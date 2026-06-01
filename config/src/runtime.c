@@ -4,8 +4,10 @@
 
 #include "config/runtime.h"
 #include "models/database.h"
+#include "models/tx_index.h"
 #include "util/ar_step_readonly.h"
 #include <limits.h>
+#include <string.h>
 #include <stddef.h>
 
 static struct app_runtime_context *g_current_runtime = NULL;
@@ -94,6 +96,27 @@ int app_runtime_node_db_utxo_max_height(struct node_db *ndb)
         sqlite3_finalize(st);
     }
     return max_height;
+}
+
+bool app_runtime_node_db_tx_index_find(struct node_db *ndb,
+                                       const uint8_t txid[32],
+                                       struct app_runtime_tx_index_hit *out)
+{
+    if (!app_runtime_node_db_handle_open(ndb) || !txid || !out)
+        return false;
+
+    struct db_tx_index dbtx;
+    memset(&dbtx, 0, sizeof(dbtx));
+    bool used_reversed = false;
+    if (!db_tx_find_native_or_reversed(ndb, txid, &dbtx, &used_reversed))
+        return false;
+
+    memset(out, 0, sizeof(*out));
+    memcpy(out->block_hash, dbtx.block_hash, sizeof(out->block_hash));
+    out->block_height = dbtx.block_height;
+    out->tx_index = dbtx.tx_index;
+    out->used_reversed = used_reversed;
+    return true;
 }
 
 sqlite3 *app_runtime_query_db(void)

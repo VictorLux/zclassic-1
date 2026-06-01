@@ -1567,8 +1567,11 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
                          "lib/validation/src/process_block_self_heal.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
+        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
         ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -1579,6 +1582,8 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "app_runtime_node_db_sync_flush_if_needed") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_wal_checkpoint") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
+        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") != NULL);
         ASSERT(strstr(buf, "SELECT MAX(height) FROM utxos") != NULL);
         ASSERT(strstr(buf, "node_db_state_set") != NULL);
         ASSERT(strstr(buf, "node_db_sync_flush") != NULL);
