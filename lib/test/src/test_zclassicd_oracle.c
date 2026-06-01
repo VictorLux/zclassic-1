@@ -210,7 +210,7 @@ static void zo_build_fixture(const char *hex64_at_h7)
     for (int h = 0; h <= 7; h++) {
         const struct uint256 *hp = (h < 7) ? &fillers[h] : &g_zo_hash7;
         struct block_index *bi = block_map_find(&g_zo_ms.map_block_index, hp);
-        active_chain_set_tip(&g_zo_ms.chain_active, bi);
+        active_chain_move_window_tip(&g_zo_ms.chain_active, bi);
     }
 
     /* Wire main_state into wallet_rpc_context (read by oracle service). */

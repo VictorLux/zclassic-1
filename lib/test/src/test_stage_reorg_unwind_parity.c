@@ -394,7 +394,7 @@ int test_stage_reorg_unwind_parity(void)
             struct main_state ms;
             memset(&ms, 0, sizeof(ms));
             active_chain_init(&ms.chain_active);
-            active_chain_set_tip(&ms.chain_active, &L.blocks[L.n - 1]);
+            active_chain_move_window_tip(&ms.chain_active, &L.blocks[L.n - 1]);
 
             struct sru_ctx ctx = { .active = &L, .ext = ext, .n_ext = 2 };
             SRU_CHECK("run1: stage init", utxo_apply_stage_init(&ms));
@@ -413,7 +413,7 @@ int test_stage_reorg_unwind_parity(void)
              * proof_validate to W's tip. The live driver swapped the tip;
              * the stage now OBSERVES the swap via branch_hash divergence. */
             ctx.active = &W;
-            active_chain_set_tip(&ms.chain_active, &W.blocks[W.n - 1]);
+            active_chain_move_window_tip(&ms.chain_active, &W.blocks[W.n - 1]);
             SRU_CHECK("run1: W seed proof_validate",
                       seed_proof_validate(progress_store_db(), W.n - 1));
 
@@ -488,7 +488,7 @@ int test_stage_reorg_unwind_parity(void)
             struct main_state ms;
             memset(&ms, 0, sizeof(ms));
             active_chain_init(&ms.chain_active);
-            active_chain_set_tip(&ms.chain_active, &W.blocks[W.n - 1]);
+            active_chain_move_window_tip(&ms.chain_active, &W.blocks[W.n - 1]);
 
             struct sru_ctx ctx = { .active = &W, .ext = ext, .n_ext = 2 };
             SRU_CHECK("run2: stage init", utxo_apply_stage_init(&ms));

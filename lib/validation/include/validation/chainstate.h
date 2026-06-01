@@ -105,7 +105,6 @@ bool active_chain_contains(const struct active_chain *c,
  * authority separately after their durable writes succeed. */
 bool active_chain_move_window_tip(struct active_chain *c,
                                   struct block_index *bi);
-bool active_chain_set_tip(struct active_chain *c, struct block_index *bi); // one-write-path-ok:active-chain-compat
 /* Forward-only widen of the visible chain[] window to a most-work candidate
  * that builds on the current tip, WITHOUT publishing an authoritative tip.
  * The reducer's structural analogue of legacy activate_best_chain assembling

@@ -151,7 +151,7 @@ int test_watchdog_conditions_pr3(void)
 
         struct block_index tip = {0};
         tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
         struct p2p_node peer = {0};
         peer.id = 1;
         peer.starting_height = 250;
@@ -185,7 +185,7 @@ int test_watchdog_conditions_pr3(void)
 
         struct block_index tip = {0};
         tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
 
         struct snapshot_sync_service svc;
         memset(&svc, 0, sizeof(svc));
@@ -219,7 +219,7 @@ int test_watchdog_conditions_pr3(void)
 
         struct block_index tip = {0};
         tip.nHeight = 100;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
 
         ok = ok && sync_set_state(SYNC_FINDING_PEERS,
                                   "test snapshot at-tip setup");

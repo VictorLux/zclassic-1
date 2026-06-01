@@ -263,7 +263,7 @@ int test_shielded_payment_gate(void)
 
     tip.nHeight = 500000;
     tip.nTime = (uint32_t)platform_time_wall_time_t();
-    active_chain_set_tip(&ms.chain_active, &tip);
+    active_chain_move_window_tip(&ms.chain_active, &tip);
     wallet->best_block = &tip;
     wallet->best_block_height = tip.nHeight;
 

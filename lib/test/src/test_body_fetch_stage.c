@@ -172,7 +172,7 @@ static int bf_setup(const char *tag, int n,
     memset(ms, 0, sizeof(*ms));
     active_chain_init(&ms->chain_active);
     if (!synth_chain_bf_build(sc, n)) return 2;
-    active_chain_set_tip(&ms->chain_active, &sc->blocks[n - 1]);
+    active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
     if (!header_admit_stage_init(ms))      return 3;
     if (!validate_headers_stage_init(ms))  return 4;
@@ -464,7 +464,7 @@ int test_body_fetch_stage(void)
             memset(&ms, 0, sizeof(ms));
             active_chain_init(&ms.chain_active);
             if (!synth_chain_bf_build(&sc, CRASH_N)) _exit(3);
-            active_chain_set_tip(&ms.chain_active, &sc.blocks[CRASH_N - 1]);
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[CRASH_N - 1]);
 
             sqlite3 *db = progress_store_db();
             if (sqlite3_exec(db,

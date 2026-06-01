@@ -180,7 +180,7 @@ int test_watchdog_dissolve_pr2(void)
 
         struct block_index tip = {0};
         tip.nHeight = 10;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
         struct p2p_node p1 = {0}, p2 = {0}, p3 = {0};
         p1.id = 1; p1.starting_height = 20; p1.state = PEER_ACTIVE;
         p2.id = 2; p2.starting_height = 20; p2.state = PEER_ACTIVE;

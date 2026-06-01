@@ -672,7 +672,7 @@ static int test_sync_service_builds_getheaders_locator_from_chain(void)
         genesis.phashBlock = &hg; genesis.nHeight = 0;
         b1.phashBlock = &h1; b1.nHeight = 1; b1.pprev = &genesis;
         b2.phashBlock = &h2; b2.nHeight = 2; b2.pprev = &b1;
-        ASSERT(active_chain_set_tip(&chain, &b2));
+        ASSERT(active_chain_move_window_tip(&chain, &b2));
 
         ASSERT(syncsvc_build_getheaders_locator(&loc, &chain, NULL, &hg).ok);
         ASSERT(loc.num_hashes >= 2);
@@ -1026,7 +1026,7 @@ static int test_sync_service_builds_alt_recovery_plan(void)
         block_map_insert(&ms.map_block_index, &h2, &alt2);
         block_map_insert(&ms.map_block_index, &h3, &alt3);
         block_map_insert(&ms.map_block_index, &h4, &fork2);
-        ASSERT(active_chain_set_tip(&ms.chain_active, &b1));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &b1));
 
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 30;
@@ -1072,7 +1072,7 @@ static int test_sync_service_requests_reset_when_no_alts(void)
         block_map_insert(&ms.map_block_index, &hg, &g);
         block_map_insert(&ms.map_block_index, &h1, &b1);
         block_map_insert(&ms.map_block_index, &h2, &bad2);
-        ASSERT(active_chain_set_tip(&ms.chain_active, &b1));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &b1));
 
         node.state = PEER_SYNCING_BLOCKS;
         node.starting_height = 30;

@@ -1814,7 +1814,7 @@ int test_validation(void)
         blk2.nHeight = 2;
         blk2.pprev = &blk1;
 
-        ok = ok && active_chain_set_tip(&c, &blk2);
+        ok = ok && active_chain_move_window_tip(&c, &blk2);
         ok = ok && (active_chain_height(&c) == 2);
         ok = ok && (active_chain_tip(&c) == &blk2);
         ok = ok && (active_chain_at(&c, 0) == &genesis);

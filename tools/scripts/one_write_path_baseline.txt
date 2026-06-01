@@ -22,4 +22,3 @@ lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cac
 lib/storage/include/storage/coins_view_sqlite.h:52:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/storage/src/coins_view_sqlite.c:689:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
 lib/validation/src/process_block_flush_policy.c:236: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
-lib/validation/src/process_block_flush_policy.c:250: ok = coins_view_cache_flush(coins_tip);

@@ -228,7 +228,7 @@ static int tf_setup(const char *tag, int log_rows,
                               &sc->blocks[i]))
             return 2;
     }
-    active_chain_set_tip(&ms->chain_active, &sc->blocks[log_rows]);
+    active_chain_move_window_tip(&ms->chain_active, &sc->blocks[log_rows]);
     if (fail_kind == TF_FAIL_REORG && ms->chain_active.chain) {
         for (int i = 0; i <= log_rows; i++)
             ms->chain_active.chain[i] = &sc->blocks[i];
@@ -269,7 +269,7 @@ int test_tip_finalize_stage(void)
         TF_CHECK("authority_guard: seeded from restored tip",
                  active_chain_height(&ms.chain_active) == 3);
         TF_CHECK("authority_guard: raw low-level tip write succeeds",
-                 active_chain_set_tip(&ms.chain_active, &sc.blocks[1]));
+                 active_chain_move_window_tip(&ms.chain_active, &sc.blocks[1]));
         TF_CHECK("authority_guard: public height unchanged",
                  active_chain_height(&ms.chain_active) == 3);
         TF_CHECK("authority_guard: reducer height unchanged",
@@ -297,7 +297,7 @@ int test_tip_finalize_stage(void)
                                         sc.blocks[i].phashBlock,
                                         &sc.blocks[i]);
         ok_setup = ok_setup &&
-            active_chain_set_tip(&ms.chain_active, &sc.blocks[5]);
+            active_chain_move_window_tip(&ms.chain_active, &sc.blocks[5]);
         ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
         ok_setup = ok_setup && exec_sql(progress_store_db(),
             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
@@ -391,7 +391,7 @@ int test_tip_finalize_stage(void)
         arith_uint256_set_u64(&sc.blocks[2].nChainWork, 20);
         arith_uint256_set_u64(&sc.blocks[3].nChainWork, 30);
         TF_CHECK("reorg_replay: installs coherent fork",
-                 active_chain_set_tip(&ms.chain_active, &sc.blocks[3]));
+                 active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]));
 
         TF_CHECK("reorg_replay: rewinds and replays fork block",
                  tip_finalize_stage_step_once() == JOB_ADVANCED);

@@ -219,7 +219,7 @@ int test_chain(void)
 
         struct active_chain ac;
         active_chain_init(&ac);
-        active_chain_set_tip(&ac, &b2);
+        active_chain_move_window_tip(&ac, &b2);
 
         if (active_chain_tip(&ac) == &b2 &&
             active_chain_at(&ac, 0) == &b0 &&
@@ -1777,7 +1777,7 @@ int test_chain(void)
             bi[i].nTime = 1000 + i;
             bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
         }
-        active_chain_set_tip(&ms.chain_active, &bi[31]);
+        active_chain_move_window_tip(&ms.chain_active, &bi[31]);
 
         bool should_skip =
             process_block_should_skip_contextual_header(&ms, &bi[31], &cp);
@@ -1809,7 +1809,7 @@ int test_chain(void)
             bi[i].nTime = (i == 0) ? 0 : (1778635105 + i);
             bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
         }
-        active_chain_set_tip(&ms.chain_active, &bi[17]);
+        active_chain_move_window_tip(&ms.chain_active, &bi[17]);
 
         bool should_skip =
             process_block_should_skip_contextual_header(&ms, &bi[17], &cp);
@@ -1837,7 +1837,7 @@ int test_chain(void)
             bi[i].nHeight = 100000 + i; /* past the "too-young" guard */
             bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
         }
-        active_chain_set_tip(&ms.chain_active, &bi[4]);
+        active_chain_move_window_tip(&ms.chain_active, &bi[4]);
 
         bool should_skip =
             process_block_should_skip_contextual_header(&ms, &bi[4], &cp);
@@ -1869,7 +1869,7 @@ int test_chain(void)
             bi[i].pprev = (i == 0) ? NULL : &bi[i - 1];
         }
         bi[10].nHeight = 100500; /* deliberate non-contiguous jump */
-        active_chain_set_tip(&ms.chain_active, &bi[19]);
+        active_chain_move_window_tip(&ms.chain_active, &bi[19]);
 
         bool should_skip =
             process_block_should_skip_contextual_header(&ms, &bi[19], &cp);

@@ -247,7 +247,14 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
                     coins_tip->cache_coins.size);
         }
     } else {
-        ok = coins_view_cache_flush(coins_tip);
+#ifdef ZCL_TESTING
+        ok = coins_view_cache_flush( // one-write-path-ok:test-only-flush-fallback
+            coins_tip);
+#else
+        LOG_FAIL("flush",
+                 "coins SQLite writer is not configured; refusing legacy "
+                 "coins_view_cache_flush fallback");
+#endif
     }
 
     if (ok) {

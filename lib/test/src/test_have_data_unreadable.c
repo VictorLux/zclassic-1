@@ -80,7 +80,7 @@ static struct block_index *hdu_build_chain(struct main_state *ms, int n,
         tip = pi;
     }
     if (tip)
-        active_chain_set_tip(&ms->chain_active, tip);
+        active_chain_move_window_tip(&ms->chain_active, tip);
     return tip;
 }
 

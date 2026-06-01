@@ -65,7 +65,7 @@ static void urs_build_chain(struct main_state *ms, int n)
     if (limit > 0) {
         struct block_index *tip = block_map_find(
             &ms->map_block_index, &hashes[limit - 1]);
-        if (tip) active_chain_set_tip(&ms->chain_active, tip);
+        if (tip) active_chain_move_window_tip(&ms->chain_active, tip);
     }
 }
 

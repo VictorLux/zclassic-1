@@ -67,9 +67,8 @@ If the node is not running, record that explicitly before claiming live proof.
 - E6 write-path debt:
   controller/admin/repair/boot `coins_view_cache_flush`, the remaining
   `coins_view_sqlite_batch_write_ex()` SQLite writer entry point,
-  process-block flush-policy write paths, and the grandfathered
-  `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
-  17 write surfaces.
+  and process-block flush-policy write paths. Current E6 baseline:
+  16 write surfaces.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk

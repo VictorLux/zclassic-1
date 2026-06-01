@@ -99,7 +99,7 @@ int test_node_health_service(void)
         header.nHeight = 125;
         header.pprev = &tip;
         header.nTime = tip.nTime;
-        bool ok = active_chain_set_tip(&ms.chain_active, &tip);
+        bool ok = active_chain_move_window_tip(&ms.chain_active, &tip);
         ms.pindex_best_header = &header;
 
         cm.manager.nodes = zcl_calloc(1, sizeof(*cm.manager.nodes), "test_nodes");
@@ -364,7 +364,7 @@ int test_node_health_service(void)
         tip.nTime = (uint32_t)platform_time_wall_time_t();
         tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
         arith_uint256_set_u64(&tip.nChainWork, 8);
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
         ms.pindex_best_header = &tip;
         header_tip = &tip;
         coins_view_cache_set_best_block(&coins_tip, &tip_hash);

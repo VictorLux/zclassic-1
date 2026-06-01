@@ -68,7 +68,7 @@ static bool seed_linked_chain(struct main_state *ms,
     }
     struct block_index *tip = block_map_find(&ms->map_block_index,
                                              &hashes[tip_h]);
-    return tip && active_chain_set_tip(&ms->chain_active, tip);
+    return tip && active_chain_move_window_tip(&ms->chain_active, tip);
 }
 
 int test_chain_integrity_failed_condition(void)

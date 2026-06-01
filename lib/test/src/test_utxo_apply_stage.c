@@ -305,7 +305,7 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     memset(ms, 0, sizeof(*ms));
     active_chain_init(&ms->chain_active);
     if (!synth_chain_uv_build(sc, n)) return 2;
-    active_chain_set_tip(&ms->chain_active, &sc->blocks[n - 1]);
+    active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
     if (!seed_proof_validate(progress_store_db(), n, upstream_fail_height))
         return 3;

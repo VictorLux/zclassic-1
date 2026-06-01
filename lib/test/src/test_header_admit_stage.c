@@ -160,7 +160,7 @@ int test_header_admit_stage(void)
 
         struct synth_chain sc;
         HA_CHECK("synth chain builds", synth_chain_build(&sc, 5));
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[4]);
 
         HA_CHECK("stage init", header_admit_stage_init(&ms));
         HA_CHECK("init is idempotent (same ms)",
@@ -211,7 +211,7 @@ int test_header_admit_stage(void)
         active_chain_init(&ms.chain_active);
         struct synth_chain sc;
         synth_chain_build(&sc, 3);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[2]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
 
         HA_CHECK("replay: init", header_admit_stage_init(&ms));
         HA_CHECK("replay: drain 3",
@@ -255,7 +255,7 @@ int test_header_admit_stage(void)
         active_chain_init(&ms.chain_active);
         struct synth_chain sc;
         synth_chain_build(&sc, 3);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[2]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
         /* Sabotage AFTER set_tip: a NULL pprev set first would make the
          * chain-walker stop at the broken link and leave chain[0] NULL,
          * which would short-circuit genesis admission to IDLE before
@@ -292,7 +292,7 @@ int test_header_admit_stage(void)
         active_chain_init(&ms.chain_active);
         struct synth_chain sc;
         synth_chain_build(&sc, 2);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[1]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[1]);
 
         struct auth_hook_state st = {0, -1};
         header_admit_stage_set_authoritative_hook(auth_observer, &st);
@@ -336,7 +336,7 @@ int test_header_admit_stage(void)
         if (parent) {
             parent->nHeight = 0;
             parent->nStatus = BLOCK_VALID_TREE;
-            active_chain_set_tip(&ms.chain_active, parent);
+            active_chain_move_window_tip(&ms.chain_active, parent);
             ms.pindex_best_header = parent;
         }
 
@@ -429,7 +429,7 @@ int test_header_admit_stage(void)
         active_chain_init(&ms.chain_active);
         struct synth_chain sc;
         synth_chain_build(&sc, 2);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[1]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[1]);
 
         header_admit_stage_init(&ms);
         header_admit_stage_drain(100);
@@ -481,7 +481,7 @@ int test_header_admit_stage(void)
         active_chain_init(&ms.chain_active);
         struct synth_chain sc;
         synth_chain_build(&sc, 5);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[4]);
 
         HA_CHECK("reorg_heal: init", header_admit_stage_init(&ms));
         HA_CHECK("reorg_heal: drain 5 → cursor=5",

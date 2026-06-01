@@ -314,7 +314,7 @@ int test_reorg_safety(void)
         for (int h = 1; h <= CHAIN_LEN; h++)
             block_map_insert(&bm, &b_hashes[h], &b_idx[h]);
 
-        active_chain_set_tip(&chain, &b_idx[CHAIN_LEN]);
+        active_chain_move_window_tip(&chain, &b_idx[CHAIN_LEN]);
         cache.hash_block = *b_idx[CHAIN_LEN].phashBlock;
 
         struct chain_state_repository csr;
@@ -469,7 +469,7 @@ int test_reorg_safety(void)
 
         block_map_insert(&bm, &a_hashes[0], &a_idx[0]);
         block_map_insert(&bm, &a_hashes[CHAIN_LEN], &a_idx[CHAIN_LEN]);
-        active_chain_set_tip(&chain, &a_idx[CHAIN_LEN]);
+        active_chain_move_window_tip(&chain, &a_idx[CHAIN_LEN]);
 
         struct chain_state_repository csr;
         csr_init(&csr, &bm, &chain, &header_tip, &cache, NULL, NULL);

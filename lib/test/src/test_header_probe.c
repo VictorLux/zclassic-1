@@ -278,7 +278,7 @@ static void hp_build_fixture(void)
     struct block_index *bi = chainstate_insert_block_index(
         (struct chainstate *)&g_hp_ms, &g_hp_genesis);
     if (bi) bi->nHeight = 0;
-    active_chain_set_tip(&g_hp_ms.chain_active, bi);
+    active_chain_move_window_tip(&g_hp_ms.chain_active, bi);
     g_hp_ms.pindex_best_header = bi;
 
     extern struct wallet_rpc_context g_wallet_ctx;

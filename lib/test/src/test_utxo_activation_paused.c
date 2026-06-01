@@ -200,7 +200,7 @@ int test_utxo_activation_paused(void)
             &ms, hashes, 0, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
         struct block_index *next = insert_test_block(
             &ms, hashes, 1, BLOCK_HAVE_DATA);
-        ok = ok && tip && next && active_chain_set_tip(&ms.chain_active, tip);
+        ok = ok && tip && next && active_chain_move_window_tip(&ms.chain_active, tip);
         condition_engine_set_main_state(&ms);
         register_block_failed_mask_at_tip();
 
@@ -209,7 +209,7 @@ int test_utxo_activation_paused(void)
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 1;
         ok = ok && block_failed_mask_at_tip_test_stall_type() == 2;
-        ok = ok && active_chain_set_tip(&ms.chain_active, next);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, next);
         fake_clock_set(&clock, 1302);
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
@@ -331,7 +331,7 @@ int test_utxo_activation_paused(void)
         recovered_tip.pprev = &tip;
         best_header.nHeight = 110;
         ms.pindex_best_header = &best_header;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
 
         ok = ok && node_db_open(&ndb, ":memory:");
         ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
@@ -381,7 +381,7 @@ int test_utxo_activation_paused(void)
         observed = observed && last_outcome &&
                    strcmp(json_get_str(last_outcome), "unwitnessed") == 0;
 
-        ok = ok && active_chain_set_tip(&ms.chain_active, &recovered_tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &recovered_tip);
         fake_clock_set(&clock, 6001);
         condition_engine_tick();
         observed = observed && condition_engine_get_active_count() == 0;
@@ -418,7 +418,7 @@ int test_utxo_activation_paused(void)
         tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         best_header.nHeight = 110;
         ms.pindex_best_header = &best_header;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
 
         ok = ok && node_db_open(&ndb, ":memory:");
         ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
@@ -474,7 +474,7 @@ int test_utxo_activation_paused(void)
         tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
         best_header.nHeight = 110;
         ms.pindex_best_header = &best_header;
-        ok = ok && active_chain_set_tip(&ms.chain_active, &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
 
         ok = ok && node_db_open(&ndb, ":memory:");
         ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);

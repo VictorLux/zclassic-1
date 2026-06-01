@@ -207,7 +207,7 @@ static int vh_setup(const char *tag, int n, vh_validator_fn fn, void *user,
     memset(ms, 0, sizeof(*ms));
     active_chain_init(&ms->chain_active);
     if (!synth_chain_vh_build(sc, n)) return 2;
-    active_chain_set_tip(&ms->chain_active, &sc->blocks[n - 1]);
+    active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
     if (!header_admit_stage_init(ms))  return 3;
     if (!validate_headers_stage_init(ms)) return 4;

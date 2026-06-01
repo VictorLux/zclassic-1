@@ -50,7 +50,7 @@ static void csv_build_chain(struct main_state *ms, int n)
     if (limit > 0) {
         struct block_index *tip = block_map_find(
             &ms->map_block_index, &hashes[limit - 1]);
-        if (tip) active_chain_set_tip(&ms->chain_active, tip);
+        if (tip) active_chain_move_window_tip(&ms->chain_active, tip);
     }
 }
 
@@ -234,7 +234,7 @@ int test_chain_state_validator(void)
         tip->nTx = 1;
         tip->nChainTx = 2001;
         arith_uint256_set_u64(&tip->nChainWork, 2001);
-        active_chain_set_tip(&ms.chain_active, tip);
+        active_chain_move_window_tip(&ms.chain_active, tip);
 
         struct coins_view_cache cache;
         struct coins_view nv;

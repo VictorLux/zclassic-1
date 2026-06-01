@@ -131,7 +131,7 @@ static bool fixture_init(struct prune_fixture *f, int num_blocks,
 
     /* Set up active chain */
     active_chain_init(&f->ms.chain_active);
-    active_chain_set_tip(&f->ms.chain_active, &f->blocks[num_blocks - 1]);
+    active_chain_move_window_tip(&f->ms.chain_active, &f->blocks[num_blocks - 1]);
 
     /* Init pruning service */
     block_pruning_init(&f->svc, &f->ms, f->datadir);

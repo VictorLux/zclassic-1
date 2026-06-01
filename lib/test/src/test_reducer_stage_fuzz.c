@@ -528,7 +528,7 @@ static void fuzz_header_admit(uint64_t *rng, int iter)
         active_chain_free(&ms.chain_active);
         progress_store_close(); test_cleanup_tmpdir(dir); return;
     }
-    active_chain_set_tip(&ms.chain_active, &sc.blocks[n - 1]);
+    active_chain_move_window_tip(&ms.chain_active, &sc.blocks[n - 1]);
 
     if (header_admit_stage_init(&ms)) {
         /* Stamp an adversarial own-cursor BEFORE corrupting, so the stage
@@ -567,7 +567,7 @@ static void fuzz_validate_headers(uint64_t *rng, int iter)
         active_chain_free(&ms.chain_active);
         progress_store_close(); test_cleanup_tmpdir(dir); return;
     }
-    active_chain_set_tip(&ms.chain_active, &sc.blocks[n - 1]);
+    active_chain_move_window_tip(&ms.chain_active, &sc.blocks[n - 1]);
 
     /* header_admit must be inited first (validate_headers reads its cursor
      * + log). Then stamp garbage. */
@@ -618,7 +618,7 @@ static void fuzz_body_fetch(uint64_t *rng, int iter)
         active_chain_free(&ms.chain_active);
         progress_store_close(); test_cleanup_tmpdir(dir); return;
     }
-    active_chain_set_tip(&ms.chain_active, &sc.blocks[n - 1]);
+    active_chain_move_window_tip(&ms.chain_active, &sc.blocks[n - 1]);
 
     if (body_fetch_stage_init(&ms)) {
         sqlite3 *db = progress_store_db();
@@ -697,7 +697,7 @@ static void fuzz_downstream(uint64_t *rng, int iter, const struct down_spec *sp)
         active_chain_free(&ms.chain_active);
         progress_store_close(); test_cleanup_tmpdir(dir); return;
     }
-    active_chain_set_tip(&ms.chain_active, &sc.blocks[n - 1]);
+    active_chain_move_window_tip(&ms.chain_active, &sc.blocks[n - 1]);
 
     if (sp->init(&ms)) {
         sqlite3 *db = progress_store_db();
@@ -747,7 +747,7 @@ static void fuzz_tip_finalize(uint64_t *rng, int iter)
         active_chain_free(&ms.chain_active);
         progress_store_close(); test_cleanup_tmpdir(dir); return;
     }
-    active_chain_set_tip(&ms.chain_active, &sc.blocks[n - 1]);
+    active_chain_move_window_tip(&ms.chain_active, &sc.blocks[n - 1]);
 
     if (tip_finalize_stage_init(&ms)) {
         sqlite3 *db = progress_store_db();

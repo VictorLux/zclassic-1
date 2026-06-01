@@ -158,9 +158,9 @@ int test_invalidateblock(void)
 
         /* Active tip = A2 (chain A). pindex_best_header = the
          * most-work header so selection is honest. */
-        active_chain_set_tip(&ms.chain_active, g);
-        active_chain_set_tip(&ms.chain_active, a1);
-        active_chain_set_tip(&ms.chain_active, a2);
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
         ms.pindex_best_header = b2;
 
         IB_CHECK("pre-invalidate: selector picks B2 (most work)",
@@ -218,9 +218,9 @@ int test_invalidateblock(void)
         struct block_index *b2 = mk_idx(&ms, 2, 21, 0x1B, b1);
         struct block_index *b3 = mk_idx(&ms, 3, 31, 0x1C, b2);
 
-        active_chain_set_tip(&ms.chain_active, g);
-        active_chain_set_tip(&ms.chain_active, a1);
-        active_chain_set_tip(&ms.chain_active, a2);
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, a1);
+        active_chain_move_window_tip(&ms.chain_active, a2);
         ms.pindex_best_header = b3;
 
         IB_CHECK("deeper: pre-invalidate selector picks B3",

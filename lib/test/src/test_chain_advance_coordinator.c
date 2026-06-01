@@ -583,7 +583,7 @@ static int test_cac_dump_reports_projection_lag(void)
         memset(&tip, 0, sizeof(tip));
         main_state_init(&ms);
         tip.nHeight = 10;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
 
         memset(&blk, 0, sizeof(blk));
         memset(blk.hash, 0xA5, sizeof(blk.hash));
@@ -826,7 +826,7 @@ static int test_cac_selects_viable_caught_up_p2p(void)
         cm.manager.nodes_cap = 4;
         tip.nHeight = 130;
         best_header.nHeight = 130;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
         ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
@@ -906,7 +906,7 @@ static int test_cac_inbound_assists_near_tip_p2p(void)
         cm.manager.nodes_cap = 3;
         tip.nHeight = 131;
         best_header.nHeight = 131;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
         ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
@@ -979,7 +979,7 @@ static int test_cac_dump_explains_stale_p2p_height(void)
         cm.manager.nodes_cap = 4;
         tip.nHeight = 100;
         best_header.nHeight = 150;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
         ms.pindex_best_header = &best_header;
 
         ASSERT(test_cac_add_peer(&cm, 10, 1, 0, 1,
@@ -1110,7 +1110,7 @@ static int test_cac_dump_populates_local_import_recovery(void)
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "cac next child missing");
 
         tip.nHeight = 100;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
 
         p1.id = 1;
         p1.starting_height = 130;
@@ -1179,7 +1179,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
         memset(&stats, 0, sizeof(stats));
         zcl_mutex_init(&ms.cs_main);
         tip.nHeight = 500;
-        ASSERT(active_chain_set_tip(&ms.chain_active, &tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, &tip));
 
         sync_monitor_init();
         legacy_mirror_sync_reset_for_test();

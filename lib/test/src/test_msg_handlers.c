@@ -194,7 +194,7 @@ static int test_p148_should_mark_seen_rejects_orphan(void)
         struct block_index tip;
         block_index_init(&tip);
         tip.nHeight = 100;
-        active_chain_set_tip(&ac, &tip);
+        active_chain_move_window_tip(&ac, &tip);
 
         struct block_index orphan;
         block_index_init(&orphan);
@@ -218,7 +218,7 @@ static int test_p148_should_mark_seen_accepts_active(void)
         struct block_index tip;
         block_index_init(&tip);
         tip.nHeight = 42;
-        active_chain_set_tip(&ac, &tip);
+        active_chain_move_window_tip(&ac, &tip);
 
         ASSERT(msg_blocks_should_mark_seen(&ac, &tip));
 

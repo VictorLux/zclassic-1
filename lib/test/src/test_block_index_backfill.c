@@ -177,7 +177,7 @@ static int run_backfill_full(int *failures)
     struct block_index *tip = block_map_find(&ms.map_block_index, &hashes[N - 1]);
     BIB_CHECK("full: tip found", tip != NULL);
     BIB_CHECK("full: set active tip",
-              tip && active_chain_set_tip(&ms.chain_active, tip));
+              tip && active_chain_move_window_tip(&ms.chain_active, tip));
 
     /* --- (3) Wire the event_log + projection. --- */
     event_log_t *log = event_log_open(el_path);
@@ -382,7 +382,7 @@ static int run_backfill_inram_solution(int *failures)
         if (cur && prev) cur->pprev = prev;
     }
     struct block_index *tip = block_map_find(&ms.map_block_index, &hashes[N - 1]);
-    (void)active_chain_set_tip(&ms.chain_active, tip);
+    (void)active_chain_move_window_tip(&ms.chain_active, tip);
 
     event_log_t *log = event_log_open(el_path);
     if (!log) { *failures += 1; printf("inram: event_log_open FAIL\n"); goto cleanup; }

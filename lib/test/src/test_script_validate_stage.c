@@ -264,7 +264,7 @@ static int sv_setup(const char *tag, int n, int upstream_fail_height,
     memset(ms, 0, sizeof(*ms));
     active_chain_init(&ms->chain_active);
     if (!synth_chain_sv_build(sc, n)) return 2;
-    active_chain_set_tip(&ms->chain_active, &sc->blocks[n - 1]);
+    active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
     if (!seed_body_persist(progress_store_db(), n, upstream_fail_height))
         return 3;

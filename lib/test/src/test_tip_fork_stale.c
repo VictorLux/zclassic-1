@@ -67,7 +67,7 @@ static bool stub_rebuild(int from_height)
     /* Model a successful canonical rebuild: advance the active tip so the
      * witness (tip advanced beyond detect height) passes. */
     if (g_advance_ms && g_advance_to)
-        active_chain_set_tip(&g_advance_ms->chain_active, g_advance_to);
+        active_chain_move_window_tip(&g_advance_ms->chain_active, g_advance_to);
     return atomic_load(&g_stub_rebuild_ret);
 }
 
@@ -108,7 +108,7 @@ static struct block_index *tfs_build_main(struct main_state *ms,
                           (uint64_t)(h + 1),
                           BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
     }
-    active_chain_set_tip(&ms->chain_active, prev);
+    active_chain_move_window_tip(&ms->chain_active, prev);
     return prev;
 }
 

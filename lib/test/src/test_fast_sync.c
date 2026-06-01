@@ -730,7 +730,7 @@ static int test_block_piece_manifest_active_chain(void)
             idx[i].pprev = (i > 0) ? &idx[i - 1] : NULL;
         }
 
-        ASSERT(active_chain_set_tip(&chain, &idx[3]));
+        ASSERT(active_chain_move_window_tip(&chain, &idx[3]));
 
         struct block_piece_manifest m;
         memset(&m, 0, sizeof(m));
@@ -780,7 +780,7 @@ static int test_block_piece_manifest_active_chain_skips_leading_gap(void)
             idx[i].pprev = (i > 0) ? &idx[i - 1] : NULL;
         }
         idx[1].nStatus &= ~BLOCK_HAVE_DATA;
-        ASSERT(active_chain_set_tip(&chain, &idx[3]));
+        ASSERT(active_chain_move_window_tip(&chain, &idx[3]));
 
         struct block_piece_manifest m;
         memset(&m, 0, sizeof(m));

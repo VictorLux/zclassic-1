@@ -353,11 +353,6 @@ bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi
     return true;
 }
 
-bool active_chain_set_tip(struct active_chain *c, struct block_index *bi) // one-write-path-ok:active-chain-compat
-{
-    return active_chain_move_window_tip(c, bi);
-}
-
 /* Extend the VISIBLE chain[] window forward to a most-work CANDIDATE that
  * builds on the current tip, WITHOUT moving the authoritative (finalized)
  * tip. This is the reducer's structural analogue of the legacy
