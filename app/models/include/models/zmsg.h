@@ -30,5 +30,9 @@
 struct ar_callbacks *db_zmsg_callbacks(void);
 bool db_zmsg_validate(const struct zmsg_message *msg,
                       struct ar_errors *errors);
+bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg);
+int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
+                 size_t max, bool unread_only);
+bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32]);
 
 #endif

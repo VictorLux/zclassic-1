@@ -5,14 +5,8 @@
 #include "net/zmsg.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
-#include "models/activerecord.h"
-#include "models/database.h"
-#include "models/zmsg.h"
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <string.h>
-#include <stdio.h>
-#include <time.h>
 #include <pthread.h>
 
 /* ── Serialization ──────────────────────────────────────────────── */
@@ -161,117 +155,4 @@ int zmsg_store_count(void)
     int c = g_msg_count;
     pthread_mutex_unlock(&g_zmsg_mutex);
     return c;
-}
-
-/* ── SQLite Persistence ─────────────────────────────────────────── */
-
-bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
-{
-    if (!ndb || !ndb->open) LOG_FAIL("zmsg", "db_zmsg_save: db not open");
-    if (!msg) LOG_FAIL("zmsg", "db_zmsg_save: msg is NULL");
-
-    struct ar_callbacks *cbs = db_zmsg_callbacks();
-    AR_VALIDATE_RECORD(cbs, "zmsg", msg, db_zmsg_validate);
-    if (!ar_run_before_save(cbs, (void *)msg))
-        return false;
-
-    const char *sql =
-        "INSERT OR IGNORE INTO zmsg_messages"
-        "(msg_id,direction,channel,sender,recipient,body,"
-        "timestamp,txid,read)"
-        " VALUES(?,?,?,?,?,?,?,?,?)";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) LOG_FAIL("zmsg", "db_zmsg_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
-
-    sqlite3_bind_blob(s, 1, msg->msg_id, 32, SQLITE_STATIC);
-    sqlite3_bind_int(s, 2, msg->direction);
-    sqlite3_bind_int(s, 3, msg->channel);
-    sqlite3_bind_text(s, 4, msg->sender, -1, SQLITE_STATIC);
-    sqlite3_bind_text(s, 5, msg->recipient, -1, SQLITE_STATIC);
-    sqlite3_bind_text(s, 6, msg->body, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 7, msg->timestamp);
-
-    /* Check if txid is non-zero */
-    uint8_t zero[32] = {0};
-    if (memcmp(msg->txid, zero, 32) != 0)
-        sqlite3_bind_blob(s, 8, msg->txid, 32, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(s, 8);
-
-    sqlite3_bind_int(s, 9, msg->read ? 1 : 0);
-
-    bool ok = AR_STEP_DONE(s);
-    sqlite3_finalize(s);
-    if (ok) ar_run_after_save(cbs, (void *)msg);
-    return ok;
-}
-
-static void row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
-{
-    memset(out, 0, sizeof(*out));
-    const void *blob = sqlite3_column_blob(s, 0);
-    if (blob) memcpy(out->msg_id, blob, 32);
-
-    out->direction = sqlite3_column_int(s, 1);
-    out->channel = sqlite3_column_int(s, 2);
-
-    const char *str = (const char *)sqlite3_column_text(s, 3);
-    if (str) snprintf(out->sender, sizeof(out->sender), "%s", str);
-
-    str = (const char *)sqlite3_column_text(s, 4);
-    if (str) snprintf(out->recipient, sizeof(out->recipient), "%s", str);
-
-    str = (const char *)sqlite3_column_text(s, 5);
-    if (str) snprintf(out->body, sizeof(out->body), "%s", str);
-
-    out->timestamp = sqlite3_column_int64(s, 6);
-
-    blob = sqlite3_column_blob(s, 7);
-    if (blob) memcpy(out->txid, blob, 32);
-
-    out->read = sqlite3_column_int(s, 8) != 0;
-}
-
-int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
-                 size_t max, bool unread_only)
-{
-    if (!ndb || !ndb->open) return 0;
-
-    const char *sql = unread_only
-        ? "SELECT msg_id,direction,channel,sender,recipient,body,"
-          "timestamp,txid,read FROM zmsg_messages "
-          "WHERE read=0 ORDER BY timestamp DESC LIMIT ?"
-        : "SELECT msg_id,direction,channel,sender,recipient,body,"
-          "timestamp,txid,read FROM zmsg_messages "
-          "ORDER BY timestamp DESC LIMIT ?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return 0;
-
-    sqlite3_bind_int(s, 1, (int)max);
-    int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
-        row_to_zmsg(s, &out[count]);
-        count++;
-    }
-    sqlite3_finalize(s);
-    return count;
-}
-
-bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32])
-{
-    if (!ndb || !ndb->open) LOG_FAIL("zmsg", "db_zmsg_mark_read: db not open");
-
-    const char *sql = "UPDATE zmsg_messages SET read=1 WHERE msg_id=?";
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) LOG_FAIL("zmsg", "db_zmsg_mark_read: prepare failed: %s", sqlite3_errmsg(ndb->db));
-
-    sqlite3_bind_blob(s, 1, msg_id, 32, SQLITE_STATIC);
-    bool ok = AR_STEP_WRITE(s) == SQLITE_DONE;
-    sqlite3_finalize(s);
-    return ok;
 }
