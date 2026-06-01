@@ -16,11 +16,6 @@
 #
 # Format: <file>:<exact #include directive>
 # Order: alphabetical by file path (regenerate via the script if needed).
-lib/metrics/src/metrics.c:#include "models/database.h"
-lib/metrics/src/metrics.c:#include "services/legacy_mirror_sync_service.h"
-lib/metrics/src/metrics.c:#include "services/node_health_service.h"
-lib/metrics/src/metrics.c:#include "services/sync_monitor.h"
-lib/net/src/connman.c:#include "models/peer.h"
 lib/net/src/fast_sync.c:#include "models/activerecord.h"
 lib/net/src/fast_sync.c:#include "models/database.h"
 lib/net/src/fast_sync.c:#include "models/utxo.h"

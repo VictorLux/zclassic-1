@@ -793,6 +793,62 @@ static void boot_save_peer_advisory(const struct p2p_node *node, void *ctx)
         peer_lifecycle_note_cache_skipped(node, "save_advisory");
 }
 
+static int boot_known_zcl23_peers(void *ctx,
+                                  struct connman_known_peer *out,
+                                  size_t max)
+{
+    struct boot_svc_ctx *svc = ctx;
+    struct db_peer peers[8];
+    size_t want = max < 8 ? max : 8;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !out || want == 0)
+        return 0;
+
+    int n = db_peer_fast_zcl23(svc->node_db, peers, want);
+    if (n <= 0)
+        return n;
+    for (int i = 0; i < n; i++) {
+        memcpy(out[i].ip, peers[i].ip, 16);
+        out[i].port = peers[i].port;
+        out[i].services = peers[i].services;
+    }
+    return n;
+}
+
+static void boot_metrics_external_gauges(
+    struct metrics_external_gauges *out,
+    void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    enum sync_state state;
+    struct legacy_mirror_sync_stats lms = {0};
+    struct node_health_snapshot nhs = {0};
+
+    if (!out)
+        return;
+
+    state = sync_get_state();
+    out->sync_state = (int)state;
+    snprintf(out->sync_state_name, sizeof(out->sync_state_name), "%s",
+             sync_state_name(state));
+
+    if (svc && svc->node_db && svc->node_db->open)
+        out->utxo_count = node_db_utxo_count(svc->node_db);
+
+    out->tip_advance_age_seconds = sync_monitor_tip_advance_age();
+
+    legacy_mirror_sync_stats_snapshot(&lms);
+    out->mirror_lag_blocks = lms.enabled ? (int64_t)lms.lag : -1;
+    out->mirror_lag_breach_seconds = lms.lag_breach_seconds;
+    out->mirror_lag_critical_seconds = lms.lag_critical_seconds;
+
+    if (svc && svc->state) {
+        node_health_collect(&nhs, svc->node_db, svc->state);
+        out->magicbean_peer_count = (int64_t)nhs.magicbean_peer_count;
+        out->zclassic_c23_peer_count = (int64_t)nhs.zclassic_c23_peer_count;
+    }
+}
+
 static bool boot_miner_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -2441,6 +2497,8 @@ bool app_init_services(struct app_context *ctx,
     svc->connman->datadir = ctx->datadir;
     connman_set_onion_peer_discovery(svc->connman, ctx->datadir,
                                      blog_discover_onion_peers);
+    connman_set_known_zcl23_peer_source(svc->connman,
+                                        boot_known_zcl23_peers, svc);
     onion_service_set_app_handlers(blog_serve, blog_discover_onion_peers);
 
     /* Load persisted peer addresses from previous session */
@@ -3392,6 +3450,8 @@ void app_start_metrics(bool mining)
     S->metrics->cm = S->connman;
     S->metrics->params = chain_params_get();
     S->metrics->mining = mining;
+    S->metrics->external_gauges = boot_metrics_external_gauges;
+    S->metrics->external_gauges_ctx = S;
     if (!metrics_start(S->metrics))
         fprintf(stderr, "WARNING: failed to start metrics thread\n");
 }

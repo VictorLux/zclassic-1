@@ -12,12 +12,8 @@
 #include "core/utiltime.h"
 #include "util/timedata.h"
 #include "event/event.h"
-#include "config/runtime.h"
+#include "sync/sync_state.h"
 #include "util/thread_registry.h"
-#include "models/database.h"
-#include "services/sync_monitor.h"
-#include "services/legacy_mirror_sync_service.h"
-#include "services/node_health_service.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -355,43 +351,35 @@ static void *metrics_thread_fn(void *arg)
                 fclose(sf);
             }
 
-            /* UTXO count from database */
-            int64_t gutxo = 0;
-            struct node_db *gndb = app_runtime_node_db();
-            if (gndb) gutxo = node_db_utxo_count(gndb);
-
-            mcp_metrics_set_node_gauges(gh, gpc, grss, gutxo, gup);
-
-            /* Sync state */
             enum sync_state gss = sync_get_state();
-            mcp_metrics_set_sync_state((int)gss, sync_state_name(gss));
+            struct metrics_external_gauges ext = {
+                .utxo_count = 0,
+                .sync_state = (int)gss,
+                .tip_advance_age_seconds = -1,
+                .mirror_lag_blocks = -1,
+                .mirror_lag_breach_seconds = 0,
+                .mirror_lag_critical_seconds = 0,
+                .magicbean_peer_count = 0,
+                .zclassic_c23_peer_count = 0,
+            };
+            snprintf(ext.sync_state_name, sizeof(ext.sync_state_name), "%s",
+                     sync_state_name(gss));
+            if (ctx->external_gauges)
+                ctx->external_gauges(&ext, ctx->external_gauges_ctx);
 
-            /* Seconds since last block-connect; alert hinge for the
-             * silent-stall failure shape (HEADERS_DOWNLOAD wedge). */
-            mcp_metrics_set_tip_advance_age(sync_monitor_tip_advance_age());
+            mcp_metrics_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
 
-            /* Mirror lag SLO gauges — surfaces redundancy state to
-             * Prometheus so dashboards/alerts can hinge on the actual
-             * zclassicd-vs-local lag without polling MCP. */
-            {
-                struct legacy_mirror_sync_stats lms = {0};
-                legacy_mirror_sync_stats_snapshot(&lms);
-                int64_t lag_b = lms.enabled ? (int64_t)lms.lag : -1;
-                mcp_metrics_set_mirror_lag(lag_b,
-                                           lms.lag_breach_seconds,
-                                           lms.lag_critical_seconds);
-            }
+            mcp_metrics_set_sync_state(ext.sync_state, ext.sync_state_name);
 
-            /* Peer-kind gauges — "Magic Bean reporting" signal as a
-             * Prometheus time series. node_health_collect iterates the
-             * connman peer list and runs msg_version_classify_peer on
-             * each; we just snapshot the resulting counts. */
-            {
-                struct node_health_snapshot nhs = {0};
-                node_health_collect(&nhs, gndb, ctx->ms);
-                mcp_metrics_set_peer_kinds((int64_t)nhs.magicbean_peer_count,
-                                           (int64_t)nhs.zclassic_c23_peer_count);
-            }
+            mcp_metrics_set_tip_advance_age(
+                ext.tip_advance_age_seconds);
+
+            mcp_metrics_set_mirror_lag(ext.mirror_lag_blocks,
+                                       ext.mirror_lag_breach_seconds,
+                                       ext.mirror_lag_critical_seconds);
+
+            mcp_metrics_set_peer_kinds(ext.magicbean_peer_count,
+                                       ext.zclassic_c23_peer_count);
         }
 
         if (is_tty) {

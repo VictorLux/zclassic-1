@@ -18,13 +18,11 @@
 #include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/tor_integration.h"
-#include "models/peer.h"
 #include "core/random.h"
 #include "core/serialize.h"
 #include "net/netbase.h"
 #include "net/version.h"
 #include "bloom/bloom.h"
-#include "config/runtime.h"
 #include <netdb.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -145,6 +143,17 @@ void connman_set_onion_peer_discovery(struct connman *cm,
         return;
     cm->onion_peer_datadir = datadir;
     cm->onion_peer_discover = discover;
+}
+
+void connman_set_known_zcl23_peer_source(
+    struct connman *cm,
+    connman_known_zcl23_peers_fn peers,
+    void *ctx)
+{
+    if (!cm)
+        return;
+    cm->known_zcl23_peers = peers;
+    cm->known_zcl23_peers_ctx = ctx;
 }
 
 /* Fetch /directory.json from a .onion seed and add clearnet IPs */
@@ -781,12 +790,14 @@ static void *thread_open_connections(void *arg)
          * ZCL23 peers (fast sync capable, high bandwidth). This creates
          * a tight mesh of power nodes that find each other quickly. */
         bool tried_zcl23 = false;
-        struct node_db *ndb = app_runtime_node_db();
-        if (!g_connect_only && ndb && (GetRand(2) == 0)) {
-            struct db_peer zcl_peers[8];
-            int nzcl = db_peer_fast_zcl23(ndb, zcl_peers, 8);
+        if (!g_connect_only && cm->known_zcl23_peers &&
+            (GetRand(2) == 0)) {
+            struct connman_known_peer zcl_peers[8];
+            int nzcl = cm->known_zcl23_peers(
+                cm->known_zcl23_peers_ctx, zcl_peers, 8);
             if (nzcl > 0) {
-                struct db_peer *pick = &zcl_peers[GetRand((uint64_t)nzcl)];
+                struct connman_known_peer *pick =
+                    &zcl_peers[GetRand((uint64_t)nzcl)];
                 /* Check not already connected */
                 bool already = false;
                 zcl_mutex_lock(&cm->manager.cs_nodes);

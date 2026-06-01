@@ -1214,6 +1214,42 @@ static int t_boot_addrman_persistence_contract(void)
     return failures;
 }
 
+static int t_lib_runtime_gauges_are_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("lib runtime gauges and peer preference are callback injected") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_metrics_external_gauges") != NULL);
+        ASSERT(strstr(buf, "S->metrics->external_gauges =") != NULL);
+        ASSERT(strstr(buf, "connman_set_known_zcl23_peer_source") != NULL);
+        ASSERT(strstr(buf, "db_peer_fast_zcl23") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/metrics/src/metrics.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "ctx->external_gauges") != NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
+        ASSERT(strstr(buf, "services/legacy_mirror_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/node_health_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/connman.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "known_zcl23_peers") != NULL);
+        ASSERT(strstr(buf, "models/peer.h") == NULL);
+        ASSERT(strstr(buf, "config/runtime.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_shutdown_persistence_order_contract(void)
 {
     int failures = 0;
@@ -1493,6 +1529,7 @@ int test_make_lint_gates(void)
     failures += t_tools_z_operator_diagnostics_contract();
     failures += t_boot_chain_advance_diagnostics_contract();
     failures += t_boot_addrman_persistence_contract();
+    failures += t_lib_runtime_gauges_are_callback_injected();
     failures += t_boot_shutdown_persistence_order_contract();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();

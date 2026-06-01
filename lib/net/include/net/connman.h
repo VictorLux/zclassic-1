@@ -11,6 +11,7 @@
 #include "net/onion_discovery.h"
 #include "chain/chainparams.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 #define MAX_ADDNODES 16
 
@@ -35,6 +36,17 @@ enum connman_addnode_failure_kind {
     CONNMAN_ADDNODE_FAILURE_TCP = 0,
     CONNMAN_ADDNODE_FAILURE_PROTOCOL,
 };
+
+struct connman_known_peer {
+    uint8_t ip[16];
+    uint16_t port;
+    uint64_t services;
+};
+
+typedef int (*connman_known_zcl23_peers_fn)(
+    void *ctx,
+    struct connman_known_peer *out,
+    size_t max);
 
 struct connman_outbound_health {
     size_t outbound_total;
@@ -78,6 +90,8 @@ struct connman {
     const char *datadir;
     const char *onion_peer_datadir;
     onion_peer_discover_fn onion_peer_discover;
+    connman_known_zcl23_peers_fn known_zcl23_peers;
+    void *known_zcl23_peers_ctx;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,
@@ -108,6 +122,11 @@ void connman_kick_seed_discovery(struct connman *cm);
 void connman_set_onion_peer_discovery(struct connman *cm,
                                       const char *datadir,
                                       onion_peer_discover_fn discover);
+
+void connman_set_known_zcl23_peer_source(
+    struct connman *cm,
+    connman_known_zcl23_peers_fn peers,
+    void *ctx);
 
 size_t connman_get_node_count(const struct connman *cm);
 

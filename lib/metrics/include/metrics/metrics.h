@@ -14,6 +14,22 @@ struct main_state;
 struct connman;
 struct chain_params;
 
+struct metrics_external_gauges {
+    int64_t utxo_count;
+    int sync_state;
+    char sync_state_name[32];
+    int64_t tip_advance_age_seconds;
+    int64_t mirror_lag_blocks;
+    int64_t mirror_lag_breach_seconds;
+    int64_t mirror_lag_critical_seconds;
+    int64_t magicbean_peer_count;
+    int64_t zclassic_c23_peer_count;
+};
+
+typedef void (*metrics_external_gauges_fn)(
+    struct metrics_external_gauges *out,
+    void *ctx);
+
 extern _Atomic uint64_t g_transactions_validated;
 extern _Atomic uint64_t g_eh_solver_runs;
 
@@ -22,6 +38,8 @@ struct metrics_context {
     struct connman *cm;
     const struct chain_params *params;
     bool mining;
+    metrics_external_gauges_fn external_gauges;
+    void *external_gauges_ctx;
     _Atomic bool running;
     bool thread_started;
 };
