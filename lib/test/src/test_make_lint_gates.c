@@ -1496,7 +1496,9 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
         ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "TIP_FROM_P2P_REPAIR = 6") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),

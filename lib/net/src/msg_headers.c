@@ -24,7 +24,6 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "services/quorum_oracle_service.h"
-#include "services/chain_tip.h"
 #include "coins/coins_view.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
@@ -39,6 +38,18 @@ extern volatile sig_atomic_t g_shutdown_requested;
  * This file handles the receive-side header processing. */
 
 #include <stdatomic.h>
+
+#ifdef ZCL_TESTING
+/* Test harness fallback for CSR-less header-anchor repair. Keep this local so
+ * the net layer does not include the app chain-tip service. */
+enum tip_source {
+    TIP_FROM_P2P_REPAIR = 6,
+};
+struct zcl_result chain_set_active_tip(struct main_state *ms,
+                                       struct block_index *new_tip,
+                                       enum tip_source src,
+                                       const char *reason);
+#endif
 
 /* ── Sync diagnostic counters ──────────────────────────────────── */
 
