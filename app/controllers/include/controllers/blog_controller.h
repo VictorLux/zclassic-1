@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "net/onion_discovery.h"
 
 /* Serve an HTTP request for the blog.
  * path: URL path (e.g., "/", "/about", "/post/hello")
@@ -34,11 +35,6 @@ size_t blog_build_node_announce(uint8_t *out, size_t out_len,
 /* Scan the chain for ZCL23NODES token SEND txs.
  * Extracts .onion addresses for peer discovery.
  * Returns count of discovered addresses. */
-struct onion_peer {
-    char hostname[64]; /* xxxxx.onion */
-    int height;        /* block height of announcement */
-};
-
 int blog_discover_onion_peers(const char *datadir,
                                struct onion_peer *out, size_t max);
 

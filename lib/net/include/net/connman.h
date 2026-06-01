@@ -8,6 +8,7 @@
 #define ZCL_NET_CONNMAN_H
 
 #include "net/net.h"
+#include "net/onion_discovery.h"
 #include "chain/chainparams.h"
 #include <stdbool.h>
 
@@ -75,6 +76,8 @@ struct connman {
     int64_t addnode_protocol_failures[MAX_ADDNODES];
     /* Data directory for persisting addrman (peers.dat) */
     const char *datadir;
+    const char *onion_peer_datadir;
+    onion_peer_discover_fn onion_peer_discover;
 };
 
 bool connman_init(struct connman *cm, const struct chain_params *params,
@@ -101,6 +104,10 @@ void connman_open_connection(struct connman *cm,
  * when it detects a peer-floor breach or single-peer recovery state to
  * widen the addrman selection without waiting for the adaptive timer. */
 void connman_kick_seed_discovery(struct connman *cm);
+
+void connman_set_onion_peer_discovery(struct connman *cm,
+                                      const char *datadir,
+                                      onion_peer_discover_fn discover);
 
 size_t connman_get_node_count(const struct connman *cm);
 

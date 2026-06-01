@@ -18,7 +18,6 @@
 #include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/tor_integration.h"
-#include "controllers/blog_controller.h"
 #include "models/peer.h"
 #include "core/random.h"
 #include "core/serialize.h"
@@ -138,6 +137,16 @@ void connman_kick_seed_discovery(struct connman *cm)
     dns_seed_resolve(cm);
 }
 
+void connman_set_onion_peer_discovery(struct connman *cm,
+                                      const char *datadir,
+                                      onion_peer_discover_fn discover)
+{
+    if (!cm)
+        return;
+    cm->onion_peer_datadir = datadir;
+    cm->onion_peer_discover = discover;
+}
+
 /* Fetch /directory.json from a .onion seed and add clearnet IPs */
 static void try_onion_seed_fetch(struct connman *cm, const char *onion)
 {
@@ -223,11 +232,11 @@ static void *thread_dns_seed(void *arg)
 
     /* ZSLP chain scan — discover .onion peers from on-chain token data.
      * This is the Tor-native peer discovery: no DNS, no clearnet. */
-    if (!g_stop) {
-        extern const char *g_blog_datadir;
-        if (g_blog_datadir) {
+    if (!g_stop && cm->onion_peer_discover) {
+        const char *datadir = cm->onion_peer_datadir;
+        if (datadir) {
             struct onion_peer peers[64];
-            int found = blog_discover_onion_peers(g_blog_datadir, peers, 64);
+            int found = cm->onion_peer_discover(datadir, peers, 64);
             if (found > 0) {
                 printf("ZSLP chain scan: discovered %d .onion peers\n", found);
                 for (int i = 0; i < found; i++)

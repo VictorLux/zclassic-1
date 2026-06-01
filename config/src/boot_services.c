@@ -89,6 +89,7 @@
 #include "controllers/name_controller.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
+#include "controllers/blog_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
@@ -2354,6 +2355,8 @@ bool app_init_services(struct app_context *ctx,
     };
     connman_init(svc->connman, params, &signals);
     svc->connman->datadir = ctx->datadir;
+    connman_set_onion_peer_discovery(svc->connman, ctx->datadir,
+                                     blog_discover_onion_peers);
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);

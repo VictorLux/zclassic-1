@@ -23,6 +23,13 @@
 static int test_tip_count = 0;
 static int test_tip_height = 0;
 
+static int test_onion_peer_discover(const char *datadir,
+                                    struct onion_peer *out,
+                                    size_t max)
+{
+    return (datadir && out && max > 0) ? 0 : -1;
+}
+
 static void test_updated_block_tip(void *ctx, int height)
 {
     (void)ctx;
@@ -1815,6 +1822,13 @@ int test_net(void)
         ok = ok && (cm.manager.default_port == params->nDefaultPort);
         ok = ok && (memcmp(cm.manager.message_start, params->pchMessageStart,
                            MESSAGE_START_SIZE) == 0);
+        const char *onion_datadir = "test-datadir";
+        connman_set_onion_peer_discovery(&cm, onion_datadir,
+                                         test_onion_peer_discover);
+        ok = ok && (cm.onion_peer_datadir == onion_datadir);
+        ok = ok && (cm.onion_peer_discover == test_onion_peer_discover);
+        connman_set_onion_peer_discovery(NULL, onion_datadir,
+                                         test_onion_peer_discover);
         char *sv = cm.manager.sub_version;
         ok = ok && (strstr(sv, "ZClassic") != NULL);
         connman_free(&cm);
