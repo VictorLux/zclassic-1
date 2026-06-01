@@ -17,7 +17,7 @@
 #include "framework/condition.h"
 #include "net/connman.h"
 #include "platform/time_compat.h"
-#include "services/block_sync_service.h"
+#include "sync/sync_planner.h"
 #include "services/chain_activation_controller.h"
 #include "services/gap_fill_service.h"
 #include "sync/sync_state.h"

@@ -3,7 +3,7 @@
  * peers, tighter getheaders intervals, locator construction. */
 
 #include "test/test_helpers.h"
-#include "services/header_sync_service.h"
+#include "sync/sync_planner.h"
 
 /* Helper: build a minimal p2p_node for testing sync decisions. */
 static struct p2p_node make_test_node(int starting_height, int64_t last_gh_time)

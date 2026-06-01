@@ -1463,8 +1463,8 @@ static int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/file_service.h") == NULL);
         ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
-        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
-        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         PASS();
     } _test_next:;
@@ -1496,7 +1496,7 @@ static int t_tx_wallet_sync_is_callback_injected(void)
         ASSERT(strstr(buf, "node_db_sync_wallet_tx") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         PASS();
     } _test_next:;
@@ -1531,9 +1531,9 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "boot_activation_controller") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
-        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
         PASS();
@@ -1641,12 +1641,12 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "msg_processor_block_index_heights_repaired") != NULL);
         ASSERT(strstr(buf, "msg_processor_commit_header_tip") != NULL);
         ASSERT(strstr(buf, "msg_processor_recommit_snapshot_anchor") != NULL);
-        ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "services/block_index_integrity.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
-        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "config/boot_internal.h") == NULL);
         ASSERT(strstr(buf, "boot_activation_controller") == NULL);

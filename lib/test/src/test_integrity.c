@@ -11,7 +11,7 @@
 #include "chain/checkpoints.h"
 #include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
-#include "services/block_sync_service.h"
+#include "sync/sync_planner.h"
 #include "services/utxo_recovery_service.h"
 #include "util/supervisor.h"
 #include "validation/main_state.h"

@@ -3,7 +3,7 @@
  * per-peer tracking, stall detection, inbound fallback. */
 
 #include "test/test_helpers.h"
-#include "services/header_sync_service.h"
+#include "sync/sync_planner.h"
 
 /* Helper: build a minimal p2p_node for testing stall detection. */
 static struct p2p_node make_stall_node(int starting_height, bool inbound,

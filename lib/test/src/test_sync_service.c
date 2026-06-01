@@ -3,9 +3,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
-#include "services/header_sync_service.h"
-#include "services/block_sync_service.h"
-#include "services/sync_service.h"
+#include "sync/sync_planner.h"
 #include "validation/main_state.h"
 #include "net/download.h"
 #include "util/safe_alloc.h"

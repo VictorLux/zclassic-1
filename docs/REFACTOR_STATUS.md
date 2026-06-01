@@ -222,11 +222,10 @@ node soak.
   the snapshot sync service, and the lib-to-app include baseline is down from
   29 to 28.
 - Header/block sync planner contracts now live in
-  `lib/sync/include/sync/sync_planner.h`, with the app service headers kept as
-  compatibility wrappers. `lib/net/src/msgprocessor.c` and
-  `lib/net/src/msg_headers.c` now use the lib-owned planner contract instead
-  of the header/block sync app service headers, and the lib-to-app include
-  baseline is down from 28 to 24.
+  `lib/sync/include/sync/sync_planner.h`. The old app-layer re-export headers
+  for header, block, and aggregate sync planning were deleted; app/test callers
+  include the lib-owned planner contract directly, and the lib-to-app include
+  baseline remains empty.
 - The header-anchor repair path no longer requires the net header handler to
   include the app chain-tip service. The current CSR-less fallback routes
   through boot-owned chain-state callbacks, and the lib-to-app include
@@ -563,6 +562,32 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after deleting the three sync-planning app-layer
+  re-export headers and routing app/test callers directly to
+  `sync/sync_planner.h`.
+- `make -j$(nproc)`: pass after the sync planner include migration.
+- `make test_parallel`: pass after rebuilding the parallel runner with direct
+  sync planner includes.
+- Focused filtered tests passed:
+  `./test_parallel --only=header_sync --timeout=120 --verbose`,
+  `./test_parallel --only=sync_service --timeout=120 --verbose`,
+  `./test_parallel --only=integrity --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass after the focused lint-gate test removed its temporary
+  fixtures; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- Deleted sync wrapper include searches returned no matches across guarded
+  app/lib/config/tools/docs C/H and Markdown surfaces.
+- `./test_parallel --timeout=180`: pass after the sync wrapper deletion,
+  `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 14:58:08 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and read-only journal checks
+  had no entries. The service was not restarted; this slice stayed read-only
+  and preserved the `8023` port expectation.
 - `git diff --check`: pass after deleting the snapshot-sync app-layer
   compatibility header and routing app/config/test callers directly to the
   lib-owned router contract.

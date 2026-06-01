@@ -3,7 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
-#include "services/header_sync_service.h"
+#include "sync/sync_planner.h"
 #include "net/snapshot_sync_contract.h"
 #include "net/net.h"
 #include "net/netaddr.h"

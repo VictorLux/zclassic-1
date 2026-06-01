@@ -18,8 +18,7 @@
 // type of this file is "a planned decision out-struct". Behavior bit-for-bit.
 
 #include "platform/time_compat.h"
-#include "services/block_sync_service.h"
-#include "services/header_sync_service.h"
+#include "sync/sync_planner.h"
 #include "util/pprev_walk.h"
 #include "net/download.h"
 #include "net/net.h"
