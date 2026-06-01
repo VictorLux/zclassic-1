@@ -76,10 +76,11 @@ If the node is not running, record that explicitly before claiming live proof.
   active-tip child discovery/disk verification, and contextual-header skip
   policy into purpose-named validation files. It now carries best-work chain
   selection only. `process_block_self_heal_legacy_rpc.c` now owns the
-  zclassicd RPC recovery source and JSON-lite parsing. Remaining
-  process-block split debt is mostly inside `process_block_self_heal.c`:
-  SQLite tx-index recovery, bounded chain scan, scan counters, and hot-loop
-  pause signaling still share one file.
+  zclassicd RPC recovery source and JSON-lite parsing.
+  `process_block_self_heal_chain_scan.c` now owns bounded active-chain disk
+  scan recovery plus tx-index backfill. Remaining process-block split debt is
+  mostly inside `process_block_self_heal.c`: SQLite tx-index recovery, scan
+  counters/tunables, and hot-loop pause signaling still share one file.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

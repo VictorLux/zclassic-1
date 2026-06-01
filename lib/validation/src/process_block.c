@@ -9,6 +9,7 @@
  *   process_block_core.c             : best-work chain selection
  *   process_block_contextual_header.c: sparse-header contextual skip policy
  *   process_block_self_heal.c        : missing-UTXO recovery + hot-loop exit
+ *   process_block_self_heal_chain_scan.c: bounded disk scan recovery source
  *   process_block_self_heal_legacy_rpc.c: zclassicd RPC recovery source
  *   process_block_flush_policy.c     : coins flush + Sapling persistence
  *   process_block_crash_hooks.c      : PBCS_* crash-injection hooks

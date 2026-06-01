@@ -1662,6 +1662,23 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         ASSERT(strstr(buf, "process_block_json_string") == NULL);
         ASSERT(strstr(buf, "process_block_legacy_rpc_body") == NULL);
+        ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan(")
+               == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_self_heal_chain_scan.c")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan")
+               != NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") != NULL);
+        ASSERT(strstr(buf, "EV_SELF_HEAL_SCAN_EXHAUSTED") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         free(buf);
         buf = NULL;
 
