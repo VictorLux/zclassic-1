@@ -1490,7 +1490,7 @@ static int t_fast_sync_uses_lib_sqlite_helpers(void)
 {
     int failures = 0;
     char *buf = NULL;
-    TEST("fast sync avoids direct AR and DB model includes") {
+    TEST("fast sync avoids direct AR, DB, and UTXO model includes") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/fast_sync.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
@@ -1498,8 +1498,22 @@ static int t_fast_sync_uses_lib_sqlite_helpers(void)
         ASSERT(strstr(buf, "AR_STEP_WRITE") != NULL);
         ASSERT(strstr(buf, "models/activerecord.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/utxo.h") == NULL);
+        ASSERT(strstr(buf, "db_utxo_serialize_snapshot") == NULL);
         ASSERT(strstr(buf, "AR_BIND_") == NULL);
         ASSERT(strstr(buf, "AR_STEP_DONE") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/include/net/fast_sync.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "fast_sync_snapshot_serialize_fn") != NULL);
+        ASSERT(strstr(buf, "struct node_db") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_serialize_utxo_snapshot") != NULL);
+        ASSERT(strstr(buf, "db_utxo_serialize_snapshot") != NULL);
         PASS();
     } _test_next:;
     free(buf);

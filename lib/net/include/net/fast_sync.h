@@ -147,12 +147,19 @@ uint64_t fast_sync_utxo_root_cache_version(void);
  * Built by fast_sync_prebuild_snapshot() for zero-copy serving. */
 void fast_sync_snapshot_path(char *out, size_t max, const char *datadir);
 
+/* Caller-owned snapshot serializer. Fast sync owns the protocol file path and
+ * metadata publishing; the app/model layer owns how UTXOs are read. */
+typedef int64_t (*fast_sync_snapshot_serialize_fn)(void *ctx,
+                                                   const char *path,
+                                                   uint32_t chunk_size,
+                                                   uint8_t sha3_out[32]);
+
 /* Pre-serialize all UTXOs into a binary snapshot file for fast serving.
- * Uses the shared node_db via db_utxo_serialize_snapshot().
  * Must be called after the UTXO set is stable (at tip).
  * Returns total UTXOs serialized, or -1 on error. */
-struct node_db;
-int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir);
+int64_t fast_sync_prebuild_snapshot(const char *datadir,
+                                    fast_sync_snapshot_serialize_fn serialize,
+                                    void *serialize_ctx);
 
 /* Publish or clear the in-memory snapshot cache and its matching SHA3
  * metadata. Ownership of snapshot_buf transfers to the cache on success.

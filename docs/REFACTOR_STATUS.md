@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 16 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 15 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -262,6 +262,11 @@ node soak.
   `AR_STEP_WRITE` helper instead of direct ActiveRecord bind/step macros.
   `lib/net/src/fast_sync.c` no longer directly includes the ActiveRecord or DB
   model headers, and the lib-to-app include baseline is down from 18 to 16.
+- Fast-sync snapshot prebuild now takes a caller-owned serializer callback.
+  Boot injects the UTXO model serializer through
+  `boot_serialize_utxo_snapshot()`, while `lib/net/src/fast_sync.c` owns only
+  protocol pathing and metadata publishing. The lib-to-app include baseline is
+  down from 16 to 15.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -366,7 +371,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 16 grandfathered lib-to-app includes.
+  with 15 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -387,6 +392,37 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after callback-injecting fast-sync snapshot
+  serialization from boot.
+- `make test_parallel`: pass after rebuilding the parallel runner for the
+  expanded fast-sync layering lint-gate assertion.
+- `tools/scripts/check_lib_layering.sh`: pass with 15 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations; only existing `boot_services.c` baseline
+  line numbers shifted after adding the boot-owned serializer callback.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=fast_sync --timeout=120 --verbose`,
+  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`, and
+  `./test_parallel --only=net --timeout=120 --verbose`.
+- `make lint`: pass after the fast-sync serializer callback injection; E1,
+  E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 15 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the fast-sync serializer
+  callback injection, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 09:27:00 UTC after the fast-sync
+  serializer callback injection did not prove live-node health: no
+  `zclassic23` process was running, `zcl-rpc` exited 7 for both
+  `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or
+  `18232` listener, the previous 20 minutes of `zclassic23.service` journal
+  had no entries, and the broader read-only journal scan still shows the
+  earlier OOM kill at 2026-06-01 07:58:58 UTC. The service was not restarted;
+  this slice stayed read-only for live checks and preserved the `8023` port
+  expectation.
 - `make -j$(nproc)`: pass after removing fast-sync's direct ActiveRecord and
   DB model includes.
 - `make test_parallel`: pass after rebuilding the parallel runner for the new

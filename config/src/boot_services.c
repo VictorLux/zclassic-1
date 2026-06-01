@@ -2060,6 +2060,23 @@ static bool boot_compute_utxo_sha3(uint8_t out[32],
     return true;
 }
 
+static int64_t boot_serialize_utxo_snapshot(void *ctx,
+                                            const char *path,
+                                            uint32_t chunk_size,
+                                            uint8_t sha3_out[32])
+{
+    struct node_db *ndb = ctx;
+
+    if (!ndb || !ndb->open || !path || !sha3_out) {
+        LOG_WARN("boot",
+                 "UTXO snapshot serialize missing ndb=%p path=%p sha3=%p",
+                 (void *)ndb, (const void *)path, (void *)sha3_out);
+        return -1;
+    }
+
+    return db_utxo_serialize_snapshot(ndb, path, chunk_size, sha3_out);
+}
+
 static bool boot_mmb_leaf_store_catchup_legacy(struct mmb_leaf_store *store,
                                                int tip_height)
 {
@@ -2379,7 +2396,7 @@ static void *build_snapshot_offer_thread(void *arg)
         struct node_db *ndb = boot_node_db();
         if (ndb && ndb->open) {
             int64_t snap_count = fast_sync_prebuild_snapshot(
-                ndb, datadir);
+                datadir, boot_serialize_utxo_snapshot, ndb);
             if (snap_count > 0) {
                 /* Use the SHA3 computed during serialization */
                 uint8_t snap_sha3[32];

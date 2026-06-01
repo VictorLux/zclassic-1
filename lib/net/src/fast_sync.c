@@ -5,7 +5,6 @@
 #include "platform/time_compat.h"
 #include "net/fast_sync.h"
 #include "coins/utxo_commitment.h"
-#include "models/utxo.h"
 #include "core/hash.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
@@ -479,14 +478,19 @@ bool fast_sync_get_snapshot_sha3(uint8_t out[32], uint64_t *count)
     return true;
 }
 
-int64_t fast_sync_prebuild_snapshot(struct node_db *ndb, const char *datadir)
+int64_t fast_sync_prebuild_snapshot(const char *datadir,
+                                    fast_sync_snapshot_serialize_fn serialize,
+                                    void *serialize_ctx)
 {
+    if (!serialize)
+        LOG_FAIL("sync", "prebuild_snapshot: serializer callback is NULL");
+
     char path[1024];
     fast_sync_snapshot_path(path, sizeof(path), datadir);
 
     printf("[snapshot] Pre-serializing UTXOs to %s...\n", path);
     uint8_t sha3[32];
-    int64_t count = db_utxo_serialize_snapshot(ndb, path, SYNC_CHUNK_SIZE, sha3);
+    int64_t count = serialize(serialize_ctx, path, SYNC_CHUNK_SIZE, sha3);
     if (count > 0) {
         uint64_t sz = fast_sync_snapshot_file_size(datadir);
         fast_sync_publish_snapshot_metadata(sha3, (uint64_t)count);

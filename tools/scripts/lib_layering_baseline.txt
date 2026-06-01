@@ -16,7 +16,6 @@
 #
 # Format: <file>:<exact #include directive>
 # Order: alphabetical by file path (regenerate via the script if needed).
-lib/net/src/fast_sync.c:#include "models/utxo.h"
 lib/net/src/msg_headers.c:#include "services/block_index_integrity.h"
 lib/net/src/msg_headers.c:#include "services/chain_activation_controller.h"
 lib/net/src/msg_headers.c:#include "services/chain_state_repository.h"
