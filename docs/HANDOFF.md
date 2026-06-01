@@ -69,14 +69,16 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 68 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 65 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
   replacing a net internal service include with a forward declaration, moving
   schema migration into the Model shape, and moving file-offer SQLite
   persistence into the FileOffer model, and moving ZMSG SQLite persistence
-  into the Zmsg model. Keep shrinking it; do not add new entries.
+  into the Zmsg model. ZNAM at-rest records and SQLite persistence now live in
+  the Znam model instead of the lib protocol parser. Keep shrinking it; do not
+  add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

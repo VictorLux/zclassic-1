@@ -81,6 +81,3 @@ lib/validation/src/process_block_core.c:#include "services/snapshot_sync_service
 lib/validation/src/process_block_flush_policy.c:#include "models/database.h"
 lib/validation/src/process_block_self_heal.c:#include "models/database.h"
 lib/validation/src/process_block_self_heal.c:#include "models/tx_index.h"
-lib/znam/src/znam.c:#include "models/activerecord.h"
-lib/znam/src/znam.c:#include "models/database.h"
-lib/znam/src/znam.c:#include "models/znam.h"

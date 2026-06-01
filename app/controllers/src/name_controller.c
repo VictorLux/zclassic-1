@@ -7,7 +7,7 @@
  *   name_resolve   — look up a name's target
  *   name_list      — list all registered names */
 
-#include "znam/znam.h"
+#include "models/znam.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"

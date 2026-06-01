@@ -2,8 +2,8 @@
  * Tests for ZCL Names (ZNAM) — parser, builder, validator, DB persistence. */
 
 #include "test/test_helpers.h"
-#include "znam/znam.h"
 #include "models/database.h"
+#include "models/znam.h"
 
 int test_znam(void)
 {

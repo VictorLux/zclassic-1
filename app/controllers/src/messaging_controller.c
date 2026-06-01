@@ -12,7 +12,7 @@
 #include "net/net.h"
 #include "net/connman.h"
 #include "chain/chainparams.h"
-#include "znam/znam.h"
+#include "models/znam.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "rpc/server.h"
