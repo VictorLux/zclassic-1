@@ -71,8 +71,9 @@ If the node is not running, record that explicitly before claiming live proof.
   21 write surfaces.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
-  hook dispatch and failed-child propagation into purpose-named validation
-  files, but it still carries chain selection and block-index hydration.
+  hook dispatch, failed-child propagation, and block-index disk
+  placement/hydration into purpose-named validation files, but it still
+  carries chain selection and tip-publication logic.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

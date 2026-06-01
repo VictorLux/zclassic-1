@@ -306,6 +306,12 @@ node soak.
   `process_block_failed_child.c` owns the bounded `BLOCK_FAILED_CHILD`
   propagation helper and OOM-amplifier guards. `process_block_core.c` is down
   from 1065 to 893 lines.
+- Block-index disk placement and hydration moved from
+  `process_block_core.c` into `process_block_index.c`. The new file owns
+  `find_block_pos()`, `block_index_refresh_header()`,
+  `block_index_hydrate_from_disk()`, and the test hydration wrapper, leaving
+  `process_block_core.c` focused on chain selection and tip-publication
+  helpers. `process_block_core.c` is down from 893 to 776 lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -423,8 +429,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `tools/scripts/lib_layering_baseline.txt` empty.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
-- `lib/validation/src/process_block_core.c` still mixes chain selection and
-  block-index hydration.
+- `lib/validation/src/process_block_core.c` still owns chain selection and
+  tip-publication logic; keep splitting remaining responsibilities by purpose.
 
 ## Next Work Order
 
@@ -441,10 +447,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after splitting process-block runtime hook dispatch
-  and failed-child propagation out of `process_block_core.c`.
+- `make -j$(nproc)`: pass after moving process-block block-index disk
+  placement and hydration helpers into `process_block_index.c`.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner
-  for the new process-block split assertions.
+  for the new process-block block-index boundary assertions.
 - `git diff --check`: pass.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
@@ -454,18 +460,20 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations.
 - Focused filtered tests passed:
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=failed_child --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`, and
-  `./test_parallel --only=chain_state_repo --timeout=120 --verbose`.
-- `make lint`: pass after the process-block split; E1, E2,
+  `./test_parallel --only=chain --timeout=120 --verbose`,
+  `./test_parallel --only=block_scan --timeout=120 --verbose`,
+  `./test_parallel --only=have_data_unreadable --timeout=120 --verbose`,
+  `./test_parallel --only=torn_index --timeout=120 --verbose`, and
+  `./test_parallel --only=validation --timeout=120 --verbose`.
+- `make lint`: pass after the block-index helper split; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   21 grandfathered write surfaces.
 - `./test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
   `0/279` groups failed in 56.0s.
-- Quick live sample attempt at 2026-06-01 11:18:25 UTC after the process-block
-  split did not prove live-node health: no `zclassic23`
-  process was running, `zcl-rpc` exited 7 for both `getblockcount` and
+- Quick live sample attempt at 2026-06-01 11:28:42 UTC after the block-index
+  helper split did not prove live-node health: no `zclassic23` process was
+  running, `zcl-rpc` exited 7 for both `getblockcount` and
   `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or `18232` listener,
   `systemctl --user status zclassic23` could not connect to the user bus, and
   the recent read-only journal checks had no entries. The service was not

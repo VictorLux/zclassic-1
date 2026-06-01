@@ -1,7 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Internal declarations shared across the process_block_* translation
- * units (process_block.c, process_block_core.c,
+ * units (process_block.c, process_block_core.c, process_block_index.c,
+ * process_block_runtime_hooks.c, process_block_failed_child.c,
  * process_block_self_heal.c, process_block_flush_policy.c,
  * process_block_crash_hooks.c). Not intended for use outside this
  * directory; the public surface lives in
@@ -158,31 +159,34 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip, bool force);
 void sapling_checkpoint_maybe_flush(int height);
 bool sapling_tree_persist_once(void);
 
-/* process_block_core.c helpers exposed to sibling .c files in the
- * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
- * update_tip used by disconnect_tip.c.
- * find_block_pos + block_index_refresh_header used by accept_block.c.
- * g_last_block_file_size updated by accept_block.c after on-disk write.
- * process_block_should_skip_contextual_header is already declared in
- * <validation/process_block.h> (public). */
+/* process_block_index.c helpers. find_block_pos +
+ * block_index_refresh_header are used by accept_block.c.
+ * g_last_block_file_size is updated by accept_block.c after on-disk write.
+ * block_index_hydrate_from_disk refreshes imported/restored index entries
+ * from verified block bytes. */
 struct block_header;
 struct disk_block_pos;
-struct block_index *add_to_block_index(struct main_state *ms,
-                                       const struct block_header *header);
-bool update_tip(struct main_state *ms, struct block_index *pindex_new);
 bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
                     const char *datadir);
 void block_index_refresh_header(struct block_index *pindex,
                                 const struct block_header *header);
-extern unsigned int g_last_block_file_size; /* defined in process_block_core.c */
-
-/* WS-6.4: helpers exposed for connect_tip.c. block_index_hydrate_from_disk
- * is also called by process_block_test_hydrate_index_from_disk in core.c.
- * find_most_work_chain + process_block_commit_tip are called by
- * activate_best_chain (still in core.c) as well. */
-struct coins_view_cache;
+extern unsigned int g_last_block_file_size; /* defined in process_block_index.c */
 bool block_index_hydrate_from_disk(struct block_index *pindex,
                                    const char *datadir);
+
+/* process_block_core.c helpers exposed to sibling .c files in the
+ * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
+ * update_tip used by disconnect_tip.c.
+ * process_block_should_skip_contextual_header is already declared in
+ * <validation/process_block.h> (public). */
+struct block_index *add_to_block_index(struct main_state *ms,
+                                       const struct block_header *header);
+bool update_tip(struct main_state *ms, struct block_index *pindex_new);
+
+/* WS-6.4: helpers exposed for connect_tip.c. find_most_work_chain +
+ * process_block_commit_tip are called by activate_best_chain (still in
+ * core.c) as well. */
+struct coins_view_cache;
 struct block_index *find_most_work_chain(struct main_state *ms);
 bool process_block_commit_tip(struct main_state *ms,
                               struct coins_view_cache *coins_tip,

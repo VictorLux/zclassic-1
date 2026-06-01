@@ -1678,6 +1678,21 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick") == NULL);
         ASSERT(strstr(buf, "process_block_set_tip_publication_hooks") == NULL);
         ASSERT(strstr(buf, "process_block_propagate_failed_child(") == NULL);
+        ASSERT(strstr(buf, "block_index_hydrate_from_disk(") == NULL);
+        ASSERT(strstr(buf, "find_block_pos(") == NULL);
+        ASSERT(strstr(buf, "block_index_refresh_header(") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_index.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "find_block_pos") != NULL);
+        ASSERT(strstr(buf, "block_index_refresh_header") != NULL);
+        ASSERT(strstr(buf, "block_index_hydrate_from_disk") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         free(buf);
         buf = NULL;
 
