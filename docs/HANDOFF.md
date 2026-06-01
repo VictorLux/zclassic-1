@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 21 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 20 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -126,7 +126,10 @@ If the node is not running, record that explicitly before claiming live proof.
   `msg_headers.c` no longer includes the app quorum-oracle service either.
   Process-block `node_db` open checks now route through the runtime boundary,
   so `lib/validation/src/process_block.c` no longer includes the DB model
-  header just to inspect an opaque handle.
+  header just to inspect an opaque handle. Process-block flush-policy DB state
+  persistence, sync-batch flush, and WAL checkpoint operations now use the
+  same runtime boundary, so `process_block_flush_policy.c` no longer includes
+  the DB model header either.
   Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after

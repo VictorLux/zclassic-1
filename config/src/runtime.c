@@ -41,6 +41,38 @@ bool app_runtime_node_db_is_open(void)
     return app_runtime_node_db_handle_open(app_runtime_node_db());
 }
 
+bool app_runtime_node_db_state_set(struct node_db *ndb,
+                                   const char *key,
+                                   const void *value,
+                                   size_t len)
+{
+    if (!app_runtime_node_db_handle_open(ndb))
+        return false;
+    return node_db_state_set(ndb, key, value, len);
+}
+
+void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb)
+{
+    if (app_runtime_node_db_handle_open(ndb) && ndb->sync_in_batch)
+        (void)node_db_sync_flush(ndb);
+}
+
+bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb)
+{
+    if (!app_runtime_node_db_handle_open(ndb))
+        return false;
+    return node_db_wal_checkpoint(ndb);
+}
+
+bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb)
+{
+    if (!app_runtime_node_db_handle_open(ndb) || !ndb->db)
+        return false;
+    return sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+                                     SQLITE_CHECKPOINT_PASSIVE,
+                                     NULL, NULL) == SQLITE_OK;
+}
+
 sqlite3 *app_runtime_query_db(void)
 {
     struct db_service *svc = app_runtime_db_service();

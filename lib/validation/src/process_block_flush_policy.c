@@ -11,11 +11,11 @@
  *   - flush_coins_if_needed (the per-block coins flush gate)
  *   - ZCL_TESTING hooks */
 
-#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "config/runtime.h"
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/connect_block.h"
@@ -23,7 +23,6 @@
 #include "core/serialize.h"
 #include "core/utiltime.h"
 #include "event/event.h"
-#include "models/database.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/log_macros.h"
 
@@ -134,7 +133,7 @@ void sapling_checkpoint_maybe_flush(int height)
 bool sapling_tree_persist_once(void)
 {
     struct node_db *ndb = process_block_node_db_internal();
-    if (!ndb || !ndb->open || !g_sapling_tree_for_flush)
+    if (!app_runtime_node_db_handle_open(ndb) || !g_sapling_tree_for_flush)
         return false;
 
     struct byte_stream ts;
@@ -150,7 +149,8 @@ bool sapling_tree_persist_once(void)
     if (force_fail > 0) {
         persist_ok = false;
     } else {
-        persist_ok = node_db_state_set(ndb, "sapling_tree", ts.data, ts.size);
+        persist_ok = app_runtime_node_db_state_set(
+            ndb, "sapling_tree", ts.data, ts.size);
         atomic_store(&g_sapling_persist_test_force_fail, 0);
     }
     stream_free(&ts);
@@ -203,15 +203,15 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         if (g_sapling_tree_for_flush &&
             g_blocks_since_sapling_save >= SAPLING_TREE_CHECKPOINT_INTERVAL) {
             struct node_db *sap_ndb = process_block_node_db_internal();
-            if (sap_ndb && sap_ndb->open) {
+            if (app_runtime_node_db_handle_open(sap_ndb)) {
                 struct byte_stream ts;
                 stream_init(&ts, 4096);
                 if (incremental_tree_serialize(g_sapling_tree_for_flush, &ts)) {
-                    if (node_db_state_set(sap_ndb, "sapling_tree",
-                                          ts.data, ts.size)) {
+                    if (app_runtime_node_db_state_set(
+                            sap_ndb, "sapling_tree", ts.data, ts.size)) {
                         g_blocks_since_sapling_save = 0;
-                        sqlite3_wal_checkpoint_v2(sap_ndb->db, NULL,
-                            SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+                        (void)app_runtime_node_db_wal_checkpoint_passive(
+                            sap_ndb);
                     }
                 }
                 stream_free(&ts);
@@ -223,8 +223,7 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
 
     /* Flush node_db batch first — coins_flush needs the write lock. */
     struct node_db *ndb = process_block_node_db_internal();
-    if (ndb && ndb->sync_in_batch)
-        node_db_sync_flush(ndb);
+    app_runtime_node_db_sync_flush_if_needed(ndb);
 
     size_t batched = (size_t)g_blocks_since_flush;
 
@@ -256,7 +255,7 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
         g_blocks_since_flush = 0;
 
         /* Persist Sapling commitment tree state */
-        if (ndb && ndb->open &&
+        if (app_runtime_node_db_handle_open(ndb) &&
             g_sapling_tree_for_flush) {
             ok = sapling_tree_persist_once() && ok;
         }
@@ -273,8 +272,8 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
          * from growing to multi-GB during sustained block processing.
          * A 6GB WAL was observed in production, blocking all operations.
          * Checkpointing on every flush keeps WAL size bounded. */
-        if (ndb && ndb->open)
-            node_db_wal_checkpoint(ndb);
+        if (app_runtime_node_db_handle_open(ndb))
+            (void)app_runtime_node_db_wal_checkpoint(ndb);
     } else {
         event_emitf(EV_COINS_FLUSH_FAILED, 0, "flush returned false");
         /* If there's nothing dirty in the cache, the flush "failure" is

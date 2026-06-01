@@ -7,6 +7,7 @@
 
 #include "config/db_service.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 struct node_db;
 struct snapshot_sync_service;
@@ -32,6 +33,13 @@ struct db_service *app_runtime_db_service(void);
 struct node_db *app_runtime_node_db(void);
 bool app_runtime_node_db_handle_open(const struct node_db *ndb);
 bool app_runtime_node_db_is_open(void);
+bool app_runtime_node_db_state_set(struct node_db *ndb,
+                                   const char *key,
+                                   const void *value,
+                                   size_t len);
+void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb);
+bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb);
+bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb);
 sqlite3 *app_runtime_query_db(void);
 struct snapshot_sync_service *app_runtime_snapshot_sync(void);
 struct tx_mempool *app_runtime_mempool(void);
