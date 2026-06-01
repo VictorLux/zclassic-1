@@ -1681,6 +1681,22 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "block_index_hydrate_from_disk(") == NULL);
         ASSERT(strstr(buf, "find_block_pos(") == NULL);
         ASSERT(strstr(buf, "block_index_refresh_header(") == NULL);
+        ASSERT(strstr(buf, "process_block_commit_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_clear_tip(") == NULL);
+        ASSERT(strstr(buf, "process_block_tip_is_best_work(") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_tip_publish.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_commit_tip") != NULL);
+        ASSERT(strstr(buf, "update_tip") != NULL);
+        ASSERT(strstr(buf, "process_block_tip_is_best_work") != NULL);
+        ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         free(buf);
         buf = NULL;
 

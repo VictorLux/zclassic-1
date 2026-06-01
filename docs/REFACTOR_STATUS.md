@@ -309,9 +309,14 @@ node soak.
 - Block-index disk placement and hydration moved from
   `process_block_core.c` into `process_block_index.c`. The new file owns
   `find_block_pos()`, `block_index_refresh_header()`,
-  `block_index_hydrate_from_disk()`, and the test hydration wrapper, leaving
-  `process_block_core.c` focused on chain selection and tip-publication
-  helpers. `process_block_core.c` is down from 893 to 776 lines.
+  `block_index_hydrate_from_disk()`, and the test hydration wrapper. At that
+  slice, `process_block_core.c` was down from 893 to 776 lines.
+- Tip-publication evidence and commit mechanics moved from
+  `process_block_core.c` into `process_block_tip_publish.c`. The new file owns
+  `process_block_tip_is_best_work()`, `process_block_commit_tip()`,
+  `update_tip()`, `process_block_commit_tip_ext()`, and the test wrappers,
+  leaving `process_block_core.c` focused on chain selection and active-tip
+  child discovery. `process_block_core.c` is down from 776 to 486 lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -430,7 +435,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still owns chain selection and
-  tip-publication logic; keep splitting remaining responsibilities by purpose.
+  active-tip child discovery; keep splitting remaining responsibilities by
+  purpose if a clearer boundary emerges.
 
 ## Next Work Order
 
@@ -447,10 +453,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after moving process-block block-index disk
-  placement and hydration helpers into `process_block_index.c`.
+- `make -j$(nproc)`: pass after moving process-block tip-publication evidence
+  and commit mechanics into `process_block_tip_publish.c`.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner
-  for the new process-block block-index boundary assertions.
+  for the new process-block tip-publication boundary assertions.
 - `git diff --check`: pass.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
@@ -460,20 +466,19 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations.
 - Focused filtered tests passed:
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=torn_index --timeout=120 --verbose`,
+  `./test_parallel --only=chain_state_repo --timeout=120 --verbose`,
   `./test_parallel --only=chain --timeout=120 --verbose`,
-  `./test_parallel --only=block_scan --timeout=120 --verbose`,
-  `./test_parallel --only=have_data_unreadable --timeout=120 --verbose`,
-  `./test_parallel --only=torn_index --timeout=120 --verbose`, and
   `./test_parallel --only=validation --timeout=120 --verbose`.
-- `make lint`: pass after the block-index helper split; E1, E2,
+- `make lint`: pass after the tip-publication split; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   21 grandfathered write surfaces.
 - `./test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
-  `0/279` groups failed in 56.0s.
-- Quick live sample attempt at 2026-06-01 11:28:42 UTC after the block-index
-  helper split did not prove live-node health: no `zclassic23` process was
-  running, `zcl-rpc` exited 7 for both `getblockcount` and
+  `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 11:39:44 UTC after the
+  tip-publication split did not prove live-node health: no `zclassic23`
+  process was running, `zcl-rpc` exited 7 for both `getblockcount` and
   `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or `18232` listener,
   `systemctl --user status zclassic23` could not connect to the user bus, and
   the recent read-only journal checks had no entries. The service was not

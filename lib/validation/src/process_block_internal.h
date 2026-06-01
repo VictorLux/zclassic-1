@@ -2,10 +2,10 @@
  *
  * Internal declarations shared across the process_block_* translation
  * units (process_block.c, process_block_core.c, process_block_index.c,
- * process_block_runtime_hooks.c, process_block_failed_child.c,
- * process_block_self_heal.c, process_block_flush_policy.c,
- * process_block_crash_hooks.c). Not intended for use outside this
- * directory; the public surface lives in
+ * process_block_tip_publish.c, process_block_runtime_hooks.c,
+ * process_block_failed_child.c, process_block_self_heal.c,
+ * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
+ * for use outside this directory; the public surface lives in
  * <validation/process_block.h>. */
 
 #ifndef ZCL_VALIDATION_PROCESS_BLOCK_INTERNAL_H
@@ -176,18 +176,17 @@ bool block_index_hydrate_from_disk(struct block_index *pindex,
 
 /* process_block_core.c helpers exposed to sibling .c files in the
  * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
- * update_tip used by disconnect_tip.c.
  * process_block_should_skip_contextual_header is already declared in
  * <validation/process_block.h> (public). */
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header);
-bool update_tip(struct main_state *ms, struct block_index *pindex_new);
 
-/* WS-6.4: helpers exposed for connect_tip.c. find_most_work_chain +
- * process_block_commit_tip are called by activate_best_chain (still in
- * core.c) as well. */
+/* process_block_tip_publish.c helpers. update_tip is used by the deleted
+ * legacy connect/disconnect wrappers' surviving tests and process-block
+ * internals; process_block_commit_tip is also wrapped by
+ * process_block_commit_tip_ext for the chain-advance protocol. */
 struct coins_view_cache;
-struct block_index *find_most_work_chain(struct main_state *ms);
+bool update_tip(struct main_state *ms, struct block_index *pindex_new);
 bool process_block_commit_tip(struct main_state *ms,
                               struct coins_view_cache *coins_tip,
                               struct block_index *new_tip,
@@ -195,6 +194,10 @@ bool process_block_commit_tip(struct main_state *ms,
                               bool update_header_tip,
                               bool persist_coins_best,
                               const struct process_block_tip_evidence *verified);
+
+/* WS-6.4: chain-selection helpers exposed for activate-best-chain-era
+ * keeper tests and active-tip repair paths. */
+struct block_index *find_most_work_chain(struct main_state *ms);
 
 /* WS-6.5: helpers exposed for activate_best_chain.c. */
 bool process_block_verify_active_tip_child_on_disk(

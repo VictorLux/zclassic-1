@@ -72,8 +72,9 @@ If the node is not running, record that explicitly before claiming live proof.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk
-  placement/hydration into purpose-named validation files, but it still
-  carries chain selection and tip-publication logic.
+  placement/hydration, plus tip-publication evidence/commit mechanics, into
+  purpose-named validation files, but it still carries chain selection and
+  active-tip child discovery.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to
