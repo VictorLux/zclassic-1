@@ -65,10 +65,10 @@ If the node is not running, record that explicitly before claiming live proof.
   legacy bool compatibility call sites to `struct zcl_result` as adjacent files
   are split or touched.
 - E6 write-path debt:
-  controller/admin `coins_view_cache_flush`, coins.db batch writers,
+  controller/admin/repair `coins_view_cache_flush`, coins.db batch writers,
   process-block flush-policy write paths, and the grandfathered
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
-  24 write surfaces.
+  21 write surfaces.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

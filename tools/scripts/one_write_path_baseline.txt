@@ -9,9 +9,6 @@
 app/controllers/src/blockchain_controller_admin.c:106: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/blockchain_controller_admin.c:192: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/blockchain_controller_admin.c:203: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/blockchain_controller_chain.c:581: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/hodl_controller.c:235: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/hodl_controller.c:90: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
 config/src/boot_index.c:156: coins_view_cache_flush(cvtip);

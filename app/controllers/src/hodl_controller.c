@@ -62,8 +62,7 @@ void rpc_hodl_set_state(struct main_state *ms,
     ctx->datadir = datadir;
 }
 
-/* HODL Wave: UTXO age distribution across the entire UTXO set.
- * Uses coins_view_db_get_coins for correct deserialization. */
+/* HODL Wave: UTXO age distribution across the persisted UTXO read model. */
 static bool rpc_gethodlwave(const struct json_value *params, bool help,
                               struct json_value *result)
 {
@@ -84,10 +83,6 @@ static bool rpc_gethodlwave(const struct json_value *params, bool help,
         json_set_str(result, "Chain not loaded");
         return false;
     }
-
-    /* Flush in-memory UTXO cache to SQLite for accurate totals */
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
 
@@ -205,8 +200,8 @@ static const uint8_t hodl_colors[HODL_WAVE_BUCKETS][3] = {
     {80,  30,  120},  /* > 5y       — dark purple */
 };
 
-/* gethodlwaveimage: Scan UTXO set, generate a PPM heatmap + HODL wave bar,
- * save to datadir/hodlwave.ppm. */
+/* gethodlwaveimage: Scan persisted chainstate, generate a PPM heatmap +
+ * HODL wave bar, save to datadir/hodlwave.ppm. */
 static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
@@ -230,9 +225,6 @@ static bool rpc_gethodlwaveimage(const struct json_value *params, bool help,
         json_set_str(result, "Chain not loaded");
         return false;
     }
-
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
 
     int tip_height = active_chain_height(&ctx->main_state->chain_active);
     if (tip_height <= 0) {

@@ -23,7 +23,6 @@
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "coins/coins.h"
-#include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
@@ -577,15 +576,13 @@ bool rpc_getdataintegrity(const struct json_value *params, bool help,
         LOG_FAIL("blockchain", "getdataintegrity: database not available");
     }
 
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
-
     int64_t t0 = (int64_t)platform_time_wall_time_t();
     struct data_integrity_detail d;
     data_integrity_compute(ctx->node_db->db, &d);
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     json_set_object(result);
+    json_push_kv_str(result, "source", "persisted_consensus_tables");
 
     /* Helper: convert 32-byte hash to hex and push as kv */
     const struct { const char *name; const uint8_t *hash; } tables[] = {
@@ -615,4 +612,3 @@ bool rpc_getdataintegrity(const struct json_value *params, bool help,
     json_push_kv_int(result, "elapsed_seconds", elapsed);
     return true;
 }
-
