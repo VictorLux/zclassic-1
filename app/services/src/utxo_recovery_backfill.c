@@ -3,9 +3,8 @@
  * UTXO Recovery Backfill Service
  *
  * Rehydrates per-block Sprout/Sapling value columns from the in-memory block
- * index and, when needed, block files on disk. Split from
- * utxo_recovery_service.c so the core recovery service stays under the
- * framework file-size ceiling.
+ * index and, when needed, block files on disk. This service owns shielded-value
+ * backfill for UTXO recovery.
  */
 
 #include "services/utxo_recovery_service.h"

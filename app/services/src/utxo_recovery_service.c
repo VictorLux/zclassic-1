@@ -343,10 +343,9 @@ bool utxo_recovery_prepare_reimport(struct node_db *ndb)
 }
 
 /* ── LDB→SQLite UTXO import + chain tip restoration ─────────────
- * The two heavy boot recovery routines (utxo_recovery_import_ldb and
- * utxo_recovery_restore_chain_tip) live in utxo_recovery_restore.c to
- * keep this file under the file-size ceiling. They share the CSR-gated
- * commit primitives above via utxo_recovery_internal.h. */
+ * utxo_recovery_restore.c owns the heavy boot recovery routines:
+ * utxo_recovery_import_ldb and utxo_recovery_restore_chain_tip. They share the
+ * CSR-gated commit primitives above via utxo_recovery_internal.h. */
 
 /* ── Validation recovery execution ──────────────────────────── */
 

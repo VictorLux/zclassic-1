@@ -159,6 +159,12 @@ node soak.
   local cold-start seed helper was renamed to the event-log projection boot
   seed, and the source scan is clean for that retired term outside the lint
   gate vocabulary.
+- Wallet read aggregate/activity helpers now live in
+  `app/models/src/wallet_tx_reads.c` instead of being parked at the bottom of
+  `sapling_note.c`. Database and wallet model sibling comments now describe
+  current ownership instead of byte-identical/file-size split history, and the
+  scaffold-label guard covers the touched model files plus UTXO recovery
+  backfill comments.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2691,6 +2697,46 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `zclassic23` journal output had no entries. This is a failed live sample, not
   a refactor completion proof; the service was not restarted and the 8023 port
   expectation was preserved.
+- Model scaffold scan after the wallet-read ownership cleanup: clean for
+  `byte-identical`, `byte-identically`, `copy-pasted`, `verbatim`,
+  `pure refactor`, code-motion labels, `pre-split`, `Split out of`,
+  `file-size ceiling`, `Precedent`, `single-engine`, and `gate E1` across
+  `app/models`, the Job files, and the touched UTXO recovery service files.
+- Wallet read helper ownership check after the same cleanup:
+  `db_wallet_tx_total_fees` and `db_wallet_utxo_recent_activity` are defined
+  only in `app/models/src/wallet_tx_reads.c`.
+- `make -j$(nproc)`: pass after moving wallet read aggregate/activity helpers
+  out of `sapling_note.c`.
+- `make test_parallel`: pass after rebuilding the parallel runner with
+  `wallet_tx_reads.c` and the widened scaffold-label guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the model/UTXO-recovery scaffold guard; `0/1` group failed in
+  12.0s.
+- Focused filtered tests after the wallet-read ownership cleanup:
+  `./test_parallel --only=wallet --timeout=120 --verbose` passed (`0/32`,
+  7.0s) and `./test_parallel --only=models --timeout=120 --verbose` passed
+  (`0/1`, 2.0s). The attempted combined filter
+  `--only='wallet|models'` matched no groups because the harness uses literal
+  substring matching.
+- `make lint`: pass after the wallet-read ownership cleanup; all zero-baseline
+  ratchets remain clean and the framework shape scan now covers 252 app `.c`
+  files.
+- `./test_parallel --timeout=180`: pass after the wallet-read ownership
+  cleanup, `0/279` groups failed in 57.0s.
+- Post-status doc/scans after the wallet-read ownership cleanup:
+  `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh` passed, the
+  zero-baseline / allowlist scan found no non-comment entries in the ratcheted
+  baseline files, and the production C/H scan under app controllers, services,
+  jobs, conditions, supervisors, models, lib, and MCP found no `shadow`,
+  `cutover`, `projection-diff`, or `projection_diff` terminology.
+- Live sample attempt at 2026-06-01 16:49:43 UTC after the wallet-read
+  ownership cleanup: no continuity proof was available. `systemctl --user`
+  could not connect to the user bus, `./tools/zcl-rpc getblockcount` and
+  `gettxoutsetinfo` exited with code 7, no `zclassic23` process was running,
+  no listener existed on ports `8023`, `8033`, `8233`, `18232`, or `8232`, and
+  the last 20 minutes of `zclassic23` journal output had no entries. This is a
+  failed live sample, not a refactor completion proof; the service was not
+  restarted and the 8023 port expectation was preserved.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

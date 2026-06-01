@@ -6,12 +6,9 @@
  * source files (database.c, database_migrate.c, database_modes.c). NOT
  * part of the public model API — callers must include models/database.h.
  *
- * These were file-static helpers in the original single database.c.
- * Splitting the migration runner and performance-mode helpers into
- * sibling files (Law 1, gate E1) required promoting the handful of
- * helpers used by more than one file to non-static; this header keeps
- * the seam visible and narrow. The function bodies are byte-identical
- * to the originals. */
+ * This header keeps shared connection-handle helpers visible only to the
+ * database model siblings that own migrations, runtime modes, and health
+ * activity stamping. */
 
 #ifndef ZCL_DB_MODEL_DATABASE_INTERNAL_H
 #define ZCL_DB_MODEL_DATABASE_INTERNAL_H

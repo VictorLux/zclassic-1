@@ -6,11 +6,9 @@
  * model files (wallet_tx.c and sapling_note.c). NOT part of the public
  * model API — controllers/services must include models/wallet_tx.h.
  *
- * These were file-static helpers in the original single wallet_tx.c.
- * Splitting SaplingNote into its own sibling file (Law 1, gate E1)
- * required promoting the handful of helpers used by both files to
- * non-static; this header keeps the seam visible and narrow. The
- * function bodies are byte-identical to the originals. */
+ * This header keeps shared wallet row readers and aggregate helpers visible
+ * only to the wallet transaction / Sapling note model siblings that own those
+ * tables. */
 
 #ifndef ZCL_DB_MODEL_WALLET_TX_INTERNAL_H
 #define ZCL_DB_MODEL_WALLET_TX_INTERNAL_H

@@ -1,8 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ActiveRecord model: SaplingNote (split from wallet_tx.c under Law 1,
- * gate E1 — the file-size ceiling). All function bodies are byte-identical
- * to the originals in wallet_tx.c; only the file boundary moved.
+ * ActiveRecord model: SaplingNote.
  *
  * SaplingNote:
  *   validates :txid, :ivk, :nullifier, :cm, :pk_d, :diversifier, :rcm, presence
@@ -308,10 +306,9 @@ int db_sapling_note_list_all(struct node_db *ndb,
         wallet_tx_read_spent_txid(s, 11, &out[count]));
 }
 
-/* Read one coinanalysis row. Mirrors the original controller column-by-
- * column, including the "encode z-address only when both diversifier and
- * pk_d are present" guard so the emitted address (empty vs derived) is
- * byte-identical even on a malformed NULL-blob row. */
+/* Read one coinanalysis row. The z-address is derived only when both
+ * diversifier and pk_d are present; malformed NULL-blob rows leave the
+ * emitted address empty. */
 static void sapling_note_read_analysis_row(sqlite3_stmt *s,
                                             struct db_sapling_note *n)
 {
@@ -441,48 +438,4 @@ bool db_sapling_note_key(struct node_db *ndb, const struct db_sapling_note *n,
                          struct db_sapling_key *out)
 {
     return db_sapling_key_find_by_ivk(ndb, n->ivk, out);
-}
-
-/* ── WalletTx/WalletUTXO read accessors (overflow from wallet_tx.c) ──
- * These two transparent-side reads live here because wallet_tx.c is at
- * the E1 file-size ceiling; this split shares wallet_tx_internal.h and
- * the same node_db, so it is the established overflow home for wallet
- * model accessors. */
-
-int64_t db_wallet_tx_total_fees(struct node_db *ndb, int *fee_paying_count)
-{
-    if (fee_paying_count) *fee_paying_count = 0;
-    if (!ndb || !ndb->open)
-        return 0;
-    sqlite3_stmt *s = NULL;
-    int64_t total = 0;
-    int count = 0;
-    AR_PREPARE_RET(ndb, s,
-        "SELECT fee FROM wallet_transactions WHERE from_me = 1 AND fee > 0",
-        0);
-    while (AR_STEP_ROW(s)) {
-        total += AR_COL_INT(s, 0);
-        count++;
-    }
-    AR_FINALIZE(s);
-    if (fee_paying_count) *fee_paying_count = count;
-    return total;
-}
-
-int db_wallet_utxo_recent_activity(struct node_db *ndb,
-                                   struct db_wallet_activity *out, size_t max)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    AR_QUERY_LIST(ndb, s,
-        "SELECT wu.value, wu.height, COALESCE(b.time,0)"
-        " FROM wallet_utxos wu"
-        " LEFT JOIN blocks b ON b.height=wu.height"
-        " WHERE wu.spent_txid IS NULL"
-        " ORDER BY wu.height DESC LIMIT ?",
-        out, max,
-        AR_BIND_INT(s, 1, (int)max),
-        out[count].value = AR_COL_INT(s, 0);
-        out[count].height = (int)AR_COL_INT(s, 1);
-        out[count].time = AR_COL_INT(s, 2));
 }

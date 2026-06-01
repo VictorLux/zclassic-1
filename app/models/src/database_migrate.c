@@ -2,14 +2,11 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * node.db key-value state store + schema migration runner. Split from
- * database.c under Law 1, gate E1 (the file-size ceiling). All function
- * bodies are byte-identical to the originals; only the file boundary
- * moved.
+ * node.db key-value state store + schema migration runner.
  *
- * The migration runner is the primary consumer of the node_state KV
- * store (it persists schema_version after each versioned block), so the
- * two concerns ship together.
+ * The migration runner is the primary consumer of the node_state KV store: it
+ * persists schema_version after each versioned block, so these connection-handle
+ * concerns ship together.
  *
  * ar-validate-skip:connection-handle-not-a-row
  *   These functions operate on the struct node_db connection handle and

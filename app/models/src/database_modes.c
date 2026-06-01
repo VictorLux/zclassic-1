@@ -2,10 +2,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * node.db UTXO lifecycle + performance modes (IBD turbo / normal mode,
- * index drop/rebuild, WAL checkpoint). Split from database.c under Law 1,
- * gate E1 (the file-size ceiling). All function bodies are byte-identical
- * to the originals; only the file boundary moved.
+ * node.db UTXO lifecycle + performance modes: IBD turbo / normal mode,
+ * index drop/rebuild, UTXO wiping, counting, and WAL checkpoint control.
  *
  * ar-validate-skip:connection-handle-not-a-row
  *   These functions operate on the struct node_db connection handle and
