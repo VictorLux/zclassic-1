@@ -32,9 +32,11 @@ BASELINE=tools/scripts/lib_layering_baseline.txt
 # Read accepted violations into a hash set. Lines that start with # or
 # that are blank are ignored.
 declare -A baseline
+baseline_count=0
 while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     baseline["$line"]=1
+    baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
 fail=0
@@ -63,7 +65,7 @@ while IFS= read -r f; do
 done < <(find lib -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*')
 
 if [ "$fail" = "0" ]; then
-    echo "check_lib_layering: clean — ${#baseline[@]} grandfathered violation(s), no new ones"
+    echo "check_lib_layering: clean — ${baseline_count} grandfathered violation(s), no new ones"
     exit 0
 fi
 

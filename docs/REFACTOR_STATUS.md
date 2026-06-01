@@ -20,11 +20,10 @@ node soak.
   C/H surfaces no longer describe active reducer read-model paths as
   shadow/cutover/projection-diff infrastructure; remaining historical wording
   is test/doc context only.
-- E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
-  zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 1 grandfathered include, raw allocation debt is at
-  zero active allowlist entries, and other ratchet baselines still grandfather
-  real debt.
+- E1, E2, supervisor, E7, typed-blocker, controller raw-SQL adoption,
+  lib-layering, and raw allocation debt are at zero grandfathered entries; E6
+  is down to 24 grandfathered write surfaces, and other ratchet baselines still
+  grandfather real debt.
 
 ## Completed Architecture Moves
 
@@ -301,6 +300,12 @@ node soak.
   the test fallback. `lib/validation/src/process_block_core.c` no longer
   includes chain-evidence or chain-state-repository headers, and the
   lib-to-app include baseline is down from 3 to 1.
+- The snapshot-sync router contract now lives in
+  `lib/net/include/net/snapshot_sync_contract.h`, with
+  `app/services/include/services/snapshot_sync_service.h` kept as a
+  compatibility wrapper for app callers. `lib/net/src/msgprocessor_snapshot.c`
+  now includes the lib-owned contract instead of the app service header, and
+  the lib-to-app include baseline is empty.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -404,10 +409,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ### Controller And Layering Debt
 
-- Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 1 grandfathered lib-to-app include:
-  `lib/net/src/msgprocessor_snapshot.c` still includes the snapshot-sync
-  service.
+- Lib-layering debt is at zero grandfathered entries. Keep
+  `tools/scripts/lib_layering_baseline.txt` empty.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -422,48 +425,43 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 3. Keep import/catchup/legacy-import code below the file-size ceiling while
    moving remaining mixed-purpose code toward the correct framework shape.
 4. Split `process_block_core.c` by responsibility.
-5. Keep E1/E2/controller-SQL baselines empty and pay down E6/lib-layering
-   until they are empty.
+5. Keep E1/E2/controller-SQL/lib-layering baselines empty and pay down E6
+   until it is empty.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
    node progress with a soak.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after moving process-block tip publication behind
-  boot-owned hooks and updating the validation trace label to
-  `process_block.publish_tip`.
+- `make -j$(nproc)`: pass after moving the snapshot-sync router contract to
+  `lib/net/include/net/snapshot_sync_contract.h`.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner
-  for the new process-block tip-publication boundary and lint-gate assertions.
+  for the new snapshot-sync contract boundary and lint-gate assertions.
 - `git diff --check`: pass.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
-- `tools/scripts/check_lib_layering.sh`: pass with 1 grandfathered
+- `tools/scripts/check_lib_layering.sh`: pass with 0 grandfathered
   lib-to-app includes and no new violations.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
-  surfaces and no new violations; only existing `boot_services.c`
-  `coins_view_cache_flush()` baseline line numbers shifted after adding the
-  boot-owned process-block tip publication callback/helper code.
+  surfaces and no new violations.
 - Focused filtered tests passed:
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`,
-  `./test_parallel --only=chain_state_repo --timeout=120 --verbose`,
-  `./test_parallel --only=process_block --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
-- `make lint`: pass after the process-block tip-publication cleanup; E1, E2,
-  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
-  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
-  surfaces, and lib-layering is 1 grandfathered include.
+  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`, and
+  `./test_parallel --only=msg_handlers --timeout=120 --verbose`.
+- `make lint`: pass after the snapshot-sync contract move; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
+  24 grandfathered write surfaces.
 - `./test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
   `0/279` groups failed in 57.0s.
-- Quick live sample attempt at 2026-06-01 10:45:24 UTC after the
-  process-block tip-publication cleanup did not prove live-node health: no
-  `zclassic23` process was running, `zcl-rpc` exited 7 for both
-  `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or
-  `18232` listener, the previous 20 minutes of `zclassic23.service` journal
-  had no entries, and the broader read-only journal scan still shows the
-  earlier OOM kill at 2026-06-01 07:58:58 UTC. The service was not restarted;
-  this slice stayed read-only for live checks and preserved the `8023` port
-  expectation.
+- Quick live sample attempt at 2026-06-01 10:56:56 UTC after the
+  snapshot-sync contract move did not prove live-node health: no `zclassic23`
+  process was running, `zcl-rpc` exited 7 for both `getblockcount` and
+  `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or `18232` listener,
+  `systemctl --user status zclassic23` could not connect to the user bus, and
+  the recent read-only journal checks had no entries. The service was not
+  restarted; this slice stayed read-only for live checks and preserved the
+  `8023` port expectation.
 - `make -j$(nproc)`: pass after callback-injecting header activation,
   block-file scan, height-repair state, and post-activation anchor repair
   through the message processor.

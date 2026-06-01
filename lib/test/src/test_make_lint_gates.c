@@ -1466,6 +1466,7 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
                          "lib/net/src/msgprocessor_snapshot.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mp->flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") != NULL);
         ASSERT(strstr(buf, "msg_snapshot_sync(") != NULL);
         ASSERT(strstr(buf, "msg_snapshot_sync_ensure") != NULL);
         ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
@@ -1481,6 +1482,7 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);

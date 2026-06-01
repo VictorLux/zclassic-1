@@ -32,7 +32,7 @@
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
 #include "coins/coins_view.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"

@@ -70,95 +70,12 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 1 grandfathered
-  lib-to-app includes after moving file manifest protocol declarations into
-  `lib/net/include/net/file_manifest.h`, moving generic node DB path building
-  into `lib/util`, moving UTXO script classification into `lib/script`,
-  replacing a net internal service include with a forward declaration, moving
-  schema migration into the Model shape, and moving file-offer SQLite
-  persistence into the FileOffer model, and moving ZMSG SQLite persistence
-  into the Zmsg model. ZNAM at-rest records and SQLite persistence now live in
-  the Znam model instead of the lib protocol parser, and swap-contract
-  persistence now lives in the SwapContract model instead of the HTLC script
-  builder/parser. Addrman sidecar integrity now lives in `lib/net`, backed by
-  the generic `lib/storage` SHA3 sidecar helper, so `connman.c` no longer
-  includes an app service for peers.dat integrity. Mining found-block
-  submission is now caller-owned through a `gen_context` callback, so
-  `lib/mining` no longer includes the app activation service. Connman onion
-  peer discovery is now callback-injected from boot, so `lib/net/src/connman.c`
-  no longer includes the blog controller. Onion service blog serving and peer
-  discovery are now callback-injected app handlers registered by boot, so
-  `lib/net/src/onion_service.c` no longer includes the blog controller.
-  Compact-block reducer submission is now callback-injected from boot, so
-  `lib/net/src/msg_compact.c` no longer includes the activation service.
-  Handshake peer persistence is now callback-injected from boot, so
-  `lib/net/src/msg_version.c` no longer includes the Peer model/database
-  headers. Metrics service/model gauges and connman known-ZCL23 peer
-  selection are now callback-injected from boot, so `lib/metrics/src/metrics.c`
-  and `lib/net/src/connman.c` no longer include those app-layer headers. Tx
-  wallet persistence and the snapshot-active check are now callback-injected
-  from boot, so `lib/net/src/msg_tx.c` no longer includes app
-  controller/model/service headers. P2P block reducer submission is now
-  callback-injected from boot, and `lib/net/src/msg_blocks.c` uses the
-  injected snapshot-active check, so that file no longer includes app
-  controller/model/activation/snapshot headers. Block-connected tip observers
-  are now callback-injected from boot too, so `msg_blocks.c` no longer includes
-  the sync monitor service. Block-sync planning for invalid-block retries and
-  valid-block acceptance is now hidden behind net-internal helpers, so
-  `msg_blocks.c` has no remaining app-service includes. Stale unused
-  app-layer includes were removed from `msg_headers.c`, `msgprocessor.c`, and
-  `msgprocessor_snapshot.c`; FlyClient proof building is now callback-injected
-  from boot, so the net snapshot handler no longer includes the blockchain
-  controller or MMB leaf-store model. Snapshot block-piece serving now loads
-  block-hash ranges and computes the local UTXO SHA3 through boot-owned
-  callbacks too, so the net snapshot handler no longer includes the Block model
-  or reaches through `struct node_db`. ZMSG, file-offer, and file-service P2P
-  persistence is now callback-injected from boot, so `msgprocessor.c` no longer
-  includes the node DB model header or the FileService model. Snapshot-sync
-  service accessors now live in `msgprocessor_snapshot.c`, so
-  `msgprocessor.c` no longer includes the snapshot sync service. Header/block
-  sync planner contracts now live in `lib/sync/include/sync/sync_planner.h`,
-  so `msgprocessor.c` and `msg_headers.c` no longer include the header/block
-  sync app service headers. Header-chain tip promotion and snapshot-anchor
-  recommit are now boot-owned chain-state callbacks, so `msg_headers.c` no
-  longer includes the chain-state repository. The CSR-less header-anchor
-  repair fallback now routes through the boot-owned callback surface, so the
-  net header handler no longer includes the app chain-tip service. Peer header
-  votes for the quorum oracle are now callback-injected from boot, so
-  `msg_headers.c` no longer includes the app quorum-oracle service either.
-  Process-block `node_db` open checks now route through the runtime boundary,
-  so `lib/validation/src/process_block.c` no longer includes the DB model
-  header just to inspect an opaque handle. Process-block flush-policy DB state
-  persistence, sync-batch flush, and WAL checkpoint operations now use the
-  same runtime boundary, so `process_block_flush_policy.c` no longer includes
-  the DB model header either. Self-heal durable UTXO max-height checks now
-  route through that runtime boundary too, so `process_block_self_heal.c` no
-  longer includes the DB model header for SQLite query access. Self-heal
-  tx-index recovery now uses a runtime-owned lookup result, so
-  `process_block_self_heal.c` no longer includes the TxIndex model header
-  either. Fast-sync chunk apply now uses direct SQLite binds plus the lib-side
-  `AR_STEP_WRITE` helper, so `lib/net/src/fast_sync.c` no longer includes the
-  ActiveRecord or DB model headers. Fast-sync snapshot prebuild now takes a
-  caller-owned serializer callback that boot wires to the UTXO model, so
-  `fast_sync.c` no longer includes the UTXO model either. Header-sync snapshot
-  active/anchor access is now callback-injected through
-  `msg_processor_set_snapshot_anchor_accessors()`, so
-  `lib/net/src/msg_headers.c` uses message-processor helpers instead of
-  including the snapshot sync service. Header activation, block-file scan,
-  height-repair state, and post-activation anchor repair are now injected
-  from boot too, so `msg_headers.c` no longer includes the app
-  activation controller or block-index integrity service. Header best-tip
-  promotion and snapshot-anchor recommit are also boot-owned chain-state
-  callbacks, so `msg_headers.c` no longer includes the chain-state repository.
-  Stale `process_block_core.c` app includes for deleted legacy engine surfaces
-  are gone, and background gap-fill wakeups now route through
-  a mutex-protected `process_block_set_gap_fill_kick()` hook from boot.
-  Process-block tip publication now routes through boot-owned
-  `process_block_set_tip_publication_hooks()` callbacks too; validation passes
-  pure tip evidence, while boot translates that evidence to the chain-evidence
-  controller / CSR app services. The only remaining baseline entry is the net
-  snapshot handler's snapshot-sync service include.
-  Keep shrinking it; do not add new entries.
+  `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
+  was removed by moving the snapshot-sync router contract to
+  `lib/net/include/net/snapshot_sync_contract.h` and leaving
+  `app/services/include/services/snapshot_sync_service.h` as a compatibility
+  wrapper for app callers. Keep this baseline empty; do not add new upward
+  includes from `lib/` to `app/`.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

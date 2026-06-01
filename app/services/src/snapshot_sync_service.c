@@ -22,7 +22,8 @@
  *   snapshot_verify.c  — FlyClient + SHA3 verification, finalize
  *   snapshot_apply.c   — promote staging + tip activation
  *
- * The public API in services/snapshot_sync_service.h is unchanged. */
+ * The public API is declared by net/snapshot_sync_contract.h and re-exported
+ * through services/snapshot_sync_service.h for app callers. */
 
 #include "services/snapshot_sync_service.h"
 #include "services/snapshot_manifest.h"
