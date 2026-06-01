@@ -14,9 +14,10 @@
 #include "net/net.h"
 #include "net/p2p_message.h"
 #include "core/serialize.h"
-#include "services/header_sync_service.h"
 
 /* ── Forward declarations for split message handlers ──────────── */
+
+struct sync_getheaders_action;
 
 /* msg_version.c — version/verack handshake */
 void push_version(struct msg_processor *mp, struct p2p_node *node);

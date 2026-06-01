@@ -67,6 +67,21 @@ int test_path_check(void)
     PC_CHECK("fs_arg accepts \"..\" (operator intent, not filtered)",
         path_check_fs_arg("../foo", 16));
 
+    /* ── zcl_node_db_path: canonical node.db path helper ─────── */
+    {
+        char db_path[64];
+        PC_CHECK("node_db_path builds under datadir",
+            strcmp(zcl_node_db_path(db_path, sizeof(db_path), "/tmp/zcl"),
+                   "/tmp/zcl/node.db") == 0 &&
+            strcmp(db_path, "/tmp/zcl/node.db") == 0);
+        PC_CHECK("node_db_path rejects NULL buffer",
+            strcmp(zcl_node_db_path(NULL, sizeof(db_path), "/tmp/zcl"), "") == 0);
+        PC_CHECK("node_db_path rejects zero buffer",
+            strcmp(zcl_node_db_path(db_path, 0, "/tmp/zcl"), "") == 0);
+        PC_CHECK("node_db_path rejects NULL datadir",
+            strcmp(zcl_node_db_path(db_path, sizeof(db_path), NULL), "") == 0);
+    }
+
     /* ── url_arg: inherits fs_arg checks ─────────────────────── */
     PC_CHECK("url_arg(NULL) rejected",
         !path_check_url_arg(NULL, 16));

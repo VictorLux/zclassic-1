@@ -5,7 +5,7 @@
 #include "framework/projection.h"
 #include "mcp/rpc_client.h"
 #include "util/log_macros.h"
-#include "views/format_helpers.h"
+#include "util/path_check.h"
 
 #include <stdint.h>
 

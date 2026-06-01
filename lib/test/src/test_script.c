@@ -133,6 +133,44 @@ int test_script(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("utxo_classify_script... ");
+    {
+        uint8_t addr_hash[20];
+        bool has_addr = false;
+        bool ok = true;
+
+        struct key_id kid;
+        unsigned char kbytes[20] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
+        memcpy(kid.id.data, kbytes, 20);
+        struct script p2pkh;
+        script_for_p2pkh(&p2pkh, &kid);
+        ok = ok && utxo_classify_script(p2pkh.data, p2pkh.size,
+                                        addr_hash, &has_addr) == SCRIPT_P2PKH;
+        ok = ok && has_addr && memcmp(addr_hash, kbytes, 20) == 0;
+
+        struct script_id sid;
+        unsigned char sbytes[20] = {0xaa,0xbb,0xcc,0xdd,0xee,0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0x11};
+        memcpy(sid.hash.data, sbytes, 20);
+        struct script p2sh;
+        script_for_p2sh(&p2sh, &sid);
+        ok = ok && utxo_classify_script(p2sh.data, p2sh.size,
+                                        addr_hash, &has_addr) == SCRIPT_P2SH;
+        ok = ok && has_addr && memcmp(addr_hash, sbytes, 20) == 0;
+
+        uint8_t op_return[] = { OP_RETURN, 1, 0x42 };
+        ok = ok && utxo_classify_script(op_return, sizeof(op_return),
+                                        addr_hash, &has_addr) == SCRIPT_OP_RETURN;
+        ok = ok && !has_addr;
+
+        uint8_t other[] = { OP_TRUE };
+        ok = ok && utxo_classify_script(other, sizeof(other),
+                                        addr_hash, &has_addr) == SCRIPT_OTHER;
+        ok = ok && !has_addr;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("script_extract_destination P2PKH... ");
     {
         struct key_id kid;

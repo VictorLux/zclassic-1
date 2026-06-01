@@ -54,7 +54,7 @@
 #define SYNC_PROJECTION_TIP_HASH_KEY   "sync_projection_tip_hash"
 #define SYNC_PROJECTION_TIP_HEIGHT_KEY "sync_projection_tip_height"
 
-/* classify_script: use shared utxo_classify_script() from models/utxo.h */
+/* classify_script: use shared utxo_classify_script() from script/standard.h */
 #define classify_script utxo_classify_script
 
 struct mempool_add_ctx {
@@ -550,4 +550,3 @@ bool node_db_sync_set_tip(struct node_db *ndb,
     ctx.height = height;
     return sync_run_write(ndb, node_db_sync_set_tip_write, &ctx) && ctx.ok;
 }
-

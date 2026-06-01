@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 79 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 75 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -126,6 +126,12 @@ node soak.
   manifest protocol declarations moved into
   `lib/net/include/net/file_manifest.h`, dropping the lib-to-app include
   baseline from 82 to 79.
+- The next lib-layering slice moved `zcl_node_db_path()` from app views to
+  `lib/util`, moved UTXO script classification from the ActiveRecord model to
+  `lib/script`, replaced the `msg_internal.h` service include with a forward
+  declaration, and removed the storage-layer model include from
+  `coins_view_sqlite.c`, dropping the lib-to-app include baseline from 79 to
+  75.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -226,7 +232,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 79 grandfathered lib-to-app includes.
+  with 75 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -247,6 +253,34 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after moving `zcl_node_db_path()` into `lib/util`,
+  moving UTXO script classification into `lib/script`, removing the
+  storage-layer UTXO model include, and replacing the net internal service
+  include with a forward declaration.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker,
+  raw-sqlite-step, controller raw-SQL, and raw-malloc gates remain at zero
+  active debt, E6 is 24 grandfathered write surfaces, and lib-layering is 75
+  grandfathered includes.
+- `make test_parallel`: pass after adding direct coverage for
+  `zcl_node_db_path()` and `utxo_classify_script()`.
+- Focused filtered tests passed:
+  `./test_parallel --only=path_check --timeout=120 --verbose`,
+  `./test_parallel --only=script --timeout=120 --verbose`,
+  `./test_parallel --only=coins_view --timeout=120 --verbose`,
+  `./test_parallel --only=fast_sync --timeout=120 --verbose`,
+  `./test_parallel --only=tor --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the lib-layering shrink,
+  `0/279` groups failed in 58.0s.
+- Quick live sample at 2026-06-01 03:47:30 UTC after the lib-layering shrink:
+  `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a journal scan since
+  2026-06-01 03:31:00 UTC found no low-tip regression, integrity failure, OOM,
+  fatal, segfault, assert, panic, or `DB_ERR_TIP_MISMATCH` signal. This is a
+  continuity check, not the final soak.
 - `make -j$(nproc)`: pass after emptying the controller raw-SQL baseline.
 - `make lint`: pass; E1, E2, supervisor, E7, typed-blocker,
   raw-sqlite-step, controller raw-SQL, and raw-malloc gates remain at zero

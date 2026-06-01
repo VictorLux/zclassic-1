@@ -4,7 +4,6 @@
 
 #include "platform/time_compat.h"
 #include "net/fast_sync.h"
-#include "views/format_helpers.h"
 #include "coins/utxo_commitment.h"
 #include "models/activerecord.h"
 #include "models/database.h"
@@ -23,6 +22,7 @@
 #include <sqlite3.h>
 #include <pthread.h>
 #include "util/ar_step_readonly.h"
+#include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #ifdef __GLIBC__

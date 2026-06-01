@@ -2,6 +2,7 @@
 
 #include "util/path_check.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static bool has_no_control_chars(const char *p, size_t len)
@@ -39,4 +40,11 @@ bool path_check_url_arg(const char *p, size_t max_len)
         seg = next;
     }
     return true;
+}
+
+const char *zcl_node_db_path(char *buf, size_t bufmax, const char *datadir)
+{
+    if (!buf || bufmax == 0 || !datadir) return "";
+    snprintf(buf, bufmax, "%s/node.db", datadir);
+    return buf;
 }

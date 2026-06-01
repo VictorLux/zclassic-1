@@ -27,4 +27,8 @@ bool path_check_fs_arg(const char *p, size_t max_len);
  * intended endpoint surface. */
 bool path_check_url_arg(const char *p, size_t max_len);
 
+/* Build the canonical node.db path under datadir. Returns buf, or "" for
+ * invalid args. */
+const char *zcl_node_db_path(char *buf, size_t bufmax, const char *datadir);
+
 #endif

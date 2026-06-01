@@ -35,9 +35,6 @@ bool zcl_is_hex_string(const char *s, size_t expected_len);
 /* Check if non-empty string contains only decimal digits. */
 bool zcl_is_all_digits(const char *s);
 
-/* Build path to node.db for the given datadir. Returns buf. */
-const char *zcl_node_db_path(char *buf, size_t bufmax, const char *datadir);
-
 /* Naive JSON string extraction: find "key":"value" and copy value to out.
  * Validates closing quote. Returns false if key not found or malformed. */
 bool zcl_json_extract_str(const char *json, const char *key,

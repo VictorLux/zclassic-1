@@ -19,7 +19,6 @@
 #include "coins/coins.h"
 #include "coins/utxo_commitment.h"
 #include "event/event.h"
-#include "models/utxo.h"
 #include "script/standard.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"

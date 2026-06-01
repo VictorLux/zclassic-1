@@ -9,7 +9,7 @@
 #include "util/log_json.h"
 #include "util/log_macros.h"
 #include "controllers/blog_controller.h"
-#include "views/format_helpers.h"
+#include "util/path_check.h"
 #include "util/template.h"
 #include <stdio.h>
 #include <stdlib.h>

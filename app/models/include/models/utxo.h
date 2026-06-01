@@ -7,16 +7,9 @@
 
 #include "models/database.h"
 #include "models/activerecord.h"
+#include "script/standard.h"
 #include <stdbool.h>
 #include <stdint.h>
-
-enum script_type {
-    SCRIPT_P2PKH = 0,
-    SCRIPT_P2SH  = 1,
-    SCRIPT_OP_RETURN = 2,
-    SCRIPT_MULTISIG = 3,
-    SCRIPT_OTHER = 255
-};
 
 struct db_utxo {
     uint8_t txid[32];
@@ -30,11 +23,6 @@ struct db_utxo {
     int height;
     bool is_coinbase;
 };
-
-/* Classify a scriptPubKey into script_type and extract address hash.
- * Single shared implementation — do not duplicate this function. */
-enum script_type utxo_classify_script(const uint8_t *script, size_t len,
-                                       uint8_t addr_hash[20], bool *has_addr);
 
 /* Callbacks and validation */
 struct ar_callbacks *db_utxo_callbacks(void);

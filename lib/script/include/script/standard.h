@@ -22,6 +22,14 @@ enum txnouttype {
     TX_NULL_DATA
 };
 
+enum script_type {
+    SCRIPT_P2PKH = 0,
+    SCRIPT_P2SH  = 1,
+    SCRIPT_OP_RETURN = 2,
+    SCRIPT_MULTISIG = 3,
+    SCRIPT_OTHER = 255
+};
+
 #define MAX_OP_RETURN_RELAY 223
 
 struct script_id {
@@ -55,6 +63,11 @@ int script_sig_args_expected(enum txnouttype t,
 
 bool script_extract_destination(const struct script *s,
                                 struct tx_destination *dest_out);
+
+/* Classify a scriptPubKey for UTXO indexing and extract address hash.
+ * Single shared implementation; keep storage/model callers on this path. */
+enum script_type utxo_classify_script(const uint8_t *script, size_t len,
+                                      uint8_t addr_hash[20], bool *has_addr);
 
 void script_for_p2pkh(struct script *out, const struct key_id *key);
 void script_for_p2sh(struct script *out, const struct script_id *script_hash);

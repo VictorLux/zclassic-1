@@ -47,13 +47,6 @@ void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi)
     snprintf(buf, max, "%s", full);
 }
 
-const char *zcl_node_db_path(char *buf, size_t bufmax, const char *datadir)
-{
-    if (!buf || bufmax == 0 || !datadir) return "";
-    snprintf(buf, bufmax, "%s/node.db", datadir);
-    return buf;
-}
-
 bool zcl_is_all_hex(const char *s, size_t len)
 {
     for (size_t i = 0; i < len; i++)

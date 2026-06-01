@@ -53,7 +53,7 @@
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
-/* classify_script: use shared utxo_classify_script() from models/utxo.h */
+/* classify_script: use shared utxo_classify_script() from script/standard.h */
 #define classify_script utxo_classify_script
 
 struct connect_block_sync_ctx {

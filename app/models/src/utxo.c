@@ -22,39 +22,6 @@
 #include <string.h>
 #include "util/safe_alloc.h"
 
-/* ── Script Classification (single shared implementation) ──────── */
-
-enum script_type utxo_classify_script(const uint8_t *script, size_t len,
-                                       uint8_t addr_hash[20], bool *has_addr)
-{
-    *has_addr = false;
-
-    /* P2PKH: OP_DUP OP_HASH160 <20> <hash> OP_EQUALVERIFY OP_CHECKSIG */
-    if (len == 25 &&
-        script[0] == 0x76 && script[1] == 0xa9 &&
-        script[2] == 0x14 &&
-        script[23] == 0x88 && script[24] == 0xac) {
-        memcpy(addr_hash, script + 3, 20);
-        *has_addr = true;
-        return SCRIPT_P2PKH;
-    }
-
-    /* P2SH: OP_HASH160 <20> <hash> OP_EQUAL */
-    if (len == 23 &&
-        script[0] == 0xa9 && script[1] == 0x14 &&
-        script[22] == 0x87) {
-        memcpy(addr_hash, script + 2, 20);
-        *has_addr = true;
-        return SCRIPT_P2SH;
-    }
-
-    /* OP_RETURN */
-    if (len > 0 && script[0] == 0x6a)
-        return SCRIPT_OP_RETURN;
-
-    return SCRIPT_OTHER;
-}
-
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
 DEFINE_MODEL_CALLBACKS(utxo)
