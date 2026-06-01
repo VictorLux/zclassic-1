@@ -4,6 +4,8 @@
 
 #include "config/runtime.h"
 #include "models/database.h"
+#include "util/ar_step_readonly.h"
+#include <limits.h>
 #include <stddef.h>
 
 static struct app_runtime_context *g_current_runtime = NULL;
@@ -71,6 +73,27 @@ bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb)
     return sqlite3_wal_checkpoint_v2(ndb->db, NULL,
                                      SQLITE_CHECKPOINT_PASSIVE,
                                      NULL, NULL) == SQLITE_OK;
+}
+
+int app_runtime_node_db_utxo_max_height(struct node_db *ndb)
+{
+    if (!app_runtime_node_db_handle_open(ndb) || !ndb->db)
+        return 0;
+
+    sqlite3_stmt *st = NULL;
+    int max_height = 0;
+    if (sqlite3_prepare_v2(ndb->db, "SELECT MAX(height) FROM utxos",
+                           -1, &st, NULL) == SQLITE_OK && st) {
+        if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
+            sqlite3_int64 h = sqlite3_column_int64(st, 0);
+            if (h > INT_MAX)
+                max_height = INT_MAX;
+            else if (h > 0)
+                max_height = (int)h;
+        }
+        sqlite3_finalize(st);
+    }
+    return max_height;
 }
 
 sqlite3 *app_runtime_query_db(void)

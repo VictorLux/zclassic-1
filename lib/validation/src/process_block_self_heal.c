@@ -18,7 +18,6 @@
 #include "platform/time_compat.h"
 #include <assert.h>
 #include <limits.h>
-#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +25,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include "util/ar_step_readonly.h"
 #include "validation/process_block.h"
 #include "validation/main_logic.h"
 #include "validation/connect_block.h"
@@ -36,11 +34,11 @@
  * already take. Inline marker keeps the lib_layering baseline flat. */
 #include "validation/chainstate.h"
 #include "services/chain_activation_controller.h"  // lib-layer-ok:self-heal-reducer-retry
+#include "config/runtime.h"
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
 #include "core/core_io.h"
 #include "event/event.h"
-#include "models/database.h"
 #include "models/tx_index.h"
 #include "rpc/legacy_rpc_client.h"
 #include "storage/disk_block_io.h"
@@ -660,17 +658,8 @@ void process_block_note_utxo_failure(struct main_state *ms,
         s_utxo_activation_paused_height = -1;
     }
 
-    int durable_utxo_max_h = 0;
-    struct node_db *ndb = process_block_node_db_internal();
-    if (ndb && ndb->open && ndb->db) {
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(ndb->db, "SELECT MAX(height) FROM utxos",
-                               -1, &st, NULL) == SQLITE_OK && st) {
-            if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
-                durable_utxo_max_h = sqlite3_column_int(st, 0);
-            sqlite3_finalize(st);
-        }
-    }
+    int durable_utxo_max_h =
+        app_runtime_node_db_utxo_max_height(process_block_node_db_internal());
 
     if (durable_utxo_max_h > height + 10) {
         if (s_utxo_fail_count == 1 || s_utxo_fail_count == 5) {

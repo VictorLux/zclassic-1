@@ -40,6 +40,7 @@ bool app_runtime_node_db_state_set(struct node_db *ndb,
 void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint(struct node_db *ndb);
 bool app_runtime_node_db_wal_checkpoint_passive(struct node_db *ndb);
+int app_runtime_node_db_utxo_max_height(struct node_db *ndb);
 sqlite3 *app_runtime_query_db(void);
 struct snapshot_sync_service *app_runtime_snapshot_sync(void);
 struct tx_mempool *app_runtime_mempool(void);

@@ -34,5 +34,4 @@ lib/validation/src/process_block_core.c:#include "services/chain_state_repositor
 lib/validation/src/process_block_core.c:#include "services/chain_tip.h"
 lib/validation/src/process_block_core.c:#include "services/gap_fill_service.h"
 lib/validation/src/process_block_core.c:#include "services/snapshot_sync_service.h"
-lib/validation/src/process_block_self_heal.c:#include "models/database.h"
 lib/validation/src/process_block_self_heal.c:#include "models/tx_index.h"

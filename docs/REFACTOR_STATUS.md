@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 20 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 19 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -248,6 +248,11 @@ node soak.
   `lib/validation/src/process_block_flush_policy.c` no longer includes the DB
   model header or dereferences `struct node_db`; the lib-to-app include
   baseline is down from 21 to 20.
+- Process-block self-heal durable UTXO max-height checks now route through the
+  runtime boundary. `config/src/runtime.c` owns the SQLite query over `utxos`,
+  while `lib/validation/src/process_block_self_heal.c` keeps the DB handle
+  opaque for that check and no longer includes the DB model header. The
+  lib-to-app include baseline is down from 20 to 19.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -352,7 +357,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 20 grandfathered lib-to-app includes.
+  with 19 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -373,6 +378,35 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after routing process-block self-heal durable UTXO
+  max-height reads through the runtime boundary.
+- `make test_parallel`: pass after rebuilding the parallel runner for the
+  expanded process-block runtime-boundary lint-gate assertion.
+- `tools/scripts/check_lib_layering.sh`: pass with 19 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=self_heal --timeout=120 --verbose`,
+  `./test_parallel --only=validation --timeout=120 --verbose`, and
+  `./test_parallel --only=chain --timeout=120 --verbose`.
+- `make lint`: pass after the self-heal/runtime boundary move; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 19 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the self-heal/runtime boundary
+  move, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 08:58:37 UTC after the
+  self-heal/runtime boundary move did not prove live-node health: no
+  `zclassic23` process was running, `zcl-rpc` returned connection failure for
+  both `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`,
+  or `18232` listener, and a read-only journal scan still shows the earlier
+  `zclassic23.service` OOM kill at 2026-06-01 07:58:58 UTC. The service was
+  not restarted; this slice stayed read-only for live checks and preserved the
+  `8023` port expectation.
 - `make -j$(nproc)`: pass after routing process-block flush-policy DB state,
   sync-batch, and WAL checkpoint operations through the runtime boundary.
 - `make test_parallel`: pass after rebuilding the parallel runner for the

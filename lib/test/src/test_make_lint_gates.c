@@ -1563,12 +1563,23 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         free(buf);
         buf = NULL;
 
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_self_heal.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+
         ASSERT(repo_path(path, sizeof(path), "config/src/runtime.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_state_set") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_sync_flush_if_needed") != NULL);
         ASSERT(strstr(buf, "app_runtime_node_db_wal_checkpoint") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_utxo_max_height") != NULL);
+        ASSERT(strstr(buf, "SELECT MAX(height) FROM utxos") != NULL);
         ASSERT(strstr(buf, "node_db_state_set") != NULL);
         ASSERT(strstr(buf, "node_db_sync_flush") != NULL);
         ASSERT(strstr(buf, "ndb->open") != NULL);
