@@ -1,10 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * UTXO Recovery — boot import/restore paths (C3 split out of
- * utxo_recovery_service.c).
+ * UTXO Recovery - boot import and active-tip restore paths.
  *
- * Two heavy boot-time recovery routines live here, split from the
- * recovery service so that file stays under the 800-LOC ceiling:
+ * Two heavy boot-time recovery routines live here:
  *
  *   utxo_recovery_import_ldb        — LevelDB chainstate → SQLite UTXO
  *                                     migration (LOCK-safe copy, SHA3
@@ -14,8 +12,7 @@
  *                                     anchor when ahead of the index).
  *
  * Both share the CSR-gated commit primitives in
- * utxo_recovery_internal.h. Behavior is unchanged from the original
- * service file — this is a pure code move.
+ * utxo_recovery_internal.h.
  */
 
 #include "services/utxo_recovery_service.h"

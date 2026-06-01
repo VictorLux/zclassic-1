@@ -1,13 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_reimport_flag — implementation. See header for the contract.
+ * utxo_reimport_flag - implementation. See header for the contract.
  *
- * Lifted from `app/services/src/utxo_recovery_service.c` (the
- * `utxo_recovery_check_reimport_flag` body) and from
- * `lib/validation/src/process_block_self_heal.c`
- * (`process_block_maybe_write_needs_reimport_flag` — the file-write
- * portion only; the failure-count threshold + diagnostics stay at the
- * caller). Pure code motion plus a renaming + a defensive log line.
+ * Owns the durable `<datadir>/needs_reimport` sentinel shared by validation
+ * self-heal and boot recovery. Validation decides when to set it; boot checks
+ * and clears it exactly once before chain mutators start.
  */
 
 #include "storage/utxo_reimport_flag.h"

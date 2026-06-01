@@ -1,9 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_apply_delta — the B5 reorg-unwind keystone, split out of
- * utxo_apply_stage.c (file-size ceiling E1). Internal to the
- * utxo_apply job: the per-block inverse-delta record (the stage analogue
- * of legacy block_undo) plus the stage-side disconnect path.
+ * utxo_apply_delta - inverse-delta persistence and reorg-unwind helpers.
+ * Internal to the utxo_apply job: captures per-block UTXO preimages so a
+ * stage-side disconnect can reconstruct the abandoned branch without legacy
+ * undo files.
  *
  * Not a public API — only utxo_apply_stage.c includes this. The two
  * delta types are shared by compute_block_delta (which fills them) and
@@ -30,19 +30,17 @@ struct delta_entry {
     struct uint256 txid;
     uint32_t vout;
     int64_t value;
-    /* B3 authorship: added entries also carry what EV_UTXO_ADD needs.
+    /* Added entries carry what EV_UTXO_ADD needs.
      * `script` aliases into the live `struct block` and is valid only
      * until block_free — emission must happen before the block is freed.
      *
-     * B5 reorg-unwind: SPENT entries ALSO carry the full pre-image
-     * (height + is_coinbase + script) so a stage-side disconnect can
-     * emit a correct restore-ADD (the inverse of the SPEND), matching
-     * the former disconnect block path byte-for-byte. For a spent entry the
-     * script bytes live in the owned `script_owned` buffer (the live
-     * block's tx_out is gone by disconnect time), and `script` aliases
-     * into it; `height` is the coin's ORIGINAL creation height. For an
-     * added entry `script` aliases the live block and `script_owned`
-     * is NULL. */
+     * Spent entries also carry the full pre-image (height + is_coinbase
+     * + script) so a stage-side disconnect can emit a correct restore-ADD
+     * (the inverse of the SPEND). For a spent entry the script bytes live in
+     * the owned `script_owned` buffer (the live block's tx_out is gone by
+     * disconnect time), and `script` aliases into it; `height` is the coin's
+     * ORIGINAL creation height. For an added entry `script` aliases the live
+     * block and `script_owned` is NULL. */
     const uint8_t *script;
     uint32_t script_len;
     bool is_coinbase;

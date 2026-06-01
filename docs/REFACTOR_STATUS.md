@@ -120,6 +120,10 @@ node soak.
   wiring, and connman now describe current ownership/purpose instead of old
   Phase/PR/dissolve code-motion scaffolding. `test_make_lint_gates` now has a
   guard for those stale labels.
+- UTXO reducer/recovery comments now describe current ownership instead of
+  B3/B5/C3 code-motion scaffolding. The guarded production files include the
+  UTXO apply inverse-delta seam, the UTXO reimport sentinel, and boot
+  projection-storage wiring.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2467,6 +2471,25 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `Behavior-preserving`, `until Phase 3`, `Phase 3 unblocks`, and
   `Phase 3: release refs` is clean.
 - Live sample attempt at 2026-06-01 15:37 UTC after the production
+  scaffold-label cleanup: no continuity proof was available. `systemctl --user`
+  could not connect to the user bus, `./tools/zcl-rpc getblockcount` and
+  `gettxoutsetinfo` exited with code 7, no `zclassic23` process was running,
+  no listener existed on ports `8023`, `8033`, `18232`, or `8232`, and the last
+  20 minutes of `zclassic23` journal output had no entries. This is a failed
+  live sample, not a refactor completion proof.
+- `make -j$(nproc)`: pass after removing stale B3/B5/C3 code-motion comments
+  from the UTXO apply/recovery path and boot projection-storage wiring.
+- `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
+  widening the scaffold-label guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the production-comment guard to cover the UTXO apply/recovery files.
+- `./test_parallel --only=utxo_apply --timeout=120 --verbose`: pass; covers
+  `test_utxo_apply_authorship` and `test_utxo_apply_stage`.
+- `make lint`: pass after the UTXO apply/recovery comment cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the UTXO apply/recovery comment
+  cleanup, `0/279` groups failed in 57.0s.
+- Live sample attempt at 2026-06-01 15:47 UTC after the UTXO apply/recovery
   scaffold-label cleanup: no continuity proof was available. `systemctl --user`
   could not connect to the user bus, `./tools/zcl-rpc getblockcount` and
   `gettxoutsetinfo` exited with code 7, no `zclassic23` process was running,

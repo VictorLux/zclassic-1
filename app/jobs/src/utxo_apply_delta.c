@@ -2,10 +2,9 @@
  *
  * utxo_apply_delta — implementation. See jobs/utxo_apply_delta.h.
  *
- * The B5 reorg-unwind keystone: the per-block inverse-delta record (the
- * stage analogue of legacy block_undo) plus the stage-side disconnect
- * path. Split out of utxo_apply_stage.c so each file stays under the E1
- * file-size ceiling. */
+ * Durable disconnect support for the utxo_apply Job: this file records
+ * per-block inverse deltas and replays them when a stage-side reorg rewinds
+ * abandoned branch rows. */
 
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_delta.h"
@@ -152,7 +151,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             for (size_t vi = 0; vi < tx->num_vin; vi++) {
                 const struct outpoint *op = &tx->vin[vi].prevout;
                 int64_t value = 0;
-                /* Full restore pre-image for the spent coin (B5). */
+                /* Full restore pre-image for the spent coin. */
                 uint32_t restore_height = 0;
                 bool restore_coinbase = false;
                 const uint8_t *restore_script = NULL;
@@ -312,8 +311,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
 
 /* ── Schema ────────────────────────────────────────────────────────── */
 
-/* B5 reorg-unwind: per-block inverse-delta record (the stage analogue of
- * legacy block_undo). One row per applied height carries the OLD branch
+/* Per-block inverse-delta record. One row per applied height carries the OLD branch
  * hash (so a same-height fork is distinguishable) plus the spent[] and
  * added[] blobs needed to emit inverse EV_UTXO_* events on a disconnect:
  *   spent_blob: per restored coin  txid|vout|value|height|is_coinbase|

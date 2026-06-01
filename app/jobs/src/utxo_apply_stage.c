@@ -39,10 +39,9 @@ struct proof_validate_row {
     int ok;
 };
 
-/* struct delta_entry / struct delta_summary + the inverse-delta
- * persistence and reorg-unwind machinery live in jobs/utxo_apply_delta.h
- * / utxo_apply_delta.c (split out to keep this file under the E1
- * file-size ceiling). */
+/* struct delta_entry / struct delta_summary plus inverse-delta persistence
+ * and reorg-unwind machinery live in jobs/utxo_apply_delta.h /
+ * utxo_apply_delta.c. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -160,15 +159,14 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
  * (utxo_apply_compute_block_delta) live in utxo_apply_delta.c, shared
  * with the inverse-delta persistence + reorg-unwind path. */
 
-/* B3: author EV_UTXO_ADD/SPEND from a validated block delta. Called
- * only when the stage holds authority (UTXO_AUTHOR_STAGE) and the block
- * verified. Adds are emitted before spends: every UTXO key created in
- * this block is unique (compute_block_delta rejects collisions), and
- * the only intra-block key interaction is create-then-spend of the same
- * output — which add-then-spend resolves to "absent", matching the
- * legacy per-tx order. The projection is a set, so the resulting final
- * state is byte-identical to legacy's interleaved emission
- * (proven empirically by test_utxo_apply_authorship_parity). */
+/* Author EV_UTXO_ADD/SPEND from a validated block delta. Called only when
+ * the stage holds authority (UTXO_AUTHOR_STAGE) and the block verified. Adds
+ * are emitted before spends: every UTXO key created in this block is unique
+ * (compute_block_delta rejects collisions), and the only intra-block key
+ * interaction is create-then-spend of the same output — which add-then-spend
+ * resolves to "absent", matching the legacy per-tx order. The projection is a
+ * set, so the resulting final state is byte-identical to legacy's interleaved
+ * emission (proven empirically by test_utxo_apply_authorship_parity). */
 static void emit_delta(const struct delta_summary *s, uint32_t height)
 {
     for (size_t i = 0; i < s->added_count; i++)
@@ -253,19 +251,18 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    /* B3: author the UTXO projection from this validated delta when the
+    /* Author the UTXO projection from this validated delta when the
      * stage holds projection authority. Scripts in `summary.added` alias
      * into `blk`, so emit before block_free. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE)
         emit_delta(&summary, (uint32_t)next_h);
 
-    /* B5 reorg-unwind keystone: persist the per-block inverse-delta
-     * (stage analogue of legacy block_undo) so a later disconnect can be
-     * reconstructed without re-reading legacy undo files. Stamped with
-     * the OLD branch hash so a fork at the same height is distinguishable.
-     * Inside the stage txn (stage_run_once's BEGIN IMMEDIATE), so the
-     * delta + log row + cursor land atomically. Persisted only on a
-     * successful apply — failure rows have nothing to invert. */
+    /* Persist the per-block inverse-delta so a later disconnect can be
+     * reconstructed without re-reading legacy undo files. Stamped with the
+     * OLD branch hash so a fork at the same height is distinguishable. Inside
+     * the stage txn (stage_run_once's BEGIN IMMEDIATE), so the delta + log row
+     * + cursor land atomically. Persisted only on a successful apply; failure
+     * rows have nothing to invert. */
     if (summary.ok) {
         if (!utxo_apply_delta_persist(db, next_h, bi->phashBlock, &summary)) {
             free_delta(&summary);
@@ -370,7 +367,7 @@ job_result_t utxo_apply_stage_step_once(void)
      * otherwise it leaves the active-chain window untouched. */
     reducer_extend_window_to_candidate(
         g_ms, utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
-    /* B5: drain any pending stage-side reorg disconnect BEFORE the next
+    /* Drain any pending stage-side reorg disconnect BEFORE the next
      * forward apply (and before tip_finalize, which the supervisor drains
      * after us, reads our cursor). Self-contained txn; on failure the
      * cursor is untouched so the next tick retries. */

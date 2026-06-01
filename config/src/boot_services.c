@@ -1582,15 +1582,14 @@ static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                           svc->wallet, datadir);
 }
 
-/* Idempotent open of the append-only event_log + utxo_projection — the
- * read authority for the single-engine UTXO path (B3/step-8). boot.c must
- * have these published (event_log_set_singleton / utxo_projection_get_global
- * non-NULL) BEFORE it builds the coins_tip read view from
- * coins_view_projection, which is well before app_init_services runs. So
- * this is hoisted here and called twice: once early from app_init (read-view
- * build) and once from boot_start_projection_storage (the rest of the
- * projection fan-out). The second call is a no-op reuse — first opener wins,
- * one handle, no split-brain. Returns the published projection or NULL.
+/* Idempotent open of the append-only event_log + utxo_projection. boot.c must
+ * publish these handles (event_log_set_singleton /
+ * utxo_projection_get_global non-NULL) before it builds the coins_tip read
+ * view from coins_view_projection, which is well before app_init_services
+ * runs. So this is hoisted here and called twice: once early from app_init
+ * (read-view build) and once from boot_start_projection_storage (the rest of
+ * the projection fan-out). The second call is a no-op reuse — first opener
+ * wins, one handle, no split-brain. Returns the published projection or NULL.
  *
  * Note: the legacy anchor-seed (utxo_projection_seed_from_legacy) is NOT done
  * here — it needs boot_node_db() which is only available after `S` is set in
