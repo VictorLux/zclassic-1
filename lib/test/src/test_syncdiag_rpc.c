@@ -582,7 +582,7 @@ int test_syncdiag_rpc(void)
         stats.local_height = 199;
         stats.target_height = 200;
         stats.stalls_total = 3;
-        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "body-hash-mismatch");
         legacy_mirror_sync_test_set_stats(&stats, NULL);
 

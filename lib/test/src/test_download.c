@@ -3,8 +3,11 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "services/gap_fill_service.h"
 #include "net/download.h"
 #include "core/uint256.h"
+#include "util/supervisor.h"
+#include "validation/main_state.h"
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -671,6 +674,50 @@ static int test_dl_unknown_height_sorts_last(void)
     return failures;
 }
 
+static int test_gap_fill_registers_supervisor_contract(void)
+{
+    int failures = 0;
+    TEST("gap_fill registers a chain supervisor contract") {
+        bool ok = true;
+        supervisor_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct zcl_result r = gap_fill_start(&ms, &dm);
+        ok = ok && r.ok;
+        if (r.ok) {
+            struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+            int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+            const struct supervisor_snapshot *gap = NULL;
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].name, "chain.gap_fill") == 0) {
+                    gap = &snaps[i];
+                    break;
+                }
+            }
+            ok = ok && gap != NULL;
+            if (gap) {
+                ok = ok && gap->period_secs == 0;
+                ok = ok &&
+                    gap->deadline_secs == (int64_t)GAPFILL_TICK_SECS * 3 + 30;
+            }
+
+            gap_fill_stop();
+            ok = ok && supervisor_child_count_total() == 0;
+        }
+
+        dl_free(&dm);
+        main_state_free(&ms);
+        supervisor_reset_for_testing();
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -691,5 +738,6 @@ int test_download(void)
     failures += test_dl_lowest_height_first();
     failures += test_dl_sorted_across_paths();
     failures += test_dl_unknown_height_sorts_last();
+    failures += test_gap_fill_registers_supervisor_contract();
     return failures;
 }

@@ -33,12 +33,10 @@
 #include "util/log_macros.h"
 #include "util/blocker.h"
 
-/* ── Reducer-as-ingest (DORMANT this phase) includes ───────────────
+/* ── Reducer-as-ingest includes ─────────────────────────────────────
  * The synchronous reducer wrapper drives the eight Wave-S Job stages and
  * the stateless check_block gate, then reads back the verdict from the
- * freshly-written stage log rows. None of these are reached under the live
- * default (SHADOW): reducer_ingest_block has NO live caller yet (steps
- * 7-12) and short-circuits unless tip_finalize is AUTHORITATIVE. */
+ * freshly-written stage log rows. */
 #include "consensus/validation.h"
 #include "validation/check_block.h"
 #include "primitives/block.h"
@@ -55,10 +53,9 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 
-/* Forward decl: the non-locking reducer drain helper (defined below). The
- * AUTHORITATIVE branch of activation_request_connect calls it directly under
- * the controller mutex it already holds — reducer_kick/reducer_ingest_block
- * lock that same mutex and would deadlock from inside the chokepoint. */
+/* Forward decl: the non-locking reducer drain helper (defined below). Callers
+ * that already hold the controller mutex must use it directly; reducer_kick
+ * and reducer_ingest_block lock that same mutex. */
 static int reducer_drain_to_convergence(void);
 
 /* The single typed blocker this authority owns. When the active tip is
@@ -514,15 +511,10 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     zcl_mutex_unlock(&ctl->mutex);
 }
 
-/* ── Reducer-as-ingest (DORMANT this phase) ────────────────────────
+/* ── Reducer-as-ingest ──────────────────────────────────────────────
  *
  * The synchronous block-intake wrapper that drives the eight Wave-S Job
- * stages instead of legacy activate_best_chain. ADDED ONLY this phase —
- * there is NO live caller (msg_blocks / mining / submitblock / rebuild
- * stay on process_new_block; those repoints are steps 7-12). Under the
- * live default (tip_finalize SHADOW) the AUTHORITATIVE guard short-circuits
- * every entry, so this is unreachable dead code and activate_best_chain
- * stays the sole live block-connect engine. */
+ * stages instead of legacy activate_best_chain. */
 
 /* Drain the eight stage step bodies once, in pipeline order — the SAME
  * order and the SAME *_stage_drain functions the per-stage supervisor
@@ -566,23 +558,13 @@ static int reducer_drain_to_convergence(void)
 
 bool reducer_is_authoritative(void)
 {
-    /* The single consistent gate every live block-intake call site uses to
-     * choose the reducer over legacy process_new_block. The reducer is the
-     * engine only when tip_finalize is AUTHORITATIVE (the cutover flip is
-     * step 13, NOT this phase) — so under the live default (SHADOW) this is
-     * false and every site stays on the unchanged legacy path. */
-    return tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE;
+    return true;
 }
 
 int reducer_kick(struct chain_activation_controller *ctl)
 {
     if (!ctl)
         return 0;
-    /* AUTHORITATIVE-gated: a no-op in SHADOW so live behaviour is
-     * unchanged. The supervisor tickers still drive the SHADOW pipeline. */
-    if (!reducer_is_authoritative())
-        return 0;
-
     zcl_mutex_lock(&ctl->mutex);
     int advanced = reducer_drain_to_convergence();
     zcl_mutex_unlock(&ctl->mutex);
@@ -646,12 +628,6 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     if (!ctl || !pblock)
         return validation_state_error(out, "reducer-null-arg");
 
-    /* AUTHORITATIVE-gated. In SHADOW (the live default) the reducer is not
-     * the engine — refuse rather than silently no-op, so a stray call can
-     * never be mistaken for an accept. There is no live caller this phase. */
-    if (!reducer_is_authoritative())
-        return validation_state_error(out, "reducer-not-authoritative");
-
     /* (1) Stateless gate FIRST, inline, BEFORE any log/stage mutation —
      * exactly as process_new_block:1022. A garbage block is rejected with
      * the verdict already in `out`; nothing is admitted to the inbox. The
@@ -665,7 +641,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     }
 
     /* (2) Push the header + raw bytes into the header_admit_inbox so the
-     * AUTHORITATIVE producer path (step 2) can CREATE the block_index entry
+     * producer path (step 2) can CREATE the block_index entry
      * without legacy accept_block_header. Hash-hint is the block hash. */
     struct uint256 block_hash;
     block_get_hash(pblock, &block_hash);
@@ -695,9 +671,8 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     (void)reducer_drain_to_convergence();
 
     /* Determine the height the just-ingested block should occupy: the
-     * active tip after the drain (tip_finalize set it in AUTHORITATIVE
-     * mode). If the block did not land, this is the prior tip and the
-     * read-back's hash compare fails → reject verdict. */
+     * active tip after the drain. If the block did not land, this is the
+     * prior tip and the read-back's hash compare fails → reject verdict. */
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
     int target_h = tip ? tip->nHeight : 0;
     zcl_mutex_unlock(&ctl->mutex);

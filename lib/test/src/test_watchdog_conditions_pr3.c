@@ -5,7 +5,6 @@
 #include "conditions/watchdog_dissolve_pr3.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
-#include "services/cutover_modes.h"
 #include "jobs/header_admit_stage.h"
 #include "services/snapshot_sync_service.h"
 #include "services/sync_monitor.h"
@@ -66,7 +65,6 @@ static void reset_pr3(struct connman *cm,
     peer_floor_violated_test_reset();
     sync_violation_lag_test_reset();
     snapshot_offer_ready_test_reset();
-    cutover_modes_test_reset();
     memset(cm, 0, sizeof(*cm));
     memset(dm, 0, sizeof(*dm));
     memset(ms, 0, sizeof(*ms));
@@ -86,9 +84,6 @@ static void cleanup_pr3(void)
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
     unsetenv("ZCL_PEERLESS_OK");
-    header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-    validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
-    cutover_modes_test_reset();
     if (sync_get_state() != SYNC_IDLE)
         sync_set_state(SYNC_IDLE, "test cleanup");
 }

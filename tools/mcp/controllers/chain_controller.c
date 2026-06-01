@@ -70,7 +70,7 @@ static int h_zcl_reorg_history(const struct mcp_request *req,
 /* ── zcl_replay_verify ─────────────────────────────────────────────
  *
  * Offline integrity / PoW verification sweep over the legacy on-disk
- * block log (Tier-1 of the cutover "PROVE" phase). For each block in a
+ * block log. For each block in a
  * bounded height window it re-derives four cheap consensus invariants:
  * (1) equihash solution, (2) difficulty target, (3) prev-block linkage,
  * (4) merkle root. Read-only — does not touch the live node, services,
@@ -326,8 +326,8 @@ static const struct mcp_tool_route k_routes[] = {
       p_reorg_history, PARAM_COUNT(p_reorg_history),
       h_zcl_reorg_history, 0, NULL },
     { "zcl_replay_verify", "chain",
-      "Offline integrity/PoW sweep over the legacy block log (cutover "
-      "PROVE phase, Tier-1). For each block in a bounded window verifies "
+      "Offline integrity/PoW sweep over the legacy block log. "
+      "For each block in a bounded window verifies "
       "equihash solution, difficulty target (nBits), prev-block linkage, "
       "and merkle root — reusing the canonical consensus check_block. "
       "Returns {blocks_checked, pow_failures, linkage_failures, "

@@ -13,6 +13,7 @@
 #include "chain/chain.h"
 #include "event/event.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -422,6 +423,7 @@ int test_block_pruning(void)
 
     /* ── 10. Start/stop lifecycle ─────────────────────── */
     {
+        supervisor_reset_for_testing();
         struct prune_fixture f;
         fixture_init(&f, 100, "lifecycle");
         f.svc.tick_seconds = 3600;  /* long tick so thread doesn't run_once */
@@ -438,15 +440,39 @@ int test_block_pruning(void)
         PRUNE_CHECK("prune: state is RUNNING after start",
                     st.state == BLOCK_PRUNING_RUNNING);
 
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int snap_n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        bool saw_contract = false;
+        bool period_ok = false;
+        bool deadline_ok = false;
+        bool progress_ok = false;
+        for (int i = 0; i < snap_n; i++) {
+            if (strcmp(snaps[i].name, "chain.block_pruning") == 0) {
+                saw_contract = true;
+                period_ok = snaps[i].period_secs == 0;
+                deadline_ok =
+                    snaps[i].deadline_secs == (int64_t)f.svc.tick_seconds * 3 + 30;
+                progress_ok = snaps[i].progress_marker == 0;
+                break;
+            }
+        }
+        PRUNE_CHECK("prune: supervisor contract registered", saw_contract);
+        PRUNE_CHECK("prune: supervisor observes worker thread", period_ok);
+        PRUNE_CHECK("prune: supervisor deadline tracks tick", deadline_ok);
+        PRUNE_CHECK("prune: supervisor progress starts at zero", progress_ok);
+
         block_pruning_stop(&f.svc);
         block_pruning_get_status(&f.svc, &st);
         PRUNE_CHECK("prune: state is STOPPED after stop",
                     st.state == BLOCK_PRUNING_STOPPED);
+        PRUNE_CHECK("prune: supervisor child removed after test stop",
+                    supervisor_child_count_total() == 0);
 
         block_pruning_stop(&f.svc);  /* safe no-op */
         PRUNE_CHECK("prune: double stop is safe no-op", true);
 
         fixture_destroy(&f);
+        supervisor_reset_for_testing();
     }
 
     event_clear_observers(EV_BLOCK_PRUNING_DONE);

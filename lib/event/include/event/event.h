@@ -208,7 +208,7 @@ enum event_type {
     /* ── Chain advance coordinator ──────────────────────────────── */
     EV_CHAIN_ADVANCE_DECISION,   /* payload: "source=... decision=... reason=... local=N target=N" */
     EV_MIRROR_CONSENSUS_DECISION,/* payload: "op=override|blocker auth=local mir=advisory reason=..." */
-    EV_CUTOVER_GUARD_DIVERGED,   /* payload: "stage=header_admit height=N hash=<64hex> reason=..." */
+    EV_CHAIN_ADVANCE_RESERVED,   /* reserved legacy guard slot; do not emit */
 
     /* ── Lag SLO + peer floor (redundancy guarantees) ───────────── */
     EV_PEER_FLOOR_BREACH,        /* payload: "healthy=N min=N since=Ns" — < floor peers for too long; loud on every cycle while breached */

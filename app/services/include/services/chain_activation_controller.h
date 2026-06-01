@@ -168,7 +168,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
  * Also exposed for diagnostics and tests. */
 int activation_drain_deferred(struct chain_activation_controller *ctl);
 
-/* ── Reducer-as-ingest (DORMANT this phase) ────────────────────── */
+/* ── Reducer-as-ingest ─────────────────────────────────────────── */
 
 /* Where an incoming block came from. Mirrors the force/requested
  * semantics of the legacy process_new_block callers: P2P/compact arrive
@@ -183,14 +183,9 @@ enum reducer_source {
     REDUCER_SRC_REPAIR,        /* rebuild_recent recovery */
 };
 
-/* reducer_is_authoritative — the single consistent gate every live
- * block-intake call site uses to choose the reducer over legacy
- * process_new_block. True iff tip_finalize is AUTHORITATIVE.
- *
- * Under the live default (SHADOW) this is false, so every repointed call
- * site (msg_blocks, msg_compact, mining, miner, rebuild) stays on the
- * unchanged legacy process_new_block path. The cutover flip to
- * AUTHORITATIVE is step 13 — NOT this phase. */
+/* reducer_is_authoritative — always true after the single-engine cleanup.
+ * Live block-intake call sites use the reducer pipeline, not legacy
+ * process_new_block. */
 bool reducer_is_authoritative(void);
 
 /* reducer_ingest_block — the synchronous block-intake entry that drives
@@ -216,13 +211,6 @@ bool reducer_is_authoritative(void);
  *
  * Returns true iff the block landed on the active chain (out is MODE_VALID);
  * false on any stateless or stateful reject (out carries the reason).
- *
- * AUTHORITATIVE-gated and DORMANT this phase: there is no live caller yet
- * (msg_blocks / mining / submitblock / rebuild stay on process_new_block —
- * those repoints are steps 7-12). Under the live default (tip_finalize +
- * utxo author SHADOW/LEGACY) this is unreachable dead code; activate_best_chain
- * remains the sole live block-connect engine.
- *
  * `force` carries the requested/relay-pre-filter semantics (force=true for
  * SUBMIT/MINED/REPAIR). `out` must be a caller-owned validation_state. */
 bool reducer_ingest_block(struct chain_activation_controller *ctl,
@@ -236,10 +224,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
  * stage step bodies once under ctl->mutex so cursor-driven catch-up makes
  * progress without waiting for the next 2s supervisor tick. Returns the
  * number of stage advances across all eight stages this kick produced.
- *
- * DORMANT this phase: no live caller (the Group-2 callers funnel into the
- * reducer only at step 14). AUTHORITATIVE-gated: a no-op (returns 0) unless
- * tip_finalize is AUTHORITATIVE, so SHADOW behaviour is unchanged. */
+ */
 int reducer_kick(struct chain_activation_controller *ctl);
 
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */

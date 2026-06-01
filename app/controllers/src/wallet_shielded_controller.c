@@ -212,12 +212,9 @@ bool rpc_z_listunspent(const struct json_value *params, bool help,
         if (chain_h == 0 && ctx->main_state)
             chain_h = active_chain_height(&ctx->main_state->chain_active);
         if (chain_h == 0 && wallet_ctx_db_ready(ctx)) {
-            sqlite3_stmt *hs = NULL;
-            sqlite3_prepare_v2(ctx->node_db->db,
-                "SELECT MAX(height) FROM blocks", -1, &hs, NULL);
-            if (hs && AR_STEP_ROW_READONLY(hs) == SQLITE_ROW)
-                chain_h = sqlite3_column_int(hs, 0);
-            if (hs) sqlite3_finalize(hs);
+            int db_height = db_block_max_height_any_status(ctx->node_db);
+            if (db_height >= 0)
+                chain_h = db_height;
         }
         for (int i = 0; i < count; i++) {
             struct db_sapling_note *n = &db_notes[i];

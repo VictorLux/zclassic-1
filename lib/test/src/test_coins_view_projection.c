@@ -138,7 +138,7 @@ static int cvp_test_connect_backing_parity(utxo_projection_t *p)
     struct coins_view chosen;
 
     /* 1. LEGACY: selector returns the legacy view verbatim. */
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+    utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
     CVP_CHECK("select LEGACY ok",
               coins_view_select_connect_backing(&chosen, &sb, &legacy_view,
                                                 p));
@@ -148,7 +148,7 @@ static int cvp_test_connect_backing_parity(utxo_projection_t *p)
               chosen.impl == legacy_view.impl);
 
     /* 2. STAGE: composite. Reads must be byte-identical to coins.db. */
-    utxo_projection_set_author(UTXO_AUTHOR_STAGE);
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     CVP_CHECK("select STAGE ok",
               coins_view_select_connect_backing(&chosen, &sb, &legacy_view,
                                                 p));
@@ -190,7 +190,7 @@ static int cvp_test_connect_backing_parity(utxo_projection_t *p)
     }
 
     /* 3. Flip back to LEGACY: byte-identical to the legacy view again. */
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+    utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
     CVP_CHECK("re-select LEGACY ok",
               coins_view_select_connect_backing(&chosen, &sb, &legacy_view,
                                                 p));
@@ -201,13 +201,13 @@ static int cvp_test_connect_backing_parity(utxo_projection_t *p)
 
     /* Misconfiguration: STAGE author with a NULL projection must fall back
      * to the legacy backing (return false, *out = legacy) — never crash. */
-    utxo_projection_set_author(UTXO_AUTHOR_STAGE);
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     CVP_CHECK("STAGE+NULL proj falls back (returns false)",
               !coins_view_select_connect_backing(&chosen, &sb, &legacy_view,
                                                  NULL));
     CVP_CHECK("STAGE+NULL proj backing == legacy vtable",
               chosen.vtable == legacy_view.vtable);
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);  /* restore default */
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);  /* restore default */
 
     coins_view_sqlite_close(&cvs);
     sqlite3_close(db);

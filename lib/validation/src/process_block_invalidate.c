@@ -229,7 +229,7 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
      * log/delta rows, and rewinds the stage cursors to the invalidated
      * height — the byte-exact stage analogue of the legacy undo restore. */
     struct block_index *parent = target->pprev; /* != NULL: non-genesis */
-    if (!active_chain_set_tip(&ms->chain_active, parent)) {
+    if (!active_chain_move_window_tip(&ms->chain_active, parent)) {
         LOG_RETURN(false, "validation",
                    "invalidate: stage-unwind cursor move to parent "
                    "(h=%d) failed for target h=%d",

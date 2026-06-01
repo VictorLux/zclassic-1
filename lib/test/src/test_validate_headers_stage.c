@@ -16,9 +16,7 @@
 #include "test/test_helpers.h"
 
 #include "chain/chain.h"
-#include "chain/chainparams.h"
 #include "core/uint256.h"
-#include "event/event.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "primitives/block.h"
@@ -33,7 +31,6 @@
 #include "validation/chainstate.h"
 #include "validation/main_logic.h"
 #include "validation/main_state.h"
-#include "validation/process_block.h"
 
 #include <errno.h>
 #include <sqlite3.h>
@@ -82,21 +79,6 @@ static int mkdir_p_vh(const char *p)
     if (mkdir(p, 0700) == 0) return 0;
     if (errno == EEXIST) return 0;
     return -1;
-}
-
-static bool vh_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
-            " VALUES(?,?,0)",
-            -1, &st, NULL) != SQLITE_OK)
-        return false;
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 2, cursor);
-    int rc = sqlite3_step(st);  // raw-sql-ok:test-direct
-    sqlite3_finalize(st);
-    return rc == SQLITE_DONE;
 }
 
 struct synth_chain_vh {
@@ -209,20 +191,6 @@ static bool log_row_at(sqlite3 *db, int height,
     return found;
 }
 
-static void cutover_guard_observer(enum event_type type,
-                                   uint32_t peer_id,
-                                   const void *payload,
-                                   uint32_t payload_len,
-                                   void *ctx)
-{
-    (void)peer_id;
-    (void)payload;
-    (void)payload_len;
-    int *calls = ctx;
-    if (type == EV_CUTOVER_GUARD_DIVERGED && calls)
-        (*calls)++;
-}
-
 /* Build {progress_store + ms + synth_chain + S-2 init + S-3 init w/
  * injected validator}. The caller does the work and then runs the
  * teardown. Returns 0 on success, nonzero on partial failure (still
@@ -265,17 +233,6 @@ int test_validate_headers_stage(void)
     int failures = 0;
 
     blocker_module_init();
-
-    /* ── cutover mode defaults and input validation ───────────────── */
-    {
-        VH_CHECK("mode: default is authoritative (post-flip, step 13)",
-                 validate_headers_get_mode() ==
-                     VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-        validate_headers_set_mode((validate_headers_mode_t)999);
-        VH_CHECK("mode: invalid value maps to shadow",
-                 validate_headers_get_mode() ==
-                     VALIDATE_HEADERS_MODE_SHADOW);
-    }
 
     /* ── happy: 5 blocks, all pass under stub ──────────────────────── */
     {
@@ -795,7 +752,6 @@ int test_validate_headers_stage(void)
                           dir, sizeof(dir), &ms, &sc) == 0);
         header_admit_stage_drain(100);
         sc.blocks[0].nStatus = BLOCK_VALID_UNKNOWN;
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
 
         VH_CHECK("auth: validate advances",
                  validate_headers_stage_step_once() == JOB_ADVANCED);
@@ -805,175 +761,7 @@ int test_validate_headers_stage(void)
         VH_CHECK("auth: pass record lookup succeeds",
                  validate_headers_stage_has_pass_record(0, &sc.hashes[0]));
 
-        validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
         vh_teardown(dir, &ms, &sc);
-    }
-
-    /* ── authoritative legacy ingress guard detects missing pass row ─ */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "validate_headers", "cutover_guard");
-        mkdir_p_vh(dir);
-        VH_CHECK("guard: store opens", progress_store_open(dir));
-
-        const struct chain_params *params = chain_params_get();
-        if (!params) {
-            printf("validate_headers: guard skipped (no chain params)\n");
-        } else {
-            struct main_state ms;
-            main_state_init(&ms);
-
-            struct uint256 parent_hash;
-            memset(&parent_hash, 0, sizeof(parent_hash));
-            parent_hash.data[0] = 0x55;
-            struct block_index *parent = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &parent_hash);
-            VH_CHECK("guard: parent inserted", parent != NULL);
-            if (parent) {
-                parent->nHeight = 0;
-                parent->nStatus = BLOCK_VALID_TREE;
-                active_chain_set_tip(&ms.chain_active, parent);
-                ms.pindex_best_header = parent;
-            }
-
-            struct block_header hdr;
-            block_header_init(&hdr);
-            hdr.hashPrevBlock = parent_hash;
-            hdr.nTime = 1;
-            hdr.nBits = 1;
-            hdr.nSolutionSize = 0;
-
-            struct uint256 hash;
-            block_header_get_hash(&hdr, &hash);
-            struct block_index *bi = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &hash);
-            VH_CHECK("guard: block index inserted", bi != NULL);
-            if (bi) {
-                bi->nHeight = 1;
-                bi->nStatus = BLOCK_VALID_UNKNOWN;
-                bi->pprev = parent;
-                active_chain_set_tip(&ms.chain_active, bi);
-                ms.pindex_best_header = bi;
-            }
-
-            VH_CHECK("guard: stage init creates schema",
-                     validate_headers_stage_init(&ms));
-
-            int guard_events = 0;
-            event_log_init();
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            VH_CHECK("guard: observer registers",
-                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
-                                   cutover_guard_observer,
-                                   &guard_events));
-
-            struct validation_state vs;
-            validation_state_init(&vs);
-            struct block_index *out = NULL;
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
-            VH_CHECK("guard: legacy path rejects missing pass row", !ok);
-            VH_CHECK("guard: reject reason names validate_headers",
-                     strcmp(vs.reject_reason,
-                            "validate-headers-cutover-diverged") == 0);
-            VH_CHECK("guard: divergence event emitted",
-                     guard_events == 1);
-
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            validate_headers_stage_shutdown();
-            main_state_free(&ms);
-        }
-
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── fast-forwarded cursor permits the first post-import header ── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "validate_headers", "fast_forward_guard");
-        mkdir_p_vh(dir);
-        VH_CHECK("ff: store opens", progress_store_open(dir));
-
-        const struct chain_params *params = chain_params_get();
-        if (!params) {
-            printf("validate_headers: fast-forward guard skipped (no chain params)\n");
-        } else {
-            sqlite3 *db = progress_store_db();
-            VH_CHECK("ff: stamp validate cursor",
-                     vh_stamp_cursor(db, "validate_headers", 1));
-            int32_t legacy_tip = 0;
-            VH_CHECK("ff: stamp legacy attach tip meta",
-                     progress_meta_set(db, "legacy_attach_tip_height",
-                                       &legacy_tip, sizeof(legacy_tip)));
-
-            struct main_state ms;
-            main_state_init(&ms);
-
-            struct uint256 parent_hash;
-            memset(&parent_hash, 0, sizeof(parent_hash));
-            parent_hash.data[0] = 0x77;
-            struct block_index *parent = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &parent_hash);
-            VH_CHECK("ff: parent inserted", parent != NULL);
-            if (parent) {
-                parent->nHeight = 0;
-                parent->nStatus = BLOCK_VALID_TREE;
-                active_chain_set_tip(&ms.chain_active, parent);
-                ms.pindex_best_header = parent;
-            }
-
-            struct block_header hdr;
-            block_header_init(&hdr);
-            hdr.hashPrevBlock = parent_hash;
-            hdr.nTime = 1;
-            hdr.nBits = 1;
-            hdr.nSolutionSize = 0;
-
-            struct uint256 hash;
-            block_header_get_hash(&hdr, &hash);
-            struct block_index *bi = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &hash);
-            VH_CHECK("ff: block index inserted", bi != NULL);
-            if (bi) {
-                bi->nHeight = 1;
-                bi->nStatus = BLOCK_VALID_UNKNOWN;
-                bi->pprev = parent;
-                active_chain_set_tip(&ms.chain_active, bi);
-                ms.pindex_best_header = bi;
-            }
-
-            VH_CHECK("ff: stage init creates schema",
-                     validate_headers_stage_init(&ms));
-            VH_CHECK("ff: cursor observes persisted fast-forward",
-                     validate_headers_stage_cursor() == 1);
-
-            int guard_events = 0;
-            event_log_init();
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            VH_CHECK("ff: observer registers",
-                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
-                                   cutover_guard_observer,
-                                   &guard_events));
-
-            struct validation_state vs;
-            validation_state_init(&vs);
-            struct block_index *out = NULL;
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
-            VH_CHECK("ff: existing header at fast-forward cursor accepted",
-                     ok && out == bi);
-            VH_CHECK("ff: no divergence event emitted", guard_events == 0);
-
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            validate_headers_stage_shutdown();
-            main_state_free(&ms);
-        }
-
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
     }
 
     /* ── pre-init guards ───────────────────────────────────────────── */
@@ -1020,7 +808,6 @@ int test_validate_headers_stage(void)
 
         vh_teardown(dir, &ms, &sc);
     }
-
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

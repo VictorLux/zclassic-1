@@ -17,6 +17,7 @@
 #include "coins/coins_view.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/utxo.h"
 #include "primitives/block.h"
 #include "storage/coins_db.h"
 #include "validation/main_state.h"

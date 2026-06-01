@@ -17,10 +17,12 @@
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "util/supervisor.h"
 
 #include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static _Atomic int g_slo_breach_events;
 static _Atomic int g_concurrent_events;
@@ -149,6 +151,52 @@ static int test_concurrent_catchup_observer_fires(void)
     return failures;
 }
 
+static int test_legacy_mirror_registers_supervisor_contract(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: legacy mirror registers a chain supervisor contract")
+    {
+        legacy_mirror_sync_reset_for_test();
+        supervisor_reset_for_testing();
+        unsetenv("ZCL_MIRROR_SYNC");
+        unsetenv("ZCL_MIRROR_CADENCE_SECS");
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = 1,
+            .rpc_user = "user",
+            .rpc_password = "pass",
+            .cadence_secs = 300,
+            .enabled = true,
+        };
+        ASSERT(legacy_mirror_sync_init(&cfg, NULL, NULL, NULL, NULL));
+        ASSERT(legacy_mirror_sync_start());
+
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        const struct supervisor_snapshot *mirror = NULL;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].name, "chain.legacy_mirror") == 0) {
+                mirror = &snaps[i];
+                break;
+            }
+        }
+        ASSERT(mirror != NULL);
+        ASSERT(mirror->period_secs == 300);
+        ASSERT(mirror->deadline_secs == 0);
+
+        struct legacy_mirror_sync_stats s = {0};
+        legacy_mirror_sync_stats_snapshot(&s);
+        ASSERT(s.running);
+
+        legacy_mirror_sync_stop();
+        ASSERT(supervisor_child_count_total() == 0);
+        legacy_mirror_sync_reset_for_test();
+        supervisor_reset_for_testing();
+    } TEST_END
+    return failures;
+}
+
 /* C2 monitor-extraction pin: the lean monitor's dump_state_json must
  * keep emitting every key that downstream consumers (node_health,
  * metrics, chain_advance_coordinator, deploy_verify.sh, and the MCP
@@ -218,7 +266,9 @@ int test_lag_slo(void)
     failures += test_snapshot_surfaces_thresholds();
     failures += test_slo_breach_observer_fires();
     failures += test_concurrent_catchup_observer_fires();
+    failures += test_legacy_mirror_registers_supervisor_contract();
     failures += test_dump_shape_is_stable();
     legacy_mirror_sync_reset_for_test();
+    supervisor_reset_for_testing();
     return failures;
 }

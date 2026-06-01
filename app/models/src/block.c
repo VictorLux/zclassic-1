@@ -351,6 +351,25 @@ bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)
     return db_block_save(ndb, b);
 }
 
+bool db_block_prepare_file_position_scan(sqlite3 *db,
+                                         sqlite3_stmt **stmt_out)
+{
+    if (!db || !stmt_out)
+        LOG_FAIL("block", "file-position scan prepare called with invalid arguments");
+
+    *stmt_out = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT hash, height, file_num, data_pos, num_tx"
+        " FROM blocks WHERE file_num >= 0"
+        " ORDER BY file_num, data_pos",
+        -1, stmt_out, NULL);
+    if (rc != SQLITE_OK || !*stmt_out) {
+        LOG_FAIL("block", "failed to prepare file-position scan: rc=%d msg=%s",
+                 rc, sqlite3_errmsg(db));
+    }
+    return true;
+}
+
 /* ── Read helpers ──────────────────────────────────────────────── */
 
 static void read_block_cols(sqlite3_stmt *s, int col,
@@ -535,6 +554,27 @@ int db_block_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM blocks");
+}
+
+bool db_block_update_sapling_tree_data(struct node_db *ndb,
+                                       const uint8_t hash[32],
+                                       const uint8_t *tree_data,
+                                       size_t tree_data_len)
+{
+    if (!ndb || !ndb->open || !hash || (!tree_data && tree_data_len > 0))
+        LOG_FAIL("block", "update_sapling_tree_data: invalid args");
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s,
+        "UPDATE blocks SET sapling_tree_data=? WHERE hash=?");
+    if (sqlite3_bind_blob(s, 1, tree_data, (int)tree_data_len,
+                          SQLITE_STATIC) != SQLITE_OK ||
+        sqlite3_bind_blob(s, 2, hash, 32, SQLITE_STATIC) != SQLITE_OK) {
+        AR_FINALIZE(s);
+        LOG_FAIL("block", "update_sapling_tree_data: bind failed");
+    }
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    return ok;
 }
 
 bool db_block_tip_height_and_time(struct node_db *ndb,

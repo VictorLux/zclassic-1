@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * script_validate_stage — Wave S, S-6 shadow stage.
+ * script_validate_stage — Wave S, S-6 stage.
  *
  * Consumes `body_persist_log`; for each height where the body was
  * verified-on-disk, runs script verification on every input and logs the
- * result. Shadow mode: no mutation of consensus state. */
+ * result. */
 
 #ifndef ZCL_SERVICES_SCRIPT_VALIDATE_STAGE_H
 #define ZCL_SERVICES_SCRIPT_VALIDATE_STAGE_H

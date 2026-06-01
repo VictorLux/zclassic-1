@@ -4,12 +4,9 @@
  * events from the append-only event_log. Phase 4c of the storage
  * unification. See docs/work/wt-phase4c-block-index-projection.md.
  *
- * Today (this PR): shadow-mode. block_index_db.c continues to write
- * LevelDB as the authoritative source AND emits an EV_BLOCK_HEADER
- * event on every write. The projection consumes those events and
- * materializes a SQLite table mirror. The diff MCP tool compares the
- * two; after 24h of zero divergence, the 4c-cutover PR flips the
- * projection authoritative and the LevelDB path is removed.
+ * block_index_db.c emits an EV_BLOCK_HEADER event on every persisted
+ * block-index write. The projection consumes those events and materializes
+ * a SQLite table mirror that can be replayed and audited.
  *
  * Threading
  * ----------

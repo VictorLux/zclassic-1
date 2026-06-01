@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Unit tests for Wave S S-8 utxo_apply shadow stage. */
+ * Unit tests for Wave S S-8 utxo_apply stage. */
 
 #include "test/test_helpers.h"
 

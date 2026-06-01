@@ -1,18 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_post_step — STEP 5 of the reducer-as-ingest design.
+ * tip_finalize_post_step — reducer post-finalize side effects.
  *
- * The post-finalize side-effect step: once tip_finalize has physically
- * advanced the in-mem tip (step 1's active_chain_set_tip), this runs the
+ * The post-finalize side-effect step: once tip_finalize has moved the
+ * in-memory active-chain window, this runs the
  * derived effects the legacy connect_tip path performs at tip-connect —
  * wallet transaction sync + Sapling trial-decrypt/note-persist, nullifier
  * spend marking, mempool removal of confirmed txs, and the MMR/MMB appends.
- *
- * AUTHORITATIVE-only by contract: the sole caller (tip_finalize_stage.c)
- * invokes this only from its AUTHORITATIVE branch, so under the live
- * default (SHADOW) it is never reached and legacy connect_tip remains the
- * sole producer of these effects — DORMANT, no live behaviour change.
- *
  * Split out of tip_finalize_stage.c to keep that file under the E1 800-LOC
  * ceiling (the lifted block carries the heavy wallet/mempool/controller
  * includes). Internal to app/jobs/src — not a public jobs/ API. */

@@ -13,7 +13,9 @@
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
 #include "services/recovery_policy.h"
+#include "services/utxo_import_pipeline.h"
 #include "models/db_txn.h"
+#include "models/utxo.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
@@ -24,13 +26,10 @@
 #include "wallet/sapling_keys.h"
 #include "keys/key.h"
 #include "core/hash.h"
-#include "core/serialize.h"
 #include "core/utiltime.h"
-#include "script/standard.h"
 #include "storage/disk_block_io.h"
 #include "storage/dbwrapper.h"
 #include "storage/coins_db.h"
-#include "coins/undo.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -46,43 +45,12 @@
 #include <stdatomic.h>
 #include <pthread.h>
 #include <signal.h>
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
 extern volatile sig_atomic_t g_shutdown_requested;
 
-
-/* ── Parallel UTXO import: LevelDB → SQLite ────────────────────────
- *
- * Architecture: Reader → Ring Buffer → N Decoders → Queue → Writer
- *
- * Reader thread:  Sequential LevelDB iteration, copies raw key+value
- *                 into chunks. Single-threaded (LevelDB not thread-safe).
- * Decoder threads: N parallel workers deserialize coins format, classify
- *                  scripts, extract height. Pure CPU, no shared state.
- * Writer thread:   Single SQLite writer with direct bind/step, no
- *                  ActiveRecord overhead. journal_mode=OFF for max speed.
- *
- * Eliminates: double-write (INSERT+UPDATE), per-txid prepare/finalize,
- *             validation callbacks, 10KB tx_out stack allocations.
- * ─────────────────────────────────────────────────────────────────── */
-
-/* Compact row for the pipeline — 128 bytes vs 10KB for tx_out+db_utxo */
-struct utxo_row {
-    uint8_t  txid[32];
-    uint8_t  address_hash[20];
-    uint8_t  script[80];       /* inline for scripts ≤80 bytes (99.9%) */
-    uint8_t *script_overflow;  /* heap alloc for rare large scripts */
-    int64_t  value;
-    int32_t  height;
-    uint32_t vout;
-    uint16_t script_len;
-    uint8_t  script_type;
-    uint8_t  has_address;
-    uint8_t  is_coinbase;
-};
 
 /* A chunk of raw LevelDB entries for decode workers */
 #define IMPORT_CHUNK_ENTRIES 2048
@@ -91,16 +59,10 @@ struct utxo_row {
  * In practice ~5500 rows per chunk. Use 32768 for 4x safety margin. */
 #define IMPORT_MAX_ROWS_PER_CHUNK 32768
 
-struct raw_entry {
-    uint8_t  txid[32];
-    uint8_t *value;     /* heap copy of deobfuscated value */
-    uint16_t value_len;
-};
-
 struct import_chunk {
-    struct raw_entry entries[IMPORT_CHUNK_ENTRIES];
+    struct utxo_import_raw_entry entries[IMPORT_CHUNK_ENTRIES];
     int num_entries;
-    struct utxo_row rows[IMPORT_MAX_ROWS_PER_CHUNK];
+    struct utxo_import_row rows[IMPORT_MAX_ROWS_PER_CHUNK];
     int num_rows;
     _Atomic int state; /* 0=free, 1=filled, 2=decoded */
 };
@@ -109,39 +71,6 @@ struct import_chunk {
 /* Auto-detect decoder count: use all cores minus 2 (reader + writer).
  * Minimum 4, maximum 32. More decoders = faster LevelDB deserialization. */
 #include <unistd.h>
-static int import_num_decoders(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (n < 6) return 4;
-    if (n > 34) return 32;
-    return (int)(n - 2);
-}
-#define IMPORT_NUM_DECODERS_MAX 32
-
-static bool import_writer_bind_checked(sqlite3_stmt *stmt,
-                                      const char *label,
-                                      int rc,
-                                      const struct node_db *ndb,
-                                      int row_no)
-{
-    if (!stmt) LOG_FAIL("sync", "import_writer_bind: stmt is NULL for %s", label);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("sync", "UTXO import writer: %s failed at row %d (rc=%d): %s", label, row_no, rc, ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
-        return false;
-    }
-    return true;
-}
-
-static bool import_writer_step_checked(sqlite3_stmt *stmt,
-                                      const struct node_db *ndb,
-                                      int row_no)
-{
-    int step_rc = AR_STEP_ROW_READONLY(stmt);
-    if (step_rc != SQLITE_DONE) {
-        LOG_WARN("sync", "UTXO import writer: sqlite3_step failed at row %d (rc=%d): %s", row_no, step_rc, ndb ? sqlite3_errmsg(ndb->db) : "db unavailable");
-        return false;
-    }
-    return true;
-}
 
 struct import_context {
     struct import_chunk chunks[IMPORT_NUM_CHUNKS];
@@ -163,7 +92,7 @@ struct import_context {
 
 struct import_job {
     struct import_context *ctx;
-    pthread_t decoders[IMPORT_NUM_DECODERS_MAX];
+    pthread_t decoders[UTXO_IMPORT_NUM_DECODERS_MAX];
     int num_decoders;
     int decoder_threads_started;
     pthread_t writer_thread;
@@ -283,157 +212,6 @@ static bool import_job_start(struct import_job *job)
     return true;
 }
 
-/* Decode a single raw coins entry into utxo_row structs.
- * Returns number of rows produced. Pure function, no shared state. */
-static int decode_coins_entry(const struct raw_entry *raw,
-                              struct utxo_row *out, int max_rows)
-{
-    struct byte_stream s;
-    stream_init_from_data(&s, raw->value, raw->value_len);
-
-    uint64_t nVersion = 0;
-    if (!stream_read_varint(&s, &nVersion)) { stream_free(&s); return 0; }
-
-    uint64_t nCode = 0;
-    if (!stream_read_varint(&s, &nCode)) { stream_free(&s); return 0; }
-
-    bool is_coinbase = (nCode & 1) != 0;
-    bool vout0_present = (nCode & 2) != 0;
-    bool vout1_present = (nCode & 4) != 0;
-    unsigned int nMaskCode = (unsigned int)(nCode / 8) +
-        ((vout0_present || vout1_present) ? 0 : 1);
-
-    if (nMaskCode > 10000) { stream_free(&s); return 0; }
-
-    /* Build availability vector (max 4096 vouts per tx, largest seen: 468) */
-    size_t num_avail = 2;
-    bool avail[4096];
-    memset(avail, 0, sizeof(avail));
-    avail[0] = vout0_present;
-    avail[1] = vout1_present;
-
-    unsigned int mask_remaining = nMaskCode;
-    while (mask_remaining > 0) {
-        unsigned char ch = 0;
-        if (!stream_read_bytes(&s, &ch, 1)) break;
-        for (unsigned int p = 0; p < 8 && num_avail < 4096; p++)
-            avail[num_avail++] = (ch & (1 << p)) != 0;
-        if (ch != 0) mask_remaining--;
-    }
-
-    /* Deserialize each available output.
-     * We do inline parsing instead of compressed_txout_deserialize to avoid
-     * secp256k1 point decompression (unnecessary for index) and to ensure
-     * every output is captured — zero tolerance for data loss. */
-    int nrows = 0;
-    for (size_t vi = 0; vi < num_avail && nrows < max_rows; vi++) {
-        if (!avail[vi]) continue;
-
-        /* Read compressed amount (varint) */
-        uint64_t comp_amount = 0;
-        if (!stream_read_varint(&s, &comp_amount)) break;
-        int64_t value = (int64_t)decompress_amount(comp_amount);
-
-        /* Read script type/size (varint) */
-        uint64_t nSize = 0;
-        if (!stream_read_varint(&s, &nSize)) break;
-
-        /* Determine raw script data size in the stream */
-        size_t raw_script_len = 0;
-        if (nSize == 0 || nSize == 1) raw_script_len = 20;      /* P2PKH / P2SH hash */
-        else if (nSize >= 2 && nSize <= 5) raw_script_len = 32;  /* compressed pubkey */
-        else raw_script_len = (size_t)(nSize - 6);               /* raw script */
-
-        /* Read raw script data */
-        uint8_t raw_script[10240];
-        if (raw_script_len > sizeof(raw_script)) raw_script_len = sizeof(raw_script);
-        if (!stream_read_bytes(&s, raw_script, raw_script_len)) break;
-
-        /* Reconstruct full script for classification */
-        struct utxo_row *r = &out[nrows];
-        memcpy(r->txid, raw->txid, 32);
-        r->vout = (uint32_t)vi;
-        r->value = value;
-        r->is_coinbase = is_coinbase;
-        r->height = 0;
-        r->script_overflow = NULL;
-        r->has_address = 0;
-        r->script_type = 0; /* OTHER */
-
-        if (nSize == 0) {
-            /* P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG */
-            r->script_len = 25;
-            r->script[0] = 0x76; r->script[1] = 0xa9; r->script[2] = 0x14;
-            memcpy(r->script + 3, raw_script, 20);
-            r->script[23] = 0x88; r->script[24] = 0xac;
-            memcpy(r->address_hash, raw_script, 20);
-            r->has_address = 1;
-            r->script_type = 1; /* P2PKH */
-        } else if (nSize == 1) {
-            /* P2SH: OP_HASH160 <20 bytes> OP_EQUAL */
-            r->script_len = 23;
-            r->script[0] = 0xa9; r->script[1] = 0x14;
-            memcpy(r->script + 2, raw_script, 20);
-            r->script[22] = 0x87;
-            memcpy(r->address_hash, raw_script, 20);
-            r->has_address = 1;
-            r->script_type = 2; /* P2SH */
-        } else if (nSize >= 2 && nSize <= 5) {
-            /* Compressed/uncompressed pubkey → P2PK script.
-             * Store the raw 33-byte compressed pubkey directly as script.
-             * We skip secp256k1 decompression — not needed for indexing. */
-            uint8_t prefix = (nSize == 2 || nSize == 4) ? 0x02 : 0x03;
-            r->script_len = 35; /* 1(push33) + 33(pubkey) + 1(OP_CHECKSIG) */
-            r->script[0] = 0x21; /* push 33 bytes */
-            r->script[1] = prefix;
-            memcpy(r->script + 2, raw_script, 32);
-            r->script[34] = 0xac; /* OP_CHECKSIG */
-        } else {
-            /* Raw script */
-            uint16_t slen = (uint16_t)raw_script_len;
-            r->script_len = slen;
-            if (slen <= sizeof(r->script)) {
-                memcpy(r->script, raw_script, slen);
-            } else {
-                r->script_overflow = zcl_malloc(slen, "script overflow");
-                if (r->script_overflow) {
-                    memcpy(r->script_overflow, raw_script, slen);
-                } else {
-                    /* malloc failed — cap to inline buffer */
-                    r->script_len = (uint16_t)sizeof(r->script);
-                    memcpy(r->script, raw_script, sizeof(r->script));
-                }
-            }
-            /* Classify raw script */
-            const uint8_t *sc = r->script_overflow ? r->script_overflow : r->script;
-            if (slen == 25 && sc[0]==0x76 && sc[1]==0xa9 && sc[2]==0x14 &&
-                sc[23]==0x88 && sc[24]==0xac) {
-                memcpy(r->address_hash, sc + 3, 20);
-                r->has_address = 1;
-                r->script_type = 1;
-            } else if (slen == 23 && sc[0]==0xa9 && sc[1]==0x14 && sc[22]==0x87) {
-                memcpy(r->address_hash, sc + 2, 20);
-                r->has_address = 1;
-                r->script_type = 2;
-            } else if (slen > 0 && sc[0] == 0x6a) {
-                r->script_type = 3;
-            }
-        }
-        nrows++;
-    }
-
-    /* Read height varint (comes after all outputs) and stamp all rows.
-     * Sanity-check: height must be ≤ 10M (no chain is taller). */
-    uint64_t height = 0;
-    if (stream_read_varint(&s, &height) && height <= 10000000) {
-        for (int i = 0; i < nrows; i++)
-            out[i].height = (int32_t)height;
-    }
-
-    stream_free(&s);
-    return nrows;
-}
-
 /* Decoder worker thread — picks filled chunks, decodes, marks decoded */
 static void *import_decoder_thread(void *arg)
 {
@@ -484,9 +262,9 @@ static void *import_decoder_thread(void *arg)
                 break;
             int space = IMPORT_MAX_ROWS_PER_CHUNK - chunk->num_rows;
             if (space <= 0) { skipped_in_chunk += chunk->num_entries - i; break; }
-            int n = decode_coins_entry(&chunk->entries[i],
-                                       &chunk->rows[chunk->num_rows],
-                                       space);
+            int n = utxo_import_decode_entry(&chunk->entries[i],
+                                             &chunk->rows[chunk->num_rows],
+                                             space);
             if (n == 0) {
                 atomic_fetch_add(&ctx->decode_failures, 1);
             }
@@ -564,44 +342,50 @@ static void *import_writer_thread(void *arg)
         for (int ri = 0; ri < chunk->num_rows; ri++) {
             if (import_ctx_should_stop(ctx))
                 break;
-            struct utxo_row *r = &chunk->rows[ri];
+            struct utxo_import_row *r = &chunk->rows[ri];
             const uint8_t *sc = r->script_overflow ?
                                 r->script_overflow : r->script;
             bool row_ok = true;
 
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_reset",
-                                                sqlite3_reset(ins), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(txid)",
-                                                sqlite3_bind_blob(ins, 1, r->txid, 32, SQLITE_STATIC), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(vout)",
-                                                sqlite3_bind_int(ins, 2, (int)r->vout), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int64(value)",
-                                                sqlite3_bind_int64(ins, 3, r->value), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(script)",
-                                                sqlite3_bind_blob(ins, 4, sc, (int)r->script_len, SQLITE_STATIC), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(script_type)",
-                                                sqlite3_bind_int(ins, 5, r->script_type), ndb,
-                                                total_rows);
+            row_ok &= utxo_import_writer_bind_checked(ins, "sqlite3_reset",
+                                                      sqlite3_reset(ins),
+                                                      ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_blob(txid)",
+                sqlite3_bind_blob(ins, 1, r->txid, 32, SQLITE_STATIC),
+                ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_int(vout)",
+                sqlite3_bind_int(ins, 2, (int)r->vout), ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_int64(value)",
+                sqlite3_bind_int64(ins, 3, r->value), ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_blob(script)",
+                sqlite3_bind_blob(ins, 4, sc, (int)r->script_len,
+                                  SQLITE_STATIC), ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_int(script_type)",
+                sqlite3_bind_int(ins, 5, r->script_type), ndb,
+                total_rows).ok;
             if (r->has_address)
-                row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_blob(address_hash)",
-                                                    sqlite3_bind_blob(ins, 6, r->address_hash, 20, SQLITE_STATIC), ndb,
-                                                    total_rows);
+                row_ok &= utxo_import_writer_bind_checked(ins,
+                    "sqlite3_bind_blob(address_hash)",
+                    sqlite3_bind_blob(ins, 6, r->address_hash, 20,
+                                      SQLITE_STATIC), ndb, total_rows).ok;
             else
-                row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_null(address_hash)",
-                                                    sqlite3_bind_null(ins, 6), ndb,
-                                                    total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(height)",
-                                                sqlite3_bind_int(ins, 7, r->height), ndb,
-                                                total_rows);
-            row_ok &= import_writer_bind_checked(ins, "sqlite3_bind_int(is_coinbase)",
-                                                sqlite3_bind_int(ins, 8, r->is_coinbase), ndb,
-                                                total_rows);
-            row_ok &= import_writer_step_checked(ins, ndb, total_rows);
+                row_ok &= utxo_import_writer_bind_checked(ins,
+                    "sqlite3_bind_null(address_hash)",
+                    sqlite3_bind_null(ins, 6), ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_int(height)",
+                sqlite3_bind_int(ins, 7, r->height), ndb, total_rows).ok;
+            row_ok &= utxo_import_writer_bind_checked(ins,
+                "sqlite3_bind_int(is_coinbase)",
+                sqlite3_bind_int(ins, 8, r->is_coinbase), ndb,
+                total_rows).ok;
+            row_ok &= utxo_import_writer_step_checked(ins, ndb,
+                                                      total_rows).ok;
             if (!row_ok) {
                 import_ctx_request_stop(ctx);
                 break;
@@ -675,7 +459,7 @@ int node_db_sync_import_utxos(struct node_db *ndb,
         LOG_ERR("sync", "import_utxos: invalid args (ndb=%p, cvdb=%p)", (void *)ndb, (void *)cvdb);
     sync_job_import_begin();
 
-    int num_decoders = import_num_decoders();
+    int num_decoders = utxo_import_num_decoders();
     printf("UTXO import: parallel pipeline (%d decoders, %d chunks, %ld cores)...\n",
            num_decoders, IMPORT_NUM_CHUNKS, sysconf(_SC_NPROCESSORS_ONLN));
     fflush(stdout);
@@ -832,7 +616,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
             if (key_len < 1 || key_data[0] != 'c') goto reader_done;
             if (key_len < 33) { db_iter_next(&it); continue; }
 
-            struct raw_entry *e = &chunk->entries[chunk->num_entries];
+            struct utxo_import_raw_entry *e =
+                &chunk->entries[chunk->num_entries];
             memcpy(e->txid, key_data + 1, 32);
 
             size_t val_len;
@@ -913,13 +698,10 @@ reader_done:
 
     /* Validation: verify all txids made it to SQLite */
     {
-        sqlite3_stmt *cnt = NULL;
-        sqlite3_prepare_v2(ndb->db,
-            "SELECT COUNT(DISTINCT txid), COUNT(*) FROM utxos",
-            -1, &cnt, NULL);
-        if (cnt && AR_STEP_ROW_READONLY(cnt) == SQLITE_ROW) {
-            int64_t sql_txids = sqlite3_column_int64(cnt, 0);
-            int64_t sql_rows = sqlite3_column_int64(cnt, 1);
+        int64_t sql_rows = 0;
+        int64_t sql_txids = 0;
+        if (db_utxo_count_rows_and_distinct_txids(ndb, &sql_rows,
+                                                  &sql_txids)) {
             if (sql_rows != total_rows) {
                 /* Row count mismatch = real data loss — pipeline bug */
                 LOG_WARN("sync", "UTXO IMPORT ERROR: wrote %d rows but " "SQLite has %lld rows — data loss!", total_rows, (long long)sql_rows);
@@ -933,7 +715,6 @@ reader_done:
                        pruned, total_entries);
             }
         }
-        sqlite3_finalize(cnt);
     }
     fflush(stdout);
 

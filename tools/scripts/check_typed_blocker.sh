@@ -17,7 +17,7 @@
 # A file is a "raw blocker site" if it contains one of:
 #   - char[[:space:]]+[a-z_]*_blocker(_code)?\[   (raw blocker char[N] field)
 #   - lms_set_blocker\(                            (legacy mirror string setter)
-#   - g_[a-z_]*\.last_blocker_code\b               (legacy blocker_code mutation)
+#   - g_[a-z_]*\.last_blocker_code\b             (legacy blocker_code mutation)
 #
 # Such a file must EITHER:
 #   - call `blocker_set(` (uses the typed primitive somewhere); OR
@@ -37,9 +37,11 @@ BASELINE=tools/scripts/typed_blocker_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
+baseline_count=0
 while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     baseline["$line"]=1
+    baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
 # Scan only production code (not tests, not vendor). The C5 MCP body
@@ -80,7 +82,7 @@ for root in "${roots[@]}"; do
 done
 
 if [ "$fail" = "0" ]; then
-    echo "check_typed_blocker: clean — ${#baseline[@]} grandfathered, no new ones"
+    echo "check_typed_blocker: clean — ${baseline_count} grandfathered, no new ones"
     exit 0
 fi
 

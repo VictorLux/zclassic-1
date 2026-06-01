@@ -4,9 +4,9 @@
  *
  * Third saga stage. Consumes `validate_headers_log` (S-3's output) and
  * records, per height, whether the block body is observable on disk.
- * Operates in **shadow mode** — no mutation of consensus state, no
- * peer fetch triggered from this module. The live `msg_blocks`
- * pipeline continues to drive actual body acquisition; S-4 watches.
+ * This stage is an authoritative reducer input, but it does not fetch from
+ * peers directly; `msg_blocks` and the block source policy still own body
+ * acquisition while S-4 records the durable observation.
  *
  * Per-height behaviour
  * --------------------

@@ -70,6 +70,10 @@ int db_block_max_height(struct node_db *ndb);
  * can treat "< 1" as "no chain". */
 int db_block_max_height_any_status(struct node_db *ndb);
 int db_block_count(struct node_db *ndb);
+bool db_block_update_sapling_tree_data(struct node_db *ndb,
+                                       const uint8_t hash[32],
+                                       const uint8_t *tree_data,
+                                       size_t tree_data_len);
 
 /* Connected-tip height + block time in one read (status>=3), each
  * COALESCE'd to 0 so an empty chain yields 0/0 rather than NULL. Used by
@@ -77,6 +81,12 @@ int db_block_count(struct node_db *ndb);
  * when the db is closed; *_out are zeroed on every non-row path. */
 bool db_block_tip_height_and_time(struct node_db *ndb,
                                   int64_t *height_out, int64_t *time_out);
+
+/* Prepare a block-file-position scan ordered for sequential blk*.dat I/O.
+ * The tx-index job owns file parsing; the Block model owns the blocks-table
+ * query shape. Caller finalizes *stmt_out. */
+bool db_block_prepare_file_position_scan(sqlite3 *db,
+                                         sqlite3_stmt **stmt_out);
 
 /* ── Relationships ─────────────────────────────────────────────── */
 

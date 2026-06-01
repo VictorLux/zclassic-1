@@ -5,11 +5,10 @@
  *
  * WHY THIS TEST EXISTS
  * --------------------
- * test_reorg_projection_parity proves the LEGACY disconnect path
- * (disconnect_block) unwinds the shadow projection correctly. But once
- * the cutover flips utxo_projection_set_author(UTXO_AUTHOR_STAGE), the
- * legacy emitters go silent (update_coins.c:53,77 / connect_block.c:752,
- * 799) and the AUTHORITATIVE writer is utxo_apply_stage. A reorg on that
+ * test_reorg_projection_parity proves the legacy disconnect path
+ * (disconnect_block) unwinds the projection correctly. When
+ * utxo_projection_test_set_author(UTXO_AUTHOR_STAGE), the legacy emitters go silent
+ * and the authoritative writer is utxo_apply_stage. A reorg on that
  * path must produce a BYTE-IDENTICAL UTXO projection to a direct build of
  * the winning branch — otherwise a reorg silently and permanently
  * corrupts the UTXO set (a wrong inverse SPENDs an absent coin = a no-op
@@ -389,7 +388,7 @@ int test_stage_reorg_unwind_parity(void)
 
         if (lg && p) {
             utxo_projection_set_event_log(lg);
-            utxo_projection_set_author(UTXO_AUTHOR_STAGE);
+            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
             seed_base_coins(ext, 2);
 
             struct main_state ms;
@@ -460,7 +459,7 @@ int test_stage_reorg_unwind_parity(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
         utxo_projection_set_event_log(NULL);
         if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);
@@ -483,7 +482,7 @@ int test_stage_reorg_unwind_parity(void)
 
         if (lg && p) {
             utxo_projection_set_event_log(lg);
-            utxo_projection_set_author(UTXO_AUTHOR_STAGE);
+            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
             seed_base_coins(ext, 2);
 
             struct main_state ms;
@@ -512,7 +511,7 @@ int test_stage_reorg_unwind_parity(void)
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
         }
-        utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
         utxo_projection_set_event_log(NULL);
         if (p) utxo_projection_close(p);
         if (lg) event_log_close(lg);

@@ -24,9 +24,11 @@
 #include "chain/chain.h"
 #include "event/event.h"
 #include "json/json.h"
+#include "supervisors/domains.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 
 #include <errno.h>
@@ -40,6 +42,10 @@
 /* ── Global instance pointer ───────────────────────────────── */
 
 struct block_pruning_service *g_block_pruning = NULL;
+
+static struct liveness_contract g_prune_contract;
+static _Atomic supervisor_child_id g_prune_supervisor_id =
+    SUPERVISOR_INVALID_ID;
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
@@ -100,6 +106,88 @@ static void file_height_map_record(struct file_height_map *m,
     if (!file_height_map_ensure(m, file_num)) return;
     if (height > m->max_height[file_num])
         m->max_height[file_num] = height;
+}
+
+static int64_t block_pruning_progress_marker(
+    const struct block_pruning_service *svc)
+{
+    if (!svc) return 0;
+    return atomic_load(&svc->blocks_pruned);
+}
+
+static int64_t block_pruning_deadline_secs(
+    const struct block_pruning_service *svc)
+{
+    int tick = svc && svc->tick_seconds > 0
+        ? svc->tick_seconds
+        : BLOCK_PRUNING_DEFAULT_TICK_SECONDS;
+    return (int64_t)tick * 3 + 30;
+}
+
+static void block_pruning_supervisor_heartbeat(
+    struct block_pruning_service *svc)
+{
+    supervisor_child_id id = atomic_load(&g_prune_supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID) return;
+    supervisor_progress(id, block_pruning_progress_marker(svc));
+    supervisor_tick(id);
+}
+
+static void block_pruning_on_stall(struct liveness_contract *c)
+{
+    struct block_pruning_service *svc =
+        c ? (struct block_pruning_service *)c->ctx : NULL;
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int64_t blocks = svc ? atomic_load(&svc->blocks_pruned) : 0;
+    int64_t files = svc ? atomic_load(&svc->files_pruned) : 0;
+    int64_t bytes = svc ? atomic_load(&svc->bytes_reclaimed) : 0;
+    LOG_WARN("prune",
+             "[prune] supervisor stall reason=%s blocks=%lld files=%lld bytes=%lld",
+             reason, (long long)blocks, (long long)files, (long long)bytes);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "source=chain.block_pruning decision=worker_stall "
+                "reason=%s blocks=%lld files=%lld bytes=%lld",
+                reason, (long long)blocks, (long long)files,
+                (long long)bytes);
+}
+
+static struct zcl_result block_pruning_register_supervisor(
+    struct block_pruning_service *svc)
+{
+    if (!svc)
+        return ZCL_ERR(-1, "block_pruning: supervisor register: null svc");
+    if (!supervisor_start())
+        return ZCL_ERR(-2, "block_pruning: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_prune_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        g_prune_contract.ctx = svc;
+        supervisor_set_period(id, 0);
+        supervisor_set_deadline(id, block_pruning_deadline_secs(svc));
+        supervisor_set_progress_max_quiet(id, 0);
+        block_pruning_supervisor_heartbeat(svc);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_prune_contract, "chain.block_pruning");
+    atomic_store(&g_prune_contract.period_secs, 0);
+    atomic_store(&g_prune_contract.deadline_secs,
+                 block_pruning_deadline_secs(svc));
+    atomic_store(&g_prune_contract.progress_max_quiet_us, 0);
+    g_prune_contract.ctx = svc;
+    g_prune_contract.on_tick = NULL;
+    g_prune_contract.on_stall = block_pruning_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_prune_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-3, "block_pruning: supervisor_register failed");
+    atomic_store(&g_prune_supervisor_id, id);
+    block_pruning_supervisor_heartbeat(svc);
+    return ZCL_OK;
 }
 
 /* Get file size, returns 0 on error. */
@@ -237,6 +325,7 @@ static void *block_pruning_thread(void *arg)
         if (ss == SYNC_AT_TIP) {
             block_pruning_run_once(svc);
         }
+        block_pruning_supervisor_heartbeat(svc);
 
         /* Interruptible sleep: 500ms ticks */
         int total_ms = svc->tick_seconds * 1000;
@@ -336,6 +425,14 @@ struct zcl_result block_pruning_start(struct block_pruning_service *svc)
             "block_pruning: thread did not signal ready within 30 s — aborted start");
     }
 
+    struct zcl_result sup_r = block_pruning_register_supervisor(svc);
+    if (!sup_r.ok) {
+        atomic_store(&svc->stop_requested, true);
+        pthread_join(svc->thread, NULL);
+        svc->thread_started = false;
+        return sup_r;
+    }
+
     printf("[prune] started — keep_blocks=%d tick=%ds\n",
            svc->keep_blocks, svc->tick_seconds);
     return ZCL_OK;
@@ -344,9 +441,17 @@ struct zcl_result block_pruning_start(struct block_pruning_service *svc)
 void block_pruning_stop(struct block_pruning_service *svc)
 {
     if (!svc || !svc->thread_started) return;
+    supervisor_child_id id = atomic_load(&g_prune_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
     atomic_store(&svc->stop_requested, true);
     pthread_join(svc->thread, NULL);
     svc->thread_started = false;
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_prune_supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
     pthread_mutex_destroy(&svc->ready_mutex);
     pthread_cond_destroy(&svc->ready_cond);
     printf("[prune] stopped\n");

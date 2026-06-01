@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_post_step — STEP 5 of the reducer-as-ingest design.
+ * tip_finalize_post_step — reducer post-finalize side effects.
  * See tip_finalize_post_step.h for the contract.
  *
  * The body of tip_finalize_run_post_finalize is lifted VERBATIM from
@@ -18,10 +18,7 @@
  *   - the per-stage timing logger (process_block_log_live_stage) and the
  *     "projection deferred" no-op comment block are dropped — neither is a
  *     side effect, and the design step scopes this to the six effects.
- *
- * AUTHORITATIVE-only: the sole caller reaches this only from its
- * AUTHORITATIVE branch, so under the live default (SHADOW) it is never
- * reached and legacy connect_tip stays the sole producer. */
+ */
 
 #include "tip_finalize_post_step.h"
 #include "jobs/stage_helpers.h"

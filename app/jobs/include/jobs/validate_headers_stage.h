@@ -4,9 +4,8 @@
  *
  * Second saga stage. Consumes `header_admit_log` (produced by S-2) and
  * records the result of full header validation in `validate_headers_log`.
- * In authoritative mode, a passing stage row also marks the in-memory
- * block_index entry as at least BLOCK_VALID_HEADER; legacy ingress becomes
- * a divergence guard.
+ * A passing stage row also marks the in-memory block_index entry as at least
+ * BLOCK_VALID_HEADER.
  *
  * Validation pipeline (per height)
  * --------------------------------
@@ -94,14 +93,6 @@ typedef bool (*vh_validator_fn)(const struct block_index *bi,
                                  char *out_reason,
                                  size_t out_reason_size,
                                  void *user);
-
-typedef enum {
-    VALIDATE_HEADERS_MODE_SHADOW = 0,
-    VALIDATE_HEADERS_MODE_AUTHORITATIVE
-} validate_headers_mode_t;
-
-void validate_headers_set_mode(validate_headers_mode_t mode);
-validate_headers_mode_t validate_headers_get_mode(void);
 
 /* Bind the stage to `ms`, ensure the validate_headers_log schema, and
  * launch VH_POOL_SIZE workers. Idempotent — a second call against the

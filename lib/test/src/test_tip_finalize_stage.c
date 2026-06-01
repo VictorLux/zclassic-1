@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Unit tests for Wave S S-9 tip_finalize shadow stage. */
+ * Unit tests for Wave S S-9 tip_finalize stage. */
 
 #include "test/test_helpers.h"
 
@@ -221,8 +221,13 @@ static int tf_setup(const char *tag, int log_rows,
     sc->fail_kind = fail_kind;
     sc->upstream_fail_height = upstream_fail_height;
     memset(ms, 0, sizeof(*ms));
-    active_chain_init(&ms->chain_active);
+    main_state_init(ms);
     if (!synth_chain_tf_build(sc, log_rows + 1)) return 2;
+    for (int i = 0; i <= log_rows; i++) {
+        if (!block_map_insert(&ms->map_block_index, sc->blocks[i].phashBlock,
+                              &sc->blocks[i]))
+            return 2;
+    }
     active_chain_set_tip(&ms->chain_active, &sc->blocks[log_rows]);
     if (fail_kind == TF_FAIL_REORG && ms->chain_active.chain) {
         for (int i = 0; i <= log_rows; i++)
@@ -234,12 +239,6 @@ static int tf_setup(const char *tag, int log_rows,
                          upstream_fail_height))
         return 3;
     if (!tip_finalize_stage_init(ms)) return 4;
-    /* These are unit tests of the SHADOW shadow-drain mechanics (cursor +
-     * log rows, no chain[] mutation). Post-flip (step 13) the production
-     * default is AUTHORITATIVE, so pin SHADOW here to preserve the unit
-     * semantics; the authoritative tip-write path is covered end-to-end by
-     * test_reducer_ingest_e2e. */
-    tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
     tip_finalize_stage_set_utxo_counter(fake_utxo_count, sc);
     return 0;
 }
@@ -248,7 +247,7 @@ static void tf_teardown(const char *dir, struct main_state *ms,
                         struct synth_chain_tf *sc)
 {
     tip_finalize_stage_shutdown();
-    active_chain_free(&ms->chain_active);
+    main_state_free(ms);
     synth_chain_tf_free(sc);
     progress_store_close();
     test_cleanup_tmpdir(dir);
@@ -264,9 +263,72 @@ int test_tip_finalize_stage(void)
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("authority_guard: setup",
+                 tf_setup("authority_guard", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("authority_guard: seeded from restored tip",
+                 active_chain_height(&ms.chain_active) == 3);
+        TF_CHECK("authority_guard: raw low-level tip write succeeds",
+                 active_chain_set_tip(&ms.chain_active, &sc.blocks[1]));
+        TF_CHECK("authority_guard: public height unchanged",
+                 active_chain_height(&ms.chain_active) == 3);
+        TF_CHECK("authority_guard: reducer height unchanged",
+                 tip_finalize_stage_last_height() == 3);
+        TF_CHECK("authority_guard: public tip unchanged",
+                 active_chain_tip(&ms.chain_active) == &sc.blocks[3]);
+        TF_CHECK("authority_guard: cache records raw local write",
+                 active_chain_cached_tip(&ms.chain_active) == &sc.blocks[1]);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        bool ok_setup = true;
+        test_fmt_tmpdir(dir, sizeof(dir), "tip_finalize", "stale_cursor");
+        mkdir_p_tf("./test-tmp");
+        mkdir_p_tf(dir);
+        ok_setup = ok_setup && progress_store_open(dir);
+        memset(&sc, 0, sizeof(sc));
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        ok_setup = ok_setup && synth_chain_tf_build(&sc, 6);
+        for (int i = 0; ok_setup && i <= 5; i++)
+            ok_setup = block_map_insert(&ms.map_block_index,
+                                        sc.blocks[i].phashBlock,
+                                        &sc.blocks[i]);
+        ok_setup = ok_setup &&
+            active_chain_set_tip(&ms.chain_active, &sc.blocks[5]);
+        ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
+        ok_setup = ok_setup && exec_sql(progress_store_db(),
+            "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+            "VALUES('tip_finalize', 2, 1)");
+        ok_setup = ok_setup && tip_finalize_stage_init(&ms);
+        tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
+        TF_CHECK("stale_cursor: setup", ok_setup);
+        TF_CHECK("stale_cursor: cursor anchored above restored tip",
+                 tip_finalize_stage_cursor() == 6);
+        TF_CHECK("stale_cursor: public height remains restored tip",
+                 active_chain_height(&ms.chain_active) == 5);
+        int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("stale_cursor: anchor row written",
+                 log_row_at(progress_store_db(), 5, &row_ok, status,
+                            sizeof(status), &depth, &utxos));
+        TF_CHECK("stale_cursor: anchor row ok",
+                 row_ok == 1 && strcmp(status, "anchor") == 0);
+        TF_CHECK("stale_cursor: stale lower rows do not replay",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+        TF_CHECK("stale_cursor: public height still restored tip",
+                 active_chain_height(&ms.chain_active) == 5);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("happy: setup",
                  tf_setup("happy", 3, TF_FAIL_NONE, -1, dir, sizeof(dir),
                           &ms, &sc) == 0);
+        TF_CHECK("happy: authority seeded from restored tip",
+                 active_chain_height(&ms.chain_active) == 3);
         TF_CHECK("happy: drains 3", tip_finalize_stage_drain(100) == 3);
         TF_CHECK("happy: cursor at 3", tip_finalize_stage_cursor() == 3);
         TF_CHECK("happy: finalized_total == 3",

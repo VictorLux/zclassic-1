@@ -148,8 +148,8 @@ static bool create_schema(sqlite3 *db)
         }
     }
     /* Schema-version sentinel — INSERT OR IGNORE so first open writes,
-     * subsequent opens leave the value alone. The cutover PR will
-     * bump this when the projection becomes authoritative. */
+     * subsequent opens leave the value alone. Future projection schema
+     * changes bump this value. */
     char *err = NULL;
     char buf[128];
     snprintf(buf, sizeof(buf),

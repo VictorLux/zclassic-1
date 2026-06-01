@@ -47,12 +47,26 @@
 
 #include "utxo_recovery_internal.h"
 
+static struct zcl_result recovery_status_ok(void)
+{
+    return ZCL_OK;
+}
+
 /* ── LDB→SQLite UTXO import ─────────────────────────────────── */
 
 struct utxo_import_result utxo_recovery_import_ldb(
     struct utxo_recovery_ctx *ctx)
 {
-    struct utxo_import_result res = {0};
+    struct utxo_import_result res = { .status = recovery_status_ok() };
+
+    if (!ctx || !ctx->ndb || !ctx->datadir) {
+        res.status = ZCL_ERR(-1,
+            "utxo_recovery_import_ldb: invalid ctx=%p ndb=%p datadir=%s",
+            (void *)ctx, ctx ? (void *)ctx->ndb : NULL,
+            ctx && ctx->datadir ? ctx->datadir : "(null)");
+        LOG_WARN("utxo_recovery", "%s", res.status.message);
+        return res;
+    }
 
     uint8_t mig_buf[8];
     size_t mig_len = 0;
@@ -61,6 +75,16 @@ struct utxo_import_result utxo_recovery_import_ldb(
 
     if (migration_done)
         return res;
+
+    if (!ctx->coins_sqlite || !ctx->coins_tip || !ctx->state) {
+        res.status = ZCL_ERR(-4,
+            "utxo_recovery_import_ldb: import requires coins_sqlite=%p "
+            "coins_tip=%p state=%p",
+            (void *)ctx->coins_sqlite, (void *)ctx->coins_tip,
+            (void *)ctx->state);
+        LOG_WARN("utxo_recovery", "%s", res.status.message);
+        return res;
+    }
 
     char cs_path[1024];
     char import_path_cleanup[1100] = "";
@@ -77,7 +101,12 @@ struct utxo_import_result utxo_recovery_import_ldb(
     if (stat(cs_path, &cs_st) != 0) {
         /* No chainstate dir — mark as done (fresh node) */
         uint8_t one = 1;
-        node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
+        if (!node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1)) {
+            res.status = ZCL_ERR(-2,
+                "utxo_recovery_import_ldb: failed to mark empty chainstate "
+                "migration done datadir=%s", ctx->datadir);
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+        }
         return res;
     }
 
@@ -102,7 +131,10 @@ struct utxo_import_result utxo_recovery_import_ldb(
         printf("Copying chainstate (zclassicd LOCK present)...\n");
         fflush(stdout);
         if (system(cmd) != 0) {
-            printf("ERROR: failed to copy chainstate\n");
+            res.status = ZCL_ERR(-3,
+                "utxo_recovery_import_ldb: failed to copy chainstate "
+                "from %s to %s", cs_path, import_path);
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
             goto cleanup;
         }
         /* Remove the copied LOCK so we can open it */
@@ -290,12 +322,6 @@ cleanup:
         system(rm_cmd);
     }
 
-    /* Mark done for fresh node if no chainstate was found */
-    if (!res.imported && !migration_done) {
-        uint8_t one = 1;
-        node_db_state_set(ctx->ndb, "leveldb_utxo_migrated", &one, 1);
-    }
-
     return res;
 }
 
@@ -373,8 +399,21 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     struct utxo_recovery_ctx *ctx,
     struct block_index *scan_fallback)
 {
-    struct chain_restore_result res = {0};
+    struct chain_restore_result res = { .status = recovery_status_ok() };
     res.restored_height = -1;
+
+    if (!ctx || !ctx->state || !ctx->coins_tip || !ctx->ndb ||
+        !ctx->params) {
+        res.status = ZCL_ERR(-20,
+            "utxo_recovery_restore_chain_tip: invalid ctx=%p state=%p "
+            "coins_tip=%p ndb=%p params=%p",
+            (void *)ctx, ctx ? (void *)ctx->state : NULL,
+            ctx ? (void *)ctx->coins_tip : NULL,
+            ctx ? (void *)ctx->ndb : NULL,
+            ctx ? (void *)ctx->params : NULL);
+        LOG_WARN("utxo_recovery", "%s", res.status.message);
+        return res;
+    }
 
     struct uint256 best_hash;
     coins_view_cache_get_best_block(ctx->coins_tip, &best_hash);
@@ -396,6 +435,11 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
                 res.restored_height = scan_fallback->nHeight;
                 if (scan_fallback->phashBlock)
                     res.restored_hash = *scan_fallback->phashBlock;
+            } else {
+                res.status = ZCL_ERR(-21,
+                    "utxo_recovery_restore_chain_tip: scan_fallback commit "
+                    "failed h=%d", scan_fallback->nHeight);
+                LOG_WARN("utxo_recovery", "%s", res.status.message);
             }
         }
         return res;
@@ -499,8 +543,13 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         }
 
         if (!utxo_recovery_commit_tip(
-                ctx, restore_tip, "coins_best_restore", true))
+                ctx, restore_tip, "coins_best_restore", true)) {
+            res.status = ZCL_ERR(-22,
+                "utxo_recovery_restore_chain_tip: coins_best_restore commit "
+                "failed h=%d", restore_tip->nHeight);
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
             return res;
+        }
         (void)chain_restore_rebuild_active_chain(ctx->state, restore_tip, NULL);
         printf("Restored chain tip from coins DB: height=%d\n",
                restore_tip->nHeight);
@@ -562,8 +611,20 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     } else {
         /* No UTXOs — wipe and start fresh */
         printf("No UTXOs found — wiping coins state.\n");
-        (void)utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos");
-        (void)utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos");
+        if (!utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos")) {
+            res.status = ZCL_ERR(-23,
+                "utxo_recovery_restore_chain_tip: wipe refused/failed for "
+                "empty UTXO restore");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+            return res;
+        }
+        if (!utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos")) {
+            res.status = ZCL_ERR(-24,
+                "utxo_recovery_restore_chain_tip: genesis commit failed "
+                "after empty UTXO restore");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+            return res;
+        }
         res.restored_height = 0;
         res.restored_hash = ctx->params->consensus.hashGenesisBlock;
     }

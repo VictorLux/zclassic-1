@@ -76,10 +76,8 @@ static bool wallet_scan_exec_checked(struct node_db *ndb,
 {
     if (!ndb || !ndb->open || !sql)
         LOG_FAIL("wallet_scan", "exec_checked: invalid args (ndb=%p sql=%p)", (void *)ndb, (void *)sql);
-    if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        LOG_FAIL("wallet_scan", "wallet_scan: %s failed: %s",
-                label, sqlite3_errmsg(ndb->db));
-    }
+    if (!node_db_exec(ndb, sql))
+        LOG_FAIL("wallet_scan", "wallet_scan: %s failed", label);
     return true;
 }
 

@@ -22,8 +22,6 @@
 #include "validation/accept_block_header.h"
 #include "chain/pow.h"
 #include "domain/consensus/header_accept.h"
-#include "event/event.h"
-#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -148,76 +146,6 @@ bool accept_block_header_check_bits_match(
      * code=REJECT_INVALID. */
     return validation_state_dos(state, dos, false, REJECT_INVALID,
                                 reason, false, NULL);
-}
-
-/* Avoid a lib/validation -> app/services include while the C-2 cutover
- * guard still needs the stage mode and parity record check.
- */
-typedef enum {
-    HEADER_ADMIT_MODE_SHADOW = 0,
-    HEADER_ADMIT_MODE_AUTHORITATIVE
-} header_admit_mode_t;
-
-extern header_admit_mode_t header_admit_get_mode(void);
-extern uint64_t header_admit_stage_cursor(void);
-extern bool header_admit_stage_has_record(int32_t height,
-                                          const struct uint256 *hash);
-
-typedef enum {
-    VALIDATE_HEADERS_MODE_SHADOW = 0,
-    VALIDATE_HEADERS_MODE_AUTHORITATIVE
-} validate_headers_mode_t;
-
-extern validate_headers_mode_t validate_headers_get_mode(void);
-extern uint64_t validate_headers_stage_cursor(void);
-extern bool validate_headers_stage_has_pass_record(int32_t height,
-                                                   const struct uint256 *hash);
-
-static bool fast_forward_cursor_allows(uint64_t cursor, int32_t height)
-{
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return false;
-
-    int32_t legacy_tip = -1;
-    size_t got = 0;
-    bool found = false;
-    if (!progress_meta_get(db, "legacy_attach_tip_height",
-                           &legacy_tip, sizeof(legacy_tip),
-                           &got, &found) ||
-        !found || got != sizeof(legacy_tip) || legacy_tip < 0)
-        return false;
-
-    uint64_t imported_boundary = (uint64_t)legacy_tip + 1u;
-    return cursor == imported_boundary &&
-           height >= 0 &&
-           (uint64_t)height >= imported_boundary;
-}
-
-static bool validate_headers_authoritative_guard(
-    struct validation_state *state,
-    int32_t height,
-    const struct uint256 *hash)
-{
-    if (validate_headers_get_mode() !=
-        VALIDATE_HEADERS_MODE_AUTHORITATIVE)
-        return true;
-
-    if (fast_forward_cursor_allows(validate_headers_stage_cursor(), height))
-        return true;
-
-    if (validate_headers_stage_has_pass_record(height, hash))
-        return true;
-
-    char hex[65];
-    uint256_get_hex(hash, hex);
-    event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
-                "stage=validate_headers height=%d hash=%s "
-                "reason=legacy_expected_valid_header_missing_stage_pass",
-                height, hex);
-    return validation_state_invalid(state, false, 0,
-                                    "validate-headers-cutover-diverged",
-                                    NULL);
 }
 
 /* Relocated verbatim from process_block_core.c (single-engine swap) so the
@@ -388,10 +316,6 @@ bool accept_block_header(const struct block_header *header,
          * chain refuses to connect. pprev_valid here means we've
          * already gone through the "Fix scrambled heights" pass above,
          * so ancestry is linked. */
-        if (!validate_headers_authoritative_guard(state, pindex->nHeight,
-                                                  &hash))
-            return false;
-
         if ((pindex->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_TREE &&
             !(pindex->nStatus & BLOCK_FAILED_MASK)) {
             pindex->nStatus = (pindex->nStatus & ~BLOCK_VALID_MASK) |
@@ -400,50 +324,6 @@ bool accept_block_header(const struct block_header *header,
         return true;
     }
 
-    if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE) {
-        struct block_index *pindex_prev = NULL;
-        if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
-            pindex_prev = block_map_find(&ms->map_block_index,
-                                          &header->hashPrevBlock);
-            if (!pindex_prev) {
-                return validation_state_invalid(state, false, 0,
-                                                "bad-prevblk", NULL);
-            }
-            if (pindex_prev->nStatus & BLOCK_FAILED_MASK) {
-                return validation_state_invalid(state, false, REJECT_INVALID,
-                                                "bad-prevblk", NULL);
-            }
-        }
-
-        int expected_height = pindex_prev ? pindex_prev->nHeight + 1 : 0;
-        if (fast_forward_cursor_allows(header_admit_stage_cursor(),
-                                       expected_height))
-            goto legacy_header_checks;
-
-        if (!header_admit_stage_has_record(expected_height, &hash)) {
-            char hex[65];
-            uint256_get_hex(&hash, hex);
-            event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
-                        "stage=header_admit height=%d hash=%s "
-                        "reason=legacy_expected_admit_missing_stage_record",
-                        expected_height, hex);
-            return validation_state_invalid(state, false, 0,
-                                            "header-admit-cutover-diverged",
-                                            NULL);
-        }
-
-        char hex[65];
-        uint256_get_hex(&hash, hex);
-        event_emitf(EV_CUTOVER_GUARD_DIVERGED, 0,
-                    "stage=header_admit height=%d hash=%s "
-                    "reason=stage_record_without_block_index",
-                    expected_height, hex);
-        return validation_state_invalid(state, false, 0,
-                                        "header-admit-cutover-diverged",
-                                        NULL);
-    }
-
-legacy_header_checks:
     /* Get prev block index */
     struct block_index *pindex_prev = NULL;
     if (uint256_cmp(&hash, &params->consensus.hashGenesisBlock) != 0) {
@@ -466,14 +346,7 @@ legacy_header_checks:
         }
     }
 
-    bool validate_headers_authoritative =
-        validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE;
-    if (validate_headers_authoritative) {
-        int32_t expected_height = pindex_prev ? pindex_prev->nHeight + 1 : 0;
-        if (!validate_headers_authoritative_guard(state, expected_height,
-                                                  &hash))
-            return false;
-    } else if (!check_block_header(header, state, params, true)) {
+    if (!check_block_header(header, state, params, true)) {
         LOG_FAIL("validation", "check_block_header failed for accepted header");
     }
 

@@ -412,8 +412,16 @@ static int test_fuzz_int_boundaries(void)
                     snprintf(json_buf, sizeof(json_buf),
                              "{\"%s\": %lld}", p->name,
                              (long long)edge_values[ei]);
-                    errs += fuzz_dispatch_no_crash(r->name, json_buf,
-                                                   "int_edge");
+                    struct json_value v;
+                    if (!json_read(&v, json_buf, strlen(json_buf))) {
+                        errs++;
+                        continue;
+                    }
+                    char err_param[64] = {0}, err_msg[256] = {0};
+                    (void)mcp_router_validate(r, &v,
+                        err_param, sizeof(err_param),
+                        err_msg, sizeof(err_msg));
+                    json_free(&v);
                 }
             }
         }

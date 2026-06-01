@@ -26,7 +26,6 @@
 #include "util/safe_alloc.h"
 #include "services/sync_monitor.h"
 #include "services/quorum_oracle_service.h"
-#include "services/block_index_integrity.h"
 #include "services/chain_tip.h"
 #include "coins/coins_view.h"
 #include "chain/pow.h"

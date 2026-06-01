@@ -147,12 +147,11 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
                              dbq_progress_cb, &pctx);
 
     sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, executed, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
+    if (!node_db_prepare_readonly_query(ndb, executed, &stmt)) {
         sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
-        const char *err = sqlite3_errmsg(ndb->db);
-        LOG_FAIL("diag", "dbquery: prepare failed: %s", err ? err : "(null)");
+        LOG_FAIL("diag", "dbquery: prepare failed");
     }
+    int rc = SQLITE_OK;
 
     int ncols = sqlite3_column_count(stmt);
 

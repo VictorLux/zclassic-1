@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "core/uint256.h"
 #include "services/chain_state_validator.h"
+#include "util/result.h"
 /* Reimport flag was extracted to a storage primitive (Phase 3 PR-1).
  * Keep this include here so existing callers of the recovery service
  * keep compiling without an explicit storage include. */
@@ -71,6 +72,7 @@ bool utxo_recovery_prepare_reimport(struct node_db *ndb);
 /* ── LDB→SQLite UTXO import ──────────────────────────────── */
 
 struct utxo_import_result {
+    struct zcl_result status; /* rich status for service-result discipline */
     bool imported;          /* UTXOs were successfully imported */
     bool skip_activate;     /* caller should skip activate_best_chain */
     int height;             /* discovered import height */
@@ -87,6 +89,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
 /* ── Chain tip restoration ───────────────────────────────── */
 
 struct chain_restore_result {
+    struct zcl_result status; /* rich status for service-result discipline */
     bool restored;          /* chain tip was successfully restored */
     bool skip_activate;     /* caller should skip activate_best_chain */
     int restored_height;    /* restored tip height, -1 if none */
@@ -104,6 +107,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
 /* ── Validation recovery execution ───────────────────────── */
 
 struct recovery_exec_result {
+    struct zcl_result status; /* rich status for recovery execution */
     bool skip_activate;     /* caller should skip activate_best_chain */
     bool recovered;         /* a recovery action was taken */
 };
@@ -137,6 +141,13 @@ bool utxo_recovery_xor_mismatch_is_corruption_candidate(
 struct recovery_exec_result utxo_recovery_execute(
     struct utxo_recovery_ctx *ctx,
     struct boot_validation_result *vr);
+
+/* Boot preflight: if coins_best_block is stale but the durable sync
+ * projection names a later consensus-backed tip, advance the coins cursor
+ * after applying the same bounded one-block overshoot guard used by the
+ * normal UTXO rewind path. Returns true only when a repair was made. */
+bool utxo_recovery_repair_stale_cursor_from_sync_projection(
+    struct node_db *ndb);
 
 /* ── UTXO cleanup ────────────────────────────────────────── */
 

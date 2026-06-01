@@ -350,12 +350,12 @@ void bsp_build_runtime_input(struct cac_plan_input *in)
     bsp_copy_text(mir->state, sizeof(mir->state),
                   msnap.state[0] ? msnap.state :
                   (mir->available ? "healthy" : "unavailable"));
-    mir->blocked = msnap.activation_blocker[0] != '\0' ||
+    mir->blocked = msnap.activation_blocker_reason[0] != '\0' ||
                    strcmp(msnap.state, "blocked") == 0;
     if (mir->blocked) {
         bsp_copy_text(mir->blocker, sizeof(mir->blocker),
-                      msnap.activation_blocker[0] ? msnap.activation_blocker
-                                                   : msnap.last_blocker_code);
+                      msnap.activation_blocker_reason[0] ? msnap.activation_blocker_reason
+                                                   : msnap.last_blocker_id);
         mir->blocked_class = bsp_classify_mirror_blocker_class(mir->blocker);
     } else {
         mir->blocked_class = BLOCKER_TRANSIENT;

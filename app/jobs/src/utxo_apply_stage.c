@@ -254,9 +254,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     /* B3: author the UTXO projection from this validated delta when the
-     * stage holds authority. Scripts in `summary.added` alias into
-     * `blk`, so emit before block_free. Default authority is LEGACY, so
-     * this is a no-op until the B7 cutover flips it. */
+     * stage holds projection authority. Scripts in `summary.added` alias
+     * into `blk`, so emit before block_free. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE)
         emit_delta(&summary, (uint32_t)next_h);
 
@@ -355,7 +354,7 @@ bool utxo_apply_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("utxo_apply", "[utxo_apply] stage initialised (shadow mode)");
+    LOG_INFO("utxo_apply", "[utxo_apply] stage initialised");
     return true;
 }
 
@@ -367,9 +366,8 @@ job_result_t utxo_apply_stage_step_once(void)
     /* Chain-extender: keep the visible chain[] window extended to the
      * most-work candidate so both the reorg-unwind detection and the
      * forward-apply below (each reads active_chain_at) see the winning
-     * branch. AUTHORITATIVE-only — keyed off the stage holding the UTXO
-     * projection authority (UTXO_AUTHOR_STAGE); a no-op under the default
-     * LEGACY author so live behaviour is unchanged (legacy owns chain[]). */
+     * branch. This runs only when the stage owns UTXO projection authorship;
+     * otherwise it leaves the active-chain window untouched. */
     reducer_extend_window_to_candidate(
         g_ms, utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
     /* B5: drain any pending stage-side reorg disconnect BEFORE the next

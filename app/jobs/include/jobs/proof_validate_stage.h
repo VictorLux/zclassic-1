@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * proof_validate_stage — Wave S, S-7 shadow stage.
+ * proof_validate_stage — Wave S, S-7 stage.
  *
  * Consumes `script_validate_log`; for each height where script validation
  * passed, verifies shielded proofs and Sapling binding signatures, then logs
- * the result. Shadow mode: no mutation of consensus state. */
+ * the result. */
 
 #ifndef ZCL_SERVICES_PROOF_VALIDATE_STAGE_H
 #define ZCL_SERVICES_PROOF_VALIDATE_STAGE_H

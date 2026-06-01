@@ -87,7 +87,7 @@ static void wallet_key_after_save(void *record, void *ctx)
 
     if (!wallet_projection_emit_key_add(k->pubkey_hash, address, "",
             (uint32_t)k->created_at)) {
-        LOG_WARN("wallet_projection", "[wallet_projection] key add shadow emit failed");
+        LOG_WARN("wallet_projection", "[wallet_projection] key add projection emit failed");
     }
 }
 

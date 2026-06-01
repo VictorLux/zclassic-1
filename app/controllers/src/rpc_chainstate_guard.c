@@ -18,8 +18,8 @@ bool rpc_chainstate_lookup_ready(const struct main_state *ms)
     /* "Is the tip block-index slot populated?" — read it through the single
      * tip accessor. active_chain_at(c, c->height) == active_chain_tip(c) today
      * (both return c->chain[c->height]); routing through active_chain_tip keeps
-     * this guard tracking the authoritative tip after the B5/B7 flip makes that
-     * accessor log_head-derived. See docs/work/b5-chain-active-readers.md. */
+     * this guard tracking the authoritative reducer tip if the accessor body
+     * derives from durable tip_finalize state. */
     return active_chain_tip(&ms->chain_active) != NULL;
 }
 

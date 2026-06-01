@@ -24,7 +24,7 @@ static bool onion_announcement_before_save(void *record, void *ctx)
     return true;
 }
 
-/* Shadow projection emit runs as a registered after_save callback (the
+/* Projection emit runs as a registered after_save callback (the
  * wallet_key pattern) so it fires through the AR lifecycle on a successful
  * save instead of as inline post-save code. Best-effort: a failed emit is
  * logged but does not fail the save. */
@@ -36,7 +36,7 @@ static void onion_announcement_after_save(void *record, void *ctx)
         !onion_ann_projection_emit(a->onion_address,
                                    (uint32_t)a->announced_at,
                                    a->script_hex)) {
-        LOG_WARN("model", "onion announcement projection shadow emit failed for save");
+        LOG_WARN("model", "onion announcement projection emit failed for save");
     }
 }
 

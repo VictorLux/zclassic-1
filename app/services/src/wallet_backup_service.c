@@ -35,6 +35,7 @@
 #include "services/wallet_backup_service.h"
 
 #include "event/event.h"
+#include "supervisors/domains.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -54,6 +55,7 @@
 #include "ports/wallet_backup_store_port.h"
 
 #include "util/log_macros.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 
 /* The wallet-backup sqlite surface lives behind wallet_backup_store_port.
@@ -75,6 +77,7 @@ static const char *const WALLET_TABLES[] = {
 };
 
 #define WALLET_TABLE_COUNT (sizeof(WALLET_TABLES) / sizeof(WALLET_TABLES[0]))
+#define WALLET_BACKUP_SUPERVISOR_DEADLINE_SEC 60
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -103,13 +106,87 @@ struct wallet_backup_service_state {
     bool    key_change_pending;
     int64_t total_triggers;     /* total on_key_change calls (all, incl. coalesced) */
     int64_t total_trigger_runs; /* backups that actually ran due to a trigger */
+    _Atomic supervisor_child_id supervisor_id;
 };
 
 static struct wallet_backup_service_state g_wbs = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
 
+static struct liveness_contract g_wbs_contract;
+
 /* ── Helpers ────────────────────────────────────────────────── */
+
+static int64_t wbs_progress_marker(void)
+{
+    if (pthread_mutex_trylock(&g_wbs.lock) != 0)
+        return 0;
+    int64_t marker = g_wbs.total_runs + g_wbs.total_failures;
+    pthread_mutex_unlock(&g_wbs.lock);
+    return marker;
+}
+
+static void wbs_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_wbs.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, wbs_progress_marker());
+}
+
+static void wbs_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int64_t runs = -1;
+    int64_t failures = -1;
+    if (pthread_mutex_trylock(&g_wbs.lock) == 0) {
+        runs = g_wbs.total_runs;
+        failures = g_wbs.total_failures;
+        pthread_mutex_unlock(&g_wbs.lock);
+    }
+    LOG_WARN("wallet_backup",
+             "[wallet_backup] supervisor stall reason=%s runs=%lld failures=%lld",
+             reason, (long long)runs, (long long)failures);
+    event_emitf(EV_WALLET_BACKUP_FAILED, 0,
+                "source=wallet_backup decision=worker_stall "
+                "reason=%s runs=%lld failures=%lld",
+                reason, (long long)runs, (long long)failures);
+}
+
+static struct zcl_result wbs_register_supervisor(void)
+{
+    if (!supervisor_start())
+        return ZCL_ERR(-30, "wallet_backup: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_wbs.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, WALLET_BACKUP_SUPERVISOR_DEADLINE_SEC);
+        supervisor_progress(id, wbs_progress_marker());
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_wbs_contract, "wallet.backup");
+    atomic_store(&g_wbs_contract.period_secs, 0);
+    atomic_store(&g_wbs_contract.deadline_secs,
+                 WALLET_BACKUP_SUPERVISOR_DEADLINE_SEC);
+    atomic_store(&g_wbs_contract.progress_max_quiet_us, 0);
+    g_wbs_contract.on_stall = wbs_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_op_sup, &g_wbs_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-31, "wallet_backup: supervisor_register failed");
+    atomic_store(&g_wbs.supervisor_id, id);
+    supervisor_progress(id, wbs_progress_marker());
+    supervisor_tick(id);
+    return ZCL_OK;
+}
 
 void wallet_backup_config_defaults(struct wallet_backup_config *cfg)
 {
@@ -430,6 +507,7 @@ struct zcl_result wallet_backup_now(void)
 static void *wbs_thread_fn(void *arg)
 {
     (void)arg;
+    wbs_supervisor_heartbeat();
     pthread_mutex_lock(&g_wbs.lock);
     int interval = g_wbs.cfg.interval_seconds > 0
         ? g_wbs.cfg.interval_seconds
@@ -440,6 +518,7 @@ static void *wbs_thread_fn(void *arg)
      * fresh copy within a few seconds of boot — the worst failure
      * is the boot that hasn't reached its first hourly tick yet. */
     (void)wallet_backup_now();
+    wbs_supervisor_heartbeat();
 
     int64_t next_at_ms = platform_time_monotonic_ms() + (int64_t)interval * 1000;
     while (true) {
@@ -453,6 +532,7 @@ static void *wbs_thread_fn(void *arg)
         bool ran_this_tick = false;
         if (platform_time_monotonic_ms() >= next_at_ms) {
             (void)wallet_backup_now();
+            wbs_supervisor_heartbeat();
             ran_this_tick = true;
             /* Re-read interval in case config was updated. */
             pthread_mutex_lock(&g_wbs.lock);
@@ -470,6 +550,7 @@ static void *wbs_thread_fn(void *arg)
             if (last_ok == 0 ||
                 now_s >= last_ok + WALLET_BACKUP_TRIGGER_MIN_INTERVAL_SEC) {
                 (void)wallet_backup_now();
+                wbs_supervisor_heartbeat();
                 ran_this_tick = true;
                 pthread_mutex_lock(&g_wbs.lock);
                 g_wbs.total_trigger_runs++;
@@ -485,6 +566,7 @@ static void *wbs_thread_fn(void *arg)
 
         /* Sleep in small increments so stop_requested is honoured
          * without waiting up to `interval` seconds. */
+        wbs_supervisor_heartbeat();
         platform_sleep_ms(200);
     }
 
@@ -546,6 +628,12 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
         return r;
     }
     pthread_mutex_unlock(&g_wbs.lock);
+
+    struct zcl_result sup_r = wbs_register_supervisor();
+    if (!sup_r.ok) {
+        wallet_backup_stop();
+        return sup_r;
+    }
     return ZCL_OK;
 }
 
@@ -553,6 +641,9 @@ void wallet_backup_stop(void)
 {
     pthread_t th;
     bool joinable = false;
+    supervisor_child_id id = atomic_load(&g_wbs.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
     pthread_mutex_lock(&g_wbs.lock);
     if (g_wbs.thread_running) {
         g_wbs.stop_requested = true;
@@ -570,6 +661,11 @@ void wallet_backup_stop(void)
         g_wbs.key_change_pending = false;
         pthread_mutex_unlock(&g_wbs.lock);
     }
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_wbs.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }
 
 /* ── Event triggers (D4: plan §5.4) ─────────────────────────── */

@@ -9,9 +9,11 @@
 #include "test/test_helpers.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
+#include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
 #include "services/block_sync_service.h"
 #include "services/utxo_recovery_service.h"
+#include "util/supervisor.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <stdlib.h>
@@ -355,6 +357,87 @@ static int test_integrity_bg_hash_verify_no_start_without_ms(void)
     return failures;
 }
 
+static int test_integrity_bg_hash_verify_supervisor_contract(void)
+{
+    int failures = 0;
+
+    TEST("integrity: bg_hash_verify registers a chain supervisor contract") {
+        bool ok = true;
+        supervisor_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct bg_hash_verification_service svc;
+        bg_hash_verify_init(&svc, &ms, NULL, "/tmp", NULL);
+
+        struct zcl_result r = bg_hash_verify_start(&svc);
+        ok = ok && r.ok;
+        if (r.ok) {
+            struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+            int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+            const struct supervisor_snapshot *hash = NULL;
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].name, "chain.bg_hash_verify") == 0) {
+                    hash = &snaps[i];
+                    break;
+                }
+            }
+            ok = ok && hash != NULL;
+            if (hash)
+                ok = ok && hash->period_secs == 0;
+            bg_hash_verify_stop(&svc);
+            ok = ok && supervisor_child_count_total() == 0;
+        }
+
+        main_state_free(&ms);
+        supervisor_reset_for_testing();
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_integrity_bg_validation_supervisor_contract(void)
+{
+    int failures = 0;
+
+    TEST("integrity: bg_validation registers a chain supervisor contract") {
+        bool ok = true;
+        supervisor_reset_for_testing();
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct bg_validation_service svc;
+        bg_validation_init(&svc, &ms, NULL, "/tmp", NULL);
+
+        ok = ok && bg_validation_start(&svc);
+        if (ok) {
+            struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+            int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+            const struct supervisor_snapshot *valid = NULL;
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].name, "chain.bg_validation") == 0) {
+                    valid = &snaps[i];
+                    break;
+                }
+            }
+            ok = ok && valid != NULL;
+            if (valid)
+                ok = ok && valid->period_secs == 0;
+            bg_validation_stop(&svc);
+            ok = ok && supervisor_child_count_total() == 0;
+        }
+
+        main_state_free(&ms);
+        supervisor_reset_for_testing();
+        ASSERT(ok);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Stall recovery window expansion tests ───────────────────────── */
 
 static int test_integrity_stall_recovery_plan(void)
@@ -510,6 +593,8 @@ int test_integrity(void)
     failures += test_integrity_bg_hash_verify_init();
     failures += test_integrity_bg_hash_verify_state_names();
     failures += test_integrity_bg_hash_verify_no_start_without_ms();
+    failures += test_integrity_bg_hash_verify_supervisor_contract();
+    failures += test_integrity_bg_validation_supervisor_contract();
 
     /* Stall recovery and sync integrity */
     failures += test_integrity_stall_recovery_plan();

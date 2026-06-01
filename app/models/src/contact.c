@@ -22,7 +22,7 @@ static bool contact_before_save(void *record, void *ctx)
     return true;
 }
 
-/* Shadow projection emit runs as a registered after_save callback (the
+/* Projection emit runs as a registered after_save callback (the
  * wallet_key pattern) so it fires through the AR lifecycle on a successful
  * save instead of as inline post-save code. Best-effort: a failed emit is
  * logged but does not fail the save. */
@@ -34,7 +34,7 @@ static void contact_after_save(void *record, void *ctx)
         !contacts_projection_emit_set(c->address, c->name) ||
         !contacts_projection_emit_touched(c->address,
                                           (uint32_t)c->last_used)) {
-        LOG_WARN("model", "contacts projection shadow emit failed for save");
+        LOG_WARN("model", "contacts projection emit failed for save");
     }
 }
 

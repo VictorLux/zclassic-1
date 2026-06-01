@@ -24,16 +24,16 @@ void update_coins(const struct transaction *tx,
                   struct coins_view_cache *inputs,
                   int nHeight);
 
-/* Phase 4b shadow-emission counters. Reset on process restart. The
+/* UTXO projection-emission counters. Reset on process restart. The
  * `total` covers successful EV_UTXO_ADD + EV_UTXO_SPEND emissions; the
- * `fail` total only counts failures when shadow mode is actually
+ * `fail` total only counts failures when projection emission is actually
  * enabled (utxo_projection_event_log() non-NULL). Operators compare
  * these against the projection-side counters in zcl_state
  * subsystem=utxo_projection to detect drift between emit and consume. */
 uint64_t update_coins_event_emit_total(void);
 uint64_t update_coins_event_emit_fail_total(void);
 
-/* Shadow-emission primitives, shared with the disconnect (reorg unwind)
+/* Projection-emission primitives, shared with the disconnect (reorg unwind)
  * path so it can mirror its UTXO mutations into the projection exactly
  * as the forward apply does. Both are best-effort: a failed emit is
  * counted (see update_coins_event_emit_fail_total) but NEVER gates the
@@ -41,13 +41,13 @@ uint64_t update_coins_event_emit_fail_total(void);
  *   - restoring a spent input  -> ADD   (coin re-enters the UTXO set)
  *   - erasing a created output -> SPEND (coin leaves the UTXO set)
  * Without these, a reorg leaves stale coins from the abandoned branch in
- * the shadow projection (forward-only emission). */
-void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
+ * the projection (forward-only emission). */
+void update_coins_emit_utxo_add_projection(const uint8_t txid[32], uint32_t vout,
                                        int64_t value, uint32_t height,
                                        bool is_coinbase,
                                        const uint8_t *script_bytes,
                                        uint32_t script_len);
-void update_coins_emit_utxo_spend_shadow(const uint8_t txid[32],
+void update_coins_emit_utxo_spend_projection(const uint8_t txid[32],
                                          uint32_t vout);
 
 #endif

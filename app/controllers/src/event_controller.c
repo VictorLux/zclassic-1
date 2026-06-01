@@ -224,7 +224,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
     json_push_kv_bool(&checks, "queue_backed_up", health.queue_backed_up);
     json_push_kv_int(&checks, "peer_count", (int64_t)health.peer_count);
     json_push_kv_int(&checks, "tip_lag", (int64_t)health.tip_lag);
-    /* Prime Directive: health = network_tip − log_head (SHADOW today). */
+    /* Prime Directive: health = network_tip minus the reducer log head. */
     json_push_kv_int(&checks, "log_head", (int64_t)health.log_head);
     json_push_kv_int(&checks, "log_head_gap", (int64_t)health.log_head_gap);
     json_push_kv_int(&checks, "error_total", health.error_total);
@@ -290,7 +290,7 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
             json_push_kv_bool(&ca, "selected_source_selectable",
                               s->selectable);
             json_push_kv_str(&ca, "selected_source_selection_blocker",
-                             s->selection_blocker);
+                             s->selection_reason);
             json_push_kv_int(&ca, "selected_source_score_base",
                              s->score_base);
             json_push_kv_int(&ca, "selected_source_score_health",
@@ -356,12 +356,12 @@ static bool rpc_healthcheck(const struct json_value *params, bool help,
         json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
         json_push_kv_int(result, "candidate_lag", ms.lag);
         json_push_kv_str(result, "candidate_blocker",
-                         ms.activation_blocker[0] ? ms.activation_blocker
-                                                  : ms.last_blocker_code);
+                         ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
+                                                  : ms.last_blocker_id);
         json_push_kv_str(result, "mirror_activation_blocker",
-                         ms.activation_blocker);
+                         ms.activation_blocker_reason);
         json_push_kv_str(result, "mirror_last_blocker_code",
-                         ms.last_blocker_code);
+                         ms.last_blocker_id);
         json_push_kv_int(result, "mirror_blockers_total",
                          ms.blockers_total);
         json_push_kv_int(result, "mirror_unsafe_overrides_total",

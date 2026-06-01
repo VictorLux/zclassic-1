@@ -41,7 +41,7 @@ uint64_t znam_projection_name_count(znam_projection_t *p);
 uint64_t znam_projection_addr_count(znam_projection_t *p);
 uint64_t znam_projection_text_count(znam_projection_t *p);
 
-/* Process-global shadow wiring used by the legacy ZNAM model. NULL log
+/* Process-global projection wiring used by the ZNAM model. NULL log
  * disables emission and keeps legacy writes authoritative. Mirrors the
  * peers_projection / utxo_projection pattern.
  */

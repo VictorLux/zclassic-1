@@ -245,13 +245,21 @@ void active_chain_free(struct active_chain *c)
     c->capacity = 0;
 }
 
+struct block_index *active_chain_cached_tip(const struct active_chain *c)
+{
+    if (!c || !c->chain || c->height < 0 || c->height >= c->capacity)
+        return NULL;
+    return c->chain[c->height];
+}
+
 struct block_index *active_chain_tip(const struct active_chain *c)
 {
     if (!c || !c->chain) return NULL;
     if (g_chain_authority.is_authoritative &&
         g_chain_authority.is_authoritative()) {
         uint8_t h32[32];
-        if (g_chain_authority.get_hash && g_chain_authority.get_hash(h32)) {
+        if (g_chain_authority.get_hash && g_chain_block_map &&
+            g_chain_authority.get_hash(h32)) {
             struct uint256 hash;
             memcpy(hash.data, h32, 32);
             struct block_index *bi = block_map_find(g_chain_block_map, &hash);
@@ -259,7 +267,7 @@ struct block_index *active_chain_tip(const struct active_chain *c)
         }
     }
     int h = active_chain_height(c);
-    if (h < 0) return NULL;
+    if (h < 0 || h >= c->capacity) return NULL;
     return c->chain[h];
 }
 
@@ -278,11 +286,13 @@ bool active_chain_contains(const struct active_chain *c,
 
 /* Physically assemble chain[] so chain[bi->nHeight] == bi and every lower
  * slot holds the ancestor on bi's path (walking pprev), then set c->height
- * = bi->nHeight. This is the structural half of active_chain_set_tip — the
- * part every reader (active_chain_at, the stages) depends on — WITHOUT the
- * authority set_tip notification. Returns false only on a realloc failure
- * (which LOG_FAILs and never returns). Slots ABOVE new_height are left
- * untouched (a later wider window can still re-expose them).  */
+ * = bi->nHeight. This is the structural half of the active-chain window move;
+ * the part every reader (active_chain_at, the stages) depends on. It never
+ * publishes the authoritative tip; reducer/repair callers must do that
+ * through their explicit authority API after their durable write succeeds.
+ * Returns false only on a realloc failure (which LOG_FAILs and never
+ * returns). Slots ABOVE new_height are left untouched (a later wider window
+ * can still re-expose them). */
 static bool active_chain_fill_window(struct active_chain *c,
                                      struct block_index *bi)
 {
@@ -313,6 +323,8 @@ static bool active_chain_fill_window(struct active_chain *c,
             p = p->pprev;
         }
         struct block_index *slot = (p && p->nHeight == h) ? p : NULL;
+        if (!slot && h <= c->height)
+            break; /* preserve the finalized lower window across pprev gaps */
         if (h <= c->height && c->chain[h] == slot)
             break;
         c->chain[h] = slot;
@@ -322,15 +334,13 @@ static bool active_chain_fill_window(struct active_chain *c,
             else
                 p = p->pprev;
         }
-        if (!p && slot == NULL && h <= c->height)
-            break;
         h--;
     }
     c->height = new_height;
     return true;
 }
 
-bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
+bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi)
 {
     if (!bi) {
         c->height = -1;
@@ -340,14 +350,12 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
     if (!active_chain_fill_window(c, bi))
         return false;
 
-    if (g_chain_authority.is_authoritative &&
-        g_chain_authority.set_tip &&
-        g_chain_authority.is_authoritative()) {
-        const uint8_t *h32 = bi ? bi->phashBlock->data : NULL;
-        g_chain_authority.set_tip(bi->nHeight, h32);
-    }
-
     return true;
+}
+
+bool active_chain_set_tip(struct active_chain *c, struct block_index *bi) // one-write-path-ok:active-chain-compat
+{
+    return active_chain_move_window_tip(c, bi);
 }
 
 /* Extend the VISIBLE chain[] window forward to a most-work CANDIDATE that
@@ -358,8 +366,8 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
  *
  * It exists because the reducer's tip_finalize uses a one-block lookahead:
  * it finalizes height H by reading active_chain_at(H+1), then collapses
- * c->height back to H via active_chain_set_tip(new_tip). Without a separate
- * window-extender, the lookahead for H+1 would never find H+2 and the
+ * c->height back to H via active_chain_move_window_tip(new_tip). Without a
+ * separate window-extender, the lookahead for H+1 would never find H+2 and the
  * reducer would wedge after one block. Re-extending to the candidate each
  * tick keeps the lookahead supplied while the finalized tip advances under
  * it.
@@ -371,9 +379,9 @@ bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
  *   - NEVER shrinks the window: if candidate->nHeight <= c->height this is a
  *     no-op (the finalized tip is the authority on retreat; window growth is
  *     monotonic forward between finalizations).
- *   - Does NOT invoke the authority set_tip callback — the finalized tip is
- *     owned solely by tip_finalize's active_chain_set_tip. This only widens
- *     what active_chain_at can see.
+ *   - Does NOT publish authority — the finalized tip is owned by
+ *     tip_finalize's explicit authority publication. This only widens what
+ *     active_chain_at can see.
  * Returns true on success (incl. the no-op case), false only on realloc
  * failure (which LOG_FAILs upstream). */
 bool active_chain_extend_window(struct active_chain *c,

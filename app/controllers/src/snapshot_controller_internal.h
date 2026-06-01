@@ -30,7 +30,7 @@
  * bulk-load transactions through these checked wrappers so error context is
  * always logged. */
 
-bool snapshot_sql_exec_checked(sqlite3 *db, const char *sql,
+bool snapshot_sql_exec_checked(struct node_db *ndb, const char *sql,
                                const char *label);
 bool snapshot_tx_begin_checked(struct node_db *ndb, const char *label);
 bool snapshot_tx_commit_checked(struct node_db *ndb, const char *label);

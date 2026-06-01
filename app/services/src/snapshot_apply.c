@@ -43,7 +43,7 @@
 /* Seed the authoritative log/projection engine from the verified
  * snapshot so a node that fast-synced on a cold datadir restores its
  * tip + UTXO set purely from the log on the next boot (no legacy
- * coins.db / node.db read). Best-effort and additive during cutover:
+ * coins.db / node.db read). Best-effort and additive during migration:
  * the legacy node.db `utxos` promote above still carries the set, so a
  * failure here is logged but never aborts the snapshot activation.
  *

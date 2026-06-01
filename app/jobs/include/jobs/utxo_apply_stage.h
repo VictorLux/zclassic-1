@@ -1,10 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_apply_stage — Wave S, S-8 shadow stage.
+ * utxo_apply_stage — Wave S, S-8 stage.
  *
  * Consumes `proof_validate_log`; for each height where proof validation
- * passed, computes the transparent UTXO delta and records the result.
- * Shadow mode: no mutation of consensus state. */
+ * passed, computes the transparent UTXO delta, records the result, and emits
+ * stage-authored UTXO projection deltas when the stage owns projection
+ * authority. */
 
 #ifndef ZCL_SERVICES_UTXO_APPLY_STAGE_H
 #define ZCL_SERVICES_UTXO_APPLY_STAGE_H

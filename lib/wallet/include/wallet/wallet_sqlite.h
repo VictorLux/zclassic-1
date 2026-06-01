@@ -80,6 +80,7 @@ struct wallet_sqlite {
     sqlite3_stmt *stmt_key_write;
     sqlite3_stmt *stmt_key_read;
     sqlite3_stmt *stmt_key_read_one;   /* SELECT ... WHERE pubkey_hash = ? */
+    sqlite3_stmt *stmt_key_delete;     /* DELETE ... WHERE pubkey_hash = ? */
     sqlite3_stmt *stmt_tx_write;
     sqlite3_stmt *stmt_tx_read;
     sqlite3_stmt *stmt_seed_write;
@@ -124,6 +125,8 @@ struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
 struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
                                             const struct pubkey *pk,
                                             const struct privkey *key);
+struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
+                                             const struct pubkey *pk);
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
 struct wallet_sqlite_health

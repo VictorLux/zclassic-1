@@ -1,29 +1,4 @@
-# Grandfathered raw-blocker-string sites (Round 6 C6 baseline).
+# Typed-blocker adoption baseline.
 #
-# These files pre-date the typed blocker primitive (Round 6 C1,
-# lib/util/blocker.h). Each entry is a target for migration in later
-# Salamander rounds:
-#
-#   legacy_mirror_sync_service.c — lms_set_blocker() string surface;
-#       Round 7 will migrate lms_set_blocker to wrap blocker_set with
-#       the classification table from block_source_policy_runtime.c.
-#       Once migrated, this file's blocker_set() call removes it from
-#       the baseline automatically.
-#
-#   block_source_policy.h — `char selection_blocker[]` field on
-#       cac_source_status. Migrated to `blocked_class` typed field in
-#       C3 (the bool/string surface kept for backward compat). Removing
-#       this baseline entry requires also removing the legacy blocker
-#       string fields once the typed query is the sole source of truth
-#       in source-scoring decisions.
-#
-#   mirror_consensus.h — `activation_blocker[128]` field. The .c
-#       file already calls blocker_set (C2 shipped). The header just
-#       declares the legacy string field; rename or drop in Round 7.
-#
-# Baseline must SHRINK over Rounds 7-9, never grow. Adding new entries
-# requires explicit justification in the commit message.
-app/services/src/legacy_mirror_sync_service.c
-app/services/include/services/block_source_policy.h
-app/services/include/services/legacy_mirror_sync_service.h
-lib/validation/include/validation/mirror_consensus.h
+# Empty by design. Raw `_blocker` string fields and legacy blocker setters must
+# route through the typed blocker primitive instead of being grandfathered.

@@ -19,18 +19,4 @@
 #   4. Delete the matching line below.
 #   5. Re-run `make lint` to confirm.
 #
-# Round 6 priority order (highest stall blast radius first):
-#   - block_sync_service       (live failure pattern, but lives in app/services?
-#                                actually file lives elsewhere — check before listing)
-#   - header_sync_service      (upstream of block sync)
-#   - legacy_mirror_sync_service (the alt source)
-#
 # Format: one file path per line. Blank lines and # comments ignored.
-app/services/src/bg_hash_verification_service.c
-app/services/src/bg_validation_service.c
-app/services/src/block_pruning_service.c
-app/services/src/gap_fill_service.c
-app/services/src/legacy_mirror_sync_service.c
-app/services/src/rolling_anchor_service.c
-app/services/src/wallet_backup_service.c
-app/services/src/zclassicd_oracle_service.c

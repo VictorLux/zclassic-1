@@ -40,6 +40,7 @@
 #include "models/database.h"
 #include "core/uint256.h"
 #include "services/recovery_policy.h"
+#include "util/result.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -203,6 +204,9 @@ struct chain_state_repository *csr_instance(void);
 /* ── Mutation entry point ─────────────────────────────────────── */
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,
                                 const struct chain_state_commit *commit);
+struct zcl_result csr_commit_tip_result(
+    struct chain_state_repository *csr,
+    const struct chain_state_commit *commit);
 enum csr_result csr_commit_header_tip(
     struct chain_state_repository *csr,
     const struct chain_state_header_commit *commit);

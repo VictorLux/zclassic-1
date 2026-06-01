@@ -5,16 +5,17 @@
  * Layout:
  *   1. Config + creds (parse zclassic.conf)
  *   2. zclassicd_oracle_probe() — synchronous probe of one height
- *   3. on_tick() — periodic heartbeat callback (random-height fan-out)
+ *   3. on_tick() — periodic supervisor callback (random-height fan-out)
  *   4. init/start/stop + stats snapshot + dump_state_json
  *
- * Threading: the only background work is the heartbeat sweeper, which
- * is owned by lib/health/heartbeat.c. No new pthreads are created here.
+ * Threading: the only background work is the supervisor tick loop. No
+ * new pthreads are created here.
  */
 
 #include "services/zclassicd_oracle_service.h"
 #include "services/oracle_policy.h"
 
+#include "supervisors/domains.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -23,9 +24,9 @@
 #include "controllers/wallet_helpers.h"
 #include "json/json.h"
 #include "event/event.h"
-#include "health/heartbeat.h"
 #include "rpc/legacy_rpc_client.h"
 #include "util/log_macros.h"
+#include "util/supervisor.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -55,7 +56,7 @@ static struct {
     char   rpc_password[128];
     int    cadence_secs;
     int    heights_per_tick;
-    health_subsystem_id health_id;
+    _Atomic supervisor_child_id supervisor_id;
 
     /* Stats */
     _Atomic int64_t probes_total;
@@ -66,8 +67,15 @@ static struct {
     _Atomic int     last_probed_height;
 } g_oracle = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
-    .health_id = HEALTH_INVALID_ID,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static struct liveness_contract g_oracle_contract;
+
+static int64_t zclassicd_oracle_progress_marker(void)
+{
+    return atomic_load(&g_oracle.probes_total);
+}
 
 /* Split HTTP head/body and parse JSON-RPC result. Returns the hex
  * string from .result on success. On error, writes a message to err.
@@ -232,11 +240,33 @@ struct zcl_result zclassicd_oracle_probe(int height,
     return ZCL_OK;
 }
 
-/* ── Periodic tick (heartbeat callback) ────────────────────────── */
+/* ── Periodic tick (supervisor callback) ───────────────────────── */
 
-static void zclassicd_oracle_on_tick(void *ctx)
+static void zclassicd_oracle_on_stall(struct liveness_contract *c)
 {
-    (void)ctx;
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int64_t probes = atomic_load(&g_oracle.probes_total);
+    int64_t errors = atomic_load(&g_oracle.rpc_errors);
+    LOG_WARN("oracle",
+             "[oracle] zclassicd oracle dependency stall reason=%s probes=%lld rpc_errors=%lld",
+             reason, (long long)probes, (long long)errors);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "source=oracle.zclassicd decision=dependency_stall "
+                "reason=%s probes=%lld rpc_errors=%lld",
+                reason, (long long)probes, (long long)errors);
+}
+
+static void zclassicd_oracle_on_tick(struct liveness_contract *c)
+{
+    (void)c;
+    supervisor_child_id id = atomic_load(&g_oracle.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_tick(id);
+
+    int64_t errors_before = atomic_load(&g_oracle.rpc_errors);
     int tip = our_tip_height();
     int margin = ORACLE_TIP_SAFETY_MARGIN;
     /* Tests can lower the margin so a tiny synthetic chain still
@@ -248,7 +278,11 @@ static void zclassicd_oracle_on_tick(void *ctx)
         if (n >= 0) margin = n;
     }
     int max_h = tip - margin;
-    if (max_h <= 0) return;  /* not synced yet */
+    if (max_h <= 0) {
+        if (id != SUPERVISOR_INVALID_ID)
+            supervisor_progress(id, zclassicd_oracle_progress_marker());
+        return;  /* not synced yet */
+    }
 
     int n = g_oracle.heights_per_tick > 0
                 ? g_oracle.heights_per_tick : ORACLE_DEFAULT_HEIGHTS_TICK;
@@ -256,6 +290,12 @@ static void zclassicd_oracle_on_tick(void *ctx)
         int h = GetRandInt(max_h + 1);
         struct zclassicd_oracle_probe_result r;
         (void)zclassicd_oracle_probe(h, &r);  /* periodic; discard result */
+    }
+
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_progress(id, zclassicd_oracle_progress_marker());
+        if (atomic_load(&g_oracle.rpc_errors) > errors_before)
+            supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
     }
 }
 
@@ -319,28 +359,52 @@ struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cf
 
 struct zcl_result zclassicd_oracle_start(void)
 {
-    if (g_oracle.health_id != HEALTH_INVALID_ID) return ZCL_OK;
     if (!g_oracle.initialized) {
         struct zcl_result init_r = zclassicd_oracle_init(NULL);
         if (!init_r.ok)
             return ZCL_ERR(-1, "zclassicd_oracle_start: init failed: %s",
                            init_r.message);
     }
-    (void)health_start();  /* idempotent */
+
+    if (!supervisor_start())
+        return ZCL_ERR(-2, "zclassicd_oracle_start: supervisor_start failed");
+
+    pthread_mutex_lock(&g_oracle.lock);
     int cad = g_oracle.cadence_secs > 0
-                  ? g_oracle.cadence_secs : ORACLE_DEFAULT_CADENCE;
-    g_oracle.health_id = health_register_periodic(
-        "oracle.zclassicd", cad, zclassicd_oracle_on_tick, NULL);
-    if (g_oracle.health_id == HEALTH_INVALID_ID)
-        return ZCL_ERR(-2, "zclassicd_oracle_start: health_register_periodic failed");
+        ? g_oracle.cadence_secs : ORACLE_DEFAULT_CADENCE;
+    pthread_mutex_unlock(&g_oracle.lock);
+
+    supervisor_child_id id = atomic_load(&g_oracle.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_period(id, cad);
+        supervisor_progress(id, zclassicd_oracle_progress_marker());
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_oracle_contract, "oracle.zclassicd");
+    atomic_store(&g_oracle_contract.period_secs, cad);
+    atomic_store(&g_oracle_contract.deadline_secs, 0);
+    atomic_store(&g_oracle_contract.progress_max_quiet_us, 0);
+    g_oracle_contract.on_tick = zclassicd_oracle_on_tick;
+    g_oracle_contract.on_stall = zclassicd_oracle_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_oracle_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-3, "zclassicd_oracle_start: supervisor_register failed");
+
+    atomic_store(&g_oracle.supervisor_id, id);
+    supervisor_progress(id, zclassicd_oracle_progress_marker());
+    supervisor_tick(id);
     return ZCL_OK;
 }
 
 void zclassicd_oracle_stop(void)
 {
-    if (g_oracle.health_id == HEALTH_INVALID_ID) return;
-    health_unregister(g_oracle.health_id);
-    g_oracle.health_id = HEALTH_INVALID_ID;
+    supervisor_child_id id = atomic_load(&g_oracle.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID) return;
+    supervisor_set_period(id, 0);
 }
 
 /* ── Stats snapshot ────────────────────────────────────────────── */
@@ -358,11 +422,16 @@ void zclassicd_oracle_stats_snapshot(struct zclassicd_oracle_stats *out)
 
 void zclassicd_oracle_reset_for_test(void)
 {
+    supervisor_child_id id = atomic_load(&g_oracle.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_period(id, 0);
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_oracle.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
+
     pthread_mutex_lock(&g_oracle.lock);
-    if (g_oracle.health_id != HEALTH_INVALID_ID) {
-        health_unregister(g_oracle.health_id);
-        g_oracle.health_id = HEALTH_INVALID_ID;
-    }
     g_oracle.initialized = false;
     g_oracle.rpc_host[0] = '\0';
     g_oracle.rpc_port = 0;
@@ -389,7 +458,9 @@ bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key)
     zclassicd_oracle_stats_snapshot(&s);
 
     pthread_mutex_lock(&g_oracle.lock);
-    bool running   = (g_oracle.health_id != HEALTH_INVALID_ID);
+    supervisor_child_id sid = atomic_load(&g_oracle.supervisor_id);
+    bool running = sid != SUPERVISOR_INVALID_ID &&
+                   atomic_load(&g_oracle_contract.period_secs) > 0;
     int cad        = g_oracle.cadence_secs;
     int hpt        = g_oracle.heights_per_tick;
     int port       = g_oracle.rpc_port;

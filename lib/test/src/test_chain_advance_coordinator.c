@@ -121,7 +121,7 @@ static int test_cac_keeps_caught_up_p2p_when_legacy_is_ahead(void)
         ASSERT(out.result == CAC_DECISION_USE_SOURCE);
         ASSERT(out.selected_source == CAC_SOURCE_P2P);
         ASSERT(out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_blocker, "");
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason, "");
     } TEST_END
     return failures;
 }
@@ -145,7 +145,7 @@ static int test_cac_gates_mirror_during_local_retries(void)
         ASSERT_STR_EQ(out.reason, "local_retries_pending");
         ASSERT(!out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
         ASSERT_STR_EQ(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
-                      selection_blocker, "local_recovery_gate");
+                      selection_reason, "local_recovery_gate");
     } TEST_END
     return failures;
 }
@@ -168,7 +168,7 @@ static int test_cac_allows_bounded_mirror_after_retries(void)
         ASSERT(out.mirror_fallback_allowed);
         ASSERT(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].selectable);
         ASSERT_STR_EQ(out.sources[CAC_SOURCE_ZCLASSICD_MIRROR].
-                      selection_blocker, "");
+                      selection_reason, "");
     } TEST_END
     return failures;
 }
@@ -297,7 +297,7 @@ static int test_cac_avoids_stale_dead_p2p(void)
         ASSERT(out.selected_source == CAC_SOURCE_NONE);
         ASSERT_STR_EQ(out.reason, "no_healthy_source");
         ASSERT(!out.sources[CAC_SOURCE_P2P].selectable);
-        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_blocker,
+        ASSERT_STR_EQ(out.sources[CAC_SOURCE_P2P].selection_reason,
                       "unhealthy");
     } TEST_END
     return failures;
@@ -1215,7 +1215,7 @@ static int test_cac_dump_populates_live_mirror_source(void)
 
         mirror_consensus_set_enabled(true);
         mirror_consensus_record_blocker("body-hash-mismatch");
-        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "body-hash-mismatch");
         legacy_mirror_sync_test_set_stats(&stats, &ms);
 

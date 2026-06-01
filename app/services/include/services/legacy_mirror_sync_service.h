@@ -13,6 +13,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/blocker.h"
+#include "util/result.h"
+
 struct main_state;
 struct coins_view_cache;
 struct chain_params;
@@ -48,6 +51,8 @@ void legacy_mirror_sync_stop(void);
  * so callers may invoke this from watchdog/manual RPC paths without
  * overlapping the heartbeat tick. */
 bool legacy_mirror_sync_request_catchup(const char *reason);
+struct zcl_result legacy_mirror_sync_request_catchup_result(
+    const char *reason);
 
 struct legacy_mirror_sync_stats {
     bool    enabled;
@@ -94,8 +99,10 @@ struct legacy_mirror_sync_stats {
     bool    last_override_safe;
     char    last_override_reason[128];
     char    last_override_scope[32];
-    char    activation_blocker[128];
-    char    last_blocker_code[64];
+    enum blocker_class activation_blocker_class;
+    enum blocker_class last_blocker_class;
+    char    activation_blocker_reason[128];
+    char    last_blocker_id[64];
     char    csr_failure_reason[160];
     char    last_error[160];
     /* Lag-SLO breach state — fail loudly and fast. Tracked atomically;

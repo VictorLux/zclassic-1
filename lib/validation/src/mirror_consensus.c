@@ -20,7 +20,8 @@ static struct {
     _Atomic int last_override_safe;
     char last_override_reason[128];
     char last_override_scope[32];
-    char activation_blocker[128];
+    enum blocker_class activation_blocker_class;
+    char activation_blocker_reason[128];
 } g_mirror_consensus = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -49,7 +50,8 @@ void mirror_consensus_record_override(int height, const char *reason)
     snprintf(g_mirror_consensus.last_override_scope,
              sizeof(g_mirror_consensus.last_override_scope), "%s",
              "unsafe_no_authorized_scope");
-    g_mirror_consensus.activation_blocker[0] = '\0';
+    g_mirror_consensus.activation_blocker_class = BLOCKER_TRANSIENT;
+    g_mirror_consensus.activation_blocker_reason[0] = '\0';
     pthread_mutex_unlock(&g_mirror_consensus.lock);
     event_emitf(EV_BLOCK_CHECK_PASSED, 0,
                 "mirror_consensus_override h=%d reason=%s", height, r);
@@ -72,7 +74,7 @@ void mirror_consensus_record_override(int height, const char *reason)
  * away when the network advances or local validation retries. A few
  * are PERMANENT (cryptographic mismatches that won't change without
  * operator action). */
-static enum blocker_class classify_mirror_reason(const char *r)
+enum blocker_class mirror_consensus_classify_blocker_reason(const char *r)
 {
     if (!r || !r[0]) return BLOCKER_TRANSIENT;
     /* Cryptographic mismatches — bad data, never auto-retry. */
@@ -92,15 +94,17 @@ void mirror_consensus_record_blocker(const char *reason)
     struct blocker_record rec;
     char bid[BLOCKER_ID_MAX];
     snprintf(bid, sizeof(bid), "mirror.%s", r[0] ? r : "unknown");
+    enum blocker_class cls = mirror_consensus_classify_blocker_reason(r);
     blocker_init(&rec, bid, "mirror_consensus",
-                 classify_mirror_reason(r), r);
+                 cls, r);
     int rc = blocker_set(&rec);
     /* Always increment the unsuppressed total (legacy semantics). */
     int64_t blockers =
         atomic_fetch_add(&g_mirror_consensus.blockers_total, 1) + 1;
     pthread_mutex_lock(&g_mirror_consensus.lock);
-    snprintf(g_mirror_consensus.activation_blocker,
-             sizeof(g_mirror_consensus.activation_blocker), "%s",
+    g_mirror_consensus.activation_blocker_class = cls;
+    snprintf(g_mirror_consensus.activation_blocker_reason,
+             sizeof(g_mirror_consensus.activation_blocker_reason), "%s",
              r);
     pthread_mutex_unlock(&g_mirror_consensus.lock);
     /* Only emit the event on a fresh write (rc == 0) — rate-limited
@@ -131,12 +135,17 @@ void mirror_consensus_stats_snapshot(struct mirror_consensus_stats *out)
     out->last_override_height =
         atomic_load(&g_mirror_consensus.last_override_height);
     pthread_mutex_lock(&g_mirror_consensus.lock);
+    out->activation_blocker_class =
+        g_mirror_consensus.activation_blocker_reason[0]
+            ? g_mirror_consensus.activation_blocker_class
+            : BLOCKER_TRANSIENT;
     snprintf(out->last_override_reason, sizeof(out->last_override_reason),
              "%s", g_mirror_consensus.last_override_reason);
     snprintf(out->last_override_scope, sizeof(out->last_override_scope),
              "%s", g_mirror_consensus.last_override_scope);
-    snprintf(out->activation_blocker, sizeof(out->activation_blocker),
-             "%s", g_mirror_consensus.activation_blocker);
+    snprintf(out->activation_blocker_reason,
+             sizeof(out->activation_blocker_reason),
+             "%s", g_mirror_consensus.activation_blocker_reason);
     pthread_mutex_unlock(&g_mirror_consensus.lock);
 }
 
@@ -145,7 +154,8 @@ void mirror_consensus_reset_for_test(void)
     pthread_mutex_lock(&g_mirror_consensus.lock);
     g_mirror_consensus.last_override_reason[0] = '\0';
     g_mirror_consensus.last_override_scope[0] = '\0';
-    g_mirror_consensus.activation_blocker[0] = '\0';
+    g_mirror_consensus.activation_blocker_class = BLOCKER_TRANSIENT;
+    g_mirror_consensus.activation_blocker_reason[0] = '\0';
     pthread_mutex_unlock(&g_mirror_consensus.lock);
     atomic_store(&g_mirror_consensus.enabled, 0);
     atomic_store(&g_mirror_consensus.overrides_total, 0);

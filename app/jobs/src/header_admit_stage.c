@@ -9,8 +9,6 @@
 
 #include "jobs/header_admit_stage.h"
 
-#include "header_admit_internal.h"
-
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -18,7 +16,6 @@
 #include "jobs/stage_helpers.h"
 #include "models/header_admit_log.h"
 #include "platform/time_compat.h"
-#include "services/cutover_modes.h"
 #include "services/header_admit_inbox.h"
 #include "storage/event_log.h"
 #include "storage/event_log_payloads.h"
@@ -46,7 +43,7 @@
 
 /* Cap the reorg-rewind backward scan. Normal reorgs are 1-6 blocks; a
  * deep stale divergence must not pin the CPU walking back across 3.1M
- * heights every supervisor tick. Mirrors HEADER_ADMIT_DIFF_MAX_RANGE. */
+ * heights every supervisor tick. */
 #define HEADER_ADMIT_REORG_REWIND_MAX_DEPTH  10000
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -59,7 +56,7 @@ static _Atomic uint64_t g_reorg_rewind_total = 0;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 /* Reducer producer path: count of block_index entries CREATED by the
- * stage from raw header bytes (add_to_block_index), AUTHORITATIVE only. */
+ * stage from raw header bytes (add_to_block_index). */
 static _Atomic uint64_t g_produced_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
@@ -77,14 +74,12 @@ MAILBOX_DEFINE(header_admit, struct header_admit_msg,
  * The inbox drain copies any message carrying raw header bytes
  * (m->has_header) into this small bounded ring, keyed by hash. step_admit
  * consults it when the active chain has no block at the height it needs
- * and the stage is AUTHORITATIVE, then CREATES the block_index entry via
- * add_to_block_index — letting the reducer extend the chain without the
- * legacy accept_block_header.
+ * and then CREATES the block_index entry via add_to_block_index — letting
+ * the reducer extend the chain without the legacy accept_block_header.
  *
  * Touched only on the stage's single step thread (drain + step both run
- * inside header_admit_stage_step_once), so no lock is needed. DORMANT in
- * SHADOW: hash-hint pushers never set has_header, so the ring stays empty
- * and the producer path never fires. */
+ * inside header_admit_stage_step_once), so no lock is needed. Hash-hint
+ * pushers never set has_header, so they do not enter the producer path. */
 #define HEADER_ADMIT_PENDING_CAP 64
 
 struct pending_header {
@@ -184,10 +179,9 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
         return;
 
     /* Reducer producer path: stage any carried raw header so step_admit
-     * can CREATE the block_index entry. AUTHORITATIVE-only and DORMANT in
-     * SHADOW (hash-hint pushers leave has_header false). */
-    if (m->has_header &&
-        header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE)
+     * can CREATE the block_index entry. Hash-hint pushers leave
+     * has_header false. */
+    if (m->has_header)
         pending_header_stage(&m->header);
 
     struct block_index *bi = active_chain_at(&ms->chain_active,
@@ -291,9 +285,8 @@ static bool log_row_active_match(sqlite3 *db, int height,
  * chain has no block (out_known=false — the LOG_AHEAD shrink case), is a
  * no-op and never triggers a rewind.
  *
- * SHADOW-only: touches only the stage cursor and the header_admit_log;
- * never the legacy block_index. Returns false (→ JOB_FATAL) only on a
- * SQL/persist failure. */
+ * This touches only the stage cursor and the header_admit_log. Returns false
+ * (→ JOB_FATAL) only on a SQL/persist failure. */
 static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
 {
     if (!g_stage || !g_ms)
@@ -344,9 +337,9 @@ static bool rewind_cursor_if_active_chain_reorged(sqlite3 *db)
 }
 
 /* Reducer producer: CREATE the block_index entry for `want_height` from a
- * staged raw header (add_to_block_index). AUTHORITATIVE-only; returns the
+ * staged raw header (add_to_block_index). Returns the
  * created (or already-mapped) entry, or NULL when no staged header lands
- * at this height (the SHADOW/legacy follower behaviour — caller IDLEs).
+ * at this height (caller IDLEs).
  * Does not touch coins.db, disk, or the active-chain tip — it only adds
  * to ms->map_block_index, exactly as legacy accept_block_header would. */
 static struct block_index *produce_block_index(struct main_state *ms,
@@ -380,13 +373,11 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
     if (!bi || !bi->phashBlock) {
-        /* Reducer producer path (AUTHORITATIVE only): the active chain has
-         * no block here yet — if a raw header for this height was staged
-         * via the inbox, CREATE the block_index entry so the reducer can
-         * extend the chain without the legacy accept_block_header. SHADOW
-         * stays a pure follower: no staged headers → IDLE as before. */
-        if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE)
-            bi = produce_block_index(ms, next_h);
+        /* Reducer producer path: the active chain has no block here yet.
+         * If a raw header for this height was staged via the inbox, CREATE
+         * the block_index entry so the reducer can extend the chain without
+         * the legacy accept_block_header. */
+        bi = produce_block_index(ms, next_h);
         if (!bi || !bi->phashBlock) return JOB_IDLE;
     }
 
@@ -403,18 +394,20 @@ static job_result_t step_admit(struct stage_step_ctx *c)
         parent_hash = bi->pprev->phashBlock;
     }
 
-    if (header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE) {
-        if (!authoritative_admit(ms, bi)) {
-            LOG_WARN("header_admit", "[header_admit] authoritative admit failed height=%d", next_h);
-            return JOB_FATAL;
-        }
-        /* Single-engine PIECE 1: 2nd EV_BLOCK_HEADER emitter, alongside
-         * the legacy block_index_db.c writer. Idempotent (INSERT OR
-         * REPLACE in block_index_projection); best-effort, never fatal —
-         * emit AFTER the VALID_TREE promotion so the persisted nStatus
-         * reflects it. */
-        block_index_emit_header_event(bi, "header_admit", &g_header_event_emit_total, &g_header_event_emit_fail_total);
+    if (!authoritative_admit(ms, bi)) {
+        LOG_WARN("header_admit",
+                 "[header_admit] authoritative admit failed height=%d",
+                 next_h);
+        return JOB_FATAL;
     }
+    /* Single-engine PIECE 1: 2nd EV_BLOCK_HEADER emitter, alongside
+     * the legacy block_index_db.c writer. Idempotent (INSERT OR
+     * REPLACE in block_index_projection); best-effort, never fatal —
+     * emit AFTER the VALID_TREE promotion so the persisted nStatus
+     * reflects it. */
+    block_index_emit_header_event(bi, "header_admit",
+                                  &g_header_event_emit_total,
+                                  &g_header_event_emit_fail_total);
 
     if (!log_insert(db, next_h, bi->phashBlock, parent_hash))
         return JOB_FATAL;
@@ -426,22 +419,6 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
-
-void header_admit_set_mode(header_admit_mode_t mode)
-{
-    cutover_modes_set_header_admit(
-        mode == HEADER_ADMIT_MODE_AUTHORITATIVE
-            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
-            : CUTOVER_STAGE_MODE_SHADOW);
-}
-
-header_admit_mode_t header_admit_get_mode(void)
-{
-    return cutover_modes_get_header_admit() ==
-               CUTOVER_STAGE_MODE_AUTHORITATIVE
-        ? HEADER_ADMIT_MODE_AUTHORITATIVE
-        : HEADER_ADMIT_MODE_SHADOW;
-}
 
 #ifdef ZCL_TESTING
 void header_admit_stage_set_authoritative_hook(
@@ -488,7 +465,8 @@ bool header_admit_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("header_admit", "[header_admit] stage initialised (mode=%s)", header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE ? "authoritative" : "shadow");
+    LOG_INFO("header_admit",
+             "[header_admit] stage initialised (authoritative)");
     return true;
 }
 
@@ -630,11 +608,7 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
-    json_push_kv_str (out, "mode",
-                      header_admit_get_mode() ==
-                          HEADER_ADMIT_MODE_AUTHORITATIVE
-                              ? "authoritative"
-                              : "shadow");
+    json_push_kv_str(out, "authority", "authoritative");
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));
@@ -646,16 +620,4 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                          (int64_t)stage_error_count(g_stage));
     }
     return true;
-}
-
-/* ── Sibling-private accessors (header_admit_stage_diff.c) ──────────── */
-
-struct main_state *header_admit_internal_ms(void)
-{
-    return g_ms;
-}
-
-struct stage *header_admit_internal_stage(void)
-{
-    return g_stage;
 }

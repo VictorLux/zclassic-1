@@ -5,25 +5,27 @@
  *
  * Lifecycle:
  *   1. boot:  rolling_anchor_init(datadir)
- *   2. tick:  rolling_anchor_extend_if_due(ms, datadir)  (every 60s) */
+ *   2. supervisor tick: rolling_anchor_extend_if_due(ms, datadir)
+ *      every 60s under the chain domain. */
 
 #include "platform/time_compat.h"
 #include "services/rolling_anchor_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
 
+#include "supervisors/domains.h"
 #include "chain/chain.h"
 #include "chain/sha3_windows.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
-#include "health/heartbeat.h"
 #include "json/json.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/main_constants.h"
@@ -71,11 +73,12 @@ static struct {
     /* Periodic-tick context, populated by rolling_anchor_start. */
     struct main_state    *tick_ms;
     char                  tick_datadir[1024];
-    health_subsystem_id   health_id;
 } g_ra = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
-    .health_id = HEALTH_INVALID_ID,
 };
+
+static struct liveness_contract g_ra_contract;
+static _Atomic supervisor_child_id g_ra_supervisor_id = SUPERVISOR_INVALID_ID;
 
 static int ra_compile_time_end(void)
 {
@@ -476,16 +479,49 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
 
 /* ── Periodic-tick wrapper ─────────────────────────────────────── */
 
-static void rolling_anchor_on_tick(void *ctx)
+static int rolling_anchor_effective_prefix_end(void)
 {
-    (void)ctx;
+    pthread_mutex_lock(&g_ra.lock);
+    int runtime_end = ra_runtime_end_locked();
+    pthread_mutex_unlock(&g_ra.lock);
+    return runtime_end;
+}
+
+static void rolling_anchor_on_stall(struct liveness_contract *c)
+{
+    int reason = c ? atomic_load(&c->stall_reason) : SUPERVISOR_STALL_NONE;
+    int runtime_end = rolling_anchor_effective_prefix_end();
+    int64_t read_failures = atomic_load(&g_ra.total_read_failures);
+    const char *reason_name = supervisor_stall_reason_name(
+        (enum supervisor_stall_reason)reason);
+
+    LOG_WARN("supervisor", "[supervisor] chain.rolling_anchor stalled reason=%s effective_prefix_end=%d read_failures=%lld", reason_name, runtime_end, (long long)read_failures);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain.rolling_anchor stalled reason=%s effective_prefix_end=%d read_failures=%lld",
+                reason_name, runtime_end, (long long)read_failures);
+}
+
+static void rolling_anchor_on_tick(struct liveness_contract *c)
+{
+    (void)c;
     pthread_mutex_lock(&g_ra.lock);
     struct main_state *ms = g_ra.tick_ms;
     char datadir[1024];
     memcpy(datadir, g_ra.tick_datadir, sizeof(datadir));
     pthread_mutex_unlock(&g_ra.lock);
-    if (!ms) return;
+
+    supervisor_child_id id = atomic_load(&g_ra_supervisor_id);
+    if (!ms) {
+        supervisor_tick(id);
+        return;
+    }
+
+    int64_t before_failures = atomic_load(&g_ra.total_read_failures);
     (void)rolling_anchor_extend_if_due(ms, datadir);
+    supervisor_progress(id, (int64_t)rolling_anchor_effective_prefix_end());
+    if (atomic_load(&g_ra.total_read_failures) > before_failures)
+        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+    supervisor_tick(id);
 }
 
 struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadir)
@@ -493,8 +529,6 @@ struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadi
     if (!ms || !datadir || !datadir[0])
         return ZCL_ERR(-1, "rolling_anchor_start: bad args ms=%p datadir=%s",
                        (void*)ms, datadir ? datadir : "(null)");
-    if (g_ra.health_id != HEALTH_INVALID_ID)
-        return ZCL_OK; /* already up */
 
     /* Idempotent — init() returns ZCL_OK if file absent. */
     (void)rolling_anchor_init(datadir, NULL);
@@ -504,19 +538,40 @@ struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadi
     snprintf(g_ra.tick_datadir, sizeof(g_ra.tick_datadir), "%s", datadir);
     pthread_mutex_unlock(&g_ra.lock);
 
-    (void)health_start();  /* idempotent */
-    g_ra.health_id = health_register_periodic(
-        "rolling_anchor", RA_TICK_SECS, rolling_anchor_on_tick, NULL);
-    if (g_ra.health_id == HEALTH_INVALID_ID)
-        return ZCL_ERR(-2, "rolling_anchor_start: health_register_periodic failed");
+    supervisor_child_id id = atomic_load(&g_ra_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_period(id, RA_TICK_SECS);
+        supervisor_progress(id, (int64_t)rolling_anchor_effective_prefix_end());
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_ra_contract, "chain.rolling_anchor");
+    atomic_store(&g_ra_contract.period_secs, (int64_t)RA_TICK_SECS);
+    atomic_store(&g_ra_contract.deadline_secs, (int64_t)0);
+    atomic_store(&g_ra_contract.progress_max_quiet_us, (int64_t)0);
+    g_ra_contract.on_tick = rolling_anchor_on_tick;
+    g_ra_contract.on_stall = rolling_anchor_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_ra_contract);
+    atomic_store(&g_ra_supervisor_id, id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-2, "rolling_anchor_start: supervisor register failed");
+    supervisor_progress(id, (int64_t)rolling_anchor_effective_prefix_end());
+    supervisor_tick(id);
     return ZCL_OK;
 }
 
 void rolling_anchor_stop(void)
 {
-    if (g_ra.health_id == HEALTH_INVALID_ID) return;
-    health_unregister(g_ra.health_id);
-    g_ra.health_id = HEALTH_INVALID_ID;
+    supervisor_child_id id = atomic_load(&g_ra_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_period(id, 0);
+    pthread_mutex_lock(&g_ra.lock);
+    g_ra.tick_ms = NULL;
+    g_ra.tick_datadir[0] = '\0';
+    pthread_mutex_unlock(&g_ra.lock);
 }
 
 bool rolling_anchor_dump_state_json(struct json_value *out, const char *key)
@@ -559,6 +614,12 @@ bool rolling_anchor_dump_state_json(struct json_value *out, const char *key)
 void rolling_anchor_reset_for_test(void)
 {
     rolling_anchor_stop();
+#ifdef ZCL_TESTING
+    supervisor_child_id id = atomic_exchange(&g_ra_supervisor_id,
+                                             SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
     pthread_mutex_lock(&g_ra.lock);
     free(g_ra.windows);
     g_ra.windows = NULL;

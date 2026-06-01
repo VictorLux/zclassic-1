@@ -28,12 +28,14 @@ BASELINE=tools/scripts/one_result_type_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
+baseline_count=0
 while IFS= read -r line; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [ -z "$line" ] && continue
     baseline["$line"]=1
+    baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
 fail=0
@@ -63,7 +65,7 @@ while IFS= read -r f; do
 done < <(find app/services/src -type f -name '*.c' | sort)
 
 if [ "$fail" = "0" ]; then
-    echo "check_one_result_type: clean — ${#baseline[@]} grandfathered service file(s), no new bare-result files"
+    echo "check_one_result_type: clean — ${baseline_count} grandfathered service file(s), no new bare-result files"
     if [ "${#stale_baseline[@]}" -gt 0 ]; then
         echo "  note: ${#stale_baseline[@]} baselined file(s) now use zcl_result — delete their baseline line(s) to ratchet forward:"
         for v in "${stale_baseline[@]}"; do echo "    $v"; done

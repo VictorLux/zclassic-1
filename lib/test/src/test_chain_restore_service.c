@@ -399,7 +399,7 @@ static int test_integrity_passes_on_clean_chain(void) {
         }
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[N - 1]);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
 
         struct chain_integrity_result r;
         chain_integrity_check_post_restore(&r, &ms);
@@ -445,7 +445,7 @@ static int test_integrity_anchor_restore_is_benign(void) {
         ASSERT(anchor->pprev == NULL);
         ASSERT(!(anchor->nStatus & BLOCK_HAVE_DATA));
 
-        ASSERT(active_chain_set_tip(&ms.chain_active, anchor));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, anchor));
 
         struct chain_integrity_result r;
         chain_integrity_check_post_restore(&r, &ms);
@@ -496,7 +496,7 @@ static int test_integrity_live_tip_only_chain_is_operational(void) {
             arith_uint256_set_u64(&idx[h]->nChainWork,
                                   (uint64_t)(h + 1));
         }
-        ASSERT(active_chain_set_tip(&ms.chain_active, idx[H]));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, idx[H]));
 
         for (int h = H - 20; h < H; h++)
             ms.chain_active.chain[h] = NULL;
@@ -543,7 +543,7 @@ static int test_integrity_detects_isolated_nbits_zero(void) {
         }
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[N - 1]);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
 
         struct chain_integrity_result r;
         chain_integrity_check_post_restore(&r, &ms);
@@ -577,7 +577,7 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
          * h=0..H (pprev NOT linked — matches the live-node post-scan
          * shape where heights have been patched but pprev is stale).
          * Then an anchor-restore installed tip=anchor at h=H with
-         * anchor->pprev=NULL — active_chain_set_tip wrote NULL into
+         * anchor->pprev=NULL — active_chain_move_window_tip wrote NULL into
          * slots 0..H-1. rebuild must fill them by height lookup. */
         const int H = 10;
         struct uint256 hashes[11];
@@ -600,14 +600,14 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
         for (int h = 0; h < H; h++)
             ms.chain_active.chain[h] = NULL;
 
         /* Pre-rebuild: integrity check reports H holes below the tip.
          * Round 4 Part 1.5.1: `ok` no longer requires zero holes —
          * only nBits clean + tip-slot populated. Tip IS populated
-         * via active_chain_set_tip above, so r0.ok may be true even
+         * via active_chain_move_window_tip above, so r0.ok may be true even
          * with holes below. We still verify the hole counts. */
         struct chain_integrity_result r0;
         chain_integrity_check_post_restore(&r0, &ms);
@@ -642,7 +642,7 @@ static int test_rebuild_active_chain_fills_holes_from_block_map(void) {
 /* Regression test: rebuild_active_chain must be O(N), not O(N²).
  *
  * Live shape: post-anchor restore installs a tip at ~h=3M with pprev=NULL.
- * active_chain_set_tip writes NULL into every slot below the tip. The
+ * active_chain_move_window_tip writes NULL into every slot below the tip. The
  * residual-hole fill then has tip_h NULL slots, and the pre-fix code did
  * a fresh block_map scan per hole — tip_h × block_map_size ops. At live
  * scale that's ~10 trillion ops and pins the node at ~92% CPU for >5min
@@ -682,7 +682,7 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
         for (int h = 0; h < H; h++)
             ms.chain_active.chain[h] = NULL;
 
@@ -773,7 +773,7 @@ static int test_rebuild_populates_skiplist_for_log_n_ancestor(void) {
             &ms.map_block_index, &hashes[H]);
         ASSERT(tip != NULL);
         ASSERT(tip->pskip == NULL);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
         for (int h = 0; h < H; h++)
             ms.chain_active.chain[h] = NULL;
 
@@ -949,7 +949,7 @@ static int test_rebuild_active_chain_scans_block_files_for_canonical_positions(v
          * this stale position and recover by header hash. */
         idx[1]->nDataPos = pos[0].nPos;
 
-        ASSERT(active_chain_set_tip(&ms.chain_active, idx[2]));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, idx[2]));
         int populated = chain_restore_rebuild_active_chain(&ms, idx[2], tmpdir);
         ASSERT(populated == 3);
         ASSERT(active_chain_at(&ms.chain_active, 0) == idx[0]);
@@ -1146,7 +1146,7 @@ static int test_finalize_null_datadir_skips_disk(void) {
         }
         struct block_index *tip = block_map_find(
             &ms.map_block_index, &hashes[N-1]);
-        ASSERT(active_chain_set_tip(&ms.chain_active, tip));
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
         bii_record_recovery_status(BII_TIP_MISSING_IN_SQL,
                                    BII_RECOVERY_RECONCILE_REQUIRED,
                                    "unit-test stale reconcile",

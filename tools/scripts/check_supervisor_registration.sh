@@ -31,9 +31,11 @@ BASELINE=tools/scripts/supervisor_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
 declare -A baseline
+baseline_count=0
 while IFS= read -r line; do
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     baseline["$line"]=1
+    baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
 fail=0
@@ -60,7 +62,7 @@ for f in app/services/src/*_service.c; do
 done
 
 if [ "$fail" = "0" ]; then
-    echo "check_supervisor_registration: clean — ${#baseline[@]} grandfathered, no new ones"
+    echo "check_supervisor_registration: clean — ${baseline_count} grandfathered, no new ones"
     exit 0
 fi
 

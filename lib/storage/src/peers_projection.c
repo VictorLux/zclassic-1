@@ -2,9 +2,8 @@
  *
  * peers_projection — Phase 4d-2 event-log consumer.
  *
- * Shadow mode only: legacy peer writes still update node.db. This module
- * consumes EV_PEER_OBSERVED / EV_PEER_DROPPED into a rebuildable SQLite
- * projection used for diffing before a later cutover.
+ * Consumes EV_PEER_OBSERVED / EV_PEER_DROPPED into a rebuildable SQLite
+ * projection used by diagnostics and replay checks.
  */
 
 #include "storage/peers_projection.h"

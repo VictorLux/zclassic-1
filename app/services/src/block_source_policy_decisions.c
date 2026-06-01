@@ -70,7 +70,7 @@ static void emit_decision_event(const char *op,
         d->selected_source < CAC_SOURCE_NUM)
         s = &d->sources[d->selected_source];
     const char *selection_blocker =
-        s && s->selection_blocker[0] ? s->selection_blocker : "-";
+        s && s->selection_reason[0] ? s->selection_reason : "-";
 
     const char *source_name = cac_source_name(d->selected_source);
     const char *trust_name = cac_source_trust_name(d->selected_source);
@@ -139,8 +139,8 @@ bool block_source_policy_peer_floor_recovery_needed(
     bool recover = healthy_outbound < min_healthy &&
                    decision->selected_source != CAC_SOURCE_P2P;
     const char *p2p_blocker =
-        decision->sources[CAC_SOURCE_P2P].selection_blocker[0] ?
-        decision->sources[CAC_SOURCE_P2P].selection_blocker : "-";
+        decision->sources[CAC_SOURCE_P2P].selection_reason[0] ?
+        decision->sources[CAC_SOURCE_P2P].selection_reason : "-";
     emit_decision_event(
         "peer_floor", "recover", recover, decision,
         "healthy=%d min=%d local=%d peer=%d p2psb=%s",

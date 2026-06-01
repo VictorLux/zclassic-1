@@ -11,7 +11,7 @@ See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (t
 **Canonical architecture:** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) — read this BEFORE writing or moving any code.
 **Status board:** [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) — current phase, conformance metrics, in-flight worktrees.
 
-The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagonal ports/adapters + a new **Condition** shape for auto-healing. Every `.c` file under `app/` lives in exactly one of eight folders matching one of eight shapes (Controller, Service, Model, Job, Supervisor, Condition, Event, Storage Adapter). Lint gates ratchet to enforce.
+The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagonal ports/adapters + a new **Condition** shape for auto-healing. Every `.c` file under `app/` lives in exactly one of eight folders matching one of eight shapes (Controller, Service, Model, Job, Supervisor, Condition, Event, Storage Adapter). Lint gates ratchet to enforce. The reducer/staged pipeline is now the authoritative chain-advance architecture; the remaining work is deleting stale cutover/shadow residue, moving mixed-purpose files into their proper shapes, and shrinking all baselines to zero.
 
 **Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
 
@@ -27,7 +27,7 @@ Type **`continue zclassic23 development`**. The agent will:
 
 Past plans at `~/.claude/plans/` (zclassic23-plan.md, zclassic23-ideal-architecture.md, come-up-with-architecture-concurrent-sutherland.md, zclassic23-50-year-architecture.md) are reference material. The framework refactor at `docs/FRAMEWORK.md` supersedes them all for active work.
 
-Wave F-1..F-5 kernel primitives (stage, mailbox, projection, platform.clock, platform.rng) shipped but mostly unused — Phase 1 of the refactor forces adoption. Wave S S-1..S-4b shipped (staged sync stages) — these ARE Jobs in the new framework; Phase 2 finishes S-5..S-12 and dissolves the chain-advance mega-modules.
+Wave F-1..F-5 kernel primitives (stage, mailbox, projection, platform.clock, platform.rng) shipped and are part of the framework base. Wave S staged sync stages are Jobs in the new framework and form the reducer path. Current cleanup work should prefer subtraction over new compatibility surfaces.
 
 ## Defensive Coding Standards (MANDATORY)
 
@@ -70,7 +70,7 @@ Restart Claude Code after adding. The tools appear automatically.
 
 ### Quick Reference
 
-There are 112 typed tools. **This table lists only the ones you reach for
+There are 98 typed tools. **This table lists only the ones you reach for
 daily** — it is deliberately not exhaustive. For the full catalog, call
 `zcl_tools_list` (live routing table) or read the source of truth:
 `tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
@@ -84,7 +84,6 @@ daily** — it is deliberately not exhaustive. For the full catalog, call
 | `zcl_peers` | Connected peers (addresses, latency, heights) |
 | `zcl_dataintegrity` / `zcl_utxocommitment` | SHA3 over consensus tables / UTXO set |
 | `zcl_balance` / `zcl_listunspent` | Wallet balance; spendable UTXOs |
-| `*_projection_diff` | Phase-4 shadow-vs-legacy parity (`zcl_utxo_`, `zcl_block_index_diff`, `zcl_mempool_`, `zcl_peers_`, `zcl_znam_`) |
 | **Primitive** `zcl_state` | Generic state dump: `subsystem=supervisor,watchdog,boot,block_index,…` — prefer this over a bespoke tool |
 | **Primitive** `zcl_node_log` | Server-side regex tail of node.log (level filter) |
 | **Primitive** `zcl_sql` | SELECT-only SQL over node.db (rate-gated) |

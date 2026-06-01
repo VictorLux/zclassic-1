@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * body_persist_stage — Wave S, S-5 shadow stage.
+ * body_persist_stage — Wave S, S-5 stage.
  *
  * Consumes `body_fetch_log`; for each height where the body is on disk,
  * reads the body, verifies header+merkle consistency, and logs the result.
- * Shadow mode: no mutation of consensus state. */
+ * Emits verified block bodies into the append-only event log. */
 
 #ifndef ZCL_SERVICES_BODY_PERSIST_STAGE_H
 #define ZCL_SERVICES_BODY_PERSIST_STAGE_H

@@ -240,6 +240,10 @@ static int t_null_repo(void)
     struct chain_state_commit c = {0};
     bool ok = csr_commit_tip(NULL, &c) == CSR_REJECTED_NULL_INPUT;
     CSR_RUN("csr: NULL repository returns NULL_INPUT", ok);
+    struct zcl_result zr = csr_commit_tip_result(NULL, &c);
+    ok = !zr.ok && zr.code == -(1000 + CSR_REJECTED_NULL_INPUT) &&
+         strstr(zr.message, "null_input") != NULL;
+    CSR_RUN("csr: result wrapper carries zcl_result failure", ok);
     return failures;
 }
 

@@ -4,8 +4,8 @@
  *
  * S-5 consumes body_fetch_log and verifies that bodies observed on disk are
  * readable, hash to the active-chain header, and merkle-reconstruct to the
- * admitted header's root. It is a shadow stage: it writes only
- * body_persist_log plus its stage cursor in progress.kv. */
+ * admitted header's root. It writes body_persist_log plus its stage cursor in
+ * progress.kv, and emits verified bodies into the append-only event log. */
 
 #include "platform/time_compat.h"
 #include "jobs/body_persist_stage.h"
@@ -152,11 +152,10 @@ static bool verify_merkle_root(const struct block *blk)
 }
 
 /* B2: emit the validated block body into the append-only event log.
- * Best-effort shadow emission — mirrors the EV_BLOCK_HEADER pattern in
- * block_index_db.c: any failure (log not wired, serialize/append error)
- * is counted and logged, never propagated to the stage result. The body
- * bytes are the canonical block_serialize() wire form, so a replay
- * consumer round-trips them via block_deserialize(). */
+ * Best-effort event emission: any failure (log not wired, serialize/append
+ * error) is counted and logged, never propagated to the stage result. The body
+ * bytes are the canonical block_serialize() wire form, so a replay consumer
+ * round-trips them via block_deserialize(). */
 static void emit_block_body_event(const struct block *blk,
                                   const struct uint256 *hash,
                                   int height)
@@ -173,7 +172,7 @@ static void emit_block_body_event(const struct block *blk,
     if (!block_serialize(blk, &s)) {
         stream_free(&s);
         LOG_WARN("body_persist",
-                 "[body_persist] shadow emit: block_serialize failed h=%d",
+                 "[body_persist] event emit: block_serialize failed h=%d",
                  height);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
                                   memory_order_relaxed);
@@ -182,7 +181,7 @@ static void emit_block_body_event(const struct block *blk,
 
     if (s.size > EV_BLOCK_BODY_MAX_BODY) {
         LOG_WARN("body_persist",
-                 "[body_persist] shadow emit: body %zu > max %u h=%d",
+                 "[body_persist] event emit: body %zu > max %u h=%d",
                  s.size, (unsigned)EV_BLOCK_BODY_MAX_BODY, height);
         stream_free(&s);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
@@ -211,7 +210,7 @@ static void emit_block_body_event(const struct block *blk,
     if (!ok) {
         free(buf);
         LOG_WARN("body_persist",
-                 "[body_persist] shadow emit: serialize failed h=%d",
+                 "[body_persist] event emit: serialize failed h=%d",
                  height);
         atomic_fetch_add_explicit(&g_body_emit_fail_total, 1,
                                   memory_order_relaxed);
@@ -314,7 +313,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     }
 
     /* B2: the body is read, hashes to its header, and merkle-checks —
-     * emit it into the append-only log before freeing (shadow mode). */
+     * emit it into the append-only log before freeing. */
     emit_block_body_event(&blk, &disk_hash, next_h);
 
     /* Single-engine BLOCKER 1 PIECE 3: the body has landed on disk and
@@ -370,7 +369,7 @@ bool body_persist_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("body_persist", "[body_persist] stage initialised (shadow mode)");
+    LOG_INFO("body_persist", "[body_persist] stage initialised");
     return true;
 }
 

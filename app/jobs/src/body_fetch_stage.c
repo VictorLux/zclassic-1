@@ -204,8 +204,8 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
 
-    /* Body observed on disk. Record presence; bytes=0 in shadow mode
-     * (size probing deferred — would add per-height pread cost). */
+    /* Body observed on disk. Record presence; bytes=0 because size probing
+     * would add per-height pread cost. */
     if (!log_insert(db, next_h, bi->phashBlock, "disk", 0, true, NULL))
         return JOB_FATAL;
 
@@ -252,7 +252,7 @@ bool body_fetch_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("body_fetch", "[body_fetch] stage initialised (shadow mode)");
+    LOG_INFO("body_fetch", "[body_fetch] stage initialised");
     return true;
 }
 

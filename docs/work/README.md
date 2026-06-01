@@ -1,5 +1,11 @@
 # Parallel-Worktree Workflow
 
+> Status note, 2026-06-01: this directory contains only the parallel-worktree
+> protocol. The current architecture/status sources are `docs/FRAMEWORK.md`,
+> `docs/REFACTOR_STATUS.md`, and `docs/HANDOFF.md`. Obsolete cutover/B8
+> runbooks, stale design notes, and paused worker assignments were deleted; git
+> history is their audit record.
+
 The framework refactor runs in parallel across multiple working
 directories ("worktrees" — actually separate clones). Each worktree picks
 up an assignment, branches, commits, pushes, and reports completion. A
@@ -42,13 +48,10 @@ The agent's startup ritual (defined in
 
 ## Where to look
 
-- **`docs/work/*.md`** — only **live** work: in-progress, claimable, deferred.
-  If it's here, it is not finished.
-- When an assignment merges, its doc is **deleted** — git history is the record
-  (no `done/` archive; that was journey sprawl, purged 2026-05-25).
-- The authoritative "what's next" list is the **NEXT** section of
-  [`REFACTOR_STATUS.md`](../REFACTOR_STATUS.md); live numbers are in
-  [`BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md). Don't quote numbers elsewhere — they rot.
+- **Current work:** [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md).
+- **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md).
+- **Session entrypoint:** [`../HANDOFF.md`](../HANDOFF.md).
+- **Worker protocol:** this file plus [`agent-protocol.md`](./agent-protocol.md).
 
 ## How assignments are structured
 

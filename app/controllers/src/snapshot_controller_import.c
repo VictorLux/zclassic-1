@@ -78,11 +78,11 @@ static void *import_block_index_thread(void *arg)
     bool ok = true;
 
     /* Turbo mode */
-    if (!snapshot_sql_exec_checked(ndb.db, "PRAGMA synchronous=OFF",
+    if (!snapshot_sql_exec_checked(&ndb, "PRAGMA synchronous=OFF",
                                    "T1 set synchronous=OFF") ||
-        !snapshot_sql_exec_checked(ndb.db, "PRAGMA cache_size=-524288",
+        !snapshot_sql_exec_checked(&ndb, "PRAGMA cache_size=-524288",
                                    "T1 set cache_size") ||
-        !snapshot_sql_exec_checked(ndb.db, "PRAGMA wal_autocheckpoint=0",
+        !snapshot_sql_exec_checked(&ndb, "PRAGMA wal_autocheckpoint=0",
                                    "T1 disable wal_autocheckpoint")) {
         db_wrapper_close(&dbw);
         node_db_close(&ndb);
@@ -91,13 +91,13 @@ static void *import_block_index_thread(void *arg)
     sqlite3_busy_timeout(ndb.db, 30000);
 
     /* Drop block indexes for bulk load */
-    if (!snapshot_sql_exec_checked(ndb.db,
+    if (!snapshot_sql_exec_checked(&ndb,
             "DROP INDEX IF EXISTS idx_blocks_prev",
             "T1 drop idx_blocks_prev") ||
-        !snapshot_sql_exec_checked(ndb.db,
+        !snapshot_sql_exec_checked(&ndb,
             "DROP INDEX IF EXISTS idx_blocks_chainwork",
             "T1 drop idx_blocks_chainwork") ||
-        !snapshot_sql_exec_checked(ndb.db, "DELETE FROM blocks",
+        !snapshot_sql_exec_checked(&ndb, "DELETE FROM blocks",
             "T1 clear blocks")) {
         db_wrapper_close(&dbw);
         node_db_close(&ndb);
@@ -239,16 +239,16 @@ static void *import_block_index_thread(void *arg)
     /* Rebuild indexes */
     printf("T1: rebuilding block indexes...\n");
     fflush(stdout);
-    if (!snapshot_sql_exec_checked(ndb.db,
+    if (!snapshot_sql_exec_checked(&ndb,
             "CREATE INDEX IF NOT EXISTS idx_blocks_prev ON blocks(prev_hash)",
             "T1 rebuild idx_blocks_prev") ||
-        !snapshot_sql_exec_checked(ndb.db,
+        !snapshot_sql_exec_checked(&ndb,
             "CREATE INDEX IF NOT EXISTS idx_blocks_chainwork"
             " ON blocks(chain_work DESC)",
             "T1 rebuild idx_blocks_chainwork") ||
-        !snapshot_sql_exec_checked(ndb.db, "PRAGMA synchronous=NORMAL",
+        !snapshot_sql_exec_checked(&ndb, "PRAGMA synchronous=NORMAL",
             "T1 restore synchronous=NORMAL") ||
-        !snapshot_sql_exec_checked(ndb.db, "PRAGMA wal_autocheckpoint=1000",
+        !snapshot_sql_exec_checked(&ndb, "PRAGMA wal_autocheckpoint=1000",
             "T1 restore wal_autocheckpoint")) {
         db_wrapper_close(&dbw);
         node_db_close(&ndb);

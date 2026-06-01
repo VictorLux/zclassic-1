@@ -14,40 +14,19 @@ app/controllers/src/hodl_controller.c:235: coins_view_cache_flush(ctx->coins_tip
 app/controllers/src/hodl_controller.c:90: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
-app/services/src/chain_state_repository.c:598: if (!active_chain_set_tip(csr->chain_active, NULL)) {
-app/services/src/chain_state_repository.c:654: ok = active_chain_set_tip(csr->chain_active, old_tip);
-app/services/src/chain_state_repository.c:702: if (!active_chain_set_tip(csr->chain_active, commit->new_tip)) {
-app/services/src/chain_tip.c:118: if (!active_chain_set_tip(&ms->chain_active, NULL))
-app/services/src/chain_tip.c:120: "chain_set_active_tip: active_chain_set_tip(NULL) failed "
-app/services/src/chain_tip.c:132: if (!active_chain_set_tip(&ms->chain_active, new_tip)) {
-app/services/src/utxo_recovery_service.c:119: coins_view_cache_flush(ctx->coins_tip);
-app/services/src/utxo_recovery_service.c:248: coins_view_cache_flush(ctx->coins_tip);
-app/services/src/utxo_recovery_service.c:270: coins_view_cache_flush(ctx->coins_tip);
 config/src/boot_index.c:156: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:226: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:239: coins_view_cache_flush(cvtip);
-config/src/boot_services.c:3063: if (coins_view_cache_flush(svc->coins_tip)) {
-config/src/boot_services.c:3079: coins_view_cache_flush(svc->coins_tip);
-config/src/boot_services.c:3217: coins_view_cache_flush(svc->coins_tip);
+config/src/boot_services.c:3066: if (coins_view_cache_flush(svc->coins_tip)) {
+config/src/boot_services.c:3082: coins_view_cache_flush(svc->coins_tip);
+config/src/boot_services.c:3215: coins_view_cache_flush(svc->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
 lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/include/storage/coins_view_sqlite.h:54:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/storage/include/storage/utxo_projection.h:50:void utxo_projection_set_author(utxo_author_t who);
 lib/storage/src/coins_view_sqlite.c:55: return coins_view_sqlite_batch_write(cvs, map_coins, hash_block);
 lib/storage/src/coins_view_sqlite.c:689:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,
 lib/storage/src/coins_view_sqlite.c:693: return coins_view_sqlite_batch_write_ex(cvs, map_coins, hash_block, NULL);
 lib/storage/src/coins_view_sqlite.c:696:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/storage/src/utxo_projection.c:93:void utxo_projection_set_author(utxo_author_t who)
-lib/validation/include/validation/chainstate.h:102:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
-lib/validation/src/chainstate.c:333:bool active_chain_set_tip(struct active_chain *c, struct block_index *bi)
 lib/validation/src/process_block_flush_policy.c:237: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
 lib/validation/src/process_block_flush_policy.c:251: ok = coins_view_cache_flush(coins_tip);
-# active_chain_set_tip is the in-memory active-chain cursor move already
-# grandfathered above for chain_state_repository.c/chain_tip.c (the
-# reducer/stage commit path). The AUTHORITATIVE invalidate/self-heal branch
-# reaches the SAME primitive to drive the stage-side reorg unwind (move the
-# cursor DOWN so the stage observes branch_hash divergence, then reducer_kick).
-# Same writer, same caller — not a new chain writer.
-lib/validation/src/process_block_invalidate.c:232: if (!active_chain_set_tip(&ms->chain_active, parent)) {
-lib/validation/src/process_block_self_heal.c:709: if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {

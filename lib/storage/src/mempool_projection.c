@@ -2,9 +2,8 @@
  *
  * mempool_projection — Phase 4d-1 event-log consumer.
  *
- * Shadow mode only: legacy mempool writes still update node.db. This module
- * consumes EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL into a rebuildable
- * SQLite projection used for diffing before a later cutover.
+ * Consumes EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL into a rebuildable
+ * SQLite projection used by diagnostics and replay checks.
  */
 
 #include "storage/mempool_projection.h"

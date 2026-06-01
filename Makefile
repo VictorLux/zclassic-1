@@ -33,17 +33,16 @@ DOMAIN_SRCS = $(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c))
 
 # Application layer (use cases / service objects).
 # May depend on domain/, ports/, primitives, util — never on adapters or I/O.
-APPLICATION_CONTEXTS = consensus operations
+APPLICATION_CONTEXTS = consensus
 APPLICATION_INCLUDES = $(foreach c,$(APPLICATION_CONTEXTS),-Iapplication/$(c)/include)
 APPLICATION_SRCS = $(foreach c,$(APPLICATION_CONTEXTS),$(wildcard application/$(c)/src/*.c))
 
 # Adapters layer (port implementations).
-# Inbound (RPC/MCP/CLI) translates wire to typed commands; outbound
-# (persistence, network) implements the port interfaces.
-ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include \
-	-Iadapters/inbound/include
-ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c) \
-	$(wildcard adapters/inbound/src/*.c)
+# Outbound adapters implement the port interfaces. Inbound surfaces currently
+# live in app/controllers, tools/mcp, and tools/cli until a real adapter shape
+# is introduced.
+ADAPTERS_INCLUDES = -Iadapters/outbound/persistence/include
+ADAPTERS_SRCS = $(wildcard adapters/outbound/persistence/src/*.c)
 
 # MCP router + future controllers (schema-driven tool dispatch)
 MCP_INCLUDES = -Itools

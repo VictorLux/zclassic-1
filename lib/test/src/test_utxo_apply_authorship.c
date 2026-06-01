@@ -4,7 +4,7 @@
  * authority inversion.
  *
  * B3 hands authorship of the UTXO projection from the legacy
- * `update_coins()` shadow emitters to `utxo_apply_stage`. Two
+ * `update_coins()` projection emitters to `utxo_apply_stage`. Two
  * properties must hold for the flip to be safe:
  *
  *   1. ordering_equivalence — the stage emits a block's delta as
@@ -155,31 +155,31 @@ static int run_single_writer_gate(int *failures_out)
     uint8_t txid[32]; make_txid(txid, 0x55);
     uint8_t script[8] = {1,2,3,4,5,6,7,8};
 
-    /* Authority STAGE: the legacy shadow emitter must yield (no event). */
-    utxo_projection_set_author(UTXO_AUTHOR_STAGE);
-    update_coins_emit_utxo_add_shadow(txid, 0, 1234, 7, false, script, 8);
+    /* Authority STAGE: the legacy projection emitter must yield (no event). */
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+    update_coins_emit_utxo_add_projection(txid, 0, 1234, 7, false, script, 8);
     UA_CHECK("gate: catch_up after STAGE emit",
              utxo_projection_catch_up(p) != UINT64_MAX);
     UA_CHECK("gate: STAGE silences legacy emitter (count==0)",
              utxo_projection_count(p) == 0);
 
-    /* Authority LEGACY (default): the legacy emitter writes again. */
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
-    update_coins_emit_utxo_add_shadow(txid, 0, 1234, 7, false, script, 8);
+    /* Authority LEGACY: the legacy emitter writes again. */
+    utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
+    update_coins_emit_utxo_add_projection(txid, 0, 1234, 7, false, script, 8);
     UA_CHECK("gate: catch_up after LEGACY emit",
              utxo_projection_catch_up(p) != UINT64_MAX);
     UA_CHECK("gate: LEGACY emitter writes (count==1)",
              utxo_projection_count(p) == 1);
 
-    /* Default authority is LEGACY — confirm and restore. */
-    UA_CHECK("gate: default author is LEGACY",
+    /* Confirm the test-only selector, then restore the production default. */
+    UA_CHECK("gate: LEGACY author selected",
              utxo_projection_get_author() == UTXO_AUTHOR_LEGACY);
 
     utxo_projection_set_event_log(NULL);
     utxo_projection_close(p);
     event_log_close(log);
 done:
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     test_cleanup_tmpdir(dir);
     *failures_out += failures;
     return failures;

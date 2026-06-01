@@ -52,10 +52,10 @@
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 framework Phase 0: zcl_conditions;
                                  * +2 Phase 6b postmortem capsule tools
-                                 * +1 cutover PROVE Tier-1: zcl_replay_verify
+                                 * +1 offline replay verifier: zcl_replay_verify
                                  *
                                  * Stage 4 of the legacy-engine purge removed the
-                                 * comparison/cutover surfaces (-14): zcl_cutovermode,
+                                 * removed comparison surfaces (-14): zcl_cutovermode,
                                  * zcl_cutoverpreflight, zcl_diff_with_legacy,
                                  * zcl_diff_with_legacy_shadow, zcl_diff_staged_header_admit,
                                  * zcl_utxo_projection_diff, zcl_block_index_diff, and the
@@ -80,7 +80,7 @@
                                  * zcl_cutoverpreflight, zcl_diff_with_legacy, and the
                                  * 7 *_projection_diff tools. */
 #define EXPECTED_CHAIN      16  /* + chain_tip + reorg_history
-                                 * + zcl_replay_verify (cutover PROVE Tier-1)
+                                 * + zcl_replay_verify (offline replay verifier)
                                  * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
                                  *
                                  * Stage 4 purge removed -4 chain tools:

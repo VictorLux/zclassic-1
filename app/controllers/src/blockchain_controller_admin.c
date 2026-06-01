@@ -20,11 +20,11 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/wallet_tx.h"
 #include "primitives/block.h"
 #include "services/chain_state_repository.h"
 #include "storage/coins_db.h"
 #include "storage/disk_block_io.h"
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -295,54 +295,21 @@ bool rpc_importchainstate(const struct json_value *params, bool help,
     /* Fix height=0 UTXOs from transaction index (LevelDB decoder can
      * fail to read the trailing height varint for some entries). */
     {
-        sqlite3_stmt *h0 = NULL;
-        sqlite3_prepare_v2(ctx->node_db->db,
-            "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
-            -1, &h0, NULL);
-        int64_t h0_count = 0;
-        if (h0 && AR_STEP_ROW_READONLY(h0) == SQLITE_ROW)
-            h0_count = sqlite3_column_int64(h0, 0);
-        sqlite3_finalize(h0);
+        int64_t h0_count = db_utxo_count_missing_heights(ctx->node_db);
         if (h0_count > 0) {
             printf("importchainstate: fixing %lld UTXOs with height=0...\n",
                    (long long)h0_count);
-            sqlite3_exec(ctx->node_db->db,
-                "UPDATE utxos SET height = ("
-                "  SELECT t.block_height FROM transactions t"
-                "  WHERE t.txid = utxos.txid"
-                ") WHERE height = 0 AND EXISTS ("
-                "  SELECT 1 FROM transactions t"
-                "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
-                ")", NULL, NULL, NULL);
+            int fixed = db_utxo_repair_missing_heights_from_tx_index(ctx->node_db);
             printf("importchainstate: fixed %d UTXO heights\n",
-                   sqlite3_changes(ctx->node_db->db));
+                   fixed);
         }
     }
 
-    /* Rebuild wallet_utxos and addresses from new UTXO set */
-    sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL, NULL);
-    sqlite3_exec(ctx->node_db->db,
-        "DELETE FROM wallet_utxos", NULL, NULL, NULL);
-    sqlite3_exec(ctx->node_db->db,
-        "INSERT INTO wallet_utxos "
-        "(txid, vout, value, address_hash, script, height, is_coinbase) "
-        "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
-        "u.height, u.is_coinbase "
-        "FROM utxos u INNER JOIN wallet_keys wk "
-        "ON u.address_hash = wk.pubkey_hash",
-        NULL, NULL, NULL);
-    sqlite3_exec(ctx->node_db->db,
-        "DELETE FROM addresses", NULL, NULL, NULL);
-    sqlite3_exec(ctx->node_db->db,
-        "INSERT OR REPLACE INTO addresses "
-        "(address_hash, script_type, balance, utxo_count, "
-        "first_seen_height, last_seen_height) "
-        "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
-        "MIN(height), MAX(height) "
-        "FROM utxos WHERE address_hash IS NOT NULL "
-        "GROUP BY address_hash",
-        NULL, NULL, NULL);
-    sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL, NULL);
+    if (!db_utxo_rebuild_wallet_and_address_caches(ctx->node_db)) {
+        json_set_str(result, "Failed to rebuild wallet/address caches");
+        LOG_FAIL("blockchain",
+                 "importchainstate: failed to rebuild wallet/address caches");
+    }
 
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
@@ -381,23 +348,15 @@ bool rpc_importchainstate(const struct json_value *params, bool help,
     json_push_kv_int(result, "utxos_imported", count);
 
     /* Report balance */
-    sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT COALESCE(SUM(value),0) FROM utxos",
-        -1, &s, NULL);
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        json_push_kv_int(result, "total_value_zatoshi",
-                          sqlite3_column_int64(s, 0));
-    sqlite3_finalize(s);
-
-    s = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT COALESCE(SUM(value),0) FROM wallet_utxos WHERE spent_txid IS NULL",
-        -1, &s, NULL);
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        json_push_kv_int(result, "wallet_balance_zatoshi",
-                          sqlite3_column_int64(s, 0));
-    sqlite3_finalize(s);
+    int64_t total_value = db_utxo_total_value(ctx->node_db);
+    if (total_value < 0) {
+        json_set_str(result, "Failed to read imported UTXO total");
+        LOG_FAIL("blockchain",
+                 "importchainstate: failed to read imported UTXO total");
+    }
+    json_push_kv_int(result, "total_value_zatoshi", total_value);
+    json_push_kv_int(result, "wallet_balance_zatoshi",
+                     db_wallet_utxo_balance(ctx->node_db));
 
     printf("importchainstate: done — %d UTXOs imported\n", count);
     fflush(stdout);

@@ -104,7 +104,7 @@ static void persist_source_snapshot(struct node_db *ndb,
     if (source_field_key(key, sizeof(key), source, "state"))
         (void)persist_text(ndb, key, s->state);
     if (source_field_key(key, sizeof(key), source, "selection_blocker"))
-        (void)persist_text(ndb, key, s->selection_blocker);
+        (void)persist_text(ndb, key, s->selection_reason);
     if (source_field_key(key, sizeof(key), source, "reason"))
         (void)persist_text(ndb, key, s->reason);
     if (source_field_key(key, sizeof(key), source, "blocker"))
@@ -187,7 +187,7 @@ static void restore_source_snapshot(struct node_db *ndb,
     text[0] = '\0';
     if (source_field_key(key, sizeof(key), source, "selection_blocker") &&
         node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))
-        bsp_copy_text(s->selection_blocker, sizeof(s->selection_blocker), text);
+        bsp_copy_text(s->selection_reason, sizeof(s->selection_reason), text);
     text[0] = '\0';
     if (source_field_key(key, sizeof(key), source, "reason") &&
         node_db_state_get(ndb, key, text, sizeof(text) - 1, &len))

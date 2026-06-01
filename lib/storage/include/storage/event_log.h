@@ -4,8 +4,8 @@
  *
  * The event log is the foundation of Phase 4: a single append-only file
  * that becomes the source of truth, with N projections derived from it.
- * This file ships ONLY the primitive — no callers wire it up here. The
- * cutover happens in later sub-phases. Read
+ * This file ships ONLY the primitive; boot/runtime code wires concrete
+ * producers and projections. Read
  * `docs/architecture/phase4-storage-unification.md` §"4a" for context.
  *
  * Wire format (per event)

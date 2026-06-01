@@ -417,8 +417,8 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
     /* Chain tip sapling root. Read the tip through the single tip accessor
      * (active_chain_tip), not active_chain_at(c, height): the two are
      * identical today (active_chain_at(c, c->height) == active_chain_tip(c))
-     * but only active_chain_tip is the B5/B7 flip seam that becomes
-     * log_head-derived. See docs/work/b5-chain-active-readers.md. */
+     * but only active_chain_tip tracks the authoritative reducer tip if the
+     * accessor body derives from durable tip_finalize state. */
     int tip = active_chain_height(&ctx->main_state->chain_active);
     const struct block_index *tip_bi =
         active_chain_tip(&ctx->main_state->chain_active);

@@ -149,7 +149,7 @@ static bool witness_peer_floor_violated(int64_t target_at_detect)
 
     /* DOCTRINE: a peer_floor remedy only resolved the symptom if the chain
      * actually resumed making progress. Counting peers alone is the original
-     * false-ok bug: during a header-admit-cutover wedge we HAD >=3 healthy
+     * false-ok bug: during a header-admit wedge we HAD >=3 healthy
      * peers, so the old witness reported `ok` 46x while the tip never moved.
      *
      * Resolution = either (a) the local height advanced past the height

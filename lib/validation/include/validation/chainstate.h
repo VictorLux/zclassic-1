@@ -95,16 +95,22 @@ struct active_chain {
 
 void active_chain_init(struct active_chain *c);
 void active_chain_free(struct active_chain *c);
+struct block_index *active_chain_cached_tip(const struct active_chain *c);
 struct block_index *active_chain_tip(const struct active_chain *c);
 struct block_index *active_chain_at(const struct active_chain *c, int height);
 bool active_chain_contains(const struct active_chain *c,
                            const struct block_index *bi);
-bool active_chain_set_tip(struct active_chain *c, struct block_index *bi);
+/* Move the in-memory active-chain cache/window. This is not public tip
+ * authority; reducer stages and explicit repair/bootstrap APIs publish
+ * authority separately after their durable writes succeed. */
+bool active_chain_move_window_tip(struct active_chain *c,
+                                  struct block_index *bi);
+bool active_chain_set_tip(struct active_chain *c, struct block_index *bi); // one-write-path-ok:active-chain-compat
 /* Forward-only widen of the visible chain[] window to a most-work candidate
- * that builds on the current tip, WITHOUT moving the authoritative tip or
- * firing the set_tip authority callback. The reducer's structural analogue
- * of legacy activate_best_chain assembling chain[] out to find_most_work_chain's
- * candidate. No-op when candidate->nHeight <= c->height. See chainstate.c. */
+ * that builds on the current tip, WITHOUT publishing an authoritative tip.
+ * The reducer's structural analogue of legacy activate_best_chain assembling
+ * chain[] out to find_most_work_chain's candidate. No-op when
+ * candidate->nHeight <= c->height. See chainstate.c. */
 bool active_chain_extend_window(struct active_chain *c,
                                 struct block_index *candidate);
 /* Side-effect-free most-work candidate selector over the block map, mirroring
@@ -120,7 +126,6 @@ int active_chain_height(const struct active_chain *c);
 struct active_chain_authority {
     int64_t (*get_height)(void);
     bool    (*get_hash)(uint8_t hash[32]);
-    void    (*set_tip)(int height, const uint8_t hash[32]);
     bool    (*is_authoritative)(void);
 };
 

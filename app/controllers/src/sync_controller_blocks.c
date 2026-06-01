@@ -11,6 +11,7 @@
 #include "sync_controller_internal.h"
 #include "services/block_source_policy.h"
 #include "services/recovery_policy.h"
+#include "models/block.h"
 #include "models/db_txn.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
@@ -384,23 +385,12 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         struct byte_stream ts;
         stream_init(&ts, 4096);
         incremental_tree_serialize(&tree, &ts);
-        sqlite3_stmt *upd = NULL;
-        if (sqlite3_prepare_v2(ndb->db,
-            "UPDATE blocks SET sapling_tree_data=? WHERE hash=?",
-            -1, &upd, NULL) != SQLITE_OK || !upd) {
-            fail_reason = "sapling_tree_update_prepare";
+        if (!db_block_update_sapling_tree_data(ndb, pindex->phashBlock->data,
+                                               ts.data, ts.size)) {
+            fail_reason = "sapling_tree_update";
             stream_free(&ts);
             goto fail;
         }
-        if (sqlite3_bind_blob(upd, 1, ts.data, (int)ts.size, SQLITE_STATIC) != SQLITE_OK ||
-            sqlite3_bind_blob(upd, 2, pindex->phashBlock->data, 32, SQLITE_STATIC) != SQLITE_OK ||
-            AR_STEP_ROW_READONLY(upd) != SQLITE_DONE) {
-            fail_reason = "sapling_tree_update_step";
-            sqlite3_finalize(upd);
-            stream_free(&ts);
-            goto fail;
-        }
-        sqlite3_finalize(upd);
         stream_free(&ts);
     }
 

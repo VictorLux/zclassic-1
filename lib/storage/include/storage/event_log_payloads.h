@@ -945,10 +945,9 @@ ev_utxo_spend_parse(const void *payload, size_t payload_len,
 
 /* ── EV_BLOCK_HEADER ─────────────────────────────────────────────────
  *
- * Per-block-index entry. Emitted alongside the legacy LevelDB write in
- * block_index_db.c (shadow mode for Phase 4c). The block_index_projection
- * consumes these to materialize a SQLite-backed replacement for the
- * LevelDB `b` keyspace.
+ * Per-block-index entry. Emitted alongside the persisted block-index write.
+ * The block_index_projection consumes these to materialize a SQLite-backed
+ * replacement for the LevelDB `b` keyspace.
  *
  * Wire layout (little-endian, no padding):
  *   bytes  0..31    hash                  (block hash)
@@ -1027,8 +1026,7 @@ bool ev_block_header_parse(const uint8_t *in, size_t in_len,
  * log is replayable from scratch — folding it rebuilds the UTXO set
  * without consulting the on-disk block files. Emitted by the body_persist stage
  * once a body is read off disk, hashes to its admitted header, and
- * merkle-reconstructs to that header's root (shadow mode for B2; the log
- * is durable but not yet authoritative — see REFACTOR_STATUS B5/B7).
+ * merkle-reconstructs to that header's root.
  *
  * Wire layout (little-endian, no padding):
  *   bytes  0..31    hash        (block hash — the projection/dedup key)

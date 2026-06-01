@@ -80,6 +80,8 @@ void node_db_close(struct node_db *ndb);
 
 /* Execute raw SQL (for migrations, debugging). */
 bool node_db_exec(struct node_db *ndb, const char *sql);
+bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
+                                    sqlite3_stmt **stmt_out);
 
 /* Transaction control for batch operations. */
 bool node_db_begin(struct node_db *ndb);

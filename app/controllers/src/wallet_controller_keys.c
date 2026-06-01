@@ -59,37 +59,22 @@ bool rpc_dumpprivkey(const struct json_value *params, bool help,
     return true;
 }
 
-/* Verify that wallet_sqlite_write_key actually persisted the given
- * key by round-tripping a read from wallet_keys. The existing
- * wallet_sqlite module has no read-single-key entry point (Agent 2
- * will add one in plan §5.2); in the interim we query directly.
- *
- * Returns true if the row was found AND the stored privkey matches
- * the supplied one byte-for-byte. Returns false on any deviation. */
-static bool wallet_readback_key(sqlite3 *db,
+/* Verify that wallet_sqlite_write_key_r actually persisted the given key.
+ * Returns true if the row was found and the stored privkey matches the
+ * supplied one byte-for-byte. Returns false on any deviation. */
+static bool wallet_readback_key(struct wallet_sqlite *ws,
                                  const struct pubkey *pk,
                                  const struct privkey *want)
 {
-    if (!db || !pk || !want) return false;
-    uint8_t pkh[20];
-    hash160(pk->vch, pk->size, pkh);
+    if (!ws || !pk || !want) return false;
 
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT privkey FROM wallet_keys WHERE pubkey_hash=?1",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK) return false;
-    sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
-    rc = AR_STEP_ROW_READONLY(st);
-    bool ok = false;
-    if (rc == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(st, 0);
-        int         n    = sqlite3_column_bytes(st, 0);
-        if (blob && n == 32 && memcmp(blob, want->vch, 32) == 0) {
-            ok = true;
-        }
-    }
-    sqlite3_finalize(st);
+    struct privkey got;
+    privkey_init(&got);
+    struct zcl_result rr = wallet_sqlite_read_single_key(ws, pk, &got);
+    if (!rr.ok) return false;
+
+    bool ok = got.fValid && memcmp(got.vch, want->vch, 32) == 0;
+    memory_cleanse(got.vch, 32);
     return ok;
 }
 
@@ -147,7 +132,7 @@ bool rpc_importprivkey(const struct json_value *params, bool help,
         /* Readback: prove the write hit disk with the bytes we asked
          * for. A passing write + failing readback was the exact
          * footgun behind the bug this change fixes. */
-        if (!wallet_readback_key(ctx->wallet_db->db, &pk, &key)) {
+        if (!wallet_readback_key(ctx->wallet_db, &pk, &key)) {
             memory_cleanse(key.vch, 32);
             json_set_str(result,
                 "Error: wallet persistence readback mismatch. Key NOT imported. "
@@ -163,20 +148,11 @@ bool rpc_importprivkey(const struct json_value *params, bool help,
         if (ctx->wallet_db) {
             /* Best-effort: delete the row we just wrote. Failure is
              * tracked by the canary on next boot. */
-            uint8_t pkh[20];
-            hash160(pk.vch, pk.size, pkh);
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(ctx->wallet_db->db,
-                    "DELETE FROM wallet_keys WHERE pubkey_hash=?1",
-                    -1, &st, NULL) == SQLITE_OK) {
-                sqlite3_bind_blob(st, 1, pkh, 20, SQLITE_STATIC);
-                /* Best-effort DELETE rolling back the wallet_key row
-                 * we just wrote when the keystore-add failed.  rc is
-                 * intentionally discarded — the canary self-test on
-                 * next boot detects a lingering row. */
-                (void)sqlite3_step(st);  // raw-sql-ok:best-effort-rollback-after-failed-write
-                sqlite3_finalize(st);
-            }
+            struct zcl_result dr = wallet_sqlite_delete_key_r(ctx->wallet_db,
+                                                              &pk);
+            if (!dr.ok)
+                LOG_WARN("wallet", "importprivkey: best-effort key rollback "
+                         "failed (code=%d): %s", dr.code, dr.message);
         }
         memory_cleanse(key.vch, 32);
         json_set_str(result, "Error adding key to wallet");
@@ -337,4 +313,3 @@ bool rpc_importaddress(const struct json_value *params, bool help,
     json_push_kv_real(result, "balance", (double)bal / 1e8);
     return true;
 }
-

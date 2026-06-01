@@ -10,7 +10,3 @@
 # Goal: empty file. The baseline can only shrink — never grow.
 #
 # Format: <relative-path> <max-loc>   (lines starting with # are comments)
-app/controllers/src/legacy_import.c 1105
-app/controllers/src/sync_controller_catchup.c 1262
-app/controllers/src/sync_controller_import.c 995
-app/services/src/legacy_mirror_sync_service.c 1180

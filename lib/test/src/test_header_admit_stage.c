@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Wave S S-2 header_admit shadow stage
- * (app/services/src/header_admit_stage.c).
+ * Unit tests for the Wave S S-2 header_admit stage
+ * (app/jobs/src/header_admit_stage.c).
  *
  * Coverage:
  *   - init / shutdown round-trip; idempotent re-init
@@ -14,10 +14,8 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
-#include "event/event.h"
 #include "primitives/block.h"
 #include "jobs/header_admit_stage.h"
-#include "services/cutover_modes.h"
 #include "services/header_admit_inbox.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
@@ -27,7 +25,6 @@
 #include "validation/chainstate.h"
 #include "validation/main_logic.h"
 #include "validation/main_state.h"
-#include "validation/process_block.h"
 
 #include <errno.h>
 #include <sqlite3.h>
@@ -47,21 +44,6 @@ static int mkdir_p_ha(const char *p)
     if (mkdir(p, 0700) == 0) return 0;
     if (errno == EEXIST) return 0;
     return -1;
-}
-
-static bool ha_stamp_cursor(sqlite3 *db, const char *name, int64_t cursor)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
-            " VALUES(?,?,0)",
-            -1, &st, NULL) != SQLITE_OK)
-        return false;
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(st, 2, cursor);
-    int rc = sqlite3_step(st);  // raw-sql-ok:test-direct
-    sqlite3_finalize(st);
-    return rc == SQLITE_DONE;
 }
 
 /* Build a chain of `n` synthetic block_index entries linked via pprev,
@@ -157,45 +139,12 @@ static bool auth_observer(struct main_state *ms,
     return true;
 }
 
-static void cutover_guard_observer(enum event_type type,
-                                   uint32_t peer_id,
-                                   const void *payload,
-                                   uint32_t payload_len,
-                                   void *ctx)
-{
-    (void)peer_id;
-    (void)payload;
-    (void)payload_len;
-    int *calls = ctx;
-    if (type == EV_CUTOVER_GUARD_DIVERGED && calls)
-        (*calls)++;
-}
-
 int test_header_admit_stage(void)
 {
     printf("\n=== header_admit_stage tests ===\n");
     int failures = 0;
 
     blocker_module_init();
-
-    /* ── cutover mode defaults to AUTHORITATIVE (post-flip, step 13) ── */
-    {
-        HA_CHECK("mode defaults to AUTHORITATIVE",
-                 header_admit_get_mode() == HEADER_ADMIT_MODE_AUTHORITATIVE);
-        header_admit_set_mode((header_admit_mode_t)999);
-        HA_CHECK("invalid mode coerces to SHADOW",
-                 header_admit_get_mode() == HEADER_ADMIT_MODE_SHADOW);
-        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_AUTHORITATIVE,
-                                          CUTOVER_STAGE_MODE_AUTHORITATIVE);
-        HA_CHECK("combined mode sets header admit authoritative",
-                 header_admit_get_mode() ==
-                     HEADER_ADMIT_MODE_AUTHORITATIVE);
-        HA_CHECK("combined mode sets validate headers authoritative",
-                 validate_headers_get_mode() ==
-                     VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-        cutover_modes_set_header_pipeline(CUTOVER_STAGE_MODE_SHADOW,
-                                          CUTOVER_STAGE_MODE_SHADOW);
-    }
 
     /* ── happy path: drain a 5-block synthetic chain ───────────────── */
     {
@@ -331,7 +280,7 @@ int test_header_admit_stage(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── authoritative path is gated behind mode flag ──────────────── */
+    /* ── authoritative path calls the reducer hook ─────────────────── */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","authoritative");
@@ -347,7 +296,6 @@ int test_header_admit_stage(void)
 
         struct auth_hook_state st = {0, -1};
         header_admit_stage_set_authoritative_hook(auth_observer, &st);
-        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
 
         HA_CHECK("auth: init", header_admit_stage_init(&ms));
         HA_CHECK("auth: step calls authoritative hook",
@@ -357,7 +305,6 @@ int test_header_admit_stage(void)
         HA_CHECK("auth: log still records row",
                  log_row_count(progress_store_db()) == 1);
 
-        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
         synth_chain_free(&sc);
@@ -366,11 +313,10 @@ int test_header_admit_stage(void)
     }
 
     /* ── producer path: a staged raw header CREATES a block_index ──────
-     * Reducer step 2. AUTHORITATIVE-only: when the active chain has no
-     * block at the needed height, a raw header pushed through the inbox
-     * lets the stage build the block_index via add_to_block_index — the
-     * reducer extends the chain without legacy accept_block_header.
-     * Dormant in SHADOW (the hash-hint path never sets has_header). */
+     * Reducer step 2. When the active chain has no block at the needed
+     * height, a raw header pushed through the inbox lets the stage build the
+     * block_index via add_to_block_index. The reducer extends the chain
+     * without legacy accept_block_header. */
     {
         char dir[256];
         test_fmt_tmpdir(dir, sizeof(dir), "header_admit","producer");
@@ -394,7 +340,6 @@ int test_header_admit_stage(void)
             ms.pindex_best_header = parent;
         }
 
-        header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
         HA_CHECK("producer: stage init", header_admit_stage_init(&ms));
         HA_CHECK("producer: produced_total starts at 0",
                  header_admit_stage_produced_total() == 0);
@@ -443,9 +388,7 @@ int test_header_admit_stage(void)
         HA_CHECK("producer: cursor advanced to 2",
                  header_admit_stage_cursor() == 2);
 
-        /* SHADOW dormancy: a fresh header pushed in SHADOW is NOT staged,
-         * so no production happens (the path is gated AUTHORITATIVE). */
-        header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
+        /* A second fresh raw header is staged and produced the same way. */
         struct block_header child2;
         block_header_init(&child2);
         child2.hashPrevBlock = child_hash;
@@ -459,164 +402,17 @@ int test_header_admit_stage(void)
         msg2.hash = child2_hash;
         msg2.has_header = true;
         msg2.header = child2;
-        HA_CHECK("producer: push raw header in SHADOW",
+        HA_CHECK("producer: push second raw header",
                  mailbox_header_admit_push(&msg2));
-        HA_CHECK("producer: SHADOW step is IDLE (no production)",
-                 header_admit_stage_step_once() == JOB_IDLE);
-        HA_CHECK("producer: SHADOW left produced_total at 1",
-                 header_admit_stage_produced_total() == 1);
-        HA_CHECK("producer: SHADOW did NOT create child2",
-                 block_map_find(&ms.map_block_index, &child2_hash) == NULL);
+        HA_CHECK("producer: step 2 produces+admits child2 (ADVANCED)",
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+        HA_CHECK("producer: produced_total == 2",
+                 header_admit_stage_produced_total() == 2);
+        HA_CHECK("producer: child2 now in block_index",
+                 block_map_find(&ms.map_block_index, &child2_hash) != NULL);
 
         header_admit_stage_shutdown();
         main_state_free(&ms);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── authoritative legacy ingress guard detects missing stage row ─ */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","cutover_guard");
-        mkdir_p_ha(dir);
-        HA_CHECK("guard: store opens", progress_store_open(dir));
-
-        const struct chain_params *params = chain_params_get();
-        if (!params) {
-            printf("header_admit: guard skipped (no chain params)\n");
-        } else {
-            struct main_state ms;
-            main_state_init(&ms);
-
-            struct uint256 parent_hash;
-            memset(&parent_hash, 0, sizeof(parent_hash));
-            parent_hash.data[0] = 0x55;
-            struct block_index *parent = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &parent_hash);
-            HA_CHECK("guard: parent inserted", parent != NULL);
-            if (parent) {
-                parent->nHeight = 0;
-                parent->nStatus = BLOCK_VALID_TREE;
-                active_chain_set_tip(&ms.chain_active, parent);
-                ms.pindex_best_header = parent;
-            }
-
-            HA_CHECK("guard: stage init creates schema",
-                     header_admit_stage_init(&ms));
-
-            struct block_header hdr;
-            block_header_init(&hdr);
-            hdr.hashPrevBlock = parent_hash;
-            hdr.nTime = 1;
-            hdr.nBits = 1;
-            hdr.nSolutionSize = 0;
-
-            int guard_events = 0;
-            event_log_init();
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            HA_CHECK("guard: observer registers",
-                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
-                                   cutover_guard_observer,
-                                   &guard_events));
-
-            struct validation_state vs;
-            validation_state_init(&vs);
-            struct block_index *out = NULL;
-            header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
-            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
-            HA_CHECK("guard: legacy path rejects missing stage row", !ok);
-            HA_CHECK("guard: divergence event emitted",
-                     guard_events == 1);
-
-            header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            header_admit_stage_shutdown();
-            main_state_free(&ms);
-        }
-
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── cold-import fast-forward lets first post-anchor header in ─── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","fast_forward_guard");
-        mkdir_p_ha(dir);
-        HA_CHECK("ff: store opens", progress_store_open(dir));
-
-        const struct chain_params *params = chain_params_get();
-        if (!params) {
-            printf("header_admit: fast-forward guard skipped (no chain params)\n");
-        } else {
-            sqlite3 *db = progress_store_db();
-            HA_CHECK("ff: stamp header cursor",
-                     ha_stamp_cursor(db, "header_admit", 1));
-            HA_CHECK("ff: stamp validate cursor",
-                     ha_stamp_cursor(db, "validate_headers", 1));
-            int32_t legacy_tip = 0;
-            HA_CHECK("ff: stamp legacy attach tip meta",
-                     progress_meta_set(db, "legacy_attach_tip_height",
-                                       &legacy_tip, sizeof(legacy_tip)));
-
-            struct main_state ms;
-            main_state_init(&ms);
-
-            struct uint256 parent_hash;
-            memset(&parent_hash, 0, sizeof(parent_hash));
-            parent_hash.data[0] = 0x66;
-            struct block_index *parent = chainstate_insert_block_index(
-                (struct chainstate *)&ms, &parent_hash);
-            HA_CHECK("ff: parent inserted", parent != NULL);
-            if (parent) {
-                parent->nHeight = 0;
-                parent->nStatus = BLOCK_VALID_TREE;
-                parent->nTime = 0; /* force contextual-header skip */
-                active_chain_set_tip(&ms.chain_active, parent);
-                ms.pindex_best_header = parent;
-            }
-
-            HA_CHECK("ff: header stage init", header_admit_stage_init(&ms));
-            HA_CHECK("ff: validate stage init",
-                     validate_headers_stage_init(&ms));
-            HA_CHECK("ff: header cursor observes persisted fast-forward",
-                     header_admit_stage_cursor() == 1);
-            HA_CHECK("ff: validate cursor observes persisted fast-forward",
-                     validate_headers_stage_cursor() == 1);
-
-            struct block_header hdr;
-            block_header_init(&hdr);
-            hdr.hashPrevBlock = parent_hash;
-            hdr.nTime = 1;
-            hdr.nBits = 1;
-            hdr.nSolutionSize = 0;
-
-            int guard_events = 0;
-            event_log_init();
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            HA_CHECK("ff: observer registers",
-                     event_observe(EV_CUTOVER_GUARD_DIVERGED,
-                                   cutover_guard_observer,
-                                   &guard_events));
-
-            struct validation_state vs;
-            validation_state_init(&vs);
-            struct block_index *out = NULL;
-            header_admit_set_mode(HEADER_ADMIT_MODE_AUTHORITATIVE);
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_AUTHORITATIVE);
-            bool ok = accept_block_header(&hdr, &vs, &ms, params, &out);
-            HA_CHECK("ff: legacy path accepts height at fast-forward cursor",
-                     ok && out != NULL && out->nHeight == 1);
-            HA_CHECK("ff: no divergence event emitted", guard_events == 0);
-
-            header_admit_set_mode(HEADER_ADMIT_MODE_SHADOW);
-            validate_headers_set_mode(VALIDATE_HEADERS_MODE_SHADOW);
-            event_clear_observers(EV_CUTOVER_GUARD_DIVERGED);
-            validate_headers_stage_shutdown();
-            header_admit_stage_shutdown();
-            main_state_free(&ms);
-        }
-
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }
@@ -668,326 +464,11 @@ int test_header_admit_stage(void)
                  !header_admit_stage_init(NULL));
     }
 
-    /* ── S-11 diff: NOT_READY before init ──────────────────────────── */
-    {
-        /* Note: previous block left state un-init, and pre-init guard
-         * confirmed that. progress.kv is also closed at this point. */
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff: returns true with NOT_READY before init",
-                 header_admit_stage_diff(-1, -1, &rep) &&
-                 rep.status == HEADER_ADMIT_DIFF_NOT_READY);
-        HA_CHECK("diff: NOT_READY report has -1 sentinels",
-                 rep.log_max_height == -1 &&
-                 rep.chain_tip_height == -1 &&
-                 rep.first_divergent_height == -1);
-    }
-
-    /* ── S-11 diff: CONVERGED on fully drained chain ───────────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_conv");
-        mkdir_p_ha(dir);
-        HA_CHECK("diff_conv: store opens", progress_store_open(dir));
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        struct synth_chain sc;
-        synth_chain_build(&sc, 5);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
-
-        HA_CHECK("diff_conv: stage init", header_admit_stage_init(&ms));
-        HA_CHECK("diff_conv: drain 5",
-                 header_admit_stage_drain(100) == 5);
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_conv: diff returns true",
-                 header_admit_stage_diff(-1, -1, &rep));
-        HA_CHECK("diff_conv: status CONVERGED",
-                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
-        HA_CHECK("diff_conv: matched 5",
-                 rep.match_count == 5 && rep.checked_count == 5);
-        HA_CHECK("diff_conv: no mismatches",
-                 rep.mismatch_count == 0 &&
-                 rep.missing_in_log_count == 0 &&
-                 rep.missing_in_chain_count == 0);
-        HA_CHECK("diff_conv: first_divergent_height == -1",
-                 rep.first_divergent_height == -1);
-        HA_CHECK("diff_conv: bounds resolved [0..4]",
-                 rep.start_height == 0 && rep.end_height == 4);
-        HA_CHECK("diff_conv: log_max=4 chain_tip=4 cursor=5",
-                 rep.log_max_height == 4 &&
-                 rep.chain_tip_height == 4 &&
-                 rep.cursor == 5);
-        HA_CHECK("diff_conv: no samples on converged",
-                 rep.sample_count == 0);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: CHAIN_AHEAD when cursor lags behind tip ────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_chainahead");
-        mkdir_p_ha(dir);
-        HA_CHECK("diff_chainahead: store opens", progress_store_open(dir));
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        struct synth_chain sc;
-        synth_chain_build(&sc, 5);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
-
-        HA_CHECK("diff_chainahead: init", header_admit_stage_init(&ms));
-        /* Only drain 3 of 5 — heights 3,4 will be missing from log. */
-        for (int i = 0; i < 3; i++)
-            HA_CHECK("diff_chainahead: step advances",
-                     header_admit_stage_step_once() == JOB_ADVANCED);
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_chainahead: diff(-1,-1) uses min(log,chain) for end",
-                 header_admit_stage_diff(-1, -1, &rep));
-        HA_CHECK("diff_chainahead: auto-end=2 (log_max=2)",
-                 rep.end_height == 2 &&
-                 rep.log_max_height == 2 &&
-                 rep.chain_tip_height == 4);
-        HA_CHECK("diff_chainahead: auto bound makes it converged",
-                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
-
-        /* Explicit end=4 should reveal heights 3,4 missing in log. */
-        HA_CHECK("diff_chainahead: explicit diff(0,4)",
-                 header_admit_stage_diff(0, 4, &rep));
-        HA_CHECK("diff_chainahead: status CHAIN_AHEAD",
-                 rep.status == HEADER_ADMIT_DIFF_CHAIN_AHEAD);
-        HA_CHECK("diff_chainahead: 3 matches + 2 missing_in_log",
-                 rep.match_count == 3 &&
-                 rep.missing_in_log_count == 2 &&
-                 rep.missing_in_chain_count == 0 &&
-                 rep.mismatch_count == 0);
-        HA_CHECK("diff_chainahead: first_divergent=3",
-                 rep.first_divergent_height == 3);
-        HA_CHECK("diff_chainahead: 2 samples for the 2 missings",
-                 rep.sample_count == 2);
-        HA_CHECK("diff_chainahead: sample[0] chain_present log_absent at h=3",
-                 rep.samples[0].height == 3 &&
-                 !rep.samples[0].log_present &&
-                 rep.samples[0].chain_present);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: DIVERGENT on real hash mismatch ────────────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_div");
-        mkdir_p_ha(dir);
-        HA_CHECK("diff_div: store opens", progress_store_open(dir));
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        struct synth_chain sc;
-        synth_chain_build(&sc, 5);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
-
-        HA_CHECK("diff_div: init", header_admit_stage_init(&ms));
-        HA_CHECK("diff_div: drain 5",
-                 header_admit_stage_drain(100) == 5);
-
-        /* Mutate chain hashes at heights 2 and 3 AFTER admission.
-         * The log still has the original hashes; the chain now has
-         * different ones — that's a real DIVERGENT. */
-        sc.hashes[2].data[31] ^= 0xFF;
-        sc.hashes[3].data[31] ^= 0xFF;
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_div: diff(0,4) returns true",
-                 header_admit_stage_diff(0, 4, &rep));
-        HA_CHECK("diff_div: status DIVERGENT",
-                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
-        HA_CHECK("diff_div: 3 matches + 2 mismatches",
-                 rep.match_count == 3 && rep.mismatch_count == 2);
-        HA_CHECK("diff_div: first_divergent=2",
-                 rep.first_divergent_height == 2);
-        HA_CHECK("diff_div: 2 samples for the 2 mismatches",
-                 rep.sample_count == 2);
-        HA_CHECK("diff_div: sample[0] both-present at h=2",
-                 rep.samples[0].height == 2 &&
-                 rep.samples[0].log_present &&
-                 rep.samples[0].chain_present);
-        HA_CHECK("diff_div: sample[0] hashes differ",
-                 memcmp(rep.samples[0].log_hash,
-                        rep.samples[0].chain_hash, 32) != 0);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: LOG_AHEAD when chain shrinks below log ─────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_logahead");
-        mkdir_p_ha(dir);
-        HA_CHECK("diff_logahead: store opens", progress_store_open(dir));
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        struct synth_chain sc;
-        synth_chain_build(&sc, 5);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[4]);
-
-        HA_CHECK("diff_logahead: init", header_admit_stage_init(&ms));
-        HA_CHECK("diff_logahead: drain 5",
-                 header_admit_stage_drain(100) == 5);
-
-        /* Shrink the chain back to height 2 — log still has 0..4. */
-        HA_CHECK("diff_logahead: shrink chain to height 2",
-                 active_chain_set_tip(&ms.chain_active, &sc.blocks[2]));
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_logahead: diff(0,4)",
-                 header_admit_stage_diff(0, 4, &rep));
-        HA_CHECK("diff_logahead: status LOG_AHEAD",
-                 rep.status == HEADER_ADMIT_DIFF_LOG_AHEAD);
-        HA_CHECK("diff_logahead: 3 matches + 2 missing_in_chain",
-                 rep.match_count == 3 &&
-                 rep.missing_in_chain_count == 2 &&
-                 rep.missing_in_log_count == 0 &&
-                 rep.mismatch_count == 0);
-        HA_CHECK("diff_logahead: first_divergent=3",
-                 rep.first_divergent_height == 3);
-        HA_CHECK("diff_logahead: chain_tip=2 log_max=4",
-                 rep.chain_tip_height == 2 &&
-                 rep.log_max_height == 4);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: EMPTY when range inverted ──────────────────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_empty");
-        mkdir_p_ha(dir);
-        progress_store_open(dir);
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        struct synth_chain sc;
-        synth_chain_build(&sc, 3);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[2]);
-
-        header_admit_stage_init(&ms);
-        header_admit_stage_drain(100);
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_empty: explicit start>end → EMPTY",
-                 header_admit_stage_diff(10, 5, &rep) &&
-                 rep.status == HEADER_ADMIT_DIFF_EMPTY);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: sample_count caps at MAX_SAMPLES ───────────────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_cap");
-        mkdir_p_ha(dir);
-        progress_store_open(dir);
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        const int N = HEADER_ADMIT_DIFF_MAX_SAMPLES + 8;  /* 40 */
-        struct synth_chain sc;
-        synth_chain_build(&sc, N);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[N - 1]);
-
-        header_admit_stage_init(&ms);
-        header_admit_stage_drain(N * 2);
-
-        /* Flip last byte on every chain hash → every height diverges. */
-        for (int i = 0; i < N; i++) sc.hashes[i].data[31] ^= 0xAA;
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_cap: diff(0,N-1)",
-                 header_admit_stage_diff(0, N - 1, &rep));
-        HA_CHECK("diff_cap: status DIVERGENT",
-                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
-        HA_CHECK("diff_cap: mismatch_count == N",
-                 rep.mismatch_count == N);
-        HA_CHECK("diff_cap: sample_count capped at MAX_SAMPLES",
-                 rep.sample_count == HEADER_ADMIT_DIFF_MAX_SAMPLES);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── S-11 diff: auto range is the recent tail, not genesis ─────── */
-    {
-        char dir[256];
-        test_fmt_tmpdir(dir, sizeof(dir), "header_admit","diff_tail");
-        mkdir_p_ha(dir);
-        progress_store_open(dir);
-
-        struct main_state ms;
-        memset(&ms, 0, sizeof(ms));
-        active_chain_init(&ms.chain_active);
-        const int N = HEADER_ADMIT_DIFF_MAX_RANGE + 7;
-        struct synth_chain sc;
-        synth_chain_build(&sc, N);
-        active_chain_set_tip(&ms.chain_active, &sc.blocks[N - 1]);
-
-        header_admit_stage_init(&ms);
-        header_admit_stage_drain(N * 2);
-
-        struct header_admit_diff_report rep;
-        HA_CHECK("diff_tail: auto diff succeeds",
-                 header_admit_stage_diff(-1, -1, &rep));
-        HA_CHECK("diff_tail: auto start is recent tail",
-                 rep.start_height == N - HEADER_ADMIT_DIFF_MAX_RANGE);
-        HA_CHECK("diff_tail: auto end is chain tip",
-                 rep.end_height == N - 1);
-        HA_CHECK("diff_tail: auto checked capped range",
-                 rep.checked_count == HEADER_ADMIT_DIFF_MAX_RANGE &&
-                 rep.match_count == HEADER_ADMIT_DIFF_MAX_RANGE);
-
-        header_admit_stage_shutdown();
-        active_chain_free(&ms.chain_active);
-        synth_chain_free(&sc);
-        progress_store_close();
-        test_cleanup_tmpdir(dir);
-    }
-
-    /* ── Reorg self-heal: DIVERGENT below a matching tip → CONVERGED ──
+    /* ── Reorg self-heal: stale row below a matching tip is rewritten ──
      * Mirrors the live first_divergent_height=3129671 case at small
      * scale: the stale log row sits BELOW the (still-matching) tip. The
-     * forward-only stage would never revisit it; the new reorg-rewind
-     * must detect it, rewind the cursor to the fork point, and re-admit
+     * forward-only stage would never revisit it; the reorg-rewind must
+     * detect it, rewind the cursor to the fork point, and re-admit
      * (INSERT OR REPLACE) so the canonical hash overwrites the stale one. */
     {
         char dir[256];
@@ -1014,13 +495,8 @@ int test_header_admit_stage(void)
          * divergence is strictly below the matching tip. */
         sc.hashes[2].data[31] ^= 0xFF;
 
-        struct header_admit_diff_report rep;
-        HA_CHECK("reorg_heal: pre status DIVERGENT",
-                 header_admit_stage_diff(0, 4, &rep) &&
-                 rep.status == HEADER_ADMIT_DIFF_DIVERGENT);
-        HA_CHECK("reorg_heal: pre mismatch=1 at height 2",
-                 rep.mismatch_count == 1 &&
-                 rep.first_divergent_height == 2);
+        HA_CHECK("reorg_heal: pre log has stale height 2",
+                 !header_admit_stage_has_record(2, &sc.hashes[2]));
 
         /* Drive steps: the first step's reorg-rewind rewinds the cursor
          * to 2; subsequent steps re-admit 2,3,4 → cursor back to 5. */
@@ -1031,11 +507,8 @@ int test_header_admit_stage(void)
                  header_admit_stage_reorg_rewind_total() >= 1);
         HA_CHECK("reorg_heal: cursor restored to 5",
                  header_admit_stage_cursor() == 5);
-        HA_CHECK("reorg_heal: post status CONVERGED",
-                 header_admit_stage_diff(0, 4, &rep) &&
-                 rep.status == HEADER_ADMIT_DIFF_CONVERGED);
-        HA_CHECK("reorg_heal: post mismatch=0, 5 matches",
-                 rep.mismatch_count == 0 && rep.match_count == 5);
+        HA_CHECK("reorg_heal: post log has canonical height 2",
+                 header_admit_stage_has_record(2, &sc.hashes[2]));
 
         header_admit_stage_shutdown();
         active_chain_free(&ms.chain_active);
@@ -1043,7 +516,6 @@ int test_header_admit_stage(void)
         progress_store_close();
         test_cleanup_tmpdir(dir);
     }
-
     printf("header_admit_stage: %d failures\n", failures);
     return failures;
 }

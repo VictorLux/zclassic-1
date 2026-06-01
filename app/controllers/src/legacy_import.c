@@ -32,8 +32,7 @@
 #include "controllers/scan_util.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-static const uint8_t ZCL_MAGIC[4] = {0x24, 0xe9, 0x27, 0x64};
+#include "legacy_import_scan.h"
 
 static bool legacy_import_exec_checked(struct node_db *ndb,
                                        const char *sql,
@@ -41,10 +40,8 @@ static bool legacy_import_exec_checked(struct node_db *ndb,
 {
     if (!ndb || !ndb->open || !sql)
         return false;
-    if (sqlite3_exec(ndb->db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-        LOG_FAIL("legacy_import", "legacy_import: %s failed: %s",
-                label, sqlite3_errmsg(ndb->db));
-    }
+    if (!node_db_exec(ndb, sql))
+        LOG_FAIL("legacy_import", "legacy_import: %s failed", label);
     return true;
 }
 
@@ -89,81 +86,6 @@ static uint8_t *ser_tx(const struct transaction *tx, size_t *len)
     *len = s.size;
     return s.data;
 }
-
-/* Extract BIP34 block height from coinbase scriptSig. */
-static int extract_bip34_height(const struct transaction *coinbase)
-{
-    if (coinbase->num_vin == 0) return -1; // raw-return-ok:bin-parser-empty-vin
-    const uint8_t *sig = coinbase->vin[0].script_sig.data;
-    size_t sig_len = coinbase->vin[0].script_sig.size;
-    if (sig_len < 1) return -1; // raw-return-ok:bin-parser-bounds
-
-    uint8_t nbytes = sig[0];
-
-    /* OP_0 = height 0 */
-    if (nbytes == 0x00) return 0;
-    /* OP_1 through OP_16 = heights 1-16 */
-    if (nbytes >= 0x51 && nbytes <= 0x60)
-        return nbytes - 0x50;
-
-    /* CScriptNum: nbytes = number of following bytes encoding height */
-    if (nbytes > 8 || (size_t)nbytes + 1 > sig_len) return -1; // raw-return-ok:bin-parser-bounds
-    int64_t h = 0;
-    for (uint8_t i = 0; i < nbytes; i++)
-        h |= (int64_t)sig[1 + i] << (8 * i);
-    /* Sign bit handling */
-    if (sig[nbytes] & 0x80)
-        h = -(h & ~((int64_t)0x80 << (8 * (nbytes - 1))));
-    return (int)h;
-}
-
-/* --- Pass 1: Parallel raw byte scan (same as wallet_scan.c) --- */
-
-static bool scan_file_raw(const uint8_t *data, size_t size,
-                           const struct addr_ht *ht)
-{
-    for (size_t i = 0; i + 25 <= size; i++) {
-        if (data[i] == 0x76 && data[i + 1] == 0xa9 &&
-            data[i + 2] == 0x14 &&
-            data[i + 23] == 0x88 && data[i + 24] == 0xac) {
-            if (aht_has(ht, data + i + 3)) return true;
-        }
-        if (data[i] == 0xa9 && data[i + 1] == 0x14 &&
-            i + 23 <= size && data[i + 22] == 0x87) {
-            if (aht_has(ht, data + i + 2)) return true;
-        }
-    }
-    return false;
-}
-
-struct scan_thread_arg {
-    const char *datadir;
-    int file_num;
-    const struct addr_ht *ht;
-    bool result;
-};
-
-static void *scan_file_thread(void *arg)
-{
-    struct scan_thread_arg *a = (struct scan_thread_arg *)arg;
-    char path[512];
-    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-             a->datadir, a->file_num);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) { a->result = false; return NULL; }
-    struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); a->result = false; return NULL; }
-    size_t sz = (size_t)st.st_size;
-    uint8_t *data = mmap(NULL, sz, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (data == MAP_FAILED) { a->result = false; return NULL; }
-    posix_madvise(data, sz, POSIX_MADV_SEQUENTIAL);
-    a->result = scan_file_raw(data, sz, a->ht);
-    munmap(data, sz);
-    return NULL;
-}
-
-/* --- Pass 2: Walk matched block files directly --- */
 
 /* Process a single deserialized block for wallet txns. */
 static bool scan_block_txs(const struct block *blk, int height,
@@ -237,53 +159,6 @@ static bool scan_block_txs(const struct block *blk, int height,
     return any_found;
 }
 
-/* Walk a block file, deserialize each block at magic boundaries.
- * For transparent wallet scan (pass 2) or Sapling scan (pass 3). */
-typedef bool (*block_visitor_fn)(const struct block *blk, int height,
-                                  void *ctx);
-
-static int walk_block_file(const uint8_t *fdata, size_t fsize,
-                            block_visitor_fn visitor, void *ctx)
-{
-    int blocks = 0;
-    size_t pos = 0;
-
-    while (pos + 8 <= fsize) {
-        /* Find magic bytes. */
-        if (memcmp(fdata + pos, ZCL_MAGIC, 4) != 0) {
-            pos++;
-            continue;
-        }
-        uint32_t blk_size;
-        memcpy(&blk_size, fdata + pos + 4, 4);
-        if (blk_size == 0 || blk_size > 4000000 ||
-            pos + 8 + blk_size > fsize) {
-            pos++;
-            continue;
-        }
-
-        struct block blk;
-        block_init(&blk);
-        struct byte_stream bs;
-        stream_init_from_data(&bs, fdata + pos + 8, blk_size);
-        if (!block_deserialize(&blk, &bs)) {
-            block_free(&blk);
-            pos += 8 + blk_size;
-            continue;
-        }
-
-        int height = -1;
-        if (blk.num_vtx > 0)
-            height = extract_bip34_height(&blk.vtx[0]);
-
-        blocks++;
-        visitor(&blk, height, ctx);
-        block_free(&blk);
-        pos += 8 + blk_size;
-    }
-    return blocks;
-}
-
 /* --- Pass 2 visitor: transparent scan --- */
 
 struct transparent_ctx {
@@ -302,387 +177,6 @@ static bool transparent_visitor(const struct block *blk, int height,
     return true;
 }
 
-/* --- Pass 3: Sapling scan with lightweight pre-filter --- */
-
-#define SAPLING_ACTIVATION_HEIGHT 476969
-
-/* Read a Bitcoin CompactSize varint from raw bytes.
- * Returns bytes consumed, or 0 on error. */
-static int read_compact_size_raw(const uint8_t *d, size_t avail, uint64_t *out)
-{
-    if (avail < 1) return 0;
-    if (d[0] < 0xfd) { *out = d[0]; return 1; }
-    if (d[0] == 0xfd && avail >= 3) {
-        *out = (uint64_t)d[1] | ((uint64_t)d[2] << 8);
-        return 3;
-    }
-    if (d[0] == 0xfe && avail >= 5) {
-        uint32_t v; memcpy(&v, d + 1, 4); *out = v;
-        return 5;
-    }
-    if (d[0] == 0xff && avail >= 9) {
-        memcpy(out, d + 1, 8);
-        return 9;
-    }
-    return 0;
-}
-
-/* Extract BIP34 height from raw block data without full deserialization.
- * Parses only: header → num_tx → coinbase scriptSig → height.
- * ~200 bytes examined vs full block_deserialize of entire block. */
-static int extract_height_raw(const uint8_t *bdata, size_t bsize)
-{
-    /* Header: version(4)+hashPrev(32)+hashMerkle(32)+hashReserved(32)+
-     *         nTime(4)+nBits(4)+nNonce(32) = 140, then solution */
-    if (bsize < 141) return -1; // raw-return-ok:bin-parser-bounds
-    size_t pos = 140;
-    uint64_t sol_size;
-    int n = read_compact_size_raw(bdata + pos, bsize - pos, &sol_size);
-    if (n == 0 || sol_size > 4096) return -1; // raw-return-ok:bin-parser-bounds
-    pos += (size_t)n + (size_t)sol_size;
-
-    /* num_tx */
-    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
-    uint64_t num_tx;
-    n = read_compact_size_raw(bdata + pos, bsize - pos, &num_tx);
-    if (n == 0 || num_tx == 0) return -1; // raw-return-ok:bin-parser-bounds
-
-    pos += (size_t)n;
-
-    /* Coinbase tx version (with optional fOverwintered bit) */
-    if (pos + 4 > bsize) return -1; // raw-return-ok:bin-parser-bounds
-    int32_t tx_ver;
-    memcpy(&tx_ver, bdata + pos, 4);
-    pos += 4;
-    if (tx_ver & (int32_t)0x80000000) pos += 4; /* skip versionGroupId */
-
-    /* vin_count */
-    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
-    uint64_t vin_count;
-    n = read_compact_size_raw(bdata + pos, bsize - pos, &vin_count);
-    if (n == 0 || vin_count == 0) return -1; // raw-return-ok:bin-parser-empty-vin
-    pos += (size_t)n;
-
-    /* First vin prevout (36 bytes) + scriptSig */
-    pos += 36;
-    if (pos >= bsize) return -1; // raw-return-ok:bin-parser-bounds
-    uint64_t script_len;
-    n = read_compact_size_raw(bdata + pos, bsize - pos, &script_len);
-    if (n == 0) return -1; // raw-return-ok:bin-parser-bounds
-    pos += (size_t)n;
-    if (pos + script_len > bsize || script_len == 0) return -1; // raw-return-ok:bin-parser-bounds
-
-    /* BIP34 height from scriptSig */
-    const uint8_t *sig = bdata + pos;
-    uint8_t nbytes = sig[0];
-    if (nbytes == 0x00) return 0;
-    if (nbytes >= 0x51 && nbytes <= 0x60) return nbytes - 0x50;
-    if (nbytes > 8 || (size_t)nbytes + 1 > script_len) return -1; // raw-return-ok:bin-parser-bounds
-    int64_t h = 0;
-    for (uint8_t i = 0; i < nbytes; i++)
-        h |= (int64_t)sig[1 + i] << (8 * i);
-    if (sig[nbytes] & 0x80)
-        h = -(h & ~((int64_t)0x80 << (8 * (nbytes - 1))));
-    return (int)h;
-}
-
-/* Check raw block data for any transaction with shielded outputs or spends.
- * Skips through serialized tx data without malloc — just pointer arithmetic.
- * Returns true if any tx has num_shielded_output > 0 or num_shielded_spend > 0. */
-static bool block_has_shielded_raw(const uint8_t *bdata, size_t bsize)
-{
-    /* Skip block header: 140 fixed bytes + varint(solution) + solution */
-    if (bsize < 141) return false;
-    size_t pos = 140;
-    uint64_t sol_size;
-    int n = read_compact_size_raw(bdata + pos, bsize - pos, &sol_size);
-    if (n == 0) return false;
-    pos += (size_t)n + (size_t)sol_size;
-
-    /* num_tx */
-    if (pos >= bsize) return false;
-    uint64_t num_tx;
-    n = read_compact_size_raw(bdata + pos, bsize - pos, &num_tx);
-    if (n == 0 || num_tx == 0 || num_tx > 50000) return false;
-    pos += (size_t)n;
-
-    /* For each transaction, skip to num_shielded_spend/output. */
-    for (uint64_t ti = 0; ti < num_tx; ti++) {
-        if (pos + 4 > bsize) return false;
-        int32_t tx_ver;
-        memcpy(&tx_ver, bdata + pos, 4);
-        pos += 4;
-        bool overwintered = (tx_ver & (int32_t)0x80000000) != 0;
-        int32_t ver = tx_ver & 0x7FFFFFFF;
-        uint32_t vg_id = 0;
-        if (overwintered) {
-            if (pos + 4 > bsize) return false;
-            memcpy(&vg_id, bdata + pos, 4);
-            pos += 4;
-        }
-
-        /* Skip vin: count + each(prevout(36) + varint(scriptSig) + seq(4)) */
-        uint64_t vin_count;
-        n = read_compact_size_raw(bdata + pos, bsize - pos, &vin_count);
-        if (n == 0) return false;
-        pos += (size_t)n;
-        for (uint64_t vi = 0; vi < vin_count; vi++) {
-            pos += 36; /* prevout */
-            if (pos >= bsize) return false;
-            uint64_t script_len;
-            n = read_compact_size_raw(bdata + pos, bsize - pos, &script_len);
-            if (n == 0) return false;
-            pos += (size_t)n + (size_t)script_len + 4; /* script + seq */
-        }
-
-        /* Skip vout: count + each(value(8) + varint(script) + script) */
-        if (pos >= bsize) return false;
-        uint64_t vout_count;
-        n = read_compact_size_raw(bdata + pos, bsize - pos, &vout_count);
-        if (n == 0) return false;
-        pos += (size_t)n;
-        for (uint64_t vo = 0; vo < vout_count; vo++) {
-            pos += 8; /* value */
-            if (pos >= bsize) return false;
-            uint64_t script_len;
-            n = read_compact_size_raw(bdata + pos, bsize - pos, &script_len);
-            if (n == 0) return false;
-            pos += (size_t)n + (size_t)script_len;
-        }
-
-        /* nLockTime(4) + nExpiryHeight(4) */
-        if (pos + 4 > bsize) return false;
-        pos += 4; /* nLockTime */
-        if (overwintered) {
-            if (pos + 4 > bsize) return false;
-            pos += 4; /* nExpiryHeight */
-        }
-
-        /* Sapling: v4 (versionGroupId == 0x892F2085) */
-        if (overwintered && vg_id == 0x892F2085) {
-            if (pos + 8 > bsize) return false;
-            pos += 8; /* valueBalance */
-
-            /* num_shielded_spend */
-            if (pos >= bsize) return false;
-            uint64_t num_spend;
-            n = read_compact_size_raw(bdata + pos, bsize - pos, &num_spend);
-            if (n == 0) return false;
-            pos += (size_t)n;
-            /* skip spends: each 384 bytes */
-            pos += (size_t)num_spend * 384;
-
-            /* num_shielded_output */
-            if (pos >= bsize) return false;
-            uint64_t num_output;
-            n = read_compact_size_raw(bdata + pos, bsize - pos, &num_output);
-            if (n == 0) return false;
-            pos += (size_t)n;
-            if (num_output > 0) return true;
-            /* skip outputs: each 948 bytes */
-            pos += (size_t)num_output * 948;
-        }
-
-        /* Skip JoinSplits (v2+, including Sapling v4) */
-        if (ver >= 2 && (!overwintered || ver < 5)) {
-            if (pos >= bsize) return false;
-            uint64_t num_js;
-            n = read_compact_size_raw(bdata + pos, bsize - pos, &num_js);
-            if (n == 0) return false;
-            pos += (size_t)n;
-            if (num_js > 0) {
-                /* Per JoinSplit: 304 fixed + proof + 2×601 ciphertext */
-                size_t js_size = (overwintered && vg_id == 0x892F2085) ?
-                                  1698 : 1802;
-                pos += (size_t)num_js * js_size;
-                pos += 32 + 64; /* joinSplitPubKey + joinSplitSig */
-            }
-        }
-
-        /* Binding sig: only present when has shielded spend or output.
-         * But we returned true above in that case, so if we reach here,
-         * both counts are 0 — no binding sig to skip. */
-    }
-    return false;
-}
-
-/* Block position record — collected by filter threads. */
-struct blk_pos {
-    int file_num;
-    size_t offset;      /* offset of magic bytes in file */
-    uint32_t blk_size;
-    int height;
-};
-
-struct filter_file_ctx {
-    const char *datadir;
-    int file_num;
-    int blocks_total;
-    int blocks_passed;
-    int height_failed;
-    struct blk_pos *hits;
-    int hit_count;
-    int hit_cap;
-};
-
-/* Thread: scan one file, apply size + height filters, collect positions. */
-static void *sapling_filter_thread(void *arg)
-{
-    struct filter_file_ctx *ctx = (struct filter_file_ctx *)arg;
-    char path[512];
-    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-             ctx->datadir, ctx->file_num);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return NULL;
-    struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return NULL; }
-    size_t fsize = (size_t)st.st_size;
-    uint8_t *fdata = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (fdata == MAP_FAILED) return NULL;
-    posix_madvise(fdata, fsize, POSIX_MADV_SEQUENTIAL);
-
-    ctx->hit_cap = 256;
-    ctx->hits = zcl_malloc((size_t)ctx->hit_cap * sizeof(struct blk_pos), "legacy scan hits");
-
-    size_t pos = 0;
-    while (pos + 8 <= fsize) {
-        if (memcmp(fdata + pos, ZCL_MAGIC, 4) != 0) { pos++; continue; }
-        uint32_t blk_size;
-        memcpy(&blk_size, fdata + pos + 4, 4);
-        if (blk_size == 0 || blk_size > 4000000 ||
-            pos + 8 + blk_size > fsize) { pos++; continue; }
-        ctx->blocks_total++;
-
-        /* Filter 1: lightweight height — skip pre-Sapling. */
-        int height = extract_height_raw(fdata + pos + 8, blk_size);
-        if (height < 0) ctx->height_failed++;
-        if (height >= 0 && height < SAPLING_ACTIVATION_HEIGHT) {
-            pos += 8 + blk_size;
-            continue;
-        }
-
-        /* Filter 2: parse raw tx structure — skip blocks without
-         * any shielded spends or outputs. No malloc, just pointer
-         * arithmetic through serialized data. */
-        if (!block_has_shielded_raw(fdata + pos + 8, blk_size)) {
-            pos += 8 + blk_size;
-            continue;
-        }
-
-        /* Record this block for trial decryption. */
-        if (ctx->hit_count >= ctx->hit_cap) {
-            ctx->hit_cap *= 2;
-            ctx->hits = zcl_realloc(ctx->hits,
-                (size_t)ctx->hit_cap * sizeof(struct blk_pos), "legacy scan hits grow");
-        }
-        ctx->hits[ctx->hit_count++] = (struct blk_pos){
-            .file_num = ctx->file_num,
-            .offset = pos,
-            .blk_size = blk_size,
-            .height = height,
-        };
-        ctx->blocks_passed++;
-        pos += 8 + blk_size;
-    }
-    munmap(fdata, fsize);
-    return NULL;
-}
-
-/* --- Pass 3b: parallel trial decryption thread --- */
-
-struct decrypt_file_ctx {
-    const char *datadir;
-    struct blk_pos *hits;
-    int count;
-    int file_num;
-    struct wallet tw;
-    int outputs_seen;
-    int notes_found;
-    struct db_sapling_note *results;
-    int result_count;
-    int result_cap;
-};
-
-static void *decrypt_thread(void *arg)
-{
-    struct decrypt_file_ctx *c = (struct decrypt_file_ctx *)arg;
-    if (c->count == 0) return NULL;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-             c->datadir, c->file_num);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return NULL;
-    struct stat st;
-    if (fstat(fd, &st) != 0) { close(fd); return NULL; }
-    size_t fsize = (size_t)st.st_size;
-    uint8_t *fdata = mmap(NULL, fsize, PROT_READ,
-                           MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (fdata == MAP_FAILED) return NULL;
-
-    for (int hi = 0; hi < c->count; hi++) {
-        struct blk_pos *bp = &c->hits[hi];
-        const uint8_t *bdata = fdata + bp->offset + 8;
-        struct block blk;
-        block_init(&blk);
-        struct byte_stream bs;
-        stream_init_from_data(&bs, bdata, bp->blk_size);
-        if (!block_deserialize(&blk, &bs)) {
-            block_free(&blk);
-            continue;
-        }
-
-        int height = bp->height;
-        if (height < 0 && blk.num_vtx > 0)
-            height = extract_bip34_height(&blk.vtx[0]);
-
-        for (size_t ti = 0; ti < blk.num_vtx; ti++) {
-            struct transaction *tx = &blk.vtx[ti];
-            if (tx->num_shielded_output == 0) continue;
-            c->outputs_seen += (int)tx->num_shielded_output;
-            struct uint256 txid = tx->hash;
-            int n = wallet_try_sapling_decrypt(&c->tw, tx, &txid);
-            if (n > 0) {
-                c->notes_found += n;
-                for (size_t ni = 0;
-                     ni < c->tw.num_sapling_notes; ni++) {
-                    struct sapling_received_note *note =
-                        &c->tw.sapling_notes[ni];
-                    if (!note->used) continue;
-                    if (memcmp(note->txid.data, txid.data, 32) != 0)
-                        continue;
-                    if (c->result_count >= c->result_cap) {
-                        c->result_cap *= 2;
-                        c->results = zcl_realloc(c->results,
-                            (size_t)c->result_cap *
-                            sizeof(struct db_sapling_note), "sapling decrypt results grow");
-                    }
-                    struct db_sapling_note *dn =
-                        &c->results[c->result_count++];
-                    memset(dn, 0, sizeof(*dn));
-                    memcpy(dn->txid, note->txid.data, 32);
-                    dn->output_index = note->output_index;
-                    dn->value = (int64_t)note->value;
-                    memcpy(dn->rcm, note->rcm, 32);
-                    memcpy(dn->memo, note->memo, 512);
-                    dn->memo_len = 512;
-                    memcpy(dn->ivk, note->ivk, 32);
-                    memcpy(dn->diversifier, note->diversifier, 11);
-                    memcpy(dn->pk_d, note->pk_d, 32);
-                    memcpy(dn->cm, note->cm, 32);
-                    memcpy(dn->nullifier, note->nf, 32);
-                    dn->block_height = height;
-                }
-            }
-        }
-        block_free(&blk);
-    }
-    munmap(fdata, fsize);
-    return NULL;
-}
-
 /* --- Main entry point --- */
 
 int legacy_import(const char *legacy_datadir,
@@ -691,8 +185,8 @@ int legacy_import(const char *legacy_datadir,
                   bool sapling_scan)
 {
     int ret = -1;
-    struct filter_file_ctx *fctxs = NULL;
-    struct decrypt_file_ctx *dctxs = NULL;
+    struct legacy_import_filter_file_ctx *fctxs = NULL;
+    struct legacy_import_decrypt_file_ctx *dctxs = NULL;
 
     if (!legacy_datadir || !ndb || !ndb->open || !w)
         LOG_ERR("legacy_import", "invalid args: datadir=%p ndb=%p open=%d wallet=%p",
@@ -739,7 +233,7 @@ int legacy_import(const char *legacy_datadir,
     for (int base = 0; base < num_files; base += batch) {
         int n = num_files - base;
         if (n > batch) n = batch;
-        struct scan_thread_arg args[8];
+        struct legacy_import_scan_file_arg args[8];
         pthread_t threads[8];
         int started = 0;
         for (int i = 0; i < n; i++) {
@@ -749,7 +243,8 @@ int legacy_import(const char *legacy_datadir,
             args[i].result = false;
             /* raw-pthread-ok: short-burst-joined-immediately */
             if (pthread_create(&threads[i], NULL,
-                               scan_file_thread, &args[i]) != 0) {
+                               legacy_import_scan_file_thread,
+                               &args[i]) != 0) {
                 LOG_WARN("legacy_import", "legacy_import: failed to start pass-1 scan thread");
                 for (int j = 0; j < started; j++)
                     pthread_join(threads[j], NULL);
@@ -801,8 +296,8 @@ int legacy_import(const char *legacy_datadir,
         if (data == MAP_FAILED) continue;
         posix_madvise(data, sz, POSIX_MADV_SEQUENTIAL);
 
-        total_blocks_p2 += walk_block_file(data, sz,
-                                            transparent_visitor, &tctx);
+        total_blocks_p2 += legacy_import_walk_block_file(
+            data, sz, transparent_visitor, &tctx);
         munmap(data, sz);
     }
 
@@ -911,7 +406,9 @@ pass2_db_done:
                "(%d files, 8 threads)...\n", num_files);
         fflush(stdout);
 
-        fctxs = zcl_calloc((size_t)num_files, sizeof(struct filter_file_ctx), "sapling filter contexts");
+        fctxs = zcl_calloc((size_t)num_files,
+                           sizeof(struct legacy_import_filter_file_ctx),
+                           "sapling filter contexts");
         if (!fctxs) {
             LOG_WARN("legacy_import", "legacy_import: failed to allocate sapling filter contexts");
             goto cleanup;
@@ -926,7 +423,7 @@ pass2_db_done:
                 fctxs[base + i].file_num = base + i;
                 /* raw-pthread-ok: short-burst-joined-immediately */
                 if (pthread_create(&thr[i], NULL,
-                                   sapling_filter_thread,
+                                   legacy_import_sapling_filter_thread,
                                    &fctxs[base + i]) != 0) {
                     LOG_WARN("legacy_import", "legacy_import: failed to start sapling filter thread");
                     for (int j = 0; j < started; j++)
@@ -966,7 +463,9 @@ pass2_db_done:
                total_candidates, w->sapling_keys.num_keys);
         fflush(stdout);
 
-        dctxs = zcl_calloc((size_t)num_files, sizeof(struct decrypt_file_ctx), "sapling decrypt contexts");
+        dctxs = zcl_calloc((size_t)num_files,
+                           sizeof(struct legacy_import_decrypt_file_ctx),
+                           "sapling decrypt contexts");
         if (!dctxs) {
             LOG_WARN("legacy_import", "legacy_import: failed to allocate sapling decrypt contexts");
             goto cleanup;
@@ -995,7 +494,7 @@ pass2_db_done:
                 if (dctxs[base + i].count == 0) continue;
                 /* raw-pthread-ok: short-burst-joined-immediately */
                 if (pthread_create(&thr3[launched], NULL,
-                                   decrypt_thread,
+                                   legacy_import_decrypt_thread,
                                    &dctxs[base + i]) != 0) {
                     LOG_WARN("legacy_import", "legacy_import: failed to start sapling decrypt thread");
                     for (int j = 0; j < launched; j++)

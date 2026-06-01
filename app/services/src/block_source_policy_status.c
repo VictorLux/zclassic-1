@@ -54,7 +54,7 @@ void bsp_source_to_json(const struct cac_source_status *s,
                      blocker_class_name(s->blocked_class));
     json_push_kv_bool(out, "authorized", s->authorized);
     json_push_kv_bool(out, "selectable", s->selectable);
-    json_push_kv_str(out, "selection_blocker", s->selection_blocker);
+    json_push_kv_str(out, "selection_blocker", s->selection_reason);
     json_push_kv_int(out, "height", (int64_t)s->height);
     json_push_kv_int(out, "score", (int64_t)s->score);
     json_push_kv_int(out, "score_base", s->score_base);
@@ -105,7 +105,7 @@ void bsp_source_to_json(const struct cac_source_status *s,
     json_push_kv_str(out, "reason", s->reason);
     json_push_kv_str(out, "blocker", s->blocker);
     json_push_kv_str(out, "candidate_blocker",
-                     s->blocker[0] ? s->blocker : s->selection_blocker);
+                     s->blocker[0] ? s->blocker : s->selection_reason);
 }
 
 void bsp_decision_to_json(const struct cac_decision *d,
@@ -157,7 +157,7 @@ void bsp_decision_to_json(const struct cac_decision *d,
         json_push_kv_bool(out, "selected_source_selectable",
                           s->selectable);
         json_push_kv_str(out, "selected_source_selection_blocker",
-                         s->selection_blocker);
+                         s->selection_reason);
         json_push_kv_int(out, "selected_source_height", s->height);
         json_push_kv_int(out, "selected_source_score_base", s->score_base);
         json_push_kv_int(out, "selected_source_score_health",

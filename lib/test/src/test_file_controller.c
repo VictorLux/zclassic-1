@@ -5,6 +5,7 @@
 #include "test/test_helpers.h"
 #include "controllers/file_controller.h"
 #include "net/file_service.h"
+#include "services/consensus_snapshot_export_service.h"
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <utime.h>
@@ -375,7 +376,7 @@ static int test_file_export_snapshot_success(void)
         ok = ok && truncate(db_path, 1100000) == 0;
 
         if (ok) {
-            ok = file_export_consensus_snapshot(dir);
+            ok = consensus_snapshot_export_service_run(dir).ok;
             ok = ok && sqlite_has_file(snap_path);
             ok = ok && sqlite3_open_v2(snap_path, &snap_db,
                                        SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
@@ -429,7 +430,7 @@ static int test_file_export_snapshot_fail_closes_partial(void)
         snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
         ok = ok && build_snapshot_source_db(db_path, false);
         ok = ok && truncate(db_path, 1100000) == 0;
-        ok = ok && file_export_consensus_snapshot(dir) == false;
+        ok = ok && !consensus_snapshot_export_service_run(dir).ok;
         ok = ok && !sqlite_has_file(snap_path);
 
         cleanup_file_controller_test_dir(dir);

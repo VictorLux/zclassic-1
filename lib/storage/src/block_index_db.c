@@ -16,13 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Phase 4c shadow emission counters ─────────────────────────────
+/* ── Block-index projection emission counters ──────────────────────
  * block_index_db continues to write LevelDB as the authoritative source
  * AND emits an EV_BLOCK_HEADER event to the append-only event log on
  * every successful write. The block_index_projection consumes those
- * events; zcl_block_index_diff compares projection state against the
- * live LevelDB. After 24h of zero divergence, the cutover PR flips
- * authoritative. */
+ * events and can be compared against the persisted index during audits. */
 _Atomic(uint64_t) g_block_index_event_emit_total      = 0;
 _Atomic(uint64_t) g_block_index_event_emit_fail_total = 0;
 
@@ -197,7 +195,7 @@ void disk_block_index_get_hash(const struct disk_block_index *d,
     block_header_get_hash(&h, out);
 }
 
-/* Shadow emission to the Phase 4c event log. Best-effort: any failure
+/* Projection emission to the event log. Best-effort: any failure
  * (no log wired, payload overflow, append error) is counted and
  * logged once; we never propagate the error to the LevelDB path. */
 static void emit_block_header_event(const struct disk_block_index *d,
@@ -211,8 +209,8 @@ static void emit_block_header_event(const struct disk_block_index *d,
         return;
     }
     if (d->nSolutionSize > EV_BLOCK_HEADER_MAX_SOLUTION) {
-        fprintf(stderr,  // obs-ok:block-index-shadow-emit
-                "[block_index_db] shadow emit: solution size %zu > max %u "
+        fprintf(stderr,  // obs-ok:block-index-projection-emit
+                "[block_index_db] projection emit: solution size %zu > max %u "
                 "for h=%d; skipping\n",
                 d->nSolutionSize, (unsigned)EV_BLOCK_HEADER_MAX_SOLUTION,
                 d->nHeight);
@@ -250,8 +248,8 @@ static void emit_block_header_event(const struct disk_block_index *d,
     }
     size_t written = 0;
     if (!ev_block_header_serialize(&h, d->nSolution, buf, bufcap, &written)) {
-        fprintf(stderr,  // obs-ok:block-index-shadow-emit
-                "[block_index_db] shadow emit: serialize failed h=%d\n",
+        fprintf(stderr,  // obs-ok:block-index-projection-emit
+                "[block_index_db] projection emit: serialize failed h=%d\n",
                 d->nHeight);
         atomic_fetch_add_explicit(&g_block_index_event_emit_fail_total, 1,
                                   memory_order_relaxed);
@@ -291,7 +289,7 @@ static bool block_tree_db_write_block_index_internal(
     bool ok = db_write(&btdb->db, key, keylen, (char *)s.data, s.size, sync);
     stream_free(&s);
 
-    /* Phase 4c: shadow emit only when the LevelDB write succeeded.
+    /* Projection emit only when the LevelDB write succeeded.
      * The projection mirrors the authoritative LevelDB state. */
     if (ok)
         emit_block_header_event(d, &hash);

@@ -5,12 +5,14 @@
 #include "platform/time_compat.h"
 #include "services/gap_fill_service.h"
 
+#include "supervisors/domains.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
 #include "net/download.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "event/event.h"
 
@@ -33,12 +35,89 @@ struct gap_fill_state {
     struct download_manager *dm;
 
     struct gap_fill_stats  stats;
+    _Atomic supervisor_child_id supervisor_id;
 };
 
 static struct gap_fill_state g_gf = {
     .mu = PTHREAD_MUTEX_INITIALIZER,
     .cv = PTHREAD_COND_INITIALIZER,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static struct liveness_contract g_gap_fill_contract;
+
+static int64_t gap_fill_supervisor_deadline_secs(void)
+{
+    return (int64_t)GAPFILL_TICK_SECS * 3 + 30;
+}
+
+static int64_t gap_fill_progress_marker(void)
+{
+    return (int64_t)g_gf.stats.passes;
+}
+
+static void gap_fill_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_gf.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, gap_fill_progress_marker());
+}
+
+static void gap_fill_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    LOG_WARN("gap_fill",
+             "[gap-fill] supervisor stall reason=%s passes=%llu enqueued=%llu idle=%llu corrupt=%llu",
+             reason,
+             (unsigned long long)g_gf.stats.passes,
+             (unsigned long long)g_gf.stats.blocks_enqueued,
+             (unsigned long long)g_gf.stats.passes_idle,
+             (unsigned long long)g_gf.stats.passes_corrupt_walk);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "source=chain.gap_fill decision=worker_stall "
+                "reason=%s passes=%llu enqueued=%llu idle=%llu corrupt=%llu",
+                reason,
+                (unsigned long long)g_gf.stats.passes,
+                (unsigned long long)g_gf.stats.blocks_enqueued,
+                (unsigned long long)g_gf.stats.passes_idle,
+                (unsigned long long)g_gf.stats.passes_corrupt_walk);
+    gap_fill_kick();
+}
+
+static struct zcl_result gap_fill_register_supervisor(void)
+{
+    if (!supervisor_start())
+        return ZCL_ERR(-3, "gap_fill: supervisor_start failed");
+
+    int64_t deadline = gap_fill_supervisor_deadline_secs();
+    supervisor_child_id id = atomic_load(&g_gf.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, deadline);
+        supervisor_progress(id, gap_fill_progress_marker());
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_gap_fill_contract, "chain.gap_fill");
+    atomic_store(&g_gap_fill_contract.period_secs, 0);
+    atomic_store(&g_gap_fill_contract.deadline_secs, deadline);
+    atomic_store(&g_gap_fill_contract.progress_max_quiet_us, 0);
+    g_gap_fill_contract.on_stall = gap_fill_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_gap_fill_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-4, "gap_fill: supervisor_register failed");
+    atomic_store(&g_gf.supervisor_id, id);
+    supervisor_progress(id, gap_fill_progress_marker());
+    supervisor_tick(id);
+    return ZCL_OK;
+}
 
 /* Walk pprev from `start` collecting block_index pointers until we
  * reach a node whose height == stop_height_exclusive (i.e. stop_h+1
@@ -218,6 +297,7 @@ static void *gap_fill_thread_main(void *arg)
 {
     (void)arg;
     printf("[gap-fill] service started\n");
+    gap_fill_supervisor_heartbeat();
     while (!atomic_load(&g_gf.stop_requested)) {
         int n = gap_fill_pass();
         g_gf.stats.passes++;
@@ -229,6 +309,7 @@ static void *gap_fill_thread_main(void *arg)
             g_gf.stats.passes_corrupt_walk++;
             LOG_WARN("gap", "[gap-fill] %s:%d %s(): corrupt pprev walk detected, " "skipping pass", __FILE__, __LINE__, __func__);
         }
+        gap_fill_supervisor_heartbeat();
 
         /* Sleep until kicked or GAPFILL_TICK_SECS elapsed. */
         pthread_mutex_lock(&g_gf.mu);
@@ -264,12 +345,26 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
     }
     g_gf.thread_started = true;
     atomic_store(&g_gf.running, true);
+    struct zcl_result sup_r = gap_fill_register_supervisor();
+    if (!sup_r.ok) {
+        atomic_store(&g_gf.stop_requested, true);
+        pthread_mutex_lock(&g_gf.mu);
+        pthread_cond_broadcast(&g_gf.cv);
+        pthread_mutex_unlock(&g_gf.mu);
+        pthread_join(g_gf.thread, NULL);
+        g_gf.thread_started = false;
+        atomic_store(&g_gf.running, false);
+        return sup_r;
+    }
     return ZCL_OK;
 }
 
 void gap_fill_stop(void)
 {
     if (!atomic_load(&g_gf.running)) return;
+    supervisor_child_id id = atomic_load(&g_gf.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
     atomic_store(&g_gf.stop_requested, true);
     pthread_mutex_lock(&g_gf.mu);
     pthread_cond_broadcast(&g_gf.cv);
@@ -292,6 +387,11 @@ void gap_fill_stop(void)
         g_gf.thread_started = false;
     }
     atomic_store(&g_gf.running, false);
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_gf.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }
 
 void gap_fill_kick(void)

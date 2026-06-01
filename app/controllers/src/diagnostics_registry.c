@@ -387,7 +387,7 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
 /* ── RPC: getmirrorstatus ──────────────────────────────────────────
  *
  * Backs the `zcl_mirror_status` MCP tool — the legacy_mirror monitor.
- * Relocated here when the projection-diff/cutover comparison apparatus
+ * Relocated here when the old comparison apparatus
  * was deleted; it is a surviving single-engine introspection surface,
  * not comparison apparatus.
  */
@@ -449,21 +449,21 @@ static const struct dump_entry g_dumpers[] = {
     { "progress",    progress_store_dump_state_json,
                      "Wave S progress.kv: open/path/stage_cursor row count" },
     { "header_admit", header_admit_stage_dump_state_json,
-                     "Wave S header_admit shadow stage: cursor, counters, last admit" },
+                     "Wave S header_admit stage: cursor, counters, last admit" },
     { "validate_headers", validate_headers_stage_dump_state_json,
-                     "Wave S validate_headers shadow stage: cursor, pool stats, pass/fail counters" },
+                     "Wave S validate_headers stage: cursor, pool stats, pass/fail counters" },
     { "body_fetch", body_fetch_stage_dump_state_json,
-                     "Wave S body_fetch shadow stage: cursor, observed/skipped counters, last advance" },
+                     "Wave S body_fetch stage: cursor, observed/skipped counters, last advance" },
     { "body_persist", body_persist_dump_state_json,
-                     "Wave S body_persist shadow stage: cursor, verification counters, log rows" },
+                     "Wave S body_persist stage: cursor, verification counters, log rows" },
     { "script_validate", script_validate_dump_state_json,
-                     "Wave S script_validate shadow stage: cursor, script counters, log rows" },
+                     "Wave S script_validate stage: cursor, script counters, log rows" },
     { "proof_validate", proof_validate_dump_state_json,
-                     "Wave S proof_validate shadow stage: cursor, proof counters, log rows" },
+                     "Wave S proof_validate stage: cursor, proof counters, log rows" },
     { "utxo_apply", utxo_apply_dump_state_json,
-                     "Wave S utxo_apply shadow stage: cursor, UTXO delta counters, log rows" },
+                     "Wave S utxo_apply stage: cursor, UTXO delta counters, log rows" },
     { "tip_finalize", tip_finalize_dump_state_json,
-                     "Wave S tip_finalize shadow stage: cursor, finalize counters, log rows" },
+                     "Wave S tip_finalize stage: cursor, finalize counters, log rows" },
     { "quorum_oracle", quorum_oracle_dump_state_json,
                      "multi-source quorum oracle: per-source vote stats + last verdict" },
     { "peer_lifecycle", peer_lifecycle_dump_state_json,
@@ -491,9 +491,8 @@ static const struct dump_entry g_dumpers[] = {
     { "utxo_projection", utxo_projection_dump_state_json,
                      "Phase 4b utxo_projection: open/path/last_consumed_offset, "
                      "utxo_count, events_consumed_total, emit/consume counters, "
-                     "REPLACE collisions, last_catch_up_ms. Shadow-mode UTXO "
-                     "set derived from the event_log; diff via "
-                     "zcl_utxo_projection_diff before cutover." },
+                     "REPLACE collisions, last_catch_up_ms. UTXO set derived "
+                     "from the event_log." },
     { "znam_projection", znam_projection_dump_state_json,
                      "Phase 4d-4 znam projection: name_count, addr/text counts, "
                      "events_consumed_total, per-event-type counters, emit/fail "
@@ -501,16 +500,16 @@ static const struct dump_entry g_dumpers[] = {
     { "wallet_projection", wallet_projection_dump_state_json,
                      "Phase 4d-3 wallet view projection: public-only "
                      "address/tx/UTXO/note counts, total value, cursor, "
-                     "and shadow emit counters." },
+                     "and emit counters." },
     { "contacts_projection", contacts_projection_dump_state_json,
                      "Phase 4d-5 contacts projection: count, cursor, "
-                     "consume counters, shadow emit counters, catch_up timing." },
+                     "consume counters, emit counters, catch_up timing." },
     { "onion_announcements_projection", onion_ann_projection_dump_state_json,
                      "Phase 4d-5 onion announcements projection: count, cursor, "
-                     "consume counters, shadow emit counters, catch_up timing." },
+                     "consume counters, emit counters, catch_up timing." },
     { "hodl_history_projection", hodl_history_projection_dump_state_json,
                      "Phase 4d-5 HODL history projection: count, cursor, "
-                     "consume counters, shadow emit counters, catch_up timing." },
+                     "consume counters, emit counters, catch_up timing." },
     { "block_index_projection", block_index_projection_dump_state_json,
                      "Phase 4c block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },

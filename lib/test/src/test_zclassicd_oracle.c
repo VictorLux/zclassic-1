@@ -8,7 +8,7 @@
  *   1. probe agrees when local block_index hash matches mock response.
  *   2. probe disagrees when mock returns a different hash.
  *   3. probe records rpc_errors when the mock listener is shut down.
- *   4. heartbeat tick increments probes_total.
+ *   4. supervisor tick increments probes_total.
  */
 
 #include "test/test_helpers.h"
@@ -24,7 +24,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
-#include "health/heartbeat.h"
+#include "util/supervisor.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -301,8 +301,12 @@ int test_zclassicd_oracle(void)
         };
         ZO_CHECK("legacy mirror init for contradiction",
                  legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL));
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-contradiction");
         ZO_CHECK("legacy mirror catchup rejects contradiction",
-                 !legacy_mirror_sync_request_catchup("unit-contradiction"));
+                 !catchup.ok);
+        ZO_CHECK("legacy mirror catchup names blocker",
+                 strstr(catchup.message, "hash-disagreement") != NULL);
 
         struct chain_state_repository empty_csr = {0};
         struct chain_evidence_controller authority;
@@ -317,7 +321,7 @@ int test_zclassicd_oracle(void)
         struct legacy_mirror_sync_stats lms;
         legacy_mirror_sync_stats_snapshot(&lms);
         ZO_CHECK("legacy contradiction surfaces blocker",
-                 strcmp(lms.last_blocker_code, "hash-disagreement") == 0);
+                 strcmp(lms.last_blocker_id, "hash-disagreement") == 0);
         ZO_CHECK("legacy contradiction does not claim rewind",
                  lms.authority_rewind_target == 0);
 
@@ -386,8 +390,8 @@ int test_zclassicd_oracle(void)
         zo_teardown();
     }
 
-    /* Test 4: heartbeat tick increments probes_total. We fire the
-     * sweeper at sub-second cadence by setting a small interval, and
+    /* Test 4: supervisor tick increments probes_total. We fire the
+     * supervisor at sub-second cadence by setting a small interval, and
      * lower the tip safety margin so our synthetic chain at h=7 still
      * has a valid probe range. */
     {
@@ -406,9 +410,24 @@ int test_zclassicd_oracle(void)
         };
         ZO_CHECK("init (tick)", zclassicd_oracle_init(&cfg).ok);
 
-        health_reset_for_test();
-        health_set_check_interval_ms(50);
+        supervisor_reset_for_testing();
+        supervisor_set_tick_ms_for_testing(50);
         ZO_CHECK("oracle_start", zclassicd_oracle_start().ok);
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int snap_n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        bool saw_contract = false;
+        bool period_ok = false;
+        bool deadline_ok = false;
+        for (int i = 0; i < snap_n; i++) {
+            if (strcmp(snaps[i].name, "oracle.zclassicd") == 0) {
+                saw_contract = true;
+                period_ok = snaps[i].period_secs == 1;
+                deadline_ok = snaps[i].deadline_secs == 0;
+            }
+        }
+        ZO_CHECK("supervisor contract registered", saw_contract);
+        ZO_CHECK("supervisor period is cadence", period_ok);
+        ZO_CHECK("supervisor deadline disabled", deadline_ok);
 
         /* Wait up to ~3s for the periodic tick. */
         bool saw_tick = false;
@@ -422,7 +441,7 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("periodic tick fired", saw_tick);
 
         zclassicd_oracle_stop();
-        health_reset_for_test();
+        supervisor_reset_for_testing();
         mock_server_stop(&srv);
         zo_teardown();
         unsetenv("ZCL_ORACLE_TIP_MARGIN");
@@ -474,7 +493,7 @@ int test_zclassicd_oracle(void)
         mirror_consensus_stats_snapshot(&ms);
         ZO_CHECK("mirror blocker counted", ms.blockers_total == 1);
         ZO_CHECK("mirror blocker records precise code",
-                 strcmp(ms.activation_blocker,
+                 strcmp(ms.activation_blocker_reason,
                         "activation-no-progress") == 0);
         events_len = event_dump_json(events, sizeof(events), 8);
         events[events_len < sizeof(events) ? events_len : sizeof(events) - 1] =
@@ -528,7 +547,7 @@ int test_zclassicd_oracle(void)
         stats.stalls_total = 2;
         snprintf(stats.stuck_reason, sizeof(stats.stuck_reason),
                  "%s", "no-authorized-child");
-        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "body-hash-mismatch");
         legacy_mirror_sync_test_set_stats(&stats, NULL);
 
@@ -622,8 +641,8 @@ int test_zclassicd_oracle(void)
 
         legacy_mirror_sync_stats_snapshot(&snap);
         ZO_CHECK("legacy mirror at tip suppresses stale activation blocker",
-                 snap.activation_blocker[0] == '\0' &&
-                 snap.last_blocker_code[0] == '\0');
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 snap.last_blocker_id[0] == '\0');
         ZO_CHECK("legacy mirror at tip reports healthy after catchup",
                  strcmp(snap.state, "healthy") == 0);
         legacy_mirror_sync_reset_for_test();
@@ -638,7 +657,7 @@ int test_zclassicd_oracle(void)
         stats.reachable = true;
         stats.legacy_height = 4;
         stats.legacy_headers = 4;
-        snprintf(stats.last_blocker_code, sizeof(stats.last_blocker_code),
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
                  "%s", "");
         legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
 
@@ -648,8 +667,8 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("legacy mirror behind local has negative lag",
                  snap.lag < 0);
         ZO_CHECK("legacy mirror behind local not blocked",
-                 snap.activation_blocker[0] == '\0' &&
-                 snap.last_blocker_code[0] == '\0');
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 snap.last_blocker_id[0] == '\0');
         legacy_mirror_sync_reset_for_test();
         zo_teardown();
     }

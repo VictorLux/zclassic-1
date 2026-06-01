@@ -1,25 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_reducer_ingest_e2e - in-process end-to-end proof of the DORMANT
- * reducer-as-ingest path, BEFORE the live cutover flip.
+ * test_reducer_ingest_e2e - in-process end-to-end proof of the authoritative
+ * reducer-as-ingest path.
  *
  * WHY THIS TEST EXISTS
  * --------------------
- * docs/work/reducer-as-ingest-design.json gives the eight-stage Wave-S
- * reducer the capability to INGEST a block when AUTHORITATIVE:
- *   - tip_finalize becomes the WRITER of the in-mem tip
- *     (active_chain_set_tip, step 1 keystone - tip_finalize_stage.c:491),
- *   - utxo_apply authors the UTXO projection + the per-block inverse delta
- *     and DRIVES the reorg unwind (steps 3/4),
- *   - tip_finalize runs the post-finalize side-effects (step 5).
+ * The eight-stage Wave-S reducer must be able to ingest a block end-to-end:
+ *   - tip_finalize moves the in-memory active-chain window,
+ *   - utxo_apply authors the UTXO projection plus the per-block inverse delta
+ *     and drives reorg unwind,
+ *   - tip_finalize runs the post-finalize side effects.
  * Every live intake caller (msg_blocks / msg_compact / mining / miner /
- * rebuild / invalidate) is gated to reducer_ingest_block via
- * reducer_is_authoritative() (== tip_finalize_get_mode()==AUTHORITATIVE),
- * but the live default is SHADOW so the WHOLE path is DORMANT - never
- * exercised live. This test flips the modes to AUTHORITATIVE inside the
- * test only (restored after) and drives the same *_stage_drain functions
- * reducer_drain_to_convergence() calls, proving the dormant consensus
- * capability works end-to-end IN-PROCESS before the flip.
+ * rebuild / invalidate) can route through reducer_ingest_block. This test
+ * drives the same *_stage_drain functions reducer_drain_to_convergence()
+ * calls, proving the consensus capability works end-to-end in-process.
  *
  * THE Equihash CONSTRAINT (why the accept case is driven at the stage
  * level, not via the literal reducer_ingest_block front door)
@@ -31,24 +25,22 @@
  * in-process unit test can solve mainnet Equihash, so NO synthetically
  * constructed block can pass that stateless gate (the force flag does NOT
  * relax it - chain_activation_controller.c:662). That gate is upstream
- * consensus that legacy process_new_block runs IDENTICALLY and is proven
- * elsewhere (test_domain_consensus_check_block). It is NOT the dormant
- * reducer capability under test. So:
+     * consensus that legacy process_new_block runs IDENTICALLY and is proven
+     * elsewhere (test_domain_consensus_check_block). It is NOT the stateful
+     * reducer capability under test. So:
  *   - the ACCEPT / INVALID-UTXO / REORG scenarios drive the real reducer
  *     consensus machinery (real UTXO delta, real tip-set, real inverse
  *     delta) the way reducer_drain_to_convergence does - NO stubbed
  *     verification of that machinery;
  *   - a dedicated case ALSO calls the literal reducer_ingest_block() and
- *     asserts (a) the SHADOW guard refuses (dormant by default) and (b) a
- *     no-Equihash block is rejected by the stateless gate - proving the
- *     front-door contract that the live callers depend on.
+ *     asserts that a no-Equihash block is rejected by the stateless gate,
+ *     proving the front-door contract that the live callers depend on.
  *
  * Real consensus, no stubs: the UTXO delta (compute_block_delta inside
  * utxo_apply_stage) and the reorg inverse-delta are the real consensus
  * code; the projection commitment is the real SHA3-256 fingerprint. Only
- * the upstream proof_validate cursor/log is seeded (those stages are
- * shadow-proven in their own suites), exactly as
- * test_stage_reorg_unwind_parity does.
+ * the upstream proof_validate cursor/log is seeded; those stage contracts are
+ * covered in their own suites, exactly as test_stage_reorg_unwind_parity does.
  */
 
 #include "test/test_helpers.h"
@@ -301,7 +293,7 @@ static bool rie_lookup(const struct uint256 *txid, uint32_t vout,
     return true; /* not found */
 }
 
-/* ── proof_validate seeding (upstream stage; shadow-proven elsewhere) ── */
+/* ── proof_validate seeding (upstream stage; covered elsewhere) ── */
 
 static bool rie_exec(sqlite3 *db, const char *sql)
 {
@@ -369,7 +361,7 @@ static bool tf_log_status_at(sqlite3 *db, int height,
 }
 
 /* The highest height with a "finalized" tip_finalize_log row, or -1. This
- * is the AUTHORITATIVE "last finalized" height — distinct from the stage's
+ * is the reducer's "last finalized" height — distinct from the stage's
  * g_last_advance_height (which also advances over rejected/upstream_failed
  * heights). */
 static int tf_max_finalized_height(sqlite3 *db)
@@ -417,8 +409,8 @@ static bool rie_utxo_counter(int height_after, int64_t *out_count, void *user)
  * does (chain_activation_controller.c:534) for the stages this test owns:
  * utxo_apply (real UTXO delta + reorg unwind) then tip_finalize (real
  * tip-set keystone + post-finalize). The upstream five stages are seeded
- * via proof_validate_log/cursor (they are shadow-proven in their own
- * suites and contribute no consensus mutation). Loops to convergence. */
+ * via proof_validate_log/cursor (they are covered in their own suites and
+ * contribute no consensus mutation). Loops to convergence. */
 static int rie_drain_to_convergence(void)
 {
     int total = 0;
@@ -456,9 +448,8 @@ struct rie_env {
     bool ok;
 };
 
-/* Open progress/log/projection, init the active chain + stages, flip the
- * dormant modes to AUTHORITATIVE (caller restores via rie_env_close).
- * Seeds the base coins and installs the reader/lookup over `active`. */
+/* Open progress/log/projection, init the active chain + stages, seed the base
+ * coins, and install the reader/lookup over `active`. */
 static bool rie_env_open(struct rie_env *e, const char *tag,
                          struct rie_branch *active,
                          const struct rie_ext_coin *ext, int n_ext)
@@ -479,11 +470,8 @@ static bool rie_env_open(struct rie_env *e, const char *tag,
     if (!e->p) return false;
 
     utxo_projection_set_event_log(e->lg);
-    /* DORMANT-PATH FLIP (test-only): make utxo_apply the projection author
-     * and tip_finalize the in-mem tip writer. reducer_is_authoritative()
-     * keys off tip_finalize_get_mode()==AUTHORITATIVE. */
-    utxo_projection_set_author(UTXO_AUTHOR_STAGE);
-    tip_finalize_set_mode(TIP_FINALIZE_MODE_AUTHORITATIVE);
+    /* Test-only projection authorship: make utxo_apply write the projection. */
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
     seed_base_coins(ext, n_ext);
 
@@ -514,9 +502,8 @@ static void rie_env_close(struct rie_env *e)
 {
     tip_finalize_stage_shutdown();
     utxo_apply_stage_shutdown();
-    /* Restore the production defaults: SHADOW + legacy author. */
-    tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
-    utxo_projection_set_author(UTXO_AUTHOR_LEGACY);
+    /* Restore the production projection author. */
+    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
     utxo_projection_set_event_log(NULL);
     active_chain_free(&e->ms.chain_active);
     block_map_free(&e->ms.map_block_index);
@@ -538,7 +525,7 @@ static struct block_index *install_branch(struct rie_env *e,
     for (int h = 0; h < br->n; h++)
         block_map_insert(&e->ms.map_block_index, br->blocks[h].phashBlock,
                          &br->blocks[h]);
-    active_chain_set_tip(&e->ms.chain_active, &br->blocks[br->n - 1]);
+    active_chain_move_window_tip(&e->ms.chain_active, &br->blocks[br->n - 1]);
     return &br->blocks[br->n - 1];
 }
 
@@ -548,7 +535,7 @@ int test_reducer_ingest_e2e(void);
 int test_reducer_ingest_e2e(void)
 {
     printf("\n=== reducer-ingest end-to-end test "
-           "(dormant AUTHORITATIVE path, real consensus) ===\n");
+           "(authoritative path, real consensus) ===\n");
     int failures = 0;
 
     blocker_module_init();
@@ -566,50 +553,26 @@ int test_reducer_ingest_e2e(void)
     ext[1].script[0] = 0x76; ext[1].script[1] = 0xa9; ext[1].script[2] = 0xBC;
     ext[1].script_len = 3;
 
-    /* ── Front-door contract: reducer_ingest_block in SHADOW + bad PoW ──
-     * Proves the live-caller gate: in the default SHADOW mode the dormant
-     * path REFUSES (reducer-not-authoritative), and a synthetic block can
-     * never pass the stateless Equihash gate (so the accept path below is
-     * legitimately exercised at the stage level, not the front door). */
+    /* ── Front-door contract: reducer_ingest_block rejects bad PoW ─────
+     * A synthetic block can never pass the stateless Equihash gate, so the
+     * accept path below is legitimately exercised at the stage level, not the
+     * front door. */
     {
-        /* Post-flip (step 13) the production default is AUTHORITATIVE — the
-         * reducer is the live engine. */
-        RIE_CHECK("front-door: default mode is AUTHORITATIVE (post-flip)",
+        RIE_CHECK("front-door: reducer is authoritative",
                   reducer_is_authoritative());
-
-        /* Exercise the SHADOW-refuses-ingest path explicitly: the controller's
-         * guard must still refuse before any mutation when SHADOW. */
-        tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
-        RIE_CHECK("front-door: explicit SHADOW disables reducer",
-                  !reducer_is_authoritative());
 
         struct rie_branch B;
         bool b = branch_build(&B, 0x33, 2, -1, 0, NULL);
         RIE_CHECK("front-door: branch builds", b);
         if (b) {
             struct validation_state vs;
-            /* SHADOW: the controller's guard refuses before any mutation. */
             bool acc = reducer_ingest_block(boot_activation_controller(),
                                             &B.bodies[1], REDUCER_SRC_P2P,
                                             false, &vs);
-            RIE_CHECK("front-door: SHADOW refuses ingest", !acc);
-            RIE_CHECK("front-door: SHADOW verdict not valid",
-                      !validation_state_is_valid(&vs));
-
-            /* Flip AUTHORITATIVE and retry: now the stateless Equihash gate
-             * is what rejects (a synthetic block carries no real 200,9
-             * solution). This documents WHY the accept case must be driven
-             * at the stage level rather than the front door in-process. */
-            tip_finalize_set_mode(TIP_FINALIZE_MODE_AUTHORITATIVE);
-            RIE_CHECK("front-door: AUTHORITATIVE gate now true",
-                      reducer_is_authoritative());
-            struct validation_state vs2;
-            bool acc2 = reducer_ingest_block(boot_activation_controller(),
-                                             &B.bodies[1], REDUCER_SRC_P2P,
-                                             false, &vs2);
             RIE_CHECK("front-door: synthetic block fails stateless Equihash",
-                      !acc2 && !validation_state_is_valid(&vs2));
-            tip_finalize_set_mode(TIP_FINALIZE_MODE_SHADOW);
+                      !acc && !validation_state_is_valid(&vs));
+            RIE_CHECK("front-door: failed verdict is not valid",
+                      !validation_state_is_valid(&vs));
         }
         branch_free(&B);
     }
@@ -634,7 +597,7 @@ int test_reducer_ingest_e2e(void)
 
         struct rie_env e;
         bool opened = built && rie_env_open(&e, "accept", &C, ext, 2);
-        RIE_CHECK("accept: env opens (AUTHORITATIVE)", opened);
+        RIE_CHECK("accept: env opens", opened);
 
         if (opened) {
             struct block_index *want_tip = install_branch(&e, &C);
@@ -698,7 +661,7 @@ int test_reducer_ingest_e2e(void)
      * The invalid block's spend output is never applied to the UTXO set.
      * No stubbed verification — the rejection is the real consensus UTXO
      * check. (Note: tip_finalize's one-block lookahead provisionally points
-     * the in-mem tip pointer at h2 when finalizing h1; the AUTHORITATIVE
+     * the in-mem tip pointer at h2 when finalizing h1; the reducer
      * consensus guarantee proven here is that h2 is NEVER FINALIZED and the
      * cursor does not advance past it — see the e2e report's lookahead
      * note.) */
@@ -711,7 +674,7 @@ int test_reducer_ingest_e2e(void)
 
         struct rie_env e;
         bool opened = built && rie_env_open(&e, "invalid", &D, ext, 2);
-        RIE_CHECK("invalid: env opens (AUTHORITATIVE)", opened);
+        RIE_CHECK("invalid: env opens", opened);
 
         if (opened) {
             (void)install_branch(&e, &D);
@@ -814,7 +777,7 @@ int test_reducer_ingest_e2e(void)
                 for (int h = 0; h < W.n; h++)
                     arith_uint256_set_u64(&W.blocks[h].nChainWork,
                                           (uint64_t)(h + 1) * 10u);
-                active_chain_set_tip(&e.ms.chain_active, &W.blocks[W.n - 1]);
+                active_chain_move_window_tip(&e.ms.chain_active, &W.blocks[W.n - 1]);
                 RIE_CHECK("reorg A: seed W proof_validate",
                           seed_proof_validate(progress_store_db(), W.n - 1));
 
@@ -894,11 +857,11 @@ int test_reducer_ingest_e2e(void)
         branch_free(&W2);
     }
 
-    /* Belt + suspenders: the production default must be restored. */
-    RIE_CHECK("teardown: production default restored to SHADOW",
-              !reducer_is_authoritative());
-    RIE_CHECK("teardown: utxo author restored to LEGACY",
-              utxo_projection_get_author() == UTXO_AUTHOR_LEGACY);
+    /* Belt + suspenders: production authority remains reducer-owned. */
+    RIE_CHECK("teardown: reducer remains authoritative",
+              reducer_is_authoritative());
+    RIE_CHECK("teardown: utxo author restored to STAGE",
+              utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
 
     printf("=== reducer-ingest end-to-end: %d failures ===\n", failures);
     return failures;

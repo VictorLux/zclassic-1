@@ -449,11 +449,15 @@ int test_body_fetch_stage(void)
 
         const int CRASH_N = 200;  /* chain depth in child */
 
+        int ready_pipe[2] = { -1, -1 };
+        BF_CHECK("crash: create ready pipe", pipe(ready_pipe) == 0);
+
         pid_t pid = fork();
         if (pid < 0) {
             BF_CHECK("crash: fork failed", false);
         } else if (pid == 0) {
             /* Child. No BF_CHECK calls — exit codes signal failure. */
+            close(ready_pipe[0]);
             if (!progress_store_open(dir)) _exit(2);
             struct main_state ms;
             struct synth_chain_bf sc;
@@ -494,10 +498,16 @@ int test_body_fetch_stage(void)
             sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
 
             if (!body_fetch_stage_init(&ms)) _exit(6);
-            /* Drain a known small amount, then idle. The parent kills
-             * while we are idle, so the on-disk state should be exactly
-             * `committed body_fetch rows == cursor`. */
+            /* Drain a known small amount, then tell the parent we are
+             * idling. The parent kills only after this byte, so the on-disk
+             * state is exactly `committed body_fetch rows == cursor`. */
             (void)body_fetch_stage_drain(30);
+            {
+                char ready = 'R';
+                if (write(ready_pipe[1], &ready, 1) != 1)
+                    _exit(7);
+                close(ready_pipe[1]);
+            }
             for (;;) {
                 struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
                 nanosleep(&ts, NULL);
@@ -505,16 +515,17 @@ int test_body_fetch_stage(void)
             _exit(0);  /* unreachable */
         }
 
-        /* Parent. Randomised delay (100-300 ms) — leaves time for the
-         * child's 1000-row vh_log seed insert + body_fetch warmup so
-         * the SIGKILL lands during the drain loop, not during setup. */
-        srand((unsigned)platform_time_wall_time_t() ^ (unsigned)getpid());
-        long delay_us = 100000 + (rand() % 200000);
-        struct timespec delay_ts = {
-            .tv_sec  = 0,
-            .tv_nsec = (long)delay_us * 1000L,
-        };
-        nanosleep(&delay_ts, NULL);
+        /* Parent. Wait until the child has finished the deterministic drain
+         * and is idling. A timer here is flaky on loaded CI: it can kill the
+         * child during setup before body_fetch_log exists. */
+        close(ready_pipe[1]);
+        {
+            char ready = 0;
+            ssize_t got = read(ready_pipe[0], &ready, 1);
+            close(ready_pipe[0]);
+            BF_CHECK("crash: child reached idle point",
+                     got == 1 && ready == 'R');
+        }
         BF_CHECK("crash: kill child",
                  kill(pid, SIGKILL) == 0);
         int status = 0;

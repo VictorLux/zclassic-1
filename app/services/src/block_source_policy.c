@@ -208,8 +208,8 @@ void block_source_policy_plan(const struct cac_plan_input *in,
             source_selection_blocker(in, &out->sources[i]);
         out->sources[i].selectable =
             selection_blocker && selection_blocker[0] == '\0';
-        copy_text(out->sources[i].selection_blocker,
-                  sizeof(out->sources[i].selection_blocker),
+        copy_text(out->sources[i].selection_reason,
+                  sizeof(out->sources[i].selection_reason),
                   selection_blocker ? selection_blocker : "invalid_source");
         if (out->sources[i].blocked && out->sources[i].blocker[0]) {
             any_blocker = true;

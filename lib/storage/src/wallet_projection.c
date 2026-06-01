@@ -2,9 +2,8 @@
  *
  * wallet_projection — Phase 4d-3 event-log consumer skeleton.
  *
- * Shadow mode only. This projection stores public, rebuildable wallet
- * view state and never stores private keys, seeds, spending keys, or
- * wallet secret material.
+ * This projection stores public, rebuildable wallet view state and never
+ * stores private keys, seeds, spending keys, or wallet secret material.
  */
 
 #include "storage/wallet_projection.h"

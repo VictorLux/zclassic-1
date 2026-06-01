@@ -12,8 +12,8 @@
  *   operators without manual comparison.
  *
  * Architecture:
- *   - One periodic tick registered with the unified heartbeat ring
- *     (lib/health/heartbeat.h). No dedicated pthread.
+ *   - One periodic tick registered with the chain supervisor. No
+ *     dedicated pthread and no lib/health dependency.
  *   - Each tick: pick `heights_per_tick` random heights in [0, tip-100]
  *     and probe each.
  *   - zclassicd_oracle_probe() is also exposed synchronously for the
@@ -48,10 +48,10 @@ struct zclassicd_oracle_config {
  * zclassic.conf when no user/password were supplied. */
 struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cfg);
 
-/* Register the periodic tick with the heartbeat ring. Idempotent. */
+/* Register the periodic tick with the supervisor. Idempotent. */
 struct zcl_result zclassicd_oracle_start(void);
 
-/* Unregister the periodic tick. Idempotent. */
+/* Disable the periodic supervisor tick. Idempotent. */
 void zclassicd_oracle_stop(void);
 
 struct zclassicd_oracle_probe_result {

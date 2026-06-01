@@ -7,16 +7,4 @@
 # functions to struct zcl_result (ZCL_OK / ZCL_ERR), then delete its line
 # here — the gate will enforce that it stays migrated.
 #
-# One path per line, repo-relative. The gate scans app/services/src/*.c only;
-# a baseline line for a path outside that scope is dead and is removed here
-# (ratchet-forward hygiene). The eight Wave-S reducer stages were relocated to
-# app/jobs/src/ by A1 ("uniform Job contract + relocate 8 reducer stages") and
-# now carry the uniform Job shape (job_result_t steps; _init/_drain bound by the
-# shared Job vtable in test_reducer_stage_fuzz.c). Their return-shape discipline
-# is owned by the A1 Job contract, not E2 — so their stale service-path entries
-# are dropped from this baseline.
-app/services/src/chain_state_repository.c
-app/services/src/cutover_modes.c
-app/services/src/legacy_mirror_sync_service.c
-app/services/src/utxo_recovery_restore.c
-app/services/src/utxo_recovery_service.c
+# One path per line, repo-relative. The gate scans app/services/src/*.c only.

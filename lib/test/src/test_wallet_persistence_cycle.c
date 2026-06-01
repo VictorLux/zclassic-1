@@ -259,6 +259,42 @@ static int test_read_single_key_not_found(void)
     return failures;
 }
 
+static int test_delete_key_roundtrip(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: delete_key_r removes persisted key") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x88);
+        ASSERT(wallet_sqlite_write_key_r(&ws, &pk, &key).ok);
+
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &got).ok);
+        memory_cleanse(got.vch, 32);
+
+        struct zcl_result r = wallet_sqlite_delete_key_r(&ws, &pk);
+        ASSERT(r.ok);
+
+        privkey_init(&got);
+        r = wallet_sqlite_read_single_key(&ws, &pk, &got);
+        ASSERT(!r.ok);
+        ASSERT(r.code == WSQL_READ_FAIL);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_write_key_invariants(void)
 {
     int failures = 0;
@@ -338,6 +374,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
     failures += test_read_single_key_not_found();
+    failures += test_delete_key_roundtrip();
     failures += test_write_key_invariants();
     failures += test_health_snapshot_without_open();
     return failures;

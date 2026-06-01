@@ -14,6 +14,7 @@
 #include "platform/time_compat.h"
 #include "controllers/snapshot_controller.h"
 #include "snapshot_controller_internal.h"
+#include "models/block.h"
 #include "models/tx_index.h"
 #include "core/serialize.h"
 #include "core/hash.h"
@@ -330,9 +331,10 @@ static void *build_tx_index_thread(void *arg)
     fflush(stdout);
     int64_t t_start = (int64_t)platform_time_wall_time_t();
 
-    sqlite3_busy_timeout(ndb.db, 30000);
-    sqlite3_exec(ndb.db, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
-    sqlite3_exec(ndb.db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL);
+    if (!db_tx_configure_additive_build(&ndb)) {
+        node_db_close(&ndb);
+        return NULL;
+    }
 
     if (sqlite3_open_v2(db_path, &read_db,
                         SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
@@ -345,17 +347,8 @@ static void *build_tx_index_thread(void *arg)
     }
     sqlite3_busy_timeout(read_db, 30000);
 
-    /* Query blocks ordered by file_num, data_pos for sequential I/O */
     sqlite3_stmt *query = NULL;
-    int query_rc = sqlite3_prepare_v2(read_db,
-        "SELECT hash, height, file_num, data_pos, num_tx"
-        " FROM blocks WHERE file_num >= 0"
-        " ORDER BY file_num, data_pos",
-        -1, &query, NULL);
-    if (query_rc != SQLITE_OK || !query) {
-        LOG_WARN("tx_index", "tx_index: failed to prepare block query: %s", sqlite3_errmsg(read_db));
-        if (query)
-            sqlite3_finalize(query);
+    if (!db_block_prepare_file_position_scan(read_db, &query)) {
         sqlite3_close(read_db);
         node_db_close(&ndb);
         return NULL;

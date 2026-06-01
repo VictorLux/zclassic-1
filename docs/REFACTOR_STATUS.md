@@ -1,189 +1,682 @@
-# Build Checklist — the road to the beautiful node
+# Refactor Status — Purpose-Per-File Finish Board
 
-> The single tracker for **everything that needs to be created.** Architecture
-> and the laws: [`FRAMEWORK.md`](./FRAMEWORK.md). This file is the *work*: every
-> item is a checkbox, grouped by workstream, ordered by dependency. Check it off
-> when it's shipped + proven. Read this first when you start a session.
->
-> **Updated:** 2026-05-27. Goal = the Prime Directive: *log-as-truth + pure
-> projections + single reducer; advance-cursor-or-name-blocker; health = the gap.*
-> Five workstreams: **B** flips authority (the north star), **A** makes the canon
-> true, **C** dissolves the legacy, **D** restores beauty, **E** enforces it.
+> Updated 2026-06-01. This file is the current debt board for finishing the
+> framework refactor. `docs/FRAMEWORK.md` remains the architecture.
 
----
+## Objective
 
-## Scoreboard — four promises (live truth, not green tests)
+Finish the ZClassic23 refactor by deleting stale shadow/cutover and scaffold
+code, making every remaining file match one clear framework shape and purpose,
+shrinking all lint baselines to zero, updating docs to reflect the
+authoritative reducer architecture, and proving it with clean tests plus a live
+node soak.
 
-Read live from the SERVICE: `zcl_status` (tip, `tip_advance_age_seconds`) +
-`zcl_state subsystem=blocker`. Measured numbers live in
-[`BENCHMARKS_LOG.md`](./BENCHMARKS_LOG.md) (append-only); don't re-quote them here.
+## Current Truth
 
-```
-  ⚡ FAST          cold-sync 180s→30s ▸ building   warm 37.7s→10s ▸   stay-at-tip ◑ (cutover)
-  🪶 LEAN          binary 14.9MB (stripped) ✓     RSS ~2GB→1GB ▲ climbs w/ bg-verify
-  💪 UNBREAKABLE   alert loop ✓ closed · recovery moles ✓ pinned   can't-halt-by-construction ◑ needs B8 + E6/E7 hardening
-  🔬 HONEST        zcl_status live truth ✓          bug→repro ✓ (chaos/postmortem)
-  ✓ done · ▸ building · ◑ fixed-in-code-not-structural · ▲ above target
-```
+- The reducer/staged pipeline is the authoritative chain-advance architecture.
+- The public cutover/projection-diff MCP/RPC apparatus has been removed.
+- The old legacy block-connect engine files are gone.
+- The production `app/`, `lib/storage/`, `lib/validation/`, and `tools/mcp/`
+  C/H surfaces no longer describe active reducer read-model paths as
+  shadow/cutover/projection-diff infrastructure; remaining historical wording
+  is test/doc context only.
+- E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
+  zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
+  lib-layering is down to 79 grandfathered includes, raw allocation debt is at
+  zero active allowlist entries, and other ratchet baselines still grandfather
+  real debt.
 
-**Owner mandate (standing):** NO whack-a-mole. The node becomes unbreakable by
-*finishing* the refactor — collapse to ONE path, DELETE the legacy — not by
-adding conditions. Default to SUBTRACTION. While two chain paths coexist a silent
-halt remains *possible*; workstream **B** is the structural cure.
+## Completed Architecture Moves
 
-**▶ FOCUS NOW (2026-05-27) — recovery moles are fixed; the next move is live preflight verification, then B8 + E6/E7.**
-The five recovery moles that wedged the live node are all on main and pinned by
-tests so they can't silently regress:
+- `app/` is organized by framework shape: controllers, services, models, jobs,
+  supervisors, conditions, events, views.
+- Model lifecycle and validation gates are enforced.
+- Wave-S reducer stages live under `app/jobs/` and use the Job advance/block
+  contract.
+- Conditions are real `{detect, remedy, witness}` files.
+- Domain extraction is real: 21 pure domain modules with matching domain tests.
+- Outbound persistence ports/adapters exist for several services.
+- MCP route counts reflect the post-apparatus surface: 98 total tools.
+- `header_admit_stage_diff.c` and the public diff report API were deleted;
+  the survivor header-admit test now verifies reorg self-heal directly through
+  the durable log.
+- `app/services/src/cutover_modes.c` and
+  `app/services/include/services/cutover_modes.h` were deleted; the
+  header-admit, validate-headers, and tip-finalize stages no longer expose
+  SHADOW/AUTHORITATIVE runtime switches.
+- The active-chain window move no longer publishes the public reducer
+  authority. `active_chain_move_window_tip()` is a local cache/window
+  primitive; tip authority is updated only through `tip_finalize_stage` or
+  explicit trusted bootstrap/repair APIs.
+- Trusted restored tips now stamp a durable `tip_finalize` anchor/cursor when
+  the persisted stage cursor lags the restored public tip. Stale low
+  `tip_finalize` cursors cannot replay old rows and republish a low public tip.
+- `tip_finalize` failure rows such as `upstream_failed` advance the stage
+  cursor only; they do not move public tip authority.
+- `staged_sync_supervisor` no longer describes the active Wave-S jobs as a
+  shadow pipeline, and its unused `datadir`/conservation-diff API parameter was
+  removed.
+- The S-5..S-8 Job headers/sources/tests no longer use comparison-era wording
+  for the active reducer stages; the health controller comment now frames
+  `log_head` as the reducer log head.
+- Boot-time projection/event-log fan-out is now named
+  `boot_start_projection_storage` / `boot_stop_projection_storage`; the
+  `config/src/boot*.c` production boot surface no longer describes this active
+  read-model wiring as shadow/cutover infrastructure.
+- `utxo_recovery_restore.c` now carries rich `struct zcl_result` status inside
+  its import/restore result structs, logs non-OK statuses at the boot caller,
+  and is removed from the E2 service-result baseline.
+- `utxo_recovery_service.c` now carries rich `struct zcl_result` status inside
+  its recovery execution result, logs non-OK execution failures at the boot
+  caller, and is removed from the E2 service-result baseline.
+- `utxo_recovery_backfill.c` is split out as the shielded-value backfill
+  service helper, with its own `zcl_result` argument validation and an explicit
+  `-1` failure return. The split keeps `utxo_recovery_service.c` under the
+  framework file-size ceiling.
+- `chain_state_repository.c` now exposes `csr_commit_tip_result()`, a
+  `struct zcl_result` wrapper over the legacy `enum csr_result` commit API, and
+  is removed from the E2 service-result baseline while call sites migrate.
+- `legacy_mirror_sync_service.c` now exposes
+  `legacy_mirror_sync_request_catchup_result()`, routes the
+  `legacy_mirror_stuck` condition through the rich result surface, and is
+  removed from the E2 service-result baseline. `check_one_result_type` now
+  supports the intended empty-baseline state.
+- `sync_controller_import.c` is below the E1 file-size ceiling after extracting
+  the LevelDB UTXO decode/bind helpers into `utxo_import_pipeline.c`, a Service
+  helper with `zcl_result` writer-bind status. The E1 baseline no longer
+  grandfathers `sync_controller_import.c`.
+- `legacy_import.c` is below the E1 file-size ceiling after extracting raw
+  block scanning, BIP34 discovery, Sapling prefilter, and decrypt workers into
+  private controller helpers `legacy_import_scan.c` / `legacy_import_scan.h`.
+- `sync_controller_catchup.c` is below the E1 file-size ceiling after extracting
+  Sapling tree rebuild logic into `sync_controller_sapling_tree.c` and wallet /
+  mempool persistence into `sync_controller_persistence.c`.
+- `legacy_mirror_sync_service.c` is below the E1 file-size ceiling after moving
+  lifecycle, stats, dump-state, and test-surface code into
+  `legacy_mirror_sync_state.c` behind `legacy_mirror_sync_internal.h`.
+- `tools/scripts/check_file_size_ceiling.sh` now supports the intended empty
+  baseline state, and `tools/scripts/file_size_ceiling_baseline.txt` contains
+  no file entries.
+- Typed-blocker adoption is no longer grandfathered. The legacy mirror and
+  mirror-consensus public stats now expose typed blocker classes plus
+  reason/id fields, `block_source_policy` no longer carries a raw
+  `selection_blocker` C field, the legacy JSON keys are preserved for clients,
+  and `tools/scripts/typed_blocker_baseline.txt` is empty.
+- Active-chain cache/window moves have been separated from public tip authority:
+  production cache updates now call `active_chain_move_window_tip()`, while the
+  compatibility `active_chain_set_tip()` wrapper remains marked as the
+  grandfathered low-level surface. The E6 one-write-path baseline is down from
+  34 to 26 write surfaces.
+- `docs/work/` now contains only the parallel-worktree protocol. Obsolete
+  cutover/B8 runbooks, stale reducer-ingest design snapshots, and a paused
+  worker assignment that referenced deleted files were removed; source/test
+  comments that pointed at those deleted docs are now self-contained.
+- Production comments/log labels under `app/`, `lib/storage/`,
+  `lib/validation/`, and `tools/mcp/` no longer call active projection paths
+  shadow/cutover/projection-diff machinery. UTXO projection emit helpers are
+  now named `*_projection`, not `*_shadow`.
+- Production UTXO projection authorship is fixed on the stage/reducer path; the
+  old author switch setter is now a `ZCL_TESTING`-only API, removing it from
+  the E6 production write-surface baseline.
+- Stale lib-layering baseline entries for removed validation files
+  (`activate_best_chain.c`, `connect_tip.c`, `disconnect_tip.c`) were deleted,
+  dropping the lib-to-app include baseline from 101 to 82.
+- Stale lib-layering baseline entries for removed
+  `msg_version.c` / `msgprocessor_snapshot.c` includes were deleted, and file
+  manifest protocol declarations moved into
+  `lib/net/include/net/file_manifest.h`, dropping the lib-to-app include
+  baseline from 82 to 79.
+- `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
+  directly; their checked exec helpers route through `node_db_exec()`, dropping
+  the controller raw-SQL baseline from 14 to 12 controller files.
+- `snapshot_controller.c`, `wallet_shielded_controller.c`, and
+  `repair_controller.c` were removed from the controller raw-SQL baseline.
+  Snapshot exec helpers now take `struct node_db *` and route through
+  `node_db_exec()`, `z_listunspent` uses the existing block model height query,
+  and UTXO height-repair count/update knowledge lives on `models/utxo`. The
+  controller raw-SQL baseline is down from 12 to 9 controller files.
+- `repair_controller_utxo.c` and `sync_controller_blocks.c` were removed from
+  the controller raw-SQL baseline. `repairutxos` transaction control now uses
+  `node_db_begin()` / `node_db_rollback()` / `node_db_commit()`, and
+  per-block Sapling tree persistence is owned by
+  `db_block_update_sapling_tree_data()`. The controller raw-SQL baseline is
+  down from 9 to 7 controller files.
+- `sync_controller_import.c` was removed from the controller raw-SQL baseline.
+  Its post-import UTXO row/distinct-txid validation now calls
+  `db_utxo_count_rows_and_distinct_txids()`, keeping table cardinality SQL on
+  the UTXO model. The controller raw-SQL baseline is down from 7 to 6
+  controller files.
+- `wallet_controller_keys.c` was removed from the controller raw-SQL baseline.
+  Key readback now uses `wallet_sqlite_read_single_key()`, rollback uses the
+  new `wallet_sqlite_delete_key_r()`, and `test_wallet_persistence_cycle`
+  covers the delete-key roundtrip. The controller raw-SQL baseline is down
+  from 6 to 5 controller files.
+- `blockchain_controller.c` was removed from the controller raw-SQL baseline.
+  MMR/MMB/commitment-MMR state persistence now uses `node_db_state_get()` /
+  `node_db_state_set()`. The controller raw-SQL baseline is down from 5 to 4
+  controller files.
+- `file_controller_export.c` was deleted from the controller layer. Consensus
+  snapshot export now lives in
+  `consensus_snapshot_export_service_run()` with a `struct zcl_result` service
+  return, and boot/test callers use the service header directly. The
+  controller raw-SQL baseline is down from 4 to 3 controller files.
+- `blockchain_controller_admin.c` was removed from the controller raw-SQL
+  baseline. `importchainstate` now calls
+  `db_utxo_rebuild_wallet_and_address_caches()`,
+  `db_utxo_total_value()`, and `db_wallet_utxo_balance()` instead of owning
+  cache-rebuild and reporting SQL directly. `test_models` covers the derived
+  wallet/address cache rebuild. The controller raw-SQL baseline is down from
+  3 to 2 controller files.
+- `snapshot_controller_txindex.c` and `dbquery_controller.c` were removed from
+  the controller raw-SQL baseline. The tx-index job now routes additive-build
+  database tuning through `db_tx_configure_additive_build()` and the block-file
+  scan query through `db_block_prepare_file_position_scan()`. The `zcl_sql`
+  diagnostic primitive now prepares statements through
+  `node_db_prepare_readonly_query()`, which rejects writable statements at the
+  database boundary. The controller raw-SQL baseline is empty.
+- Production raw malloc/calloc/realloc allowlist debt is at zero active
+  entries after migrating the boot-services DB path allocation to
+  `zcl_malloc()` and the connman deferred-free resize to `zcl_realloc()`.
 
-1. **BIP30 self-write** — `connect_block` tolerates an own-height duplicate
-   non-coinbase output as overwrite (different-height duplicate still rejects).
-   `4fa294c03` + `baec7b591`; test `test_connect_block_self_write.c` (`4ccacf3ab`).
-2. **CEC cursor lag** — `coins_cursor` lag/overshoot is advisory, doesn't gate
-   tip block-index evidence. `158c246ef`; test in `test_chain_evidence_controller.c`.
-3. **Stale-freeze reconcile** — `cec.reconcile` lifts an unnamed persisted freeze
-   when the live tip is provably consistent. `93dceff66` + `ecd597a53`.
-4. **LOCAL_IMPORT reconstruct** — `cec` reconstructs recoverable tip as
-   `LOCAL_IMPORT` (single source of authority) instead of freezing. `3f3003d1b`.
-5. **No-silent-ready** — block-connection authority must advance-the-tip OR
-   name-a-typed-blocker (no bare READY when behind). E8 gate HARD: `2d7de2a76` +
-   `32581b86e` + `f1d303b80`.
+## Active Debt
 
-The single next action is **live preflight verification** on a clean datadir (authoritative
-path + canary checks), then **B8** deletion cleanup and **E6/E7** hardening.
-Everything routes through B; do not spawn a parallel "fix the mirror" track — that IS
-B.
+### Delete Or Move Out Of Production
 
-**Preflight go/no-go hardened (2026-05-29):** `cutoverpreflight` (RPC + MCP `zcl_cutoverpreflight`)
-now ANDs a complete invariant set into one `ready` boolean with a typed blocker per failing
-gate: tip parity (height+hash via header_admit_diff CONVERGED), `blocks_fed==blocks_diffed`
-conservation, auto-revert wiring armed (`cutover_no_forward_progress` registered/CRITICAL/
-max_attempts==1/witnessed/not-active), header+validate cursor-lag, modes-are-shadow, and the
-net-new **UTXO-set commitment (SHA3) parity gate** (`SHA3(legacy coins.db utxos) ==
-SHA3(log-folded utxo_projection)` + count match; projection caught up first so an in-flight
-gap reads DEFER, never false-divergence). Read-only; cannot make `ready` easier.
+- No production `shadow`/`cutover`/`projection-diff` matches remain in
+  `app/`, `lib/storage/`, `lib/validation/`, or `tools/mcp/` C/H files outside
+  tests/views. Keep this at zero; normalize remaining historical test/doc
+  wording only when it obscures current behavior.
 
----
+### E1 Oversized App Files
 
-## ✅ Already shipped (the foundation)
+`tools/scripts/file_size_ceiling_baseline.txt` is empty. There are no
+grandfathered oversized app `.c` files; keep this gate at zero.
 
-The primitives the north star needs all exist and are tested — they just run in
-**shadow**. This is why the work ahead is *flipping authority*, not building.
+### E2 Service Result Debt
 
-- [x] Condition engine + 23 conditions (the model-citizen shape) · Phase 0
-- [x] Kernel primitives adopted: mailbox, projection, platform.clock/rng (0 raw clock/RNG callers) · Phase 1
-- [x] Wave-S stage pipeline, all 8 stages, SHADOW complete (header_admit → tip_finalize) · Phase 2
-- [x] event_log — durable, fsync'd, CRC32C, torn-write recovery, SHA3 fingerprint · Phase 4a
-- [x] 8 pure-fold projections: utxo, block_index, mempool, peers, wallet, znam, contacts/onion/hodl · Phase 4b–d
-- [x] Crypto-agility registry + hot-path rewires (Equihash, ECDSA) · Phase 5
-- [x] Determinism: seed_tape + postmortem capsule + `make chaos` · Phase 6
-- [x] Supervisor tree split into 7 domain supervisors · Phase 3
-- [x] Service-shell renames/splits/deletions: `sync_watchdog_service` **deleted** (no files remain); `chain_restore_service` shell **deleted** (`89892c441`) but its work **split into 7 files** (`app/services/src/chain_restore_{repair,executor,boot_snapshot,boot_activation,planner,integrity,disk_repair}.c`, 6 non-test consumers); `header_probe_service` **renamed** to `app/services/src/header_probe.c` (376 LOC) + poll loop extracted to `app/jobs/src/header_probe_poll.c` (3 non-test consumers); `chain_evidence_controller` **NOT dissolved** — still live at `app/services/src/chain_evidence_controller.c` (796 LOC, 9 non-test consumers incl. `connect_tip.c`/`activate_best_chain.c`/`process_block_core.c`). The latter two are B8/cutover-gated, not yet removed.
-- [x] **Reorg keystone (2026-05-26):** disconnect emits inverse UTXO deltas (`bfa379bc8`) + byte-exact convergence proof (`1e65f81a0`)
-- [x] Silent-halt escalation closed: `EV_OPERATOR_NEEDED` → sinks + `zcl_status` DEGRADED + sd_notify
-- [x] PROVE Tier-1: offline PoW/integrity sweep `zcl_replay_verify` (`63a9a5de4`) + shadow_replay_proof
-- [x] Test harness: `test_parallel --only=SUBSTR` (1s iteration vs 110s full)
-- [x] **Recovery moles fixed (2026-05-27):** 5 layers (BIP30 self-write tolerance, CEC cursor non-gating, stale-freeze reconcile, LOCAL_IMPORT reconstruct, no-silent-ready E8) all on main, pinned by `test_connect_block_self_write.c` + `test_chain_evidence_controller.c` (`4ccacf3ab`). The live node can no longer wedge silently on these classes.
-- [x] **A5 shape codegen (2026-05-27):** `tools/new_shape.sh` + `make new-{condition,model,job,controller}` (`497b48781`). The easy path is the correct path.
-- [x] **Pure domain core extracted (2026-05-27):** `domain/` (top-level, not `lib/`) holds **21** pure modules across 3 contexts — `domain/consensus/src/` (17: check_block, checkpoints, coinbase, coins_math, equihash, header_accept, locktime, pow, sapling_structural, script_interp, script_standard, sighash, sigops, subsidy, tx_structural, upgrades, verify), `domain/wallet/src/` (2: key_derivation, mnemonic), `domain/encoding/src/` (2: base58, bech32). Each is no-clock/no-RNG/no-IO, fronted by a thin `lib/` legacy wrapper that `#include "domain/<ctx>/<name>.h"` and delegates (e.g. `lib/chain/src/pow.c`, `lib/encoding/src/base58.c`, `lib/script/src/standard.c`), and sealed by a regression test — **21** `lib/test/src/test_domain_*.c` files (1:1 with the modules). Verify: `find domain -name '*.c' | wc -l` → 21; `ls lib/test/src/test_domain_*.c | wc -l` → 21.
-- [x] **Ports/adapters seam populated (2026-05-27; extended 2026-05-29):** **9 services** now read/write through a port instead of touching SQLite directly — hodl_history (`hodl_history_port.h`), node_health (`node_health_store_port.h`), db_maintenance (`db_maintenance_port.h`), wallet_backup (`wallet_backup_store_port.h`), block_index_sidecar (`block_index_sidecar_port.h`), block_log, bg_hash_verify (`bg_hash_verify_store_port.h`), bg_validation (`bg_validation_store_port.h`), zslp (`zslp_store_port.h`) — plus the pre-existing clock, consensus_log, event_emitter, utxo_snapshot ports. SQLite adapters live in `adapters/outbound/persistence/src/` (one `*_sqlite.c` per service), each with a port test (`lib/test/src/test_*_port.c`). The remaining services-direct-sqlite files are all B-gated / chain-entangled (block_index_loader, chain_state_repository, chain_tip, utxo_recovery_*); this is a real seam, not full coverage.
+`tools/scripts/one_result_type_baseline.txt` is empty. The file-level ratchet is
+at zero grandfathered service files. Remaining work is call-site cleanup:
+legacy compatibility bool APIs should migrate toward `struct zcl_result` as
+their owning files are split or touched for adjacent debt.
 
----
+### E6 One-Write-Path Debt
 
-## B — THE CUTOVER: flip authority from coins.db to the log  ← the north star
+From `tools/scripts/one_write_path_baseline.txt`:
 
-Dependency-ordered. This is the structural cure; everything in **C** is gated on
-it. Plan detail: [`work/cutover.md`](./work/cutover.md).
+- controller/admin `coins_view_cache_flush` call sites
+- coins.db batch writer declarations and implementations
+- process-block flush-policy write paths
+- the compatibility `active_chain_set_tip()` wrapper, while remaining
+  production cache/window moves use `active_chain_move_window_tip()`
 
-- [x] **B1** Reorg-capability in `tip_finalize` — disconnect emits inverse deltas; parity proven byte-exact.
-- [x] **B2** Emit block bodies to the log. `EV_BLOCK_BODY` (type 2) now has an emitter: the `body_persist` stage emits the verified body into the append-only log (shadow, best-effort — mirrors the EV_BLOCK_HEADER pattern in `block_index_db.c`). New frozen codec `struct ev_block_body {hash, height, body_len, body}` in `event_log_payloads.{h,c}` — the body bytes are the canonical `block_serialize()` wire form, so a consumer round-trips via `block_deserialize()`. Emit fires ONLY on the `"verified"` path (read off disk → hashes to admitted header → merkle-reconstructs), so read-failed/header-mismatch/merkle-mismatch heights emit no body. New counters `body_emit_total`/`body_emit_fail_total` exposed via accessors + `zcl_state` dump. Proven in `test_body_persist_stage`: codec round-trip (incl. truncation rejects), 4 verified bodies stream back byte-faithful (deserialize + hash-match), verified-only skip (h=1 read-failed → 3 bodies). The log is now replayable from scratch to rebuild UTXO. Default remains shadow-capable with log-backed authority available via cutover mode. *(Phase 4e)*
-- [x] **B3** Invert the UTXO emitter. `utxo_projection` now owns a single-writer authority flag (`utxo_author_t {LEGACY,STAGE}`, default LEGACY). `utxo_apply_stage` retains its validated delta (script + is_coinbase) and authors `EV_UTXO_ADD/SPEND` when authority==STAGE; `update_coins.c`'s shadow emitters no-op when authority≠LEGACY → exactly one writer. Proven byte-exact in `test_utxo_apply_authorship` (legacy-interleaved emission == stage adds-then-spends, incl. in-block create+spend). Default stays LEGACY so the live node is unchanged; the **flip** path is in the B7 machinery. *Acceptance met: stage CAN drive the projection, parity-proven; authority gate is the cutover seam.*
-- [x] **B4** Point `connect_block` input lookups at the utxo **projection** instead of `coins_view_cache`. Read mechanism + authority-gated wiring **DORMANT** (live path unchanged, default author LEGACY); authoritative path uses this wiring when cutover mode is active.
-  - **Read mechanism (`82712bf54`):** `utxo_projection_get_coins(txid)→struct coins` reader (mirrors `coins_view_sqlite_get_coins` byte-for-byte, `version=1`) + `lib/storage/coins_view_projection.c` (a read-only `struct coins_view` backed by the projection), parity-proven in `test_coins_view_projection`. Read-only: `batch_write` is a guarded error (stage authors via events — B3 single-writer).
-  - **Authority-gated wiring (`7e52a3c14`):** `lib/storage/coins_view_stage_backing.c::coins_view_select_connect_backing()` chooses the `coins_view_cache` backing on `utxo_projection_get_author()`: LEGACY (default) hands back the coins_tip view *verbatim* (byte-identical to today); STAGE returns a composite that resolves get_coins/have_coins through the projection (authoritative reads) while delegating get_best_block + batch_write to the coins_tip view (best-block consistency; coins.db mirror warm; NOT a second projection writer — B3 single-writer holds). Wired at the one seam `connect_tip.c`; connect_block call sites byte-identical; RAM read-cache preserved. Proven in extended `test_coins_view_projection`. **DORMANT until cutover mode is active.**
-  - **`version` resolved INERT (2026-05-26):** `struct coins.version` plumbed into undo at `update_coins.c:154`, restored at `connect_block.c:709`. Consensus-inert: `coins_view_sqlite.c:611` hardcodes `out->version=1` on load; `utxo_commitment` = `SHA256(txid‖vout‖value‖height)` no version. **No `EV_UTXO_ADD` format change, no schema migration.**
-- [x] **B5** Make `log_head` / the `tip_finalize` cursor the **definitional tip**. Demote `chain_active` to a derived in-RAM index rebuilt from `block_index_projection`. *Acceptance:* `health = network_tip − log_head` is one real number.
-  - **Observability DONE:** `health = network_tip − log_head` is now one real number — `node_health_snapshot.log_head` (= `tip_finalize_stage_cursor()−1`) + `log_head_gap` (= `peer_best_height − log_head`), surfaced in the healthcheck JSON (`event_controller`).
-  - **DONE (the flip):** `active_chain_height` and `active_chain_tip` prioritize the atomic log_head.
-  - **Flip is proven cheap** ([`work/b5-chain-active-readers.md`](./work/b5-chain-active-readers.md)): readers already route through two accessors `active_chain_tip(c)` / `active_chain_height(c)` (`lib/validation/include/validation/chainstate.h`), so the flip is a 2-accessor-body change.
-- [x] **B6** Offline PROVE harness complete: Tier-1 full-0→tip driver emits `shadow_replay_proof: 0 divergences across N blocks, commit <sha>`; `--deep`/`--tier2` runs full PoW/script/Groth16 sweep via `replay_verify_run`; reorg corpus (`test_reorg_projection_parity`) byte-exact; full-driver CI test. `e7c5c4b74`.
-- [x] **B7** Flip once, behind the guard. `cutovermode all authoritative` + `cutover_no_forward_progress` auto-revert (180s no-progress → revert to SHADOW + page). Real canary: one block connects through the authoritative path, auto-revert on any divergence. **DONE.** The safety net is tested and `cutovermode` supports tip_finalize authoritative.
-- [~] **B8** Extract-then-delete (see **C**). **Legacy-module half is DONE:** Phase A (legacy_bootstrap_importer) deleted; Phase C (mirror block-apply + body_pull ~856 LOC) deleted (`6ef905772`); Phase D (clean_above_tip → Condition) done as-shipped; **Phase B (CAC shell) dissolved** (`af8b486d0`, see C1). `connect_tip` SURVIVES (post-flip authoritative connect path), `legacy_import` controller is KEEP, `utxo_recovery` is mostly KEEP/A-work, the `legacy_mirror` heartbeat + lag-SLO monitor are PRESERVED.
-  - **Remaining B8 = the comparison apparatus**, and it is **HARD-GATED on the live flip + soak** (it is the tooling that *performs and verifies* the flip — `cutoverpreflight`, `cutovermode`, `diff_with_legacy_shadow`, `shadow_feeder`, the `*_projection_diff` MCP tools, the S-11 `header_admit_stage_diff` / `zcl_diff_staged_header_admit`, both cutover Conditions). Exact symbol/caller/test/build ledger + the mandatory **flip → soak → confirm → delete** ordering and Gate-0 checklist in [`work/b8-comparison-apparatus-deletion-plan.md`](./work/b8-comparison-apparatus-deletion-plan.md) (`a6a3430f4`). ≈7,600 LOC retires once: flip is permanent (stage default AUTHORITATIVE, revert unreachable), tip soaked N blocks with diffs matching, preflight GREEN, fed==diffed held, auto-revert NEVER fired.
-  - **Live-flip prerequisite (current blocker):** the running node must be AT network tip for preflight to pass (it correctly DEFERS while behind). As of 2026-05-29 the node is catching up (~3126.5k / network ~3128.5k).
+The final form is one durable writer and one cursor authority.
+Current guardrail: low-level active-chain cache/window moves and stale
+`tip_finalize` cursors cannot regress the public reducer tip.
 
----
+### Supervisor Debt
 
-## A — Make the canon true (the missing shape primitives)
+`tools/scripts/supervisor_baseline.txt` is empty. Every long-running service
+that gate tracks now registers a supervisor liveness contract.
 
-`FRAMEWORK.md` blesses **struct-registration**, not block-macro DSLs (Law 3).
-So this is NOT about building fictional `MODEL(){…}` macros — it's giving the
-three unreal shapes a real, debuggable form.
+### Typed Blocker Debt
 
-- [x] **A1** `app/jobs/include/jobs/job.h` — one uniform Job contract: `job_result_t {JOB_ADVANCED,JOB_BLOCKED,JOB_IDLE,JOB_FATAL}` (replaces `stage_result_t`, integer values preserved byte-for-byte). The 8 reducer `*_stage.c` relocated `app/services/` → `app/jobs/`; kernel `stage.h` now includes `jobs/job.h`. `app/jobs/` now holds the reducer; the empty-scaffold folder is real. `994145f28`.
-- [x] **A2** Event-shape decision (orchestrator, 2026-05-26): the Event shape STAYS; its implementation is lib-resident today (`lib/event/` in-mem observability ring + `lib/storage/event_log` durable log). `app/events/` is reserved for app-level event definitions + subscriber wiring and gets populated by **B2** (block-body emit) as the log becomes authoritative — not deleted. FRAMEWORK §3 Event row states this.
-- [x] **A3** Supervisor declarations extracted into `app/supervisors/src/{net,chain,staged_sync}_supervisor.c` (8 Wave-S children in pipeline order); `boot_services.c` 3,885 → 3,270 LOC (−615); boot ordering preserved. `fa9e8d0ec`.
-- [~] **A4** `zcl_result` adoption for services (Law 2). Migrate services off bare `bool`/`int`. Cluster-by-cluster in flight: wallet-backup (`844f13472`), snapshot (`20bb5bc36`), ZSLP (`c2e107257`), infra (`93ac12748`), chain_restore (`922ea6fff`), chain_tip (`655804a9b`), oracle+policy (`36bb634da`). Plus stale-line hygiene: the 8 Wave-S reducer stages A1 relocated to `app/jobs/src/` were dropped from the E2 baseline (outside the gate's `app/services/src/` scope; their return shape is owned by the A1 Job contract). E2 baseline ratcheted 77 → **9** (`tools/scripts/one_result_type_baseline.txt`; `grep -vc '^#\|^$'` → 9). The survivors are all chain-authority / reducer / legacy-mirror / recovery / cutover (constraint-gated; `utxo_recovery_restore.c` carried the recovery service's bare-result surface when C3 split it out). *(ratchet — see E2)*
-- [x] **A5** `tools/new_shape.sh` shape-skeleton generator + `make new-{condition,model,job,controller}` targets shipped (`497b48781`). Emits committed C that compiles and passes the shape lint gates on the day it lands — gdb-steppable, not metaprogramming. Refuses to overwrite existing files; prints the one manual registry-wiring step.
+`tools/scripts/typed_blocker_baseline.txt` is empty. Raw blocker string fields
+and legacy blocker setters are not grandfathered; keep this gate at zero.
 
----
+### Controller And Layering Debt
 
-## C — Dissolve the mega-modules (extract-then-delete)
+- Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
+  with 79 grandfathered lib-to-app includes.
+- Controller raw-SQL debt is at zero grandfathered files. Keep
+  `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
+- `lib/validation/src/process_block_core.c` still mixes chain selection,
+  block-index hydration, tip commit, and failed-child propagation.
 
-Net deletable ≈ **3,900–4,000 LOC** (corrected from the stale "3 modules = 4,407"
-headline — see [`work/b8-deletion-inventory.md`](./work/b8-deletion-inventory.md);
-`connect_tip` survives, `legacy_mirror` heartbeat is preserved). All gated on
-**B** (they own behavior the new path lacks until the flip).
+## Next Work Order
 
-- [x] **C1 / B8-Phase-B (2026-05-29)** `chain_advance_coordinator.c` **shell dissolved** (`af8b486d0`). Pure source-selection policy was already in `block_source_policy.{h,c}`; force-promotion window already deleted. This step re-homed the surviving stateful surface (`peer_floor_recovery_needed`, `snapshot_offer_allowed`, `local_header_refill_needed`, `note_projection_deferred`, `get_status`, `dump_state_json`, `init`) into a new `block_source_policy_runtime.c`, renamed `chain_advance_coordinator_*` → `block_source_policy_*`, and repointed all ~12 consumers (incl. the surviving `connect_tip.c:938` and the `zcl_status` HARD dependency — the `"chain_advance_coordinator"` diagnostics key is preserved, repointed to `block_source_policy_dump_state_json`). The dead test-only `plan` wrapper was dropped. **Honest delta:** this is a *relocation* (~−4 net code), not a LOC cut — the architectural win is dissolving the CAC mega-module into its correct hexagonal home; the real B8 LOC deletion is the comparison apparatus, gated below. **Follow-up (done):** `block_source_policy_runtime.c` was since split below the 800-LOC cap (now 460 LOC) and is no longer in the E1 baseline. Full suite 0/267, 31 gates clean.
-- [ ] **C2** `legacy_mirror_sync_service.c` (1,487) → extract the live-sync **heartbeat + lag-SLO monitor** to a lean monitor (PRESERVE it); delete only the block-application coordination. *Gated on B.*
-- [x] **C3** `utxo_recovery_service.c` (1,204 → 624) → DONE as-shipped. `clean_above_tip` (orphan-UTXO heal) re-homed as the continuous `orphan_utxo_above_tip` Condition (`6ef905772`), which reuses the single heal impl `coins_rewind_above_tip` (guard `UTXO_BOOT_REWIND_MAX_ROWS`=32). There is NO legacy duplicate to dissolve — the `boot.c:3109` one-shot caller is a non-removable boot-ordering requirement (the Condition engine registers in `boot_services.c` *after* boot needs the inline heal before `activation_boot_complete`; removing it would require moving chain-progress onto the on-disk stage cursor — the B north-star, not a heal refactor). `restore_chain_tip` / `import_ldb` already split to `utxo_recovery_restore.c` (573 LOC). Both files under the E1 cap.
-- [x] **C4** Collapse the **4 importers** (5,519 LOC: `legacy_bootstrap_importer` + `legacy_mirror_sync` + `legacy_import` + `sync_controller_import`) → one `legacy_bridge` + one `legacy_poll` job. [`work/wt-consolidate-import-paths.md`](./work/wt-consolidate-import-paths.md). *Independent of B.*
+1. Delete zero-purpose scaffolding and stale build references.
+2. Keep production terminology clean; normalize remaining historical test/doc
+   fixture names only when touched for adjacent work.
+3. Keep import/catchup/legacy-import code below the file-size ceiling while
+   moving remaining mixed-purpose code toward the correct framework shape.
+4. Split `process_block_core.c` by responsibility.
+5. Keep E1/E2/controller-SQL baselines empty and pay down E6/lib-layering
+   until they are empty.
+6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
+   node progress with a soak.
 
----
+## Latest Verification
 
-## D — Restore beauty (shape conformance — independent, high-leverage)
+- `make -j$(nproc)`: pass after emptying the controller raw-SQL baseline.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker,
+  raw-sqlite-step, controller raw-SQL, and raw-malloc gates remain at zero
+  active debt, E6 is 24 grandfathered write surfaces, and lib-layering is 79
+  grandfathered includes.
+- `make test_parallel`: pass after the controller raw-SQL baseline reached
+  zero.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with an empty baseline. WARN mode reports 0 direct raw controller SQL
+  calls.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the controller raw-SQL baseline reached zero.
+- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
+  moving the `zcl_sql` prepare path behind
+  `node_db_prepare_readonly_query()`.
+- `./test_parallel --only=sqlite --timeout=120 --verbose`: pass, including the
+  snapshot tx-index job start/join path.
+- `./test_parallel --only=models --timeout=120 --verbose`: pass, including
+  tx-index bulk-load lifecycle coverage.
+- `./test_parallel --timeout=180`: pass after the controller raw-SQL baseline
+  reached zero, `0/279` groups failed in 59.0s.
+- Quick live sample at 2026-06-01 03:31:20 UTC after the controller raw-SQL
+  baseline reached zero: `systemctl --user is-active zclassic23` reported
+  `active`, `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a 10-minute journal scan found no low-tip
+  regression, integrity failure, OOM, fatal, segfault, assert, or panic signal.
+  This is a continuity check, not the final soak.
+- `git diff --check`: pass after the `blockchain_controller_admin.c`
+  controller raw-SQL shrink.
+- `make -j$(nproc)`: pass after moving consensus snapshot export out of the
+  controller layer into `consensus_snapshot_export_service_run()`.
+- `make test_parallel`: pass after touching
+  `lib/test/src/test_file_controller.c`.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL is
+  3 grandfathered controller files.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces, no new ones, after keeping the existing boot-services
+  `coins_view_cache_flush` E6 entries line-stable.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with 3 grandfathered controller files, no new ones. WARN mode now
+  reports 12 direct raw controller SQL calls across those 3 files.
+- `./test_parallel --only=file_controller --timeout=120 --verbose`: pass after
+  moving consensus snapshot export to the service layer; `0/1` filtered groups
+  failed in 2.0s.
+- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+  `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 03:08:22 UTC after the controller raw-SQL
+  shrink: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a journal scan since
+  2026-06-01 02:50:00 UTC found no low-tip regression, integrity failure, OOM,
+  fatal, segfault, assert, or panic signal. This is a continuity check, not the
+  final soak.
+- `git diff --check`: pass after the consensus snapshot export service move.
+- `make test_parallel`: pass after adding
+  `wallet_sqlite_delete_key_r()` and the wallet persistence roundtrip test.
+- `make -j$(nproc)`: pass after moving `wallet_controller_keys.c` key
+  readback/rollback SQL into `wallet_sqlite`.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL is
+  5 grandfathered controller files.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with 5 grandfathered controller files, no new ones. WARN mode now
+  reports 21 direct raw controller SQL calls across those 5 files.
+- `./test_parallel --only=wallet_persistence_cycle --timeout=120 --verbose`:
+  pass, including the new `delete_key_r` persisted-key removal case.
+- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after moving
+  wallet-key readback/rollback SQL into `wallet_sqlite`; `0/32` filtered groups
+  failed in 7.0s.
+- `./test_parallel --timeout=180`: pass after the wallet/controller raw-SQL
+  shrink, `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 02:50:33 UTC after the wallet/controller
+  raw-SQL shrink: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a journal scan since
+  2026-06-01 02:50:00 UTC found no low-tip regression, integrity failure, OOM,
+  fatal, segfault, assert, or panic signal. This is a continuity check, not the
+  final soak.
+- `make -j$(nproc)`: pass after moving `sync_controller_import.c` UTXO
+  cardinality validation into the UTXO model.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL is
+  6 grandfathered controller files.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with 6 grandfathered controller files, no new ones. WARN mode now
+  reports 23 direct raw controller SQL calls across those 6 files.
+- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after
+  moving sync-import UTXO cardinality validation into the UTXO model; filtered
+  run covered both `test_sync_service` and `test_snapshot_sync_service`.
+- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`:
+  pass.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the controller raw-SQL baseline shrink.
+- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+  `0/279` groups failed in 58.0s.
+- Quick live sample at 2026-06-01 02:43:32 UTC after the controller raw-SQL
+  shrink: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a journal scan since
+  2026-06-01 02:40:00 UTC found no low-tip regression, integrity failure, OOM,
+  fatal, segfault, assert, or panic signal. This is a continuity check, not the
+  final soak.
+- `make -j$(nproc)`: pass after moving `repair_controller_utxo.c` transaction
+  control to `node_db_*()` and `sync_controller_blocks.c` Sapling tree writes
+  to the Block model.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL is
+  7 grandfathered controller files.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces, no new ones, after keeping the `repair_controller_utxo.c`
+  `coins_view_cache_flush` E6 lines stable.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with 7 grandfathered controller files, no new ones. WARN mode now
+  reports 24 direct raw controller SQL calls across those 7 files.
+- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after
+  moving Sapling tree block persistence into the Block model; filtered run
+  covered both `test_sync_service` and `test_snapshot_sync_service`.
+- `./test_parallel --only=sapling_tree --timeout=120 --verbose`: pass.
+- `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`: pass
+  after moving `repairutxos` transaction control to `node_db_*()`.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the controller raw-SQL baseline shrink.
+- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+  `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 02:34:30–02:35:07 UTC after the follow-up
+  controller raw-SQL shrink: `systemctl --user is-active zclassic23` reported
+  `active`, `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and a short log tail found no low-tip
+  regression, integrity failure, OOM, fatal, segfault, or assert signal. This
+  is a continuity check, not the final soak.
+- `make -j$(nproc)`: pass after the snapshot/wallet/repair controller raw-SQL
+  shrink and UTXO model helper extraction.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL
+  was then 9 grandfathered controller files.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces, no new ones, after keeping the blockchain admin E6 baseline
+  line-stable.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with then-9 grandfathered controller files, no new ones. WARN mode then
+  reported 28 direct raw controller SQL calls across those 9 files.
+- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after replacing
+  the shielded wallet height fallback with `db_block_max_height_any_status()`.
+- `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`: pass
+  after routing snapshot checked exec helpers through `node_db_exec()`.
+- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+  after moving UTXO missing-height count/repair SQL into `models/utxo`.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the controller raw-SQL baseline shrink.
+- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+  `0/279` groups failed in 58.0s.
+- Quick live sample at 2026-06-01 02:24:01–02:24:57 UTC after the controller
+  raw-SQL shrink: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1349221`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8033` / `[::]:8033`, and `getpeerinfo` showed active peers with
+  peer tip around `3131915`. A short log tail found no low-tip regression or
+  integrity failure. This is a continuity check, not the final soak.
+- `git diff --check`: pass after the controller raw-SQL shrink.
+- `make -j$(nproc)`: pass after the file-manifest header extraction, controller
+  raw-SQL cleanup, and raw allocation wrapper migration.
+- `make lint`: pass; E1, E2, supervisor, E7, typed-blocker, raw-sqlite-step,
+  and raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, lib-layering is 79 grandfathered includes, and controller raw-SQL
+  was then 12 grandfathered controller files.
+- `make test_parallel`: pass after making the `body_fetch_stage` crash-replay
+  test deterministic with a child-ready pipe.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces, no new ones.
+- `tools/scripts/check_lib_layering.sh`: pass with 79 grandfathered lib-to-app
+  includes, no new ones.
+- `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
+  pass with then-12 grandfathered controller files, no new ones.
+- `tools/scripts/check_raw_malloc.sh`: pass with no active production raw
+  malloc/calloc/realloc allowlist entries.
+- `./test_parallel --only=file_controller --timeout=120 --verbose`: pass after
+  moving file manifest protocol declarations into `lib/net`.
+- `./test_parallel --only=file_market --timeout=120 --verbose`: pass.
+- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after routing
+  wallet scan / legacy import table clearing through `node_db_exec()`.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the lib-layering/controller-SQL/raw-malloc baseline shrink.
+- First full `./test_parallel --timeout=180` after the edits exposed the
+  existing timing-sensitive `test_body_fetch_stage` crash subcase
+  (`zero-progress case is consistent`, `rows bounded by chain size`). The crash
+  test now waits for a child-ready pipe after deterministic drain; focused
+  rerun passed.
+- Second full `./test_parallel --timeout=180`: pass with `0/279` groups failed
+  in 121.0s.
+- Live-node sample at `2026-06-01 02:09:55 UTC`: not proven. `systemctl --user
+  is-active zclassic23` could not connect to the user bus, `./tools/zcl-rpc
+  getblockcount` exited 7, and no `zclassic23`/`zclassicd` process or
+  `18232`/`8232`/`8033` listener was visible.
+- `rg -ni "shadow|cutover|projection-diff|shadow-diff" app lib/storage lib/validation tools/mcp --glob '*.c' --glob '*.h' --glob '!lib/test/**' --glob '!app/views/**'`:
+  clean after normalizing uppercase production "Shadow" comments too.
+- `rg -n "shadow|cutover|projection-diff|shadow-diff" app lib/storage lib/validation tools/mcp --glob '*.c' --glob '*.h' --glob '!lib/test/**' --glob '!app/views/**'`:
+  clean after deleting stale production wording and renaming UTXO projection
+  emitters.
+- `make -j$(nproc)`: pass after the production wording cleanup and UTXO
+  projection emitter rename.
+- `make lint`: pass after re-anchoring the existing
+  `utxo_projection_set_author` grandfathered E6 line; E1, E2, supervisor, E7,
+  and typed-blocker baselines remain at zero, E6 remains at 26, and
+  lib-layering remains at 101.
+- `./test_parallel --only=utxo_apply_authorship --timeout=120 --verbose`:
+  pass after the UTXO projection emitter rename.
+- `./test_parallel --only=reorg_projection_parity --timeout=120 --verbose`:
+  pass after the projection wording cleanup.
+- `./test_parallel --only=reorg_parity --timeout=120 --verbose`: pass.
+- `./test_parallel --only=block_index_backfill --timeout=120 --verbose`: pass.
+- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass.
+- `./test_parallel --timeout=180`: pass after the production wording cleanup,
+  `0/279` groups failed in 67.0s.
+- `git diff --check`: pass after the production wording cleanup and status
+  update.
+- `rg` for deleted `docs/work` plan names and source-comment references:
+  clean after removing obsolete cutover/B8 runbooks, stale reducer-ingest design
+  snapshots, and the paused import-path worker assignment.
+- `make lint`: pass after the `docs/work` stale-plan deletion; E1, E2,
+  supervisor, E7, and typed-blocker baselines remain at zero, E6 remains at 26,
+  and lib-layering remains at 101.
+- `git diff --check`: pass after the `docs/work` stale-plan deletion.
+- `make -j$(nproc)`: pass after splitting active-chain cache/window moves from
+  public tip authority.
+- `make lint`: pass; E1, E2, supervisor, E7, and typed-blocker baselines are at
+  zero, E6 is down to 26 grandfathered write surfaces, and lib-layering remains
+  at 101.
+- `./test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
+  the active-chain cache/window API split.
+- `./test_parallel --only=chain_tip --timeout=120 --verbose`: pass.
+- `./test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
+  includes the authority guard proving a raw low-level active-chain cache move
+  does not lower public reducer height.
+- `./test_parallel --only=invalidateblock --timeout=120 --verbose`: pass after
+  migrating invalidate-path cache movement to `active_chain_move_window_tip()`.
+- `./test_parallel --only=process_block_revalidate --timeout=120 --verbose`:
+  pass.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass;
+  includes the E6 fixture that proves a new writer still trips the ratchet.
+- `./test_parallel --timeout=180`: pass after the active-chain cache/window API
+  split, `0/279` groups failed in 69.0s.
+- `git diff --check`: pass after the active-chain cache/window API split and
+  doc update.
+- `make -j$(nproc)`: pass after the projection-storage boot rename.
+- `make test_parallel`: pass.
+- `./test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
+  includes `authority_guard` and `stale_cursor`, proving raw low-level
+  active-chain cache moves do not lower public reducer height and stale low
+  `tip_finalize` cursors anchor above a restored high tip instead of replaying.
+- `./test_parallel --only=reducer_ingest_e2e --timeout=120 --verbose`: pass.
+- `./test_parallel --only=chain_restore_service --timeout=120 --verbose`: pass.
+- `./test_parallel --only=supervisor --timeout=120 --verbose`: pass after the
+  staged-sync supervisor API/comment cleanup.
+- `./test_parallel --only=body_persist_stage --timeout=120 --verbose`: pass
+  after the S-5 Job/test wording cleanup.
+- `./test_parallel --only=script_validate_stage --timeout=120 --verbose`: pass
+  after the S-6 Job/test wording cleanup.
+- `./test_parallel --only=proof_validate_stage --timeout=120 --verbose`: pass
+  after the S-7 Job/test wording cleanup.
+- `./test_parallel --only=utxo_apply_stage --timeout=120 --verbose`: pass after
+  the S-8 Job/test wording cleanup.
+- `./test_parallel --only=boot_phase --timeout=120 --verbose`: pass after the
+  boot projection-storage wording/function rename.
+- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+  after rebuilding `test_parallel`; covers the new import/restore `zcl_result`
+  status paths, including invalid-context errors. Re-run after the execution
+  status/backfill split: pass.
+- `./test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
+  adding `csr_commit_tip_result()`; covers the `zcl_result` failure wrapper.
+- `./test_parallel --timeout=180`: pass, `0/279` groups failed in 72.1s after
+  the recovery execution status/backfill split. Re-run after the CSR wrapper:
+  pass, `0/279` groups failed in 70.0s.
+- `git diff --check`: pass after the S-5..S-8, health-comment, and
+  projection-storage boot cleanup; re-run after the recovery split: pass.
+- `make -j$(nproc)`: pass after the recovery execution status/backfill split
+  and again after the CSR wrapper.
+- `rg` over `config/src/boot_services.c` and `config/src/boot.c` finds no
+  `shadow`/`cutover`/`SHADOW`/`AUTHORITATIVE` boot-surface references.
+- `make lint`: pass after the legacy mirror result wrapper; E2 is at zero
+  grandfathered service files, E7 has zero grandfathered entries, E1 remains
+  at 4, typed-blocker remains at 4, lib-layering remains at 101, and E6 remains
+  at 34.
+  The E6 baseline change only re-anchored the same three
+  `config/src/boot_services.c` `coins_view_cache_flush` entries after comment
+  cleanup shifted their line numbers.
+- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+  adding `legacy_mirror_sync_request_catchup_result()`; covers the non-OK
+  `zcl_result` path carrying `hash-disagreement`.
+- `./test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
+  pass after routing the remedy through the result-returning catchup API.
+- `make -j$(nproc)`: pass after the legacy mirror result wrapper.
+- `./test_parallel --timeout=180`: pass after the legacy mirror result wrapper,
+  `0/279` groups failed in 79.1s.
+- `make -j$(nproc)`: pass after extracting `utxo_import_pipeline.c` from
+  `sync_controller_import.c`.
+- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+  after the import-pipeline helper split.
+- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
+  import-pipeline helper split.
+- `make lint`: pass after the import-pipeline helper split; E1 is down to 3
+  grandfathered oversized app files, E2 remains at zero, E7 remains at zero,
+  typed-blocker remains at 4, lib-layering remains at 101, and E6 remains at
+  34.
+- `./test_parallel --timeout=180`: pass after the import-pipeline helper split,
+  `0/279` groups failed in 78.0s.
+- `make -j$(nproc)`: pass after the `legacy_import.c`,
+  `sync_controller_catchup.c`, and `legacy_mirror_sync_service.c` E1 splits.
+- `make lint`: pass after emptying the E1 baseline; E1 is at zero grandfathered
+  oversized app files, E2 remains at zero, typed-blocker remains at 4,
+  lib-layering remains at 101, and E6 remains at 34.
+- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+  the legacy mirror state split; covers catchup failure reporting and dump-state
+  fields.
+- `./test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
+  pass after the legacy mirror state split; covers condition remedy routing.
+- `./test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
+  legacy mirror state split; covers the monitor contract dump shape.
+- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
+  sync catchup/persistence split; filtered run covered both `test_sync_service`
+  and `test_snapshot_sync_service`.
+- `./test_parallel --only=sqlite --timeout=120 --verbose`: pass after the sync
+  persistence split; covers sync job wrappers, mempool persistence, and DB
+  service writes.
+- `./test_parallel --only=sapling_tree --timeout=120 --verbose`: pass after the
+  Sapling tree rebuild split.
+- `./test_parallel --timeout=180`: pass after the E1 baseline reached zero,
+  `0/279` groups failed in 65.0s.
+- `git diff --check`: pass after the E1 baseline reached zero and docs were
+  updated.
+- `make -j$(nproc)`: pass after replacing the remaining typed-blocker baseline
+  surfaces with typed class plus reason/id fields.
+- `make test_parallel`: pass after the typed-blocker public-struct rename.
+- `make lint`: pass after emptying `tools/scripts/typed_blocker_baseline.txt`;
+  E1, E2, E7, supervisor, and typed-blocker baselines are at zero. E6 remains
+  at 34 and lib-layering remains at 101.
+- `./test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`:
+  pass after the source-policy `selection_reason` struct-field rename while
+  preserving the legacy `selection_blocker` JSON key.
+- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+  the legacy mirror and mirror-consensus typed blocker stats rename.
+- `./test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
+  legacy mirror typed blocker stats rename.
+- `./test_parallel --only=syncdiag_rpc --timeout=120 --verbose`: pass after the
+  diagnostics JSON compatibility check.
+- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
+  the MCP status compatibility check.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  the typed-blocker baseline became empty and `check_typed_blocker.sh` learned
+  the empty-baseline count.
+- `./test_parallel --timeout=180`: pass after the typed-blocker baseline reached
+  zero, `0/279` groups failed in 70.0s.
+- Live node negative proof: the 2026-05-31 22:34 UTC restart initially
+  restored RPC/UTXO height to `3130701`, then the old stale cursor path
+  regressed the public tip back into the ~44k range after background validation
+  had time to run.
+- Live node patched proof: after the 2026-05-31 22:54 UTC restart, boot
+  restored RPC/UTXO height to `3130701`; `tip_finalize` stamped
+  `authority anchor cursor from=45685 to=3130702 reason=init_existing_tip`;
+  `progress.kv` contains `tip_finalize_log` row `(3130701, anchor, ok=1)`.
+- Live soak 2026-05-31 22:56:05–23:00:40 UTC: every 30s sample reported
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `stage_cursor.tip_finalize=3130702`, and the latest tip-finalize row remained
+  `(3130701, anchor, ok=1)`. Post-soak log scan found no low-tip `commit_tip`,
+  `chain_integrity_failed`, or orphan-UTXO regression. Background validation is
+  still running from height `44770` toward `3130701`, so this is a live
+  regression proof, not final refactor completion.
+- After the staged-sync supervisor cleanup and rebuild, the current binary was
+  restarted again at 2026-05-31 23:07 UTC. Samples through 23:10 UTC stayed at
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`, and
+  `stage_cursor.tip_finalize=3130702`; logs showed all eight staged jobs
+  initialised and no low-tip commit or integrity regression. Background
+  validation resumed from height `55001` toward `3130701`.
+- Quick live sample at 2026-05-31 23:24 UTC after this cleanup still reported
+  `getblockcount=3130701` and `gettxoutsetinfo.height=3130701`. This is a
+  continuity check, not a replacement for the required final soak.
+- Quick live sample at 2026-05-31 23:32 UTC after the E2 shrink still reported
+  `getblockcount=3130701` and `gettxoutsetinfo.height=3130701`.
+- Quick live sample at 2026-06-01 00:00:45 UTC after the E2 baseline reached
+  zero: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `stage_cursor.tip_finalize=3130702`, and latest `tip_finalize_log` row
+  remained `(3130701, anchor, ok=1)`. A tail scan found no low-tip regression
+  or integrity failure. This is a continuity check, not the final soak.
+- Quick live sample at 2026-06-01 00:14:19 UTC after the E1 shrink:
+  `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `stage_cursor.tip_finalize=3130702`, and latest `tip_finalize_log` row
+  remained `(3130701, anchor, ok=1)`. A tail scan found no low-tip regression
+  or integrity failure. This is a continuity check, not the final soak.
+- Quick live sample at 2026-06-01 00:47 UTC after the E1 baseline reached zero:
+  `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, and `gettxoutsetinfo.height=3130701` with
+  `txouts=1348252`; a node.log tail scan found no low-tip commit, integrity
+  failure, or orphan-UTXO regression. This is a continuity check, not the final
+  soak.
+- Live sample attempt at 2026-06-01 01:00 UTC after the typed-blocker shrink:
+  no continuity proof was available. `systemctl --user` could not connect to
+  the user bus, RPC port `18232` was closed, no `zclassic23` process was
+  running, and the journal showed `zclassic23.service` was OOM-killed at
+  2026-06-01 00:51:52 UTC after `zclassicd-rhett` was OOM-killed with a 6.0G
+  memory peak. This is a failed live sample, not a refactor completion proof.
+- Live sample attempt at 2026-06-01 01:10 UTC after the active-chain E6 shrink:
+  no continuity proof was available. `systemctl --user` could not connect to
+  the user bus, `./tools/zcl-rpc getblockcount` exited with code 7, no
+  `zclassic23` or `zclassicd` process was running, and no listener existed on
+  ports `18232`, `8232`, or `8033`. This is a failed live sample, not a refactor
+  completion proof.
+- Live sample attempt at 2026-06-01 01:32 UTC after the production wording
+  cleanup: no continuity proof was available. `systemctl --user` could not
+  connect to the user bus, `./tools/zcl-rpc getblockcount` exited with code 7,
+  no `zclassic23` or `zclassicd` process was running, and no listener existed
+  on ports `18232`, `8232`, or `8033`. This is a failed live sample, not a
+  refactor completion proof.
+- Live sample attempt at 2026-06-01 01:47 UTC after the E6/lib-layering shrink:
+  no continuity proof was available. `systemctl --user` could not connect to
+  the user bus, `./tools/zcl-rpc getblockcount` exited with code 7, no
+  `zclassic23` or `zclassicd` process was running, and no listener existed on
+  ports `18232`, `8232`, or `8033`. This is a failed live sample, not a refactor
+  completion proof.
 
-From the beauty audit; each is "principle violated → where → the elegant form."
-
-- [x] **D1** Dissolve `diagnostics_controller.c` — 2,550 → 51 LOC, split into 6 single-concern files (diagnostics_registry + cutover/projection_diff/nodelog/dbquery/probe controllers). `da9a1fe5a`.
-- [x] **D2** Controllers must not build views — explorer_factoids/stats/pages assembly moved into `app/views/` (controllers now skinny). `dd041e3b8`.
-- [x] **D3** `header_admit_log` now a Model (`app/models/src/header_admit_log.c`, validates_* + before/after_save + `AR_ADHOC_SAVE`); raw SQL removed from the stage's write path. `aa9b6aaa7`.
-- [x] **D4** One log call. **app/controllers slice DONE** (`110859a24`): 25 `fprintf(stderr,…); return` pairs → `LOG_FAIL/ERR/NULL` (151→126 in controllers). **lib/net slice (verified no-op):** all 68 are non-returning P2P log-and-continue / void-function diagnostics, already `obs-ok` — zero safe `LOG_*` drop-ins. **FIXED:** added non-returning `LOG_WARN`/`LOG_INFO` to `util/log_macros.h`. **`lib/net` slice DONE (2026-05-26, `f1e8d51a2`)**. **Remaining:** the `obs-ok` non-returning sites across `app/` → `LOG_WARN/INFO` (swept and mostly complete).
-- [~] **D5** `app/` files > 800 LOC: **31 → 4** under the cap (E1 baseline file: `tools/scripts/file_size_ceiling_baseline.txt`, which lists exactly these 4). Wave splits landed: 12 oversized controllers (`ec1424cf4`), 3 views (`7e52a3c14`), explorer_factoids (`f3e57804d`), `database.c`+`wallet_tx.c` models (`c945d64c4`), api+snapshot router monoliths (`adc7ac45a`), `validate_headers` + `bg_validation` (`46d0edb2a`), reconciled (`7ca847c57`), C1 policy extraction (`chain_advance_coordinator.c` re-homed and since split below the cap), C3 `utxo_recovery_service.c` 1141→624 split. **Remaining 4 are all legacy modules B8 deletes/shrinks**: `sync_controller_catchup.c` (1262), `legacy_mirror_sync_service.c` (1180), `legacy_import.c` (1105), `sync_controller_import.c` (995). Closing D5 = finishing the cutover (C+B8), not more splits.
-
----
-
-## E — Enforce it (every law gets a gate; "beauty by the build")
-
-Hygiene is well-gated. **11 of 11 architecture gates now have enforcement**
-(6 HARD + 5 RATCHET). **E6/E7 are wired as ratchets** and harden as B8 deletes
-the legacy writer/RAM-authority surfaces. `make lint` reports 31 gates total, all clean. Each gate lands with the
-work it guards (design in `FRAMEWORK.md` §5).
-
-- [x] **E1** `file-size-ceiling` — RATCHET, baseline = **4** grandfathered files (down from 29) (`tools/scripts/file_size_ceiling_baseline.txt`). All 4 remaining are legacy modules B8 deletes. `5daf21742`.
-- [x] **E2** `check-one-result-type` — RATCHET (**9** service files baselined, down from 77; new ones must use `zcl_result`) (`tools/scripts/one_result_type_baseline.txt`; `grep -vc '^#\|^$'` → 9). `f331f6e0d` + A4 paydowns through this round.
-- [x] **E3** `check-shape-includes-header` — HARD; every condition/model/supervisor file includes its shape header. `f331f6e0d`.
-- [x] **E4** `check-projections-pure` — HARD; every `*_projection.c` is a pure fold (no app includes, no AR model saves). `f331f6e0d`.
-- [x] **E5** `stage-advances-or-blocks` — every Job step (`app/jobs/src/*_stage.c`) references a cursor (`cursor_out`/`c->cursor_in`/`stage_cursor`) AND returns `JOB_BLOCKED`/`JOB_IDLE` on non-progress. HARD (all 8 stages comply). `tools/scripts/check_stage_advances_or_blocks.sh`.
-- [~] **E6** `one-write-path` — RATCHET wired (`tools/scripts/check_one_write_path.sh`), baseline = **64** legacy write surfaces; hardens as B8 deletes them.
-- [~] **E7** `no-authoritative-RAM-state` — RATCHET wired (`tools/scripts/check_no_authoritative_ram_state.sh`), baseline = **0** direct RAM-authority surfaces.
-- [x] **E8** `no-silent-ready` — the block-connection authority (`chain_activation_controller.c`) must advance-the-tip OR name-a-typed-blocker; any `activation_set_state(...ACTIVATION_READY...)` path must route `blocker_set`. HARD. Closed the live silent-ready hole (`"behind_peers"` → bare READY while +950 behind): the behind path now registers the typed blocker `chain.tip_behind_header_chain` (TRANSIENT, names why/height/escape `activation_drive_connect`, escape re-drives a local connect pass); caught-up clears it. Single decision `activation_eval_tip_blocker`; test asserts the blocker appears in the registry when behind and is cleared when caught up. `tools/scripts/check_no_silent_ready.sh`. **This is the structural foundation B stands on — the reducer now tells the truth every tick (advance or named-blocker); the B7 flip / B8 delete-legacy build on it.** *(`health-is-the-gap` Condition consolidation deferred to the B8 cleanup.)*
-- [x] **E9** `operator-needed-has-a-sink` — HARD; `EV_OPERATOR_NEEDED` emit paired with the `alerts.c` subscriber (tree already satisfies). `5daf21742`.
-- [x] **E10** `framework-shape` + `controller-SQL` graduated WARN → RATCHET (baselines captured; new violators fail). `5daf21742`.
-- [x] **E11** `doc-accuracy` — HARD; `<!--LINT-GATES-->` block in DEFENSIVE_CODING.md must match Makefile `lint:` deps. 31 gates, agree. `5daf21742`.
-
----
-
-## Decision log (binding)
-
-- **2026-05-27** Recovery moles closed and pinned: BIP30 self-write tolerance + CEC cursor non-gating + LOCAL_IMPORT reconstruct + stale-freeze reconcile + E8 no-silent-ready. Live-cutover preflight verification is now the immediate next check before B8 cleanup. Doc reconciled against live lint baselines: E1 file-size 31→7, E2 one-result-type 77→28; A5 codegen shipped; B4 read-mechanism + authority-gated wiring active after B7.
-- **2026-05-28** E6/E7 enforcement wired: `check-one-write-path` ratchets 74 grandfathered legacy write surfaces; `check-no-authoritative-ram-state` ratchets direct active-chain internals with a zero baseline; `make lint` reports 31 gates clean. B8 deletion now has build guardrails.
-- **2026-05-27** Canon reconciled with reality (docs-only): `domain/` now holds 21 pure modules (3 contexts) each with a legacy wrapper + a seal test; ports/adapters seam populated for 5 services (10 port headers total); E2 baseline 77→28; B7 safety net (tip-parity / reorg-parity / shadow-conservation / replay-verify tests + preflight conservation gate) is landed; B8 net deletable corrected 4,407→≈3,900–4,000 (`connect_tip` survives, `legacy_mirror` heartbeat preserved); B5 proven a 2-accessor-body change; B7 completed and next is B8 + E6 + E7.
-- **2026-05-26** Canon made honest: `FRAMEWORK.md` rewritten to bless struct-registration over fictional block-DSLs; the Ten Laws + Prime Directive + validation-feedback honesty added; every law mapped to a gate. `VISION.md` + `ARCHITECTURE.md` (old L1–L7 layer cake) merged in and deleted.
-- **2026-05-23** Framework adopted: Rails-style MVC + Phoenix-style supervisors + hexagonal cut + Conditions. Strangler execution (per-module PRs), not big-bang. Lint gates ratchet WARN→FAIL.
-- **2026-05-23** Worktree workflow: separate clones at `~/github/zclassic23-{2,3}`, identified by pwd suffix, pushed to origin for orchestrator merge.
-
-## How this file gets updated
-
-- Check an item `[x]` only when it's shipped **and** proven (forward-progress / test / measured delta). Add a row to `BENCHMARKS_LOG.md` for any number moved.
-- Orchestrator (main) edits this file; workers append a Completion section to their own `docs/work/wtN-*.md`. Recent history lives in `git log`, not here.
+Do not mark this refactor complete while any ratchet baseline contains a real
+entry or the live node proof is missing.

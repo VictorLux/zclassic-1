@@ -38,8 +38,9 @@ static enum condition_remedy_result remedy_legacy_mirror_stuck(void)
     atomic_fetch_add(&g_test_remedy_calls, 1);
 #endif
     LOG_WARN("condition", "[condition:legacy_mirror_stuck] stuck_height=%d lag=%d " "stalls=%lld reason=%s action=catchup", atomic_load(&g_stuck_height_at_detect), atomic_load(&g_lag_at_detect), (long long)atomic_load(&g_stalls_at_detect), s.stuck_reason[0] ? s.stuck_reason : "(none)");
-    return legacy_mirror_sync_request_catchup("condition:legacy_mirror_stuck")
-        ? COND_REMEDY_OK : COND_REMEDY_FAILED;
+    struct zcl_result r = legacy_mirror_sync_request_catchup_result(
+        "condition:legacy_mirror_stuck");
+    return r.ok ? COND_REMEDY_OK : COND_REMEDY_FAILED;
 }
 
 static bool witness_legacy_mirror_stuck(int64_t target_at_detect)

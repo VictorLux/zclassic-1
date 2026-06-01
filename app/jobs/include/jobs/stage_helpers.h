@@ -97,10 +97,11 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  *
  * The reducer's tip_finalize uses a one-block lookahead (finalize H by
  * reading active_chain_at(H+1)) and then collapses the visible chain[]
- * window back to the finalized height via active_chain_set_tip. Legacy
- * keeps a wider window because activate_best_chain assembles chain[] out to
- * find_most_work_chain's candidate before connect_tip walks it; the reducer
- * had no equivalent and wedged after a single block.
+ * window back to the finalized height via active_chain_move_window_tip, then
+ * publishes the authority through the reducer's explicit tip publication.
+ * Legacy keeps a wider window because activate_best_chain assembles chain[]
+ * out to find_most_work_chain's candidate before connect_tip walks it; the
+ * reducer had no equivalent and wedged after a single block.
  *
  * This helper restores that property: it selects the most-work candidate
  * (side-effect-free mirror of find_most_work_chain) and forward-extends the
@@ -109,10 +110,8 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * and tip_finalize (lookahead) call it at the top of their step_once so the
  * window is always supplied to the height they are about to process.
  *
- * STRICTLY a no-op unless the reducer holds authority — the caller passes
- * `authoritative` from its own mode gate, so under the live default (SHADOW)
- * this never touches chain[] and legacy connect_tip remains the sole tip
- * writer (byte-identical live behaviour). */
+ * STRICTLY a no-op unless the caller owns the active-chain window for the
+ * current stage step. */
 static inline void reducer_extend_window_to_candidate(struct main_state *ms,
                                                        bool authoritative)
 {

@@ -1,14 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Reorg projection-parity PROOF — the proof that commit bfa379bc8
- * ("fix(reorg): emit shadow UTXO events on disconnect") actually works.
+ * Reorg projection-parity PROOF — proves disconnect-side UTXO projection
+ * events keep the projection coherent through a reorg.
  *
- * The shadow utxo_projection is a SQLite UTXO set derived purely from
- * the append-only EV_UTXO_ADD / EV_UTXO_SPEND event stream. The forward
- * path (update_coins_with_undo) emits those events. Before the fix,
- * disconnect_block emitted NOTHING, so on a chain REORG the projection
- * kept stale coins from the abandoned branch — the legacy coins.db
- * unwound, but the shadow projection did not.
+ * The utxo_projection is a SQLite UTXO set derived purely from the
+ * append-only EV_UTXO_ADD / EV_UTXO_SPEND event stream. The forward path
+ * (update_coins_with_undo) emits those events. Before the fix, disconnect_block
+ * emitted NOTHING, so on a chain REORG the projection kept stale coins from the
+ * abandoned branch while the legacy coins.db unwound.
  *
  * This test drives the projection through a real reorg and asserts it
  * CONVERGES to the same coin set as a direct build of the winning branch:
@@ -181,7 +180,7 @@ static void make_block_txs(struct block *blk, int height,
 /* Connect every tx in a block via update_coins_with_undo, accumulating
  * undo into the block_undo so disconnect_block can reverse it. Coinbase
  * (vtx[0]) connects with plain update_coins (no inputs). Both paths emit
- * shadow events into whatever event log is currently wired global. */
+ * projection events into whatever event log is currently wired global. */
 static bool connect_block_with_undo(struct block *blk, int height,
                                     struct coins_view_cache *cache,
                                     struct block_undo *bu)
@@ -210,7 +209,7 @@ int test_reorg_projection_parity(void);
 int test_reorg_projection_parity(void)
 {
     printf("\n=== reorg projection-parity test "
-           "(shadow projection through reorg) ===\n");
+           "(projection through reorg) ===\n");
     int failures = 0;
 
     rpp_mkdir_p("./test-tmp");
@@ -314,7 +313,7 @@ int test_reorg_projection_parity(void)
 
         if (l1 && p1) {
             /* Wire the PROCESS-GLOBAL log: every update_coins /
-             * disconnect_block shadow emit now lands in L1. */
+             * disconnect_block projection emit now lands in L1. */
             utxo_projection_set_event_log(l1);
 
             struct coins_view_cache v;
@@ -438,7 +437,7 @@ int test_reorg_projection_parity(void)
     if (!count_eq || !cmt_eq) {
         printf("[divergence] reorged projection != direct build: "
                "count1=%" PRIu64 " count2=%" PRIu64 " commitment_match=%d "
-               "(without the disconnect-side shadow emission, branch-A coins "
+               "(without the disconnect-side projection emission, branch-A coins "
                "would remain stale in P1)\n",
                count1, count2, cmt_eq ? 1 : 0);
     }
@@ -447,7 +446,7 @@ int test_reorg_projection_parity(void)
            " commitment_match=%d\n", count1, count2, cmt_eq ? 1 : 0);
     RPP_CHECK("PROOF: reorged P1 count == direct P2 count", count_eq);
     RPP_CHECK("PROOF: reorged P1 commitment == direct P2 commitment "
-              "(byte-exact UTXO set via shadow events)", cmt_eq);
+              "(byte-exact UTXO set via projection events)", cmt_eq);
 
     /* ── Cleanup ────────────────────────────────────────────────────── */
     free_block(&genesis);

@@ -127,8 +127,8 @@ void coins_view_cache_as_view(struct coins_view *out,
  * only on the FORWARD path (update_coins add/remove). disconnect_block does
  * NOT decrement it, so after a chain reorg `c->commitment` is path-DEPENDENT:
  * it reflects the history of connects/disconnects rather than the resulting
- * coin set. A cutover proof (and any commitment QUERY that must hold across a
- * reorg) MUST therefore recompute from the coin set — this function — and may
+ * coin set. Any commitment query that must hold across a reorg MUST therefore
+ * recompute from the coin set — this function — and may
  * NOT trust the stale incremental field.
  *
  * Equivalence guarantee: for a coin set produced by forward-only connects

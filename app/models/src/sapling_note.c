@@ -152,7 +152,7 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     AR_FINALIZE(s);
     if (ok && !wallet_projection_emit_note_decrypted(
             n->txid, n->output_index, n->value, n->cm, n->block_height)) {
-        LOG_WARN("wallet_projection", "[wallet_projection] note decrypted shadow emit failed");
+        LOG_WARN("wallet_projection", "[wallet_projection] note decrypted projection emit failed");
     }
     AR_FINISH_SAVE(cbs, n, ok);
 }

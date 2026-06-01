@@ -4,8 +4,7 @@
  * boot rebuild (event_log -> block_index_projection -> in-memory map +
  * tip seeded from the tip_finalize cursor).
  *
- * Step 6 of docs/work/single-engine-newcode-plan.md. This proves the
- * rebuilder in isolation, before it is wired as the sole boot path:
+ * This proves the projection-backed rebuilder in isolation:
  *
  *   1. Emit N chained EV_BLOCK_HEADER into a fresh event log (heights
  *      0..N-1, each hashPrev = the prior block's hash, genesis hashPrev
@@ -342,8 +341,8 @@ static int run_rebuild_null_bip(int *failures)
  * tip_finalize cursor records the CANONICAL tip hash, so even though the
  * fork block is folded into the map (HAVE_DATA + VALID_SCRIPTS, identical
  * height), the rebuild must seed the active tip from the cursor's canonical
- * hash, NOT the fork. A linear fixture would falsely pass this contract
- * (finish-runbook step 9 BLOCKER), so this fixture is the one that bites. */
+ * hash, NOT the fork. A linear fixture would falsely pass this contract, so
+ * this fixture preserves the competing-fork regression case. */
 static int run_rebuild_competing_fork(int *failures)
 {
     int start_failures = *failures;

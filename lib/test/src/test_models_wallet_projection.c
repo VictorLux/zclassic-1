@@ -346,5 +346,94 @@ int test_model_wallet_projection(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("UTXO model rebuilds wallet and address caches... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        bool ok;
+        snprintf(dbdir, sizeof(dbdir),
+                 ".zcl_test_utxo_cache_rebuild_%d", (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = node_db_open(&ndb, dbpath);
+
+        if (ok) {
+            struct db_wallet_key key;
+            struct db_utxo wallet_utxo;
+            struct db_utxo external_utxo;
+            uint8_t wallet_script[] = {0x76, 0xa9, 0x14, 0x88, 0xac};
+            uint8_t external_addr[20];
+            sqlite3_stmt *s = NULL;
+            int address_rows = 0;
+            int64_t address_balance = 0;
+
+            memset(&key, 0, sizeof(key));
+            memset(&wallet_utxo, 0, sizeof(wallet_utxo));
+            memset(&external_utxo, 0, sizeof(external_utxo));
+            memset(external_addr, 0x66, sizeof(external_addr));
+
+            memset(key.pubkey_hash, 0x41, sizeof(key.pubkey_hash));
+            memset(key.pubkey, 0x42, sizeof(key.pubkey));
+            memset(key.privkey, 0x43, sizeof(key.privkey));
+            key.pubkey_len = sizeof(key.pubkey);
+            key.compressed = true;
+            key.created_at = 1770000600;
+            ok = db_wallet_key_save(&ndb, &key);
+
+            memset(wallet_utxo.txid, 0x51, sizeof(wallet_utxo.txid));
+            wallet_utxo.vout = 0;
+            wallet_utxo.value = 1111;
+            wallet_utxo.script = wallet_script;
+            wallet_utxo.script_len = sizeof(wallet_script);
+            wallet_utxo.script_type = SCRIPT_P2PKH;
+            memcpy(wallet_utxo.address_hash, key.pubkey_hash,
+                   sizeof(wallet_utxo.address_hash));
+            wallet_utxo.has_address = true;
+            wallet_utxo.height = 10;
+            ok = ok && db_utxo_save(&ndb, &wallet_utxo);
+
+            memset(external_utxo.txid, 0x52, sizeof(external_utxo.txid));
+            external_utxo.vout = 1;
+            external_utxo.value = 2222;
+            external_utxo.script = wallet_script;
+            external_utxo.script_len = sizeof(wallet_script);
+            external_utxo.script_type = SCRIPT_P2PKH;
+            memcpy(external_utxo.address_hash, external_addr,
+                   sizeof(external_utxo.address_hash));
+            external_utxo.has_address = true;
+            external_utxo.height = 11;
+            ok = ok && db_utxo_save(&ndb, &external_utxo);
+
+            ok = ok && db_utxo_rebuild_wallet_and_address_caches(&ndb);
+            ok = ok && db_wallet_utxo_balance(&ndb) == 1111;
+            ok = ok && db_utxo_total_value(&ndb) == 3333;
+
+            if (ok &&
+                sqlite3_prepare_v2(ndb.db,
+                    "SELECT COUNT(*), COALESCE(SUM(balance),0) FROM addresses",
+                    -1, &s, NULL) == SQLITE_OK &&
+                s &&
+                sqlite3_step(s) == SQLITE_ROW) {
+                address_rows = sqlite3_column_int(s, 0);
+                address_balance = sqlite3_column_int64(s, 1);
+            } else {
+                ok = false;
+            }
+            if (s)
+                sqlite3_finalize(s);
+            ok = ok && address_rows == 2;
+            ok = ok && address_balance == 3333;
+            node_db_close(&ndb);
+        }
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

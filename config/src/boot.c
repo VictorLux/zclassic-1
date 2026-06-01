@@ -118,8 +118,8 @@ static struct main_state g_state;
 static struct coins_view_sqlite g_coins_sqlite;
 /* Read authority for the coins_tip cache backing (single-engine, step 8):
  * a read-only coins_view over the log-derived UTXO projection. The legacy
- * g_coins_sqlite is still opened during the cutover window for the
- * damage-recovery best-block reads below; it is removed in step 10. */
+ * g_coins_sqlite is still opened for legacy damage-recovery best-block reads
+ * below; retiring that fallback is remaining one-write-path debt. */
 static struct coins_view_projection g_coins_read_view;
 static struct coins_view_cache g_coins_tip;
 static struct chain_activation_controller g_activation_ctl;
@@ -1571,7 +1571,7 @@ bool app_init(struct app_context *ctx)
      * Idempotent: the helper refuses to import if main.utxos already
      * holds the snapshot's contents (handled by checking the source
      * file's integrity + size; a re-run with utxos>1000 is a no-op via
-     * the export guard in file_export_consensus_snapshot). */
+     * the export guard in consensus_snapshot_export_service_run). */
     if (g_node_db.open) {
         char snap_path[PATH_MAX];
         int sp_n = snprintf(snap_path, sizeof(snap_path),
@@ -1673,6 +1673,8 @@ bool app_init(struct app_context *ctx)
      * which commits node_db's batch before the coins flush runs
      * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
+        (void)utxo_recovery_repair_stale_cursor_from_sync_projection(
+            &g_node_db);
         if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
             /* the old "Warning" + keep-going path is how the
              * live node was still serving RPC against a corrupted
@@ -1743,7 +1745,7 @@ bool app_init(struct app_context *ctx)
      * resolves misses against the log-derived UTXO projection, not the
      * legacy coins.db `utxos` table. utxo_projection_open publishes the
      * process-global handle; it normally happens later in
-     * boot_start_phase4_storage_shadow (via app_init_services), so open it
+     * boot_start_projection_storage (via app_init_services), so open it
      * here first — that call becomes a no-op reuse. FATAL if the projection
      * cannot be opened: with the projection as the sole read source there is
      * no fallback, and serving reads off a half-built backing would be a
@@ -1763,7 +1765,7 @@ bool app_init(struct app_context *ctx)
      * so the single-engine boot rebuild (load_block_index_from_projection,
      * under -rebuildfromlog) has the caught-up projection available BEFORE
      * the block-index load below. The phase-4 fan-out re-call in
-     * boot_start_phase4_storage_shadow is a no-op reuse (first opener wins).
+     * boot_start_projection_storage is a no-op reuse (first opener wins).
      * Non-fatal if it cannot open: -rebuildfromlog simply falls through to
      * the legacy loaders. */
     (void)boot_ensure_block_index_projection(ctx->datadir);
@@ -2393,6 +2395,9 @@ bool app_init(struct app_context *ctx)
             .db_service = boot_runtime_db_service(),
         };
         struct utxo_import_result ir = utxo_recovery_import_ldb(&uctx);
+        if (!ir.status.ok)
+            fprintf(stderr, "[boot] UTXO import failed: %s\n",
+                    ir.status.message);
         if (ir.skip_activate) {
             if (ir.anchor_reason[0])
                 activation_set_anchor_active(&g_activation_ctl,
@@ -2524,6 +2529,9 @@ bool app_init(struct app_context *ctx)
         };
         struct chain_restore_result cr =
             utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
+        if (!cr.status.ok)
+            fprintf(stderr, "[boot] UTXO chain restore failed: %s\n",
+                    cr.status.message);
         if (cr.restored && cr.restored_height > 0) {
             boot_restored_authority_tip = true;
             boot_restored_authority_height = cr.restored_height;
@@ -2709,6 +2717,9 @@ bool app_init(struct app_context *ctx)
             .db_service = boot_runtime_db_service(),
         };
         struct recovery_exec_result rr = utxo_recovery_execute(&uctx, &vr);
+        if (!rr.status.ok)
+            fprintf(stderr, "[boot] UTXO recovery execution failed: %s\n",
+                    rr.status.message);
         (void)rr.skip_activate; /* activation controller handles state */
 
         /* Enter turbo mode if genesis reset happened */
@@ -2788,8 +2799,8 @@ bool app_init(struct app_context *ctx)
                 /* This LDB/damage-recovery branch needs the LEGACY coins.db
                  * best-block, not the projection (the projection read view
                  * tracks a consume offset, not a best-block hash). Read it
-                 * straight from g_coins_sqlite, which is still open during
-                 * the cutover window (removed in step 10). */
+                 * straight from g_coins_sqlite, which still exists for
+                 * legacy damage-recovery reads. */
                 uint256_set_null(&post_scan_best);
                 if (g_coins_sqlite.db)
                     coins_view_sqlite_get_best_block(&g_coins_sqlite,
@@ -3115,7 +3126,7 @@ sapling_tree_boot_check_done:
         struct uint256 coins_hash;
         /* Legacy LDB-import safety check: needs the coins.db best-block, not
          * the projection (no best-block). Read from g_coins_sqlite directly
-         * (still open during the cutover window; removed in step 10). */
+         * while that legacy recovery fallback remains. */
         uint256_set_null(&coins_hash);
         if (g_coins_sqlite.db)
             coins_view_sqlite_get_best_block(&g_coins_sqlite, &coins_hash);

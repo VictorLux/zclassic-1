@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_stage — Wave S, S-9 shadow stage.
+ * tip_finalize_stage — Wave S, S-9.
  *
  * Consumes `utxo_apply_log`; for each height where UTXO apply passed,
  * observes that the live chain has advanced to the next active tip and
- * records the finalize result. Shadow mode: no mutation of consensus state. */
+ * records the finalize result while publishing the reducer-owned active tip. */
 
 #ifndef ZCL_SERVICES_TIP_FINALIZE_STAGE_H
 #define ZCL_SERVICES_TIP_FINALIZE_STAGE_H
@@ -23,19 +23,11 @@ typedef bool (*tip_finalize_utxo_count_fn)(int height_after,
                                            int64_t *out_count,
                                            void *user);
 
-typedef enum {
-    TIP_FINALIZE_MODE_SHADOW = 0,
-    TIP_FINALIZE_MODE_AUTHORITATIVE
-} tip_finalize_mode_t;
-
 bool tip_finalize_stage_init(struct main_state *ms);
 void tip_finalize_stage_shutdown(void);
 
-void tip_finalize_set_mode(tip_finalize_mode_t mode);
-tip_finalize_mode_t tip_finalize_get_mode(void);
-
 /* Force the authoritative tip state (height + hash). Used during
- * transitions or by trusted bypasses (bootstrap/sync). */
+ * trusted bypasses (bootstrap/sync). */
 void tip_finalize_stage_set_authoritative_tip(int height,
                                               const uint8_t hash[32]);
 
@@ -54,8 +46,7 @@ bool tip_finalize_stage_finalized_tip_at(struct sqlite3 *db, int height,
  * stage cursor to height+1, so the next boot_rebuild_from_log restores
  * the tip purely from the log/cursor. Also seeds the runtime
  * authoritative tip. Best-effort, non-fatal: returns false (no mutation
- * beyond the log row) if the progress store / stage are not yet wired —
- * the legacy node.db promote still carries the snapshot during cutover.
+ * beyond the log row) if the progress store / stage are not yet wired.
  * `hash` is the 32-byte snapshot anchor block hash. */
 bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32]);
 

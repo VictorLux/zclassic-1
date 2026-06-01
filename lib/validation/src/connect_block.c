@@ -738,7 +738,7 @@ bool disconnect_block(const struct block *block,
                 entry->coins.vout[tx->vin[j].prevout.n] = undo->txout;
                 entry->flags |= COINS_CACHE_DIRTY;
 
-                /* Mirror the restore into the shadow projection: the
+                /* Mirror the restore into the UTXO projection: the
                  * coin re-enters the UTXO set, so emit ADD — the inverse
                  * of the SPEND emitted when this input was first consumed.
                  * undo->height>0 carries the coin's original metadata
@@ -749,7 +749,7 @@ bool disconnect_block(const struct block *block,
                         ? undo->height : (uint32_t)entry->coins.height;
                     bool add_coinbase = (undo->height > 0)
                         ? undo->coinbase : entry->coins.is_coinbase;
-                    update_coins_emit_utxo_add_shadow(
+                    update_coins_emit_utxo_add_projection(
                         tx->vin[j].prevout.hash.data,
                         tx->vin[j].prevout.n,
                         undo->txout.value, add_height, add_coinbase,
@@ -789,14 +789,14 @@ bool disconnect_block(const struct block *block,
         struct coins_cache_entry *ghost =
             coins_view_cache_modify(view, &tx->hash);
         if (ghost) {
-            /* Mirror the erase into the shadow projection: every output
+            /* Mirror the erase into the UTXO projection: every output
              * this tx still contributes to the UTXO set leaves it, so
              * emit SPEND per live output — the inverse of the ADD emitted
              * when the block created them. Emit BEFORE freeing the coins.
              * Best-effort; never gates the consensus erase below. */
             for (size_t vi = 0; vi < ghost->coins.num_vout; vi++) {
                 if (!tx_out_is_null(&ghost->coins.vout[vi]))
-                    update_coins_emit_utxo_spend_shadow(tx->hash.data,
+                    update_coins_emit_utxo_spend_projection(tx->hash.data,
                                                         (uint32_t)vi);
             }
             coins_free(&ghost->coins);

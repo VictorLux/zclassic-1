@@ -18,6 +18,7 @@
 
 #include "services/wallet_backup_service.h"
 #include "event/event.h"
+#include "util/supervisor.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -144,6 +145,7 @@ static int t_happy(void)
 {
     int failures = 0;
     wb_install_observer();
+    supervisor_reset_for_testing();
 
     struct wb_fixture f;
     if (!wb_fixture_init(&f, "happy")) {
@@ -384,17 +386,32 @@ static int t_status_snapshot(void)
     }
     struct wallet_backup_status status;
     wallet_backup_status_snapshot(&status);
+    struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+    int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+    const struct supervisor_snapshot *backup = NULL;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].name, "wallet.backup") == 0) {
+            backup = &snaps[i];
+            break;
+        }
+    }
     wallet_backup_stop();
+    bool supervisor_stopped = supervisor_child_count_total() == 0;
 
     bool success = started &&
                    status.running &&
                    status.total_runs >= 1 &&
                    status.last_key_count == 3 &&
                    status.last_size_bytes > 0 &&
-                   status.last_path[0] != '\0';
+                   status.last_path[0] != '\0' &&
+                   backup != NULL &&
+                   backup->period_secs == 0 &&
+                   backup->deadline_secs == 60 &&
+                   supervisor_stopped;
     WB_RUN("wb: status snapshot reflects thread's first backup", success);
 
     wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
     return failures;
 }
 

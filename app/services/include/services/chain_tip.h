@@ -4,8 +4,8 @@
  *
  * Before this module, ~30 call sites across snapshot_sync_service,
  * chain_restore_service, process_block, msg_headers, utxo_recovery,
- * and boot.c invoked `active_chain_set_tip(&ms->chain_active, new_bi)`
- * directly. Each site decided independently whether to:
+ * and boot.c invoked the low-level active-chain window primitive directly.
+ * Each site decided independently whether to:
  *   - emit EV_TIP_UPDATED / EV_CHAIN_TIP_COMMIT events
  *   - call csr_apply_commit for SQLite persistence
  *   - update pindex_best_header
@@ -16,9 +16,9 @@
  * means editing 30 sites — a recipe for drift.
  *
  * This module exposes a single function that all of those sites
- * SHOULD call. The bare `active_chain_set_tip` survives as a low-level
- * primitive used by this module itself; new callers must use
- * `chain_set_active_tip`. */
+ * SHOULD call. The bare `active_chain_move_window_tip` is a low-level
+ * cache/window primitive used by this module itself; it does not publish the
+ * authoritative reducer tip. New callers must use `chain_set_active_tip`. */
 
 #ifndef ZCL_CHAIN_TIP_H
 #define ZCL_CHAIN_TIP_H
@@ -47,14 +47,15 @@ enum tip_source {
 
 const char *tip_source_name(enum tip_source src);
 
-/* Set the active chain tip. Wraps the low-level `active_chain_set_tip`
+/* Set the active chain tip. Wraps the low-level `active_chain_move_window_tip`
  * and adds:
+ *   - reducer authority publication for trusted bootstrap/repair writes
  *   - structured `[tip] h=H hash=hex16... src=... reason=...` log line
  *   - EV_TIP_UPDATED event with hash + height payload
  *   - EV_CHAIN_TIP_COMMIT event with from/to/reason payload
  *
  * Returns ZCL_OK on success, or a zcl_result carrying code+message
- * if `active_chain_set_tip` returns false (typically realloc OOM at
+ * if `active_chain_move_window_tip` returns false (typically realloc OOM at
  * very high heights) or `ms` is NULL.
  *
  * `new_tip` may be NULL to clear the tip (returns ZCL_OK; emits a

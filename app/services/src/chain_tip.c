@@ -115,9 +115,9 @@ struct zcl_result chain_set_active_tip(struct main_state *ms,
     int from_h = active_chain_height(&ms->chain_active);
 
     if (!new_tip) {
-        if (!active_chain_set_tip(&ms->chain_active, NULL))
+        if (!active_chain_move_window_tip(&ms->chain_active, NULL))
             return ZCL_ERR(-2,
-                "chain_set_active_tip: active_chain_set_tip(NULL) failed "
+                "chain_set_active_tip: active_chain_move_window_tip(NULL) failed "
                 "from_h=%d src=%s reason=%s",
                 from_h, tip_source_name(src), reason ? reason : "");
         printf("[tip] CLEARED (from h=%d) src=%s reason=%s\n",
@@ -129,24 +129,21 @@ struct zcl_result chain_set_active_tip(struct main_state *ms,
         return ZCL_OK;
     }
 
-    if (!active_chain_set_tip(&ms->chain_active, new_tip)) {
+    if (!active_chain_move_window_tip(&ms->chain_active, new_tip)) {
         fprintf(stderr, // obs-ok:paired-with-ZCL_ERR-return
             "[tip] set_active_tip FAILED at h=%d src=%s reason=%s\n",
             new_tip->nHeight, tip_source_name(src),
             reason ? reason : "");
         return ZCL_ERR(-3,
-            "chain_set_active_tip: active_chain_set_tip failed at h=%d "
+            "chain_set_active_tip: active_chain_move_window_tip failed at h=%d "
             "src=%s reason=%s",
             new_tip->nHeight, tip_source_name(src),
             reason ? reason : "");
     }
 
-    /* If we are authoritative, and this tip set came from a trusted source
-     * (like connect_tip or bootstrap), ensure the authority atomics match
-     * what we just wrote to RAM. This allows legacy/sync paths to still
-     * drive the definitional tip during transition. */
-    if (tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE &&
-        new_tip->phashBlock) {
+    /* Keep the reducer authority atomics aligned with trusted bootstrap or
+     * repair tip writes. */
+    if (new_tip->phashBlock) {
         tip_finalize_stage_set_authoritative_tip(new_tip->nHeight,
                                                  new_tip->phashBlock->data);
     }

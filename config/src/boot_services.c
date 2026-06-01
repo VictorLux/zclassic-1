@@ -10,6 +10,7 @@
 #include "services/block_source_policy.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
+#include "services/consensus_snapshot_export_service.h"
 #include "services/gap_fill_service.h"
 #include "services/hodl_history_service.h"
 #include "services/rolling_anchor_service.h"
@@ -38,6 +39,7 @@
 #include "util/alerts.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "net/connman.h"
@@ -543,7 +545,7 @@ static bool boot_rolling_anchor_start(void *ctx)
     if (!svc)
         return false;
     if (rolling_anchor_start(svc->state, svc->datadir).ok)
-        printf("[rolling-anchor] periodic tick registered\n");
+        printf("[rolling-anchor] supervisor contract registered\n");
     return true;
 }
 
@@ -1024,13 +1026,13 @@ static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
  * non-NULL) BEFORE it builds the coins_tip read view from
  * coins_view_projection, which is well before app_init_services runs. So
  * this is hoisted here and called twice: once early from app_init (read-view
- * build) and once from boot_start_phase4_storage_shadow (the rest of the
+ * build) and once from boot_start_projection_storage (the rest of the
  * projection fan-out). The second call is a no-op reuse — first opener wins,
  * one handle, no split-brain. Returns the published projection or NULL.
  *
  * Note: the legacy anchor-seed (utxo_projection_seed_from_legacy) is NOT done
  * here — it needs boot_node_db() which is only available after `S` is set in
- * app_init_services, so it stays in boot_start_phase4_storage_shadow below. */
+ * app_init_services, so it stays in boot_start_projection_storage below. */
 utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
 {
     utxo_projection_t *existing = utxo_projection_get_global();
@@ -1047,15 +1049,15 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
                       "%s/utxo_projection.db", datadir);
     if (ne <= 0 || (size_t)ne >= sizeof(event_path) ||
         nu <= 0 || (size_t)nu >= sizeof(utxo_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] storage shadow paths too long\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] projection storage paths too long\n");
         return NULL;
     }
 
     if (!g_phase4_event_log) {
         g_phase4_event_log = event_log_open(event_path);
         if (!g_phase4_event_log) {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] event log unavailable; projections disabled\n");
             return NULL;
         }
@@ -1066,16 +1068,16 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
     g_phase4_utxo_projection =
         utxo_projection_open(utxo_path, g_phase4_event_log);
     if (!g_phase4_utxo_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] utxo_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] utxo_projection unavailable; UTXO projection disabled\n");
         return NULL;
     }
     uint64_t uoff = utxo_projection_catch_up(g_phase4_utxo_projection);
     if (uoff == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] utxo_projection catch_up failed\n");
     } else {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] utxo_projection caught up to offset=%llu\n",
                 (unsigned long long)uoff);
     }
@@ -1088,7 +1090,7 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
  * this is hoisted so boot.c can open + publish + catch up the projection
  * BEFORE the block-index load (which optionally rebuilds from it under
  * -rebuildfromlog), well before app_init_services runs. Called twice: once
- * early from boot.c and once (no-op reuse) from boot_start_phase4_storage_shadow.
+ * early from boot.c and once (no-op reuse) from boot_start_projection_storage.
  * First opener wins — one handle, no split-brain. Requires the event log
  * to already be published (boot_ensure_log_and_utxo_projection first).
  * Returns the published projection or NULL. */
@@ -1106,14 +1108,14 @@ block_index_projection_t *boot_ensure_block_index_projection(const char *datadir
     int n5 = snprintf(bip_path, sizeof(bip_path),
                       "%s/block_index_projection.db", datadir);
     if (n5 <= 0 || (size_t)n5 >= sizeof(bip_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] block_index_projection path too long\n");
         return NULL;
     }
     g_phase4_block_index_projection =
         block_index_projection_open(bip_path, g_phase4_event_log);
     if (!g_phase4_block_index_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] block_index_projection unavailable\n");
         return NULL;
     }
@@ -1122,7 +1124,7 @@ block_index_projection_t *boot_ensure_block_index_projection(const char *datadir
     return g_phase4_block_index_projection;
 }
 
-static void boot_start_phase4_storage_shadow(const char *datadir)
+static void boot_start_projection_storage(const char *datadir)
 {
     if (!datadir || !datadir[0])
         return;
@@ -1134,8 +1136,8 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
                       "%s/peers_projection.db", datadir);
     if (n2 <= 0 || (size_t)n2 >= sizeof(mempool_path) ||
         n3 <= 0 || (size_t)n3 >= sizeof(peers_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] storage shadow paths too long\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] projection storage paths too long\n");
         return;
     }
 
@@ -1143,7 +1145,7 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
      * view) the event_log + utxo_projection. After this g_phase4_event_log
      * is published. */
     if (!boot_ensure_log_and_utxo_projection(datadir)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] event log / utxo_projection unavailable; "
                 "projections disabled\n");
         return;
@@ -1153,16 +1155,16 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_mempool_projection =
         mempool_projection_open(mempool_path, g_phase4_event_log);
     if (!g_phase4_mempool_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] mempool_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] mempool_projection unavailable; projection disabled\n");
     } else {
         uint64_t off =
             mempool_projection_catch_up(g_phase4_mempool_projection);
         if (off == UINT64_MAX) {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] mempool_projection catch_up failed\n");
         } else {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] mempool_projection caught up to offset=%llu\n",
                     (unsigned long long)off);
         }
@@ -1172,64 +1174,62 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_peers_projection =
         peers_projection_open(peers_path, g_phase4_event_log);
     if (!g_phase4_peers_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] peers_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] peers_projection unavailable; projection disabled\n");
         return;
     }
     uint64_t off = peers_projection_catch_up(g_phase4_peers_projection);
     if (off == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] peers_projection catch_up failed\n");
     } else {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] peers_projection caught up to offset=%llu\n",
                 (unsigned long long)off);
     }
 
     /* Phase 4b: utxo_projection — first PRODUCTION consumer of the event
      * log. Opened + caught up above by boot_ensure_log_and_utxo_projection
-     * (so the coins_tip read view can bind to it before this runs). Shadow
-     * mode only here; legacy update_coins.c still authors coins.db. */
+     * (so the coins_tip read view can bind to it before this runs). */
 
     /* Phase 4b-seed: one-time anchor-seed the projection from the legacy
      * coins.db so SHA3(projection)==SHA3(coins.db) and counts match (the
-     * utxo_commitment cutover preflight gate). The shadow projection only
-     * holds tail deltas emitted since shadow boot; the historical set that
-     * predates shadow emission was never folded in. Idempotent: the seed
+     * UTXO commitment guard). The projection may only hold tail deltas on old
+     * datadirs, so the historical set must be folded in once. Idempotent: the seed
      * refuses (returns -1) once anchor_seeded is stamped, so this is a
-     * no-op on every boot after the first. Shadow-only — seeding the
-     * projection never touches the authoritative legacy coins.db. */
+     * no-op on every boot after the first. Seeding the projection never writes
+     * coins.db. */
     {
         struct node_db *seed_ndb = boot_node_db();
         if (seed_ndb && seed_ndb->db) {
             int64_t seeded = utxo_projection_seed_from_legacy(
                 g_phase4_utxo_projection, seed_ndb->db);
             if (seeded >= 0)
-                fprintf(stderr,  // obs-ok:phase4-shadow
+                fprintf(stderr,  // obs-ok:phase4-storage
                         "[phase4] utxo_projection anchor-seeded %lld UTXOs "
                         "from coins.db\n", (long long)seeded);
             else
-                fprintf(stderr,  // obs-ok:phase4-shadow
+                fprintf(stderr,  // obs-ok:phase4-storage
                         "[phase4] utxo_projection anchor-seed skipped "
                         "(already seeded or legacy db unavailable)\n");
         }
     }
 
-    /* Phase 4c: block_index_projection shadow. Opened (or reused, if boot.c
+    /* Phase 4c: block_index_projection. Opened (or reused, if boot.c
      * already opened it for the -rebuildfromlog boot path) via the hoisted
      * helper — first opener wins. */
     if (!boot_ensure_block_index_projection(datadir)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] block_index_projection unavailable\n");
         return;
     }
 
-    /* Phase 4d-4: znam_projection shadow */
+    /* Phase 4d-4: znam_projection */
     char znam_path[PATH_MAX];
     int n6 = snprintf(znam_path, sizeof(znam_path),
                       "%s/znam_projection.db", datadir);
     if (n6 <= 0 || (size_t)n6 >= sizeof(znam_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] znam_projection path too long\n");
         return;
     }
@@ -1237,50 +1237,50 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_znam_projection =
         znam_projection_open(znam_path, g_phase4_event_log);
     if (!g_phase4_znam_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] znam_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] znam_projection unavailable; projection disabled\n");
         return;
     }
     uint64_t zoff = znam_projection_catch_up(g_phase4_znam_projection);
     if (zoff == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] znam_projection catch_up failed\n");
     } else {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] znam_projection caught up to offset=%llu\n",
                 (unsigned long long)zoff);
     }
 
-    /* Phase 4d-3: wallet_view_projection shadow. Set the event-log
+    /* Phase 4d-3: wallet_view_projection. Set the event-log
      * emitter only after the initial replay so boot catch-up cannot race
      * new wallet view events. */
     char wallet_path[PATH_MAX];
     int n7 = snprintf(wallet_path, sizeof(wallet_path),
                       "%s/wallet_projection.db", datadir);
     if (n7 <= 0 || (size_t)n7 >= sizeof(wallet_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] wallet_projection path too long\n");
         return;
     }
     g_phase4_wallet_projection =
         wallet_projection_open(wallet_path, g_phase4_event_log);
     if (!g_phase4_wallet_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] wallet_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] wallet_projection unavailable; projection disabled\n");
         return;
     }
     uint64_t woff = wallet_projection_catch_up(g_phase4_wallet_projection);
     if (woff == UINT64_MAX) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] wallet_projection catch_up failed\n");
     } else {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] wallet_projection caught up to offset=%llu\n",
                 (unsigned long long)woff);
     }
     wallet_projection_set_event_log(g_phase4_event_log);
 
-    /* Phase 4d-5: small-batch projections shadow */
+    /* Phase 4d-5: small-batch projections */
     char contacts_path[PATH_MAX];
     char onion_ann_path[PATH_MAX];
     char hodl_history_path[PATH_MAX];
@@ -1293,7 +1293,7 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     if (n8 <= 0 || (size_t)n8 >= sizeof(contacts_path) ||
         n9 <= 0 || (size_t)n9 >= sizeof(onion_ann_path) ||
         n10 <= 0 || (size_t)n10 >= sizeof(hodl_history_path)) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] small projection paths too long\n");
         return;
     }
@@ -1302,16 +1302,16 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_contacts_projection =
         contacts_projection_open(contacts_path, g_phase4_event_log);
     if (!g_phase4_contacts_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
-                "[phase4] contacts_projection unavailable; shadow emit only\n");
+        fprintf(stderr,  // obs-ok:phase4-storage
+                "[phase4] contacts_projection unavailable; projection disabled\n");
     } else {
         uint64_t coff =
             contacts_projection_catch_up(g_phase4_contacts_projection);
         if (coff == UINT64_MAX) {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] contacts_projection catch_up failed\n");
         } else {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] contacts_projection caught up to offset=%llu\n",
                     (unsigned long long)coff);
         }
@@ -1321,17 +1321,17 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_onion_ann_projection =
         onion_ann_projection_open(onion_ann_path, g_phase4_event_log);
     if (!g_phase4_onion_ann_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] onion_announcements_projection unavailable; "
-                "shadow emit only\n");
+                "projection disabled\n");
     } else {
         uint64_t aoff =
             onion_ann_projection_catch_up(g_phase4_onion_ann_projection);
         if (aoff == UINT64_MAX) {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] onion_announcements_projection catch_up failed\n");
         } else {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] onion_announcements_projection caught up to "
                     "offset=%llu\n",
                     (unsigned long long)aoff);
@@ -1342,17 +1342,17 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     g_phase4_hodl_history_projection =
         hodl_history_projection_open(hodl_history_path, g_phase4_event_log);
     if (!g_phase4_hodl_history_projection) {
-        fprintf(stderr,  // obs-ok:phase4-shadow
+        fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] hodl_history_projection unavailable; "
-                "shadow emit only\n");
+                "projection disabled\n");
     } else {
         uint64_t hoff =
             hodl_history_projection_catch_up(g_phase4_hodl_history_projection);
         if (hoff == UINT64_MAX) {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] hodl_history_projection catch_up failed\n");
         } else {
-            fprintf(stderr,  // obs-ok:phase4-shadow
+            fprintf(stderr,  // obs-ok:phase4-storage
                     "[phase4] hodl_history_projection caught up to "
                     "offset=%llu\n",
                     (unsigned long long)hoff);
@@ -1360,7 +1360,7 @@ static void boot_start_phase4_storage_shadow(const char *datadir)
     }
 }
 
-static void boot_stop_phase4_storage_shadow(void)
+static void boot_stop_projection_storage(void)
 {
     /* Order: detach emitters before closing the projections so no
      * in-flight emit lands on a stale handle. Then close projections
@@ -1737,7 +1737,7 @@ static void *address_backfill_service_thread(void *arg)
     if (!svc || !svc->datadir)
         return NULL;
 
-    db_path = malloc(1024);
+    db_path = zcl_malloc(1024, "address_backfill_db_path");
     if (!db_path)
         return NULL;
     snprintf(db_path, 1024, "%s/node.db", svc->datadir);
@@ -2000,10 +2000,15 @@ static void *build_snapshot_offer_thread(void *arg)
                           strcmp(export_snapshot, "0") == 0;
     if (file_service_enabled && !export_opt_out) {
         printf("Exporting consensus snapshot (no wallet data)...\n");
-        if (file_export_consensus_snapshot(datadir)) {
+        struct zcl_result export_result =
+            consensus_snapshot_export_service_run(datadir);
+        if (export_result.ok) {
             file_controller_refresh_manifest();
             fs_server_refresh_manifest();
             printf("Consensus snapshot ready for file service\n");
+        } else {
+            printf("Consensus snapshot export skipped/failed (%s)\n",
+                   export_result.message);
         }
     } else if (file_service_enabled) {
         printf("Consensus snapshot export skipped on boot "
@@ -2152,7 +2157,7 @@ bool app_init_services(struct app_context *ctx,
 {
     /* Timing only (no behavior change): break p2p_services_start
      * (~11s in docs/work/sync-perf-profile-2026-05-29.md) into its
-     * synchronous sub-stages so projection-shadow / file-sync / network /
+     * synchronous sub-stages so projection-storage / file-sync / network /
      * RPC-register / frontend(Tor) / runtime costs are individually
      * visible. Markers reuse the existing [boot] <phase> Nms idiom on the
      * same monotonic-ms basis. */
@@ -2193,11 +2198,9 @@ bool app_init_services(struct app_context *ctx,
     svc->runtime.wallet = svc->wallet;
     app_runtime_set_current(&svc->runtime);
 
-    /* Phase 4 storage unification shadow path. Opens the append-only
-     * event log and first non-consensus projection; failures are
-     * observational only until cutover.
-     */
-    boot_start_phase4_storage_shadow(ctx->datadir);
+    /* Projection storage fan-out. Opens the append-only event log and the
+     * reducer read-model projections used by runtime services. */
+    boot_start_projection_storage(ctx->datadir);
 
     /* ── Register sync state observer ──────────────────────────── *
      * Logs every sync state transition via the event system.
@@ -2370,7 +2373,7 @@ bool app_init_services(struct app_context *ctx,
             fprintf(stderr, "Warning: ZK params not loaded\n");
     }
 
-    printf("[boot]   %-28s %lldms\n", "svc.init_shadow_wallet",
+    printf("[boot]   %-28s %lldms\n", "svc.init_wallet",
            (long long)(svc_clock_ms() - t_svc));
     t_svc = svc_clock_ms();
 
@@ -2983,7 +2986,7 @@ bool app_init_services(struct app_context *ctx,
      * surface instead of dead-ending. Was never called in production. */
     alerts_init();
     self_heal_register(svc->state);
-    staged_sync_supervisor_register(svc->state, svc->datadir);
+    staged_sync_supervisor_register(svc->state);
 
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
@@ -3144,11 +3147,6 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     main_state_free(svc->state);
     sapling_free_params();
 
-    /* Cutover Item 3: the conservation diff Job is a leaf consumer (reads
-     * the shadow log + zclassicd RPC, writes only its own cursor in
-     * progress.kv). Tear it down first so it stops issuing RPCs and
-     * closes its read ports before progress.kv closes below. */
-
     /* Wave S shutdown order: bottom-up through the saga so each stage's
      * upstream is still alive while it drains in-flight work. S-9
      * tip_finalize reads from utxo_apply_log; tear it down first. */
@@ -3177,7 +3175,7 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
      * (which read disk) don't outlive the disk_block_io cache. */
     validate_headers_stage_shutdown();
 
-    /* Wave S, S-2: stop the shadow header_admit stage before closing
+    /* Wave S, S-2: stop the header_admit stage before closing
      * progress.kv (so any in-flight step finishes). */
     header_admit_stage_shutdown();
 
@@ -3185,7 +3183,7 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
      * never opened. */
     progress_store_close();
 
-    boot_stop_phase4_storage_shadow();
+    boot_stop_projection_storage();
 
     ecc_verify_destroy();
     ecc_stop();

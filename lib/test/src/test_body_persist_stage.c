@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Unit tests for Wave S S-5 body_persist shadow stage. */
+ * Unit tests for Wave S S-5 body_persist stage. */
 
 #include "test/test_helpers.h"
 

@@ -11,6 +11,7 @@
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "models/database.h"
+#include "storage/coins_view_sqlite.h"
 #include "util/ar_step_readonly.h"
 #include <stdio.h>
 #include <string.h>
@@ -481,7 +482,7 @@ int test_utxo_recovery_service(void)
             struct utxo_import_result ir = utxo_recovery_import_ldb(&uctx);
 
             URS_CHECK("urs: LDB import skips when already migrated",
-                      !ir.imported && !ir.skip_activate);
+                      ir.status.ok && !ir.imported && !ir.skip_activate);
 
             coins_view_cache_free(&cache);
             block_map_free(&ms.map_block_index);
@@ -558,7 +559,7 @@ int test_utxo_recovery_service(void)
                 &persisted_len);
 
             URS_CHECK("urs: no-UTXO restore commits genesis through CSR",
-                      rr.restored &&
+                      rr.status.ok && rr.restored &&
                       active_chain_tip(&ms.chain_active) == genesis &&
                       uint256_eq(&got_best,
                                   &params->consensus.hashGenesisBlock) &&
@@ -577,6 +578,28 @@ int test_utxo_recovery_service(void)
                       "(db open failed)", false);
         }
         unlink(db_path);
+    }
+
+    /* ── 12b. Recovery entry points return rich status on invalid context ── */
+
+    {
+        struct utxo_import_result ir = utxo_recovery_import_ldb(NULL);
+        URS_CHECK("urs: import null ctx returns zcl_result error",
+                  !ir.status.ok && ir.status.code == -1);
+
+        struct chain_restore_result rr =
+            utxo_recovery_restore_chain_tip(NULL, NULL);
+        URS_CHECK("urs: restore null ctx returns zcl_result error",
+                  !rr.status.ok && rr.status.code == -20 &&
+                  rr.restored_height == -1);
+
+        struct boot_validation_result vr;
+        memset(&vr, 0, sizeof(vr));
+        vr.action = BOOT_OK;
+        struct recovery_exec_result er = utxo_recovery_execute(NULL, &vr);
+        URS_CHECK("urs: execute null ctx returns zcl_result error",
+                  !er.status.ok && er.status.code == -30 &&
+                  !er.recovered && !er.skip_activate);
     }
 
     /* ── 13. Clean above tip: no-op when tip=0 ── */
@@ -603,6 +626,89 @@ int test_utxo_recovery_service(void)
         }
         unlink(db_path);
         block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 14. Stale coins cursor can advance to sync projection tip ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_stale_cursor.db", getpid());
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        if (node_db_open(&ndb, db_path)) {
+            node_db_begin(&ndb);
+            node_db_exec(&ndb,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "file_num,data_pos,num_tx) VALUES("
+                "X'" URS_HEX32(11) "',100,X'" URS_HEX32(00) "',4,"
+                "X'" URS_HEX32(22) "',1000,0,X'',X'',X'',13,0,1,1)");
+            node_db_exec(&ndb,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "file_num,data_pos,num_tx) VALUES("
+                "X'" URS_HEX32(33) "',105,X'" URS_HEX32(11) "',4,"
+                "X'" URS_HEX32(44) "',2000,0,X'',X'',X'',13,0,2,1)");
+            node_db_exec(&ndb,
+                "INSERT INTO utxos(txid,vout,height,value,script,"
+                "is_coinbase) VALUES(X'" URS_HEX32(AA) "',0,105,"
+                "100000,X'51',1)");
+            node_db_exec(&ndb,
+                "INSERT INTO utxos(txid,vout,height,value,script,"
+                "is_coinbase) VALUES(X'" URS_HEX32(BB) "',0,106,"
+                "100000,X'51',1)");
+            node_db_exec(&ndb,
+                "INSERT INTO transactions(txid,block_hash,block_height,"
+                "tx_index,file_num,file_pos,is_coinbase) VALUES("
+                "X'" URS_HEX32(BB) "',X'" URS_HEX32(55) "',106,0,0,0,1)");
+            node_db_exec(&ndb,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('utxo_commitment', X'" URS_HEX32(CC) "')");
+            node_db_commit(&ndb);
+
+            uint8_t coins_hash[32];
+            memset(coins_hash, 0x11, sizeof(coins_hash));
+            uint8_t sync_hash[32];
+            memset(sync_hash, 0x33, sizeof(sync_hash));
+            node_db_state_set(&ndb, "coins_best_block",
+                              coins_hash, sizeof(coins_hash));
+            node_db_state_set(&ndb, "sync_projection_tip_hash",
+                              sync_hash, sizeof(sync_hash));
+            node_db_state_set_int(&ndb, "sync_projection_tip_height", 105);
+
+            bool repaired =
+                utxo_recovery_repair_stale_cursor_from_sync_projection(&ndb);
+
+            uint8_t got[32];
+            size_t got_len = 0;
+            bool got_best = node_db_state_get(&ndb, "coins_best_block",
+                                              got, sizeof(got), &got_len);
+            int64_t above = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM utxos WHERE height > 105");
+            int64_t stale_tx = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM transactions WHERE block_height > 105");
+            int64_t commitment = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM node_state WHERE key='utxo_commitment'");
+
+            struct coins_view_sqlite cvs;
+            bool opens = coins_view_sqlite_open(&cvs, ndb.db);
+            if (opens)
+                coins_view_sqlite_close(&cvs);
+
+            URS_CHECK("urs: stale coins cursor repairs from sync projection",
+                      repaired && got_best && got_len == 32 &&
+                      memcmp(got, sync_hash, sizeof(sync_hash)) == 0 &&
+                      above == 0 && stale_tx == 0 && commitment == 0 &&
+                      opens);
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: stale coins cursor repair (db open failed)",
+                      false);
+        }
+        unlink(db_path);
     }
 
     printf("--- utxo_recovery_service: %d failure(s) ---\n", failures);

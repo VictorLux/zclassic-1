@@ -1283,9 +1283,10 @@ static void *thread_socket_handler(void *arg)
                     size_t new_cap = cm->deferred_free_cap * 2;
                     if (new_cap > CONNMAN_DEFERRED_FREE_HARD_CAP)
                         new_cap = CONNMAN_DEFERRED_FREE_HARD_CAP;
-                    struct p2p_node **grown = realloc(
+                    struct p2p_node **grown = zcl_realloc(
                         cm->deferred_free,
-                        new_cap * sizeof(*cm->deferred_free));
+                        new_cap * sizeof(*cm->deferred_free),
+                        "connman_deferred_free");
                     if (grown) {
                         cm->deferred_free = grown;
                         cm->deferred_free_cap = new_cap;
@@ -1982,4 +1983,3 @@ void connman_get_outbound_health(struct connman *cm,
     out->ipv4_group_count = num_groups;
     out->healthy_ipv4_group_count = healthy_num_groups;
 }
-

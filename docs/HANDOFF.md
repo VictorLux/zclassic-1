@@ -1,59 +1,100 @@
 # HANDOFF — read this first
 
-**Restart command:** type **`continue zclassic23 development`** (3 words). That's all you need.
+**Restart command:** type **`continue zclassic23 development`**.
 
-State at handoff: `origin/main`, working tree clean, one branch, build + lint + 287-group test suite all green.
+State at handoff: active framework-refactor worktree with local changes. Verify
+with `git status --short --branch` before editing.
 
 ---
 
-## The one thing that's left: cutover stabilization + cleanup
+## Current truth
 
-The node is in late-stage migration from a **legacy** consensus pipeline (`connect_tip`, whose
-tip is `chain_active`) to an **event-sourced** one (the Wave-S reducer, whose tip
-derives from an append-only `log_head`). All 8 reducer stages already run in **shadow**
-and produce the same answers as legacy on every block. **B5 and B7 are done; remaining work
-is live preflight verification plus B8 cleanup.** Everything else is built.
+The reducer/staged path is now the authoritative chain-advance architecture.
+The old comparison/cutover RPC surface has been removed from the public tool
+set, and the legacy block-connect engine files are gone. The remaining refactor
+work is cleanup and hardening:
 
-```
-B5  make log_head the tip ...... done (2-FUNCTION accessor flip: active_chain_tip + active_chain_height)
-B7  flip authoritative with auto-revert guard ...... done (cutover with `cutovermode` + `cutover_no_forward_progress`)
-B8  live preflight verification + delete legacy (~3,900 LOC) .. exact checklist already written
-```
+1. Keep stale shadow/cutover scaffolding out of production; current production
+   C/H searches are clean, and `docs/work` now contains only the
+   parallel-worktree protocol.
+2. Move every remaining oversized or mixed-purpose app file into one framework
+   shape.
+3. Shrink the ratchet baselines to zero.
+4. Keep docs honest with the reducer-as-authority architecture.
+5. Prove the result with clean build/lint/tests and a live node soak.
 
-- B5 audit: `docs/work/b5-chain-active-readers.md`
-- B8 inventory: `docs/work/b8-deletion-inventory.md`
-- Architecture: `docs/FRAMEWORK.md` · Checklist: `docs/REFACTOR_STATUS.md`
+`docs/FRAMEWORK.md` is the architecture. `docs/REFACTOR_STATUS.md` is the live
+debt board.
 
-## Do NOT
-1. **Do not flip casually.** It touches the live chain. Green tests ≠ a healthy live node
-   (a past cutover shipped green and wedged the chain). Flip on a **clean datadir**, with
-   the canary armed, watching live tip-advance, ready to revert.
-2. **Never stop `zclassicd`** (`zclassicd-rhett`). Both nodes run under systemd `--user`
-   linger 24/7. Manage via `systemctl`, never manual runs. `-cold-import` is **forbidden**
-   (corrupts state). For a torn local chain use the fast rebuild (`rebuild_recent`).
-3. **Never weaken a lint gate** to make progress. Baselines (E1=4, E2=9) only go down.
+---
 
-## Two gotchas that will bite you
-1. **Stale test binary** — `make` doesn't relink `test_parallel`. Always:
-   `touch lib/test/src/test_parallel.c && make test_parallel` before trusting results.
-2. **Worktree leaks** — agents using absolute paths can write into main's working tree.
-   `git status` main before every commit/cherry-pick; the real work is in the branch,
-   so `git restore` any strays.
+## Do Not
 
-## Confirm flip-readiness (all observable)
-- `zcl_state subsystem=cutover` — stage modes, authoritative_active, conservation, canary — one call.
-- `cutoverpreflight` RPC — the `ready` boolean; refuses the flip with a typed blocker if unsafe.
-- Proof tests: `test_cutover_tip_parity`, `test_shadow_conservation`, `test_cutover_flip_dryrun`,
-  `test_cutover_postflip_reorg`, `test_reducer_stage_fuzz`, `test_projection_replay_invariant`, `test_replay_verify`.
+1. Do not weaken a lint gate or grow a baseline.
+2. Do not restore deleted cutover/projection-diff/public shadow tooling.
+3. Do not stop `zclassicd-rhett`; manage long-running services through
+   `systemctl --user`.
+4. Do not treat green unit tests as a live-node proof. The final bar includes
+   forward progress on the running node.
 
-## First 5 minutes
-```
-make -j$(nproc) && make lint
-touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel   # expect 287/287
-zcl_status                          # live node state
-zcl_state subsystem=cutover         # flip readiness
+---
+
+## First 5 Minutes
+
+```bash
+git status --short --branch
+make lint
+touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel
+./tools/zcl-rpc getblockcount
 ```
 
-## MCP
-`claude mcp add zcl23 -- zclassic23 -mcp`. ~105 tools. Start with `zcl_status`.
-Primitives: `zcl_state`, `zcl_sql` (SELECT-only), `zcl_node_log`. Escape hatch: `zcl_rpc`.
+If the node is not running, record that explicitly before claiming live proof.
+
+---
+
+## Current High-Value Targets
+
+- E1 oversized files:
+  `tools/scripts/file_size_ceiling_baseline.txt` is empty. Keep it empty; do
+  not add new grandfathered oversized app files.
+- E2 service-result files:
+  `tools/scripts/one_result_type_baseline.txt` is empty. Keep it empty; migrate
+  legacy bool compatibility call sites to `struct zcl_result` as adjacent files
+  are split or touched.
+- E6 write-path debt:
+  controller/admin `coins_view_cache_flush`, coins.db batch writers,
+  process-block flush-policy write paths, and the grandfathered
+  `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
+  24 write surfaces.
+- Lib-layering debt:
+  `tools/scripts/lib_layering_baseline.txt` is down to 79 grandfathered
+  lib-to-app includes after moving file manifest protocol declarations into
+  `lib/net/include/net/file_manifest.h`. Keep shrinking it; do not add new
+  entries.
+- Controller raw-SQL debt:
+  `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
+  routing wallet scan / legacy import exec helpers,
+  snapshot controller exec helpers, wallet shielded height fallback, and
+  repair-height UTXO queries through models / `node_db_exec()`, plus moving
+  `repairutxos` transaction control to `node_db_*()` and Sapling tree block
+  writes to the Block model, and moving sync-import UTXO cardinality validation
+  to the UTXO model. Wallet key readback/rollback now routes through
+  `wallet_sqlite`, MMR/MMB state persistence routes through `node_db_state_*`,
+  and consensus snapshot export moved to
+  `consensus_snapshot_export_service`. `importchainstate` derived wallet /
+  address cache rebuilds and imported-value reporting now live on the UTXO /
+  wallet models. The tx-index block-position scan and additive-build PRAGMAs
+  now live on Block / TxIndex model helpers, and the diagnostic SQL primitive
+  prepares statements through `node_db_prepare_readonly_query()`. Keep this
+  baseline empty.
+- Raw allocation debt:
+  `tools/scripts/raw_malloc_allowlist.txt` has no active entries. Keep
+  production allocations on `zcl_malloc` / `zcl_calloc` / `zcl_realloc` unless
+  a local raw-alloc exception is explicitly justified.
+- Supervisor debt:
+  `tools/scripts/supervisor_baseline.txt` is empty; keep it that way.
+- Typed-blocker debt:
+  `tools/scripts/typed_blocker_baseline.txt` is empty; keep it that way.
+
+Default to subtraction. A file that exists only to preserve the old cutover or
+shadow comparison world should be deleted or moved into tests.

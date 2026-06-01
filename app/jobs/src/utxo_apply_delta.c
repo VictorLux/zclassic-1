@@ -746,8 +746,8 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     }
 
     /* Emit inverse events for h = C-1 down to fork_plus1 (REVERSE, the
-     * disconnect order). Only when STAGE holds authority — in shadow mode
-     * the legacy disconnect_block path owns the projection unwind. */
+     * disconnect order). Only the configured projection author may unwind
+     * the projection. */
     if (utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         for (int h = C - 1; h >= fork_plus1; h--) {
             if (!emit_inverse_delta(db, h))

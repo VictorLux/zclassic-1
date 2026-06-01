@@ -23,7 +23,6 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "primitives/block.h"
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "validation/main_state.h"
 
@@ -82,18 +81,13 @@ bool rpc_blockchain_mmr_initialized(void) { return g_mmr_initialized; }
 void rpc_blockchain_mmr_init_from_state(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT value FROM node_state WHERE key='mmr_state'",
-            -1, &s, NULL) != SQLITE_OK)
-        return;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
-        int len = sqlite3_column_bytes(s, 0);
-        if (blob && len >= 12 && mmr_deserialize(&g_mmr, blob, (size_t)len))
-            g_mmr_initialized = true;
+
+    uint8_t buf[MMR_SERIALIZED_MAX];
+    size_t len = 0;
+    if (node_db_state_get(ndb, "mmr_state", buf, sizeof(buf), &len) &&
+        len >= 12 && mmr_deserialize(&g_mmr, buf, len)) {
+        g_mmr_initialized = true;
     }
-    sqlite3_finalize(s);
     if (!g_mmr_initialized) {
         mmr_init(&g_mmr);
         g_mmr_initialized = true;
@@ -126,14 +120,8 @@ void rpc_blockchain_mmr_save(struct node_db *ndb)
     uint8_t buf[MMR_SERIALIZED_MAX];
     size_t len = mmr_serialize(&g_mmr, buf, sizeof(buf));
     if (len == 0) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "INSERT OR REPLACE INTO node_state(key,value) "
-            "VALUES('mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
-        return;
-    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
-    sqlite3_finalize(s);
+    if (!node_db_state_set(ndb, "mmr_state", buf, len))
+        LOG_WARN("blockchain", "MMR state save failed");
 }
 
 /* ── Global MMB (Merkle Mountain Belt) ────────────────── */
@@ -155,18 +143,13 @@ struct mmb *rpc_blockchain_get_mmb(void) { return &g_mmb; }
 void rpc_blockchain_mmb_init_from_state(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT value FROM node_state WHERE key='mmb_state'",
-            -1, &s, NULL) != SQLITE_OK)
-        return;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
-        int len = sqlite3_column_bytes(s, 0);
-        if (blob && len >= 13 && mmb_deserialize(&g_mmb, blob, (size_t)len))
-            g_mmb_initialized = true;
+
+    uint8_t buf[MMB_SERIALIZED_MAX];
+    size_t len = 0;
+    if (node_db_state_get(ndb, "mmb_state", buf, sizeof(buf), &len) &&
+        len >= 13 && mmb_deserialize(&g_mmb, buf, len)) {
+        g_mmb_initialized = true;
     }
-    sqlite3_finalize(s);
     if (!g_mmb_initialized) {
         mmb_init(&g_mmb);
         g_mmb_initialized = true;
@@ -209,14 +192,8 @@ void rpc_blockchain_mmb_save(struct node_db *ndb)
     uint8_t buf[MMB_SERIALIZED_MAX];
     size_t len = mmb_serialize(&g_mmb, buf, sizeof(buf));
     if (len == 0) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "INSERT OR REPLACE INTO node_state(key,value) "
-            "VALUES('mmb_state',?)", -1, &s, NULL) != SQLITE_OK)
-        return;
-    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
-    sqlite3_finalize(s);
+    if (!node_db_state_set(ndb, "mmb_state", buf, len))
+        LOG_WARN("blockchain", "MMB state save failed");
 }
 
 /* ── Commitment MMR (UTXO state binding) ─────────────── */
@@ -236,22 +213,17 @@ struct mmr *rpc_blockchain_get_commitment_mmr(void)
 void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb)
 {
     if (!ndb || !ndb->open) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "SELECT value FROM node_state WHERE key='commitment_mmr_state'",
-            -1, &s, NULL) != SQLITE_OK)
-        return;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(s, 0);
-        int len = sqlite3_column_bytes(s, 0);
-        if (blob && len >= 12 &&
-            mmr_deserialize(&g_commitment_mmr, blob, (size_t)len)) {
+
+    uint8_t buf[MMR_SERIALIZED_MAX];
+    size_t len = 0;
+    if (node_db_state_get(ndb, "commitment_mmr_state", buf, sizeof(buf),
+                          &len)) {
+        if (len >= 12 && mmr_deserialize(&g_commitment_mmr, buf, len)) {
             g_commitment_mmr_initialized = true;
             printf("Commitment MMR loaded: %llu leaves\n",
                    (unsigned long long)g_commitment_mmr.num_leaves);
         }
     }
-    sqlite3_finalize(s);
     if (!g_commitment_mmr_initialized) {
         mmr_init(&g_commitment_mmr);
         g_commitment_mmr_initialized = true;
@@ -264,14 +236,8 @@ void rpc_blockchain_commitment_mmr_save(struct node_db *ndb)
     uint8_t buf[MMR_SERIALIZED_MAX];
     size_t len = mmr_serialize(&g_commitment_mmr, buf, sizeof(buf));
     if (len == 0) return;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(ndb->db,
-            "INSERT OR REPLACE INTO node_state(key,value) "
-            "VALUES('commitment_mmr_state',?)", -1, &s, NULL) != SQLITE_OK)
-        return;
-    sqlite3_bind_blob(s, 1, buf, (int)len, SQLITE_STATIC);
-    sqlite3_step(s);  // raw-sql-ok:state-kv-write-caller-handles-rc
-    sqlite3_finalize(s);
+    if (!node_db_state_set(ndb, "commitment_mmr_state", buf, len))
+        LOG_WARN("blockchain", "commitment MMR state save failed");
 }
 
 void rpc_blockchain_maybe_commit(int32_t height,

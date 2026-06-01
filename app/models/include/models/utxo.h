@@ -61,6 +61,27 @@ int db_utxo_list_for_address(struct node_db *ndb,
 /* Count total UTXOs in the set. */
 int64_t db_utxo_count(struct node_db *ndb);
 
+/* Sum total UTXO value in zatoshis. Returns -1 on unavailable DB. */
+int64_t db_utxo_total_value(struct node_db *ndb);
+
+/* Count UTXO rows and the distinct creating transaction IDs. */
+bool db_utxo_count_rows_and_distinct_txids(struct node_db *ndb,
+                                           int64_t *rows_out,
+                                           int64_t *distinct_txids_out);
+
+/* Count UTXOs whose imported height could not be decoded but whose value
+ * proves they are real spendable outputs. */
+int64_t db_utxo_count_missing_heights(struct node_db *ndb);
+
+/* Repair missing imported UTXO heights from the transaction index.
+ * Returns sqlite3_changes() on success, or -1 on failure. */
+int db_utxo_repair_missing_heights_from_tx_index(struct node_db *ndb);
+
+/* Rebuild derived wallet_utxos and addresses caches from the current UTXO set.
+ * Used after bulk chainstate import where the UTXO model is the source of
+ * truth and the wallet/explorer tables are read models. */
+bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb);
+
 /* ── Iteration ─────────────────────────────────────────────────── */
 
 /* Callback for db_utxo_each(). Return true to continue, false to stop.

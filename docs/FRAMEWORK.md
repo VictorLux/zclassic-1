@@ -128,8 +128,8 @@ for high-performance C, not Rails cosplay.
                                     ▼
                     ╔═══════════════════════════════╗
                     ║   THE FACT LOG  (event_log)    ║  ◄── the ONLY source of truth
-                    ║   durable, fsync'd, CRC'd       ║      (durable today; not yet
-                    ║   headers · bodies · utxo Δ      ║       authoritative — see checklist)
+                    ║   durable, fsync'd, CRC'd       ║      (authoritative reducer
+                    ║   headers · bodies · utxo Δ      ║       path; cleanup remains)
                     ╚═══════════════════════════════╝
                                     │ pure fold (cursor per projection)
               ┌─────────┬───────────┼────────────┬──────────┐
@@ -162,13 +162,14 @@ every advance is a stage returning `ADVANCED` or a typed `BLOCKED`, then
 `network_tip − log_head` growing) or a named blocker at a known height. There is
 no third state. That is strictly stronger than detectors watching proxies.
 
-**Today vs target:** every primitive in this picture exists and is tested — the
-log is durable and publishable-quality, the eight projections are clean folds,
-the stage contract already *is* advance-or-blocker. But it all runs in
-**shadow**: the live tip is still driven by the legacy `connect_tip` path with
-`coins.db` as the mutable source of truth. The whole refactor is the act of
-*flipping authority* from `coins.db` to the log — not building new machinery.
-The checklist tracks that flip move by move.
+**Today vs target:** the staged reducer is now the authoritative
+chain-advance architecture and the legacy block-connect engine files have been
+deleted. The remaining work is to make that truth complete everywhere: retire
+the remaining stale cutover/shadow docs and comments, finish the coins.db
+write-path cleanup, finish migrating mixed-purpose code toward the correct
+shapes, and shrink the remaining ratchet baselines to zero. The E1/E2 and
+typed-blocker baselines are already empty; the checklist tracks the remaining
+cleanup move by move.
 
 ---
 
@@ -179,21 +180,21 @@ know the shape.
 
 | # | Shape | Folder | Canonical form | Status | Exemplar |
 |---|-------|--------|----------------|--------|----------|
-| 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | legacy-C; 12 oversized controllers split, 3 remain (all legacy-import) | `chain_projection.c` |
-| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; 9 baselined, down from 77 (A4 in flight, cluster-by-cluster) | `replay_verify_service.c` |
+| 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
+| 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
 | 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — 8 Wave-S stages relocated to `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (23 conditions live) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | scaffold (definitions + subscribers populate as B2 makes the log authoritative; impl lives in `lib/`) | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; 10 ports, 5 services behind them (hodl_history, node_health, db_maintenance, wallet_backup, block_index_sidecar), most storage still direct | `adapters/outbound/persistence/` |
+| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved app-level shape; durable log/event primitives live in `lib/` today | `lib/storage/event_log.c` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; outbound persistence adapters are real, inbound adapter layer is not currently present | `adapters/outbound/persistence/` |
 
-The honest read: **four shapes are real and enforced today (Model, Condition,
-Job, plus the projection + `*_dump_state_json` registry); Supervisor is
-partial; the rest are legacy C wearing a shape label, or scaffold.** That gap
-— not the absence of ideas — is the work. Underneath the shapes the pure
-`domain/` core is now real (21 sealed modules, see §6) and the storage seam
-carries 5 services behind ports — both partial, both moving the right direction.
+The honest read: **Model, Condition, Job, and the projection/state-dump registry
+are real and enforced; Supervisor and Storage Adapter are partial; Controller
+and Service still carry legacy debt.** That gap — not the absence of ideas — is
+the work. Underneath the shapes the pure `domain/` core is real and the storage
+seam is growing behind ports, but remaining mixed-purpose code still needs to
+converge on one clear shape per file.
 
 ### The canonical form is struct-registration, not a block-DSL
 
@@ -292,10 +293,10 @@ blockers (ratchet), framework-shape (ratchet). The gates are themselves under
 test (`test_make_lint_gates.c` plants a fixture, asserts the gate trips,
 removes it, asserts green).
 
-**9 of the 11 architecture gates are now enforced** (6 HARD: E3, E4, E5, E8,
-E9, E11; 3 RATCHET: E1, E2, E10). Only **E6** (one-write-path) and **E7**
-(no-authoritative-RAM-state) remain — they land with B7. The Ten Laws and the
-Prime Directive land as gates with the work they guard:
+**10 of the 11 architecture gates are now enforced** (6 HARD: E3, E4, E5, E8,
+E9, E11; 4 RATCHET: E1, E2, E6, E10). **E7**
+(no-authoritative-RAM-state) is clean at zero grandfathered entries. The Ten
+Laws and the Prime Directive land as gates with the work they guard:
 
 | Gate | Enforces (law) | Mode |
 |------|----------------|------|
@@ -365,8 +366,9 @@ The framework holds; the implementation moves.
   (the build checklist — what's done, what's next) and
   [`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the five acceptance numbers
   + the operator-paging clause everything is judged against).
-- **Driving the north star:** the act of flipping authority from `coins.db` to
-  the log is the cutover — [`docs/work/cutover.md`](./work/cutover.md).
+- **Driving the north star:** finish deleting the old cutover/shadow language
+  and pay down the remaining ratchet baselines until the reducer/log authority
+  is the only architecture described in production docs.
 - **Worker assignment:** [`docs/work/agent-protocol.md`](./work/agent-protocol.md),
   then your spec under `docs/work/`.
 - **Reviewing a PR:** every changed file matches its folder's shape; lint
@@ -382,7 +384,7 @@ The framework holds; the implementation moves.
 - **AR (ActiveRecord)** — the model lifecycle (`AR_*_SAVE`, before/after hooks). Real and lint-enforced.
 - **Cursor** — durable position in `progress.kv` a Job advances; enables crash-safe idempotent replay.
 - **Reducer** — the stage pipeline; the only writer; advance-cursor-or-name-blocker.
-- **Fact log** — `lib/storage/event_log.c`; the append-only durable source of truth (target).
+- **Fact log** — `lib/storage/event_log.c`; the append-only durable source of truth.
 - **Projection** — a pure fold over the log into a queryable view; rebuildable, never authoritative.
 - **Witness** — observable post-condition confirming a Condition's remedy actually worked.
 - **Blocker** — a typed, named reason a stage cannot advance (height, missing input, source tried).

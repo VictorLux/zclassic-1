@@ -3,8 +3,8 @@
  * proof_validate_stage — implementation. See jobs/proof_validate_stage.h.
  *
  * S-7 consumes script_validate_log and replays shielded proof verification
- * over block bodies that have already passed S-6. It is a shadow stage: it
- * writes only proof_validate_log plus its stage cursor in progress.kv. */
+ * over block bodies that have already passed S-6. It writes
+ * proof_validate_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
 #include "jobs/proof_validate_stage.h"
@@ -505,7 +505,7 @@ bool proof_validate_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("proof_validate", "[proof_validate] stage initialised (shadow mode)");
+    LOG_INFO("proof_validate", "[proof_validate] stage initialised");
     return true;
 }
 

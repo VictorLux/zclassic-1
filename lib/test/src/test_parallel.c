@@ -69,7 +69,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_evidence_controller) \
     X(long_op) \
     X(db_txn) X(sync_service) X(snapshot_sync_service) \
-    X(file_controller) X(file_ops) X(integrity) X(protocols) \
+    X(file_controller) X(file_ops) X(integrity) X(rolling_anchor_service) \
+    X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
     X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \

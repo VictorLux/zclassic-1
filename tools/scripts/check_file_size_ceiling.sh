@@ -26,6 +26,7 @@ BASELINE=tools/scripts/file_size_ceiling_baseline.txt
 
 # Load baseline into an associative array: path -> max-loc.
 declare -A baseline
+baseline_count=0
 while IFS= read -r line; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"
@@ -34,6 +35,7 @@ while IFS= read -r line; do
     path="${line%% *}"
     loc="${line##* }"
     baseline["$path"]="$loc"
+    baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
 fail=0
@@ -60,7 +62,7 @@ while IFS= read -r f; do
 done < <(find app -type f -name '*.c' | sort)
 
 if [ "$fail" = "0" ]; then
-    echo "check_file_size_ceiling: clean — ${#baseline[@]} baselined, no new/grown oversized files (ceiling $CEILING)"
+    echo "check_file_size_ceiling: clean — ${baseline_count} baselined, no new/grown oversized files (ceiling $CEILING)"
     exit 0
 fi
 

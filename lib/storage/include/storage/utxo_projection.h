@@ -4,12 +4,9 @@
  * append-only event_log (Phase 4a).
  *
  * The projection is a rebuildable SQLite UTXO set derived from
- * EV_UTXO_ADD / EV_UTXO_SPEND events. In shadow mode (this PR), the
- * legacy `update_coins()` path still authors UTXO writes against
- * `coins.db`; we just additionally emit events that the projection
- * consumes. A separate 4b-cutover PR (gated on 24h of clean
- * `zcl_utxo_projection_diff` runs) disables the legacy SQLite write
- * and makes this projection authoritative.
+ * EV_UTXO_ADD / EV_UTXO_SPEND events. The reducer path owns UTXO authorship;
+ * test binaries can flip the author to prove the legacy emitters stay silent
+ * under stage authority.
  *
  * Threading
  * ----------
@@ -17,8 +14,7 @@
  * conventions). `_get` / `_count` / `_commitment` are reentrant reads;
  * `_catch_up` serialises internally via a SQLite IMMEDIATE txn.
  *
- * See `docs/work/wt-phase4b-utxo-projection.md` for the assignment that
- * shipped this file. */
+ * See `docs/FRAMEWORK.md` for the current reducer authority model. */
 
 #ifndef ZCL_STORAGE_UTXO_PROJECTION_H
 #define ZCL_STORAGE_UTXO_PROJECTION_H
@@ -33,22 +29,24 @@ typedef struct utxo_projection utxo_projection_t;
 
 /* B3 single-writer authority over the UTXO projection.
  *
- *   UTXO_AUTHOR_LEGACY (default) — `update_coins()` authors EV_UTXO_*
- *       events as the legacy connect path runs (shadow emission). This
- *       is today's behavior; the live node defaults here.
- *   UTXO_AUTHOR_STAGE — `utxo_apply_stage` authors the events from its
+ *   UTXO_AUTHOR_LEGACY — `update_coins()` authors EV_UTXO_*
+ *       events in tests that exercise the old emitter path.
+ *   UTXO_AUTHOR_STAGE (default) — `utxo_apply_stage` authors the events from its
  *       own validated delta and the legacy emitters become no-ops, so
  *       there is exactly one writer to the projection.
  *
- * The flip is performed by the cutover canary (B7); both emit paths
- * read this flag atomically and only the matching author writes. */
+ * Both emit paths read this flag atomically and only the matching author
+ * writes. */
 typedef enum {
     UTXO_AUTHOR_LEGACY = 0,
     UTXO_AUTHOR_STAGE  = 1
 } utxo_author_t;
 
-void utxo_projection_set_author(utxo_author_t who);
 utxo_author_t utxo_projection_get_author(void);
+
+#ifdef ZCL_TESTING
+void utxo_projection_test_set_author(utxo_author_t who);
+#endif
 
 /* Open or create the projection at `projection_path`. Replays from the
  * `last_consumed_offset` stored in the projection's own metadata table
@@ -69,10 +67,10 @@ void utxo_projection_close(utxo_projection_t *p);
 uint64_t utxo_projection_catch_up(utxo_projection_t *p);
 
 /* One-time anchor-seed: bulk-copy the full legacy coins.db `utxos` table
- * into the projection so SHA3(projection)==SHA3(coins.db) and counts match
- * (the utxo_commitment cutover preflight gate). The live projection only
- * holds the tail deltas emitted since shadow boot (e.g. 154 of 1.34M); it
- * was never seeded with the historical set that predates shadow emission.
+ * into the projection so SHA3(projection)==SHA3(coins.db) and counts match.
+ * A projection opened before anchor seeding only holds the tail deltas emitted
+ * since its event log was wired; it lacks the historical set that predates
+ * projection emission.
  * Clears any existing rows, then copies the full authoritative set in one
  * IMMEDIATE txn, and stamps the cursor to the current event-log head so a
  * later catch_up does NOT re-fold the tail deltas already captured by the
@@ -131,9 +129,9 @@ bool utxo_projection_setinfo(utxo_projection_t *p, int64_t *num_txs,
 
 /* SHA3-256 over every (txid|vout_le|value_le|script_len_le|script|
  * height_le|is_coinbase) UTXO in ORDER BY txid, vout. Matches the
- * canonical serialisation in `lib/coins/src/utxo_commitment.c` so
- * the shadow-diff tool can compare the projection commitment to the
- * legacy coins.db commitment byte-for-byte. Returns 0 on success. */
+ * canonical serialisation in `lib/coins/src/utxo_commitment.c` so audits can
+ * compare the projection commitment to the legacy coins.db commitment
+ * byte-for-byte. Returns 0 on success. */
 int utxo_projection_commitment(utxo_projection_t *p, uint8_t out[32]);
 
 /* Process-global accessor for the projection handle published by the
@@ -141,13 +139,13 @@ int utxo_projection_commitment(utxo_projection_t *p, uint8_t out[32]);
  * already closed. Safe to call from any thread. */
 utxo_projection_t *utxo_projection_get_global(void);
 
-/* Process-global setter for the event log used by the shadow emission
+/* Process-global setter for the event log used by the projection emission
  * path in `update_coins.c`. NULL log disables emission (the legacy
  * SQLite write still happens). Mirrors peers_projection wiring. */
 void utxo_projection_set_event_log(event_log_t *log);
 event_log_t *utxo_projection_event_log(void);
 
-/* Shadow emission helpers used by `lib/validation/src/update_coins.c`.
+/* Projection emission helpers used by `lib/validation/src/update_coins.c`.
  * Both increment `g_utxo_event_emit_*_total` counters internally so the
  * dump_state_json output shows how many events have been authored.
  *

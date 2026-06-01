@@ -13,7 +13,7 @@
  * Storage is reached ONLY through hodl_history_port — the raw sqlite
  * queries live in the sqlite adapter. This file is pure domain logic:
  * cutoff arithmetic, the older<=total clamp, the percentage, sample
- * striding, and the projection shadow emit. The public functions still
+ * striding, and the projection event emit. The public functions still
  * accept a sqlite3* so callers (boot_services, explorer, tests) are
  * unchanged; each binds the default sqlite adapter and drives the port.
  */
@@ -96,7 +96,7 @@ static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
     if (height > INT32_MAX || block_time > UINT32_MAX ||
         !hodl_history_projection_emit_snapshot(
             (int32_t)height, (uint32_t)block_time, total, older, pct)) {
-        LOG_WARN("service", "hodl history projection shadow emit failed for snapshot");
+        LOG_WARN("service", "hodl history projection emit failed for snapshot");
     }
     return true;
 }

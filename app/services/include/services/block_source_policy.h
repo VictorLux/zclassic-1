@@ -78,7 +78,7 @@ struct cac_source_status {
     int64_t distinct_peer_count;
     int64_t serving_peer_id;
     char state[32];
-    char selection_blocker[64];
+    char selection_reason[64];
     char reason[384];
     char blocker[128];
 };

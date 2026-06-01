@@ -17,7 +17,6 @@
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "validation/main_state.h"
-#include "services/cutover_modes.h"
 
 #include <pthread.h>
 #include <sqlite3.h>
@@ -238,6 +237,54 @@ static bool finalized_tip_row_at(sqlite3 *db, int height,
     return true;
 }
 
+static bool ensure_authority_anchor_row(sqlite3 *db, int height,
+                                        const uint8_t hash[32])
+{
+    struct finalized_tip_row row;
+    if (!finalized_tip_row_at(db, height, &row))
+        return false;
+    if (row.found && row.ok && row.has_tip_hash &&
+        memcmp(row.tip_hash.data, hash, 32) == 0)
+        return true;
+
+    struct uint256 tip_hash;
+    memcpy(tip_hash.data, hash, 32);
+    return log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash);
+}
+
+static bool anchor_cursor_to_authority(sqlite3 *db, int height,
+                                       const uint8_t hash[32],
+                                       bool require_prior_progress,
+                                       const char *reason)
+{
+    if (!db || !g_stage || height < 0 || !hash)
+        return true;
+
+    uint64_t target = (uint64_t)height + 1u;
+    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    int64_t rows = stage_log_row_count(db, STAGE_NAME, "tip_finalize_log");
+    if (require_prior_progress && cursor == 0 && rows <= 0)
+        return true;
+    if (cursor >= target)
+        return true;
+    if (!ensure_authority_anchor_row(db, height, hash))
+        return false;
+    if (!stage_set_cursor(g_stage, db, target)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] authority anchor cursor failed from=%llu to=%llu reason=%s",
+                 (unsigned long long)cursor,
+                 (unsigned long long)target,
+                 reason ? reason : "");
+        return false;
+    }
+    LOG_INFO("tip_finalize",
+             "[tip_finalize] authority anchor cursor from=%llu to=%llu reason=%s",
+             (unsigned long long)cursor,
+             (unsigned long long)target,
+             reason ? reason : "");
+    return true;
+}
+
 static int reorg_depth_from(struct block_index *old_tip,
                             struct block_index *new_tip)
 {
@@ -358,16 +405,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
     uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply",
                                                STAGE_NAME);
-    /* B5 ordering invariant: tip_finalize's cursor must NEVER exceed
-     * utxo_apply's persisted cursor. The supervisor drains utxo_apply
-     * (incl. its reorg unwind, which rewinds the utxo_apply cursor to the
-     * fork boundary) BEFORE tip_finalize each tick, and tip_finalize's own
-     * rewind_cursor_if_active_chain_reorged runs at the top of step_once.
-     * If we observe cursor_in > uv_cursor here, utxo_apply rewound under a
-     * reorg but tip_finalize has not yet followed — a strict-greater
-     * overshoot. Log loudly and idle so tip_finalize's rewind (which has
-     * already run this tick or runs next tick) re-converges; finalizing a
-     * tip whose UTXO set is mid-unwind would be a consensus hazard. */
+    /* B5 ordering invariant: tip_finalize never outruns utxo_apply's
+     * durable cursor. On strict-greater, idle until the next rewind tick
+     * re-converges; finalizing during a UTXO unwind is a consensus hazard. */
     if ((uint64_t)next_h > uv_cursor) {
         LOG_WARN("tip_finalize",
             "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu "
@@ -396,7 +436,6 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                         -1, 0, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
-        atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
@@ -472,30 +511,17 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
 
-    /* STEP 1 keystone — make tip_finalize the WRITER of the in-mem tip, not
-     * just the authority that reports it. After the log row is durable,
-     * advance the physical chain_active.chain[] array (which every stage
-     * READS) to new_tip — the only new chain[] writer outside legacy
-     * connect_tip. STRICTLY gated on AUTHORITATIVE: in the default SHADOW
-     * mode this is a no-op and legacy connect_tip->update_tip stays the sole
-     * tip writer (live behaviour UNCHANGED); only the cutover flip (step 13,
-     * not here) makes the reducer drive the tip. active_chain_set_tip
-     * re-invokes our authority set_tip_cb when authoritative — only atomic
-     * stores (update_last_advance), matching the value stamped below, no
-     * lock re-entrancy. */
-    if (tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE) {
-        if (!active_chain_set_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
-            LOG_WARN("tip_finalize",
-                "[tip_finalize] AUTHORITATIVE chain_active set_tip failed "
-                "height=%d — chain[] not advanced", next_h);
-            return JOB_FATAL;
-        }
-
-        /* STEP 5 — tip is physically advanced; run the derived side effects
-         * (wallet+Sapling, mempool removal, MMR/MMB) legacy connect_tip does
-         * at tip-connect. AUTHORITATIVE-only (legacy is sole producer in SHADOW). */
-        tip_finalize_run_post_finalize(new_tip);
+    /* Durable row first; then move the local chain[] cache/window. Public
+     * authority is published explicitly below. */
+    if (!active_chain_move_window_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
+        LOG_WARN("tip_finalize",
+            "[tip_finalize] chain_active set_tip failed height=%d",
+            next_h);
+        return JOB_FATAL;
     }
+
+    /* Run derived tip side effects after the local cache moves. */
+    tip_finalize_run_post_finalize(new_tip);
 
     atomic_fetch_add(&g_finalized_total, 1);
     atomic_fetch_add(&g_total_work_added_low,
@@ -509,8 +535,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
 static bool is_authoritative(void)
 {
-    bool res = tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE;
-    return res;
+    return true;
 }
 
 static int64_t get_height(void)
@@ -524,14 +549,6 @@ static bool get_hash(uint8_t hash[32])
     return get_last_advance(&h, hash);
 }
 
-static void set_tip_cb(int height, const uint8_t hash[32])
-{
-    if (hash)
-        update_last_advance(height, hash);
-    else
-        atomic_store(&g_last_advance_height, (int64_t)height);
-}
-
 bool tip_finalize_stage_init(struct main_state *ms)
 {
     if (!ms) LOG_FAIL("tip_finalize", "init: NULL main_state");
@@ -543,10 +560,16 @@ bool tip_finalize_stage_init(struct main_state *ms)
     zcl_mutex_init(&g_last_advance_hash_mu);
     g_ms = ms;
 
+    struct block_index *existing_tip =
+        active_chain_cached_tip(&ms->chain_active);
+    if (existing_tip && existing_tip->phashBlock &&
+        atomic_load(&g_last_advance_height) < 0)
+        update_last_advance(existing_tip->nHeight,
+                            existing_tip->phashBlock->data);
+
     struct active_chain_authority auth = {
         .get_height = get_height,
         .get_hash = get_hash,
-        .set_tip = set_tip_cb,
         .is_authoritative = is_authoritative
     };
     active_chain_register_authority(&auth);
@@ -570,9 +593,19 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     g_ms = ms;
     g_stage = s;
+    if (existing_tip && existing_tip->phashBlock &&
+        !anchor_cursor_to_authority(db, existing_tip->nHeight,
+                                    existing_tip->phashBlock->data,
+                                    true, "init_existing_tip")) {
+        stage_destroy(s);
+        g_stage = NULL;
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("tip_finalize", "[tip_finalize] stage initialised (shadow mode)");
+    LOG_INFO("tip_finalize",
+             "[tip_finalize] stage initialised (authoritative)");
     return true;
 }
 
@@ -581,11 +614,10 @@ job_result_t tip_finalize_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    /* Chain-extender (AUTHORITATIVE-only, no-op in SHADOW): re-widen chain[]
-     * to the most-work candidate so step_finalize's one-block lookahead finds
-     * next_h+1 — its own set_tip collapses the window each step. stage_helpers.h */
-    reducer_extend_window_to_candidate(
-        g_ms, tip_finalize_get_mode() == TIP_FINALIZE_MODE_AUTHORITATIVE);
+    /* Re-widen chain[] to the most-work candidate so step_finalize's
+     * one-block lookahead finds next_h+1 — its own set_tip collapses the
+     * window each step. stage_helpers.h */
+    reducer_extend_window_to_candidate(g_ms, true);
     if (!rewind_cursor_if_active_chain_reorged(db))
         return JOB_FATAL;
     return stage_run_once(g_stage, db);
@@ -617,26 +649,14 @@ void tip_finalize_stage_shutdown(void)
     pthread_mutex_unlock(&g_lock);
 }
 
-void tip_finalize_set_mode(tip_finalize_mode_t mode)
-{
-    cutover_modes_set_tip_finalize(
-        mode == TIP_FINALIZE_MODE_AUTHORITATIVE
-            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
-            : CUTOVER_STAGE_MODE_SHADOW);
-}
-
-tip_finalize_mode_t tip_finalize_get_mode(void)
-{
-    return cutover_modes_get_tip_finalize() ==
-               CUTOVER_STAGE_MODE_AUTHORITATIVE
-        ? TIP_FINALIZE_MODE_AUTHORITATIVE
-        : TIP_FINALIZE_MODE_SHADOW;
-}
-
 void tip_finalize_stage_set_authoritative_tip(int height,
                                               const uint8_t hash[32])
 {
     update_last_advance(height, hash);
+    sqlite3 *db = progress_store_db();
+    if (db && g_stage)
+        (void)anchor_cursor_to_authority(db, height, hash, false,
+                                         "trusted_tip");
 }
 
 bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
@@ -661,8 +681,8 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
     sqlite3 *db = progress_store_db();
     if (!db) {
         /* Not wired (very early boot, or unit tests without a progress
-         * store). The cold-start seed is best-effort: the legacy node.db
-         * promote still carries the snapshot during cutover. */
+         * store). The cold-start seed is best-effort until the stage is
+         * available. */
         return false;
     }
     if (!ensure_log_schema(db))
@@ -671,16 +691,11 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
     struct uint256 tip_hash;
     memcpy(tip_hash.data, hash, 32);
 
-    /* Durable finalize-log row at the anchor height (ok=1, tip_hash) so a
-     * later boot_rebuild_from_log resolves the anchor as the tip via
-     * tip_finalize_stage_finalized_tip_at. Zero work-delta / utxo-size:
-     * the snapshot anchor has no per-block apply accounting (it is a
-     * cryptographically-verified set, not a connected block). */
+    /* Snapshot/trusted anchors have no per-block work or UTXO delta. */
     if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash))
         return false;
 
-    /* Advance the durable stage cursor to height+1 so the stage resumes
-     * at the next height and the rebuild reads cursor-1 == anchor. */
+    /* Resume after the anchor; rebuild reads cursor-1 == anchor. */
     if (g_stage && !stage_set_cursor(g_stage, db, (uint64_t)height + 1)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] anchor seed: cursor stamp to %d failed",
@@ -688,8 +703,7 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
         return false;
     }
 
-    /* Seed the runtime authoritative tip so readers see the anchor
-     * immediately, not only after the next boot. */
+    /* Publish immediately, not only after the next boot. */
     update_last_advance(height, hash);
     return true;
 }
@@ -703,50 +717,15 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn,
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t tip_finalize_stage_cursor(void)
-{
-    return g_stage ? stage_cursor(g_stage) : 0;
-}
-
-int64_t tip_finalize_stage_last_height(void)
-{
-    return atomic_load(&g_last_advance_height);
-}
-
-uint64_t tip_finalize_stage_finalized_total(void)
-{
-    return atomic_load(&g_finalized_total);
-}
-
-uint64_t tip_finalize_stage_upstream_failed_total(void)
-{
-    return atomic_load(&g_upstream_failed_total);
-}
-
-uint64_t tip_finalize_stage_reorg_detected_total(void)
-{
-    return atomic_load(&g_reorg_detected_total);
-}
-
-uint64_t tip_finalize_stage_utxo_count_diverged_total(void)
-{
-    return atomic_load(&g_utxo_count_diverged_total);
-}
-
-uint64_t tip_finalize_stage_precondition_failed_total(void)
-{
-    return atomic_load(&g_precondition_failed_total);
-}
-
-uint64_t tip_finalize_stage_total_work_added_high(void)
-{
-    return atomic_load(&g_total_work_added_high);
-}
-
-uint64_t tip_finalize_stage_total_work_added_low(void)
-{
-    return atomic_load(&g_total_work_added_low);
-}
+uint64_t tip_finalize_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
+int64_t tip_finalize_stage_last_height(void) { return atomic_load(&g_last_advance_height); }
+uint64_t tip_finalize_stage_finalized_total(void) { return atomic_load(&g_finalized_total); }
+uint64_t tip_finalize_stage_upstream_failed_total(void) { return atomic_load(&g_upstream_failed_total); }
+uint64_t tip_finalize_stage_reorg_detected_total(void) { return atomic_load(&g_reorg_detected_total); }
+uint64_t tip_finalize_stage_utxo_count_diverged_total(void) { return atomic_load(&g_utxo_count_diverged_total); }
+uint64_t tip_finalize_stage_precondition_failed_total(void) { return atomic_load(&g_precondition_failed_total); }
+uint64_t tip_finalize_stage_total_work_added_high(void) { return atomic_load(&g_total_work_added_high); }
+uint64_t tip_finalize_stage_total_work_added_low(void) { return atomic_load(&g_total_work_added_low); }
 
 bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
 {

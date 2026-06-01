@@ -11,7 +11,6 @@
 #include "platform/time_compat.h"
 #include "jobs/validate_headers_stage.h"
 #include "validate_headers_internal.h"
-#include "services/cutover_modes.h"
 #include "jobs/header_admit_stage.h"
 
 #include "chain/chain.h"
@@ -323,8 +322,6 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     }
     for (int i = 0; i < n; i++) {
         if (jobs[i].ok &&
-            validate_headers_get_mode() ==
-                VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
             !mark_valid_header((struct block_index *)jobs[i].bi)) {
             LOG_WARN("validate_headers", "[validate_headers] recheck mark failed height=%d", jobs[i].height);
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -411,8 +408,6 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
     for (int i = 0; i < batch_n; i++) {
         if (jobs[i].ok &&
-            validate_headers_get_mode() ==
-                VALIDATE_HEADERS_MODE_AUTHORITATIVE &&
             !mark_valid_header((struct block_index *)jobs[i].bi)) {
             LOG_WARN("validate_headers", "[validate_headers] authoritative mark failed height=%d", jobs[i].height);
             return JOB_FATAL;
@@ -478,24 +473,10 @@ bool validate_headers_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("validate_headers", "[validate_headers] stage initialised (mode=%s, pool=%d batch=%d)", validate_headers_get_mode() == VALIDATE_HEADERS_MODE_AUTHORITATIVE ? "authoritative" : "shadow", VH_POOL_SIZE, VH_BATCH_SIZE);
+    LOG_INFO("validate_headers",
+             "[validate_headers] stage initialised (authoritative, pool=%d batch=%d)",
+             VH_POOL_SIZE, VH_BATCH_SIZE);
     return true;
-}
-
-void validate_headers_set_mode(validate_headers_mode_t mode)
-{
-    cutover_modes_set_validate_headers(
-        mode == VALIDATE_HEADERS_MODE_AUTHORITATIVE
-            ? CUTOVER_STAGE_MODE_AUTHORITATIVE
-            : CUTOVER_STAGE_MODE_SHADOW);
-}
-
-validate_headers_mode_t validate_headers_get_mode(void)
-{
-    return cutover_modes_get_validate_headers() ==
-               CUTOVER_STAGE_MODE_AUTHORITATIVE
-        ? VALIDATE_HEADERS_MODE_AUTHORITATIVE
-        : VALIDATE_HEADERS_MODE_SHADOW;
 }
 
 void validate_headers_stage_set_validator(vh_validator_fn fn, void *user)
@@ -603,10 +584,7 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
     json_set_object(out);
     json_push_kv_bool(out, "initialised", g_stage != NULL);
     json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_str (out, "mode",
-                      validate_headers_get_mode() ==
-                          VALIDATE_HEADERS_MODE_AUTHORITATIVE
-                          ? "authoritative" : "shadow");
+    json_push_kv_str(out, "authority", "authoritative");
     json_push_kv_int (out, "cursor",
                       (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
     json_push_kv_int (out, "pool_size", (int64_t)VH_POOL_SIZE);

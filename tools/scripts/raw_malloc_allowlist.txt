@@ -16,7 +16,6 @@
 # — e.g., build-time tools, db_service heap job ownership): annotate
 # the line with `// raw-alloc-ok: <one-line justification>`.
 
-# config/src/boot_services.c: db_path string buffer; thread arg ownership.
-config/src/boot_services.c
-# lib/net/src/connman.c: deferred-free ring growth, hot networking path.
-lib/net/src/connman.c
+# Migration complete: production raw malloc/calloc/realloc calls now route
+# through zcl_malloc / zcl_calloc / zcl_realloc or carry a local
+# raw-alloc-ok exception.

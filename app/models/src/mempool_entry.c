@@ -99,7 +99,7 @@ bool db_mempool_save(struct node_db *ndb, const struct db_mempool_entry *e)
         !mempool_projection_emit_admit(e->txid, e->fee, (uint32_t)e->size,
                                        (uint32_t)e->size, e->time_added,
                                        e->raw_tx, e->raw_tx_len)) {
-        LOG_WARN("model", "mempool projection shadow emit failed for save");
+        LOG_WARN("model", "mempool projection emit failed for save");
     }
     AR_FINISH_SAVE(cbs, e, ok);
 }
@@ -168,7 +168,7 @@ bool db_mempool_delete(struct node_db *ndb, const uint8_t txid[32])
     AR_FINALIZE(s);
     if (ok && mempool_projection_event_log() &&
         !mempool_projection_emit_remove(txid, 4)) {
-        LOG_WARN("model", "mempool projection shadow emit failed for delete");
+        LOG_WARN("model", "mempool projection emit failed for delete");
     }
     AR_FINISH_DESTROY(cbs, &e, ok);
 }
@@ -213,7 +213,7 @@ static void emit_clear_removes(uint8_t *txids, int count)
     for (int i = 0; i < count; i++) {
         const uint8_t *txid = txids + (size_t)i * 32u;
         if (!mempool_projection_emit_remove(txid, 3)) {
-            LOG_WARN("model", "mempool projection shadow emit failed for clear");
+            LOG_WARN("model", "mempool projection emit failed for clear");
         }
     }
 }
@@ -221,8 +221,8 @@ static void emit_clear_removes(uint8_t *txids, int count)
 bool db_mempool_clear(struct node_db *ndb)
 {
     if (!ndb->open) return false;
-    bool shadow = mempool_projection_event_log() != NULL;
-    int count = shadow ? db_mempool_count(ndb) : 0;
+    bool projection_wired = mempool_projection_event_log() != NULL;
+    int count = projection_wired ? db_mempool_count(ndb) : 0;
     uint8_t *txids = NULL;
     struct clear_txid_buf buf = {0};
     if (count > 0) {

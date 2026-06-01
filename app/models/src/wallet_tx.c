@@ -112,7 +112,7 @@ static void wallet_tx_after_save(void *record, void *ctx)
     if (!wallet_projection_emit_tx_seen(t->txid,
             t->has_block ? t->block_height : -1,
             t->fee, t->from_me ? 1u : 0u)) {
-        LOG_WARN("wallet_projection", "[wallet_projection] tx seen shadow emit failed");
+        LOG_WARN("wallet_projection", "[wallet_projection] tx seen projection emit failed");
     }
 }
 
@@ -151,7 +151,7 @@ static void wallet_utxo_after_save(void *record, void *ctx)
                 u->vout, (long long)u->value);
     if (!wallet_projection_emit_utxo_seen(u->txid, u->vout, u->value,
             u->address_hash, u->height, u->is_coinbase ? 1u : 0u)) {
-        LOG_WARN("wallet_projection", "[wallet_projection] utxo seen shadow emit failed");
+        LOG_WARN("wallet_projection", "[wallet_projection] utxo seen projection emit failed");
     }
 }
 

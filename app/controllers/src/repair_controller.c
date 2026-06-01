@@ -43,15 +43,11 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
 
-    /* Count before */
-    sqlite3_stmt *s = NULL;
-    int64_t before = 0;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
-        -1, &s, NULL);
-    if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        before = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    int64_t before = db_utxo_count_missing_heights(ctx->node_db);
+    if (before < 0) {
+        json_set_str(result, "Failed to count height=0 UTXOs");
+        LOG_FAIL("repair", "repairheights: count before failed");
+    }
 
     if (before == 0) {
         json_set_object(result);
@@ -64,27 +60,17 @@ static bool rpc_repairheights(const struct json_value *params, bool help,
            (long long)before);
     fflush(stdout);
 
-    /* Fix heights by joining with transactions table */
-    sqlite3_exec(ctx->node_db->db,
-        "UPDATE utxos SET height = ("
-        "  SELECT t.block_height FROM transactions t"
-        "  WHERE t.txid = utxos.txid"
-        ") WHERE height = 0 AND EXISTS ("
-        "  SELECT 1 FROM transactions t"
-        "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
-        ")", NULL, NULL, NULL);
+    int changes = db_utxo_repair_missing_heights_from_tx_index(ctx->node_db);
+    if (changes < 0) {
+        json_set_str(result, "Failed to repair height=0 UTXOs");
+        LOG_FAIL("repair", "repairheights: update failed");
+    }
 
-    int changes = sqlite3_changes(ctx->node_db->db);
-
-    /* Count remaining */
-    int64_t after = 0;
-    s = NULL;
-    sqlite3_prepare_v2(ctx->node_db->db,
-        "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
-        -1, &s, NULL);
-    if (s && AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-        after = sqlite3_column_int64(s, 0);
-    sqlite3_finalize(s);
+    int64_t after = db_utxo_count_missing_heights(ctx->node_db);
+    if (after < 0) {
+        json_set_str(result, "Failed to count remaining height=0 UTXOs");
+        LOG_FAIL("repair", "repairheights: count after failed");
+    }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 

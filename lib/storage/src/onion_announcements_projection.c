@@ -266,7 +266,7 @@ static int64_t count_legacy_onion_announcements(sqlite3 *db)
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM onion_announcements",
                            -1, &s, NULL) != SQLITE_OK)
         return -1;
-    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-audit
         count = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     return count;
@@ -305,8 +305,8 @@ bool onion_ann_projection_diff_legacy(onion_ann_projection_t *p,
     }
 
     for (;;) {
-        int prc = sqlite3_step(ps);  // raw-sql-ok:projection-diff
-        int lrc = sqlite3_step(ls);  // raw-sql-ok:projection-diff
+        int prc = sqlite3_step(ps);  // raw-sql-ok:projection-audit
+        int lrc = sqlite3_step(ls);  // raw-sql-ok:projection-audit
         if (prc == SQLITE_DONE && lrc == SQLITE_DONE)
             break;
         if (prc != SQLITE_ROW || lrc != SQLITE_ROW) {

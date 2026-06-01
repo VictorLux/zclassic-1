@@ -42,6 +42,7 @@
 #include "platform/time_compat.h"
 #include "services/bg_validation_service.h"
 #include "bg_validation_internal.h"
+#include "supervisors/domains.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/check_block.h"
@@ -76,6 +77,7 @@
 #endif
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 
 /* Global instance for RPC access */
@@ -87,6 +89,99 @@ struct bg_validation_service *g_bg_validation = NULL;
 /* ── How often to save progress and log ─────────────────────── */
 #define SAVE_INTERVAL  1000
 #define LOG_INTERVAL   10000
+#define BG_VALIDATION_SUPERVISOR_DEADLINE_SEC 600
+
+static _Atomic supervisor_child_id g_bg_validation_supervisor_id =
+    SUPERVISOR_INVALID_ID;
+static struct liveness_contract g_bg_validation_contract;
+
+static int64_t bg_validation_progress_marker(
+    const struct bg_validation_service *svc)
+{
+    if (!svc)
+        LOG_RETURN((int64_t)-1, "bg_validation",
+                   "bg_validation_progress_marker: null svc");
+    return atomic_load(&svc->progress.verified_height);
+}
+
+static void bg_validation_supervisor_heartbeat(
+    const struct bg_validation_service *svc)
+{
+    supervisor_child_id id = atomic_load(&g_bg_validation_supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, bg_validation_progress_marker(svc));
+}
+
+static void bg_validation_supervisor_done(void)
+{
+    supervisor_child_id id = atomic_load(&g_bg_validation_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
+}
+
+static void bg_validation_on_stall(struct liveness_contract *c)
+{
+    const struct bg_validation_service *svc =
+        c ? (const struct bg_validation_service *)c->ctx : NULL;
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int verified = svc ? atomic_load(&svc->progress.verified_height) : -1;
+    int chain_height = svc ? atomic_load(&svc->progress.chain_height) : -1;
+    int state = svc ? atomic_load(&svc->progress.state) : BG_VALIDATION_IDLE;
+    int64_t sigs = svc ? atomic_load(&svc->progress.sigs_verified) : 0;
+    int64_t proofs = svc ? atomic_load(&svc->progress.proofs_verified) : 0;
+    LOG_WARN("bg_validation",
+             "[bg-valid] supervisor stall reason=%s verified=%d chain_height=%d state=%s sigs=%lld proofs=%lld",
+             reason, verified, chain_height,
+             bg_validation_state_name((enum bg_validation_state)state),
+             (long long)sigs, (long long)proofs);
+    event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "source=chain.bg_validation decision=worker_stall "
+                "reason=%s verified=%d chain_height=%d state=%s sigs=%lld proofs=%lld",
+                reason, verified, chain_height,
+                bg_validation_state_name((enum bg_validation_state)state),
+                (long long)sigs, (long long)proofs);
+}
+
+static bool bg_validation_register_supervisor(
+    struct bg_validation_service *svc)
+{
+    if (!supervisor_start()) {
+        LOG_FAIL("bg_validation", "bg_validation_start: supervisor_start failed");
+        return false;
+    }
+
+    supervisor_child_id id = atomic_load(&g_bg_validation_supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, BG_VALIDATION_SUPERVISOR_DEADLINE_SEC);
+        supervisor_progress(id, bg_validation_progress_marker(svc));
+        supervisor_tick(id);
+        return true;
+    }
+
+    liveness_contract_init(&g_bg_validation_contract, "chain.bg_validation");
+    atomic_store(&g_bg_validation_contract.period_secs, 0);
+    atomic_store(&g_bg_validation_contract.deadline_secs,
+                 BG_VALIDATION_SUPERVISOR_DEADLINE_SEC);
+    atomic_store(&g_bg_validation_contract.progress_max_quiet_us, 0);
+    g_bg_validation_contract.ctx = svc;
+    g_bg_validation_contract.on_stall = bg_validation_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_chain_sup, &g_bg_validation_contract);
+    if (id == SUPERVISOR_INVALID_ID) {
+        LOG_FAIL("bg_validation", "bg_validation_start: supervisor_register failed");
+        return false;
+    }
+    atomic_store(&g_bg_validation_supervisor_id, id);
+    supervisor_progress(id, bg_validation_progress_marker(svc));
+    supervisor_tick(id);
+    return true;
+}
 
 /* Parallel script verification (struct script_check_item +
  * bg_validation_verify_scripts_parallel) lives in
@@ -323,6 +418,7 @@ static void *bg_validation_thread(void *arg)
     const struct chain_params *params = svc->params;
     const char *datadir = svc->datadir;
     int num_workers = svc->num_workers;
+    bg_validation_supervisor_heartbeat(svc);
 
     /* Load resume point */
     int start_height = load_progress(&svc->progress_store);
@@ -351,6 +447,7 @@ static void *bg_validation_thread(void *arg)
     for (int h = start_height; h <= chain_height; h++) {
         if (atomic_load(&svc->stop_requested))
             break;
+        bg_validation_supervisor_heartbeat(svc);
 
         /* Refresh chain height periodically (chain may advance) */
         if (h % 100 == 0) {
@@ -388,6 +485,7 @@ static void *bg_validation_thread(void *arg)
             fprintf(stderr, "[bg-valid] VALIDATION FAILURE at height %d\n", h);
             atomic_store(&svc->progress.state, BG_VALIDATION_FAILED);
             block_free(&blk);
+            bg_validation_supervisor_done();
             return NULL;
         }
 
@@ -397,6 +495,7 @@ static void *bg_validation_thread(void *arg)
         atomic_store(&svc->progress.verified_height, h);
         atomic_store(&svc->progress.sigs_verified, total_sigs);
         atomic_store(&svc->progress.proofs_verified, total_proofs);
+        bg_validation_supervisor_heartbeat(svc);
 
         /* Save progress periodically */
         if (h % SAVE_INTERVAL == 0) {
@@ -481,6 +580,7 @@ static void *bg_validation_thread(void *arg)
                verified);
     }
 
+    bg_validation_supervisor_done();
     return NULL;
 }
 
@@ -580,9 +680,13 @@ bool bg_validation_start(struct bg_validation_service *svc)
     }
 
     atomic_store(&svc->stop_requested, false);
+    if (!bg_validation_register_supervisor(svc))
+        return false;
     if (thread_registry_spawn_ex("zcl_bg_valid", bg_validation_thread, svc,
-                                  &svc->thread) != 0)
+                                  &svc->thread) != 0) {
+        bg_validation_supervisor_done();
         LOG_FAIL("bg-valid", "failed to create thread");
+    }
     svc->thread_started = true;
     return true;
 }
@@ -591,6 +695,7 @@ void bg_validation_stop(struct bg_validation_service *svc)
 {
     if (!svc || !svc->thread_started)
         return;
+    bg_validation_supervisor_done();
     atomic_store(&svc->stop_requested, true);
     /* cap join at 5 s. bg-validation can be in the
      * middle of a slow signature/proof batch — better to detach than
@@ -607,6 +712,12 @@ void bg_validation_stop(struct bg_validation_service *svc)
         pthread_join(svc->thread, NULL);
     }
     svc->thread_started = false;
+#ifdef ZCL_TESTING
+    supervisor_child_id id = atomic_exchange(&g_bg_validation_supervisor_id,
+                                             SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }
 
 struct bg_validation_progress bg_validation_get_progress(

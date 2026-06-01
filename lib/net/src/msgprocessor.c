@@ -26,6 +26,7 @@
 #include "net/dandelion.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
+#include "net/file_manifest.h"
 #include "net/file_market.h"
 #include "net/p2p_game.h"
 #include "net/net_fault.h"
@@ -35,11 +36,10 @@
 #include "net/zmsg.h"
 #include "models/database.h"
 #include "models/file_service.h"
-/* lib/net → app/controllers boundary: msgprocessor.c needs the full
- * struct file_manifest definition (not just a function decl) to handle
- * P2P file challenge messages. Real fix is to move the manifest struct
- * down into a lib/net or lib/storage header; out of scope. */
-#include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-struct-defn
+/* lib/net still reaches the controller-owned manifest cache for P2P file
+ * challenge responses. The manifest protocol types live in net/file_manifest.h;
+ * the remaining controller dependency is the cache ownership boundary. */
+#include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
 #include "services/snapshot_sync_service.h"
 #include "services/block_sync_service.h"
 #include "services/chain_state_repository.h"

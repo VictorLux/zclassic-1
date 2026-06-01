@@ -280,6 +280,106 @@ int64_t db_utxo_count(struct node_db *ndb)
     AR_QUERY_INT64_BOUND(ndb, s, "SELECT COUNT(*) FROM utxos", (void)0);
 }
 
+int64_t db_utxo_total_value(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_RETURN(-1, "utxo", "total_value: db unavailable");
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COALESCE(SUM(value),0) FROM utxos",
+        (void)0);
+}
+
+bool db_utxo_count_rows_and_distinct_txids(struct node_db *ndb,
+                                           int64_t *rows_out,
+                                           int64_t *distinct_txids_out)
+{
+    if (!ndb || !ndb->open || !rows_out || !distinct_txids_out)
+        LOG_FAIL("utxo", "count_rows_and_distinct_txids: invalid args");
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_OR(ndb, s,
+        "SELECT COUNT(DISTINCT txid), COUNT(*) FROM utxos",
+        LOG_FAIL("utxo", "count_rows_and_distinct_txids: prepare failed: %s",
+                 sqlite3_errmsg(ndb->db)));
+
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        LOG_FAIL("utxo", "count_rows_and_distinct_txids: query returned no row");
+    }
+
+    *distinct_txids_out = AR_COL_INT(s, 0);
+    *rows_out = AR_COL_INT(s, 1);
+    AR_FINALIZE(s);
+    return true;
+}
+
+int64_t db_utxo_count_missing_heights(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_RETURN(-1, "utxo", "count_missing_heights: db unavailable");
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_INT64_BOUND(ndb, s,
+        "SELECT COUNT(*) FROM utxos WHERE height = 0 AND value > 0",
+        (void)0);
+}
+
+int db_utxo_repair_missing_heights_from_tx_index(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_ERR("utxo", "repair_missing_heights: db unavailable");
+    if (!node_db_exec(ndb,
+            "UPDATE utxos SET height = ("
+            "  SELECT t.block_height FROM transactions t"
+            "  WHERE t.txid = utxos.txid"
+            ") WHERE height = 0 AND EXISTS ("
+            "  SELECT 1 FROM transactions t"
+            "  WHERE t.txid = utxos.txid AND t.block_height IS NOT NULL"
+            ")")) {
+        LOG_ERR("utxo", "repair_missing_heights: update failed");
+    }
+    return sqlite3_changes(ndb->db);
+}
+
+bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: db unavailable");
+
+    if (!node_db_begin(ndb))
+        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: begin failed");
+
+    bool ok = true;
+    ok = ok && node_db_exec(ndb, "DELETE FROM wallet_utxos");
+    ok = ok && node_db_exec(ndb,
+        "INSERT INTO wallet_utxos "
+        "(txid, vout, value, address_hash, script, height, is_coinbase) "
+        "SELECT u.txid, u.vout, u.value, u.address_hash, u.script, "
+        "u.height, u.is_coinbase "
+        "FROM utxos u INNER JOIN wallet_keys wk "
+        "ON u.address_hash = wk.pubkey_hash");
+    ok = ok && node_db_exec(ndb, "DELETE FROM addresses");
+    ok = ok && node_db_exec(ndb,
+        "INSERT OR REPLACE INTO addresses "
+        "(address_hash, script_type, balance, utxo_count, "
+        "first_seen_height, last_seen_height) "
+        "SELECT address_hash, MAX(script_type), SUM(value), count(*), "
+        "MIN(height), MAX(height) "
+        "FROM utxos WHERE address_hash IS NOT NULL "
+        "GROUP BY address_hash");
+
+    if (!ok) {
+        (void)node_db_rollback(ndb);
+        LOG_FAIL("utxo",
+                 "rebuild_wallet_and_address_caches: refresh statements failed");
+    }
+
+    if (!node_db_commit(ndb))
+        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: commit failed");
+
+    return true;
+}
+
 void db_utxo_free(struct db_utxo *u)
 {
     if (!u) return;

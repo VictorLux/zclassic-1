@@ -3,8 +3,8 @@
  * script_validate_stage — implementation. See jobs/script_validate_stage.h.
  *
  * S-6 consumes body_persist_log and replays script verification over block
- * bodies already proven readable by S-5. It is a shadow stage: it writes only
- * script_validate_log plus its stage cursor in progress.kv. */
+ * bodies already proven readable by S-5. It writes script_validate_log plus
+ * its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
 #include "jobs/script_validate_stage.h"
@@ -436,7 +436,7 @@ bool script_validate_stage_init(struct main_state *ms)
     g_stage = s;
     pthread_mutex_unlock(&g_lock);
 
-    LOG_INFO("script_validate", "[script_validate] stage initialised (shadow mode)");
+    LOG_INFO("script_validate", "[script_validate] stage initialised");
     return true;
 }
 

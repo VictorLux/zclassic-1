@@ -22,8 +22,8 @@
 #include <string.h>
 #include "util/safe_alloc.h"
 
-/* Phase 4b shadow-emission counters. These mirror the
- * utxo_projection internals but are owned by the *emitter* side so an
+/* UTXO projection-emission counters. These mirror the
+ * utxo_projection internals but are owned by the emitter side so an
  * operator can spot a divergence (emit-side count vs consume-side count)
  * without grepping two subsystems. Reset on every process restart. */
 #include <stdatomic.h>
@@ -41,7 +41,7 @@ uint64_t update_coins_event_emit_fail_total(void)
                                 memory_order_relaxed);
 }
 
-void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
+void update_coins_emit_utxo_add_projection(const uint8_t txid[32], uint32_t vout,
                                   int64_t value, uint32_t height,
                                   bool is_coinbase,
                                   const uint8_t *script_bytes,
@@ -52,7 +52,7 @@ void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
      * exactly one writer to the projection. */
     if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
         return;
-    /* Shadow mode: emit failures NEVER gate the legacy SQLite write.
+    /* Projection emission: failures NEVER gate the legacy SQLite write.
      * obs-ok marker downgrades the warning to "operator can grep
      * later" rather than "abort consensus path". */
     if (utxo_projection_emit_add(txid, vout, value, height, is_coinbase,
@@ -60,19 +60,19 @@ void update_coins_emit_utxo_add_shadow(const uint8_t txid[32], uint32_t vout,
         atomic_fetch_add_explicit(&g_utxo_event_emit_total, 1,
                                   memory_order_relaxed);
     } else if (utxo_projection_event_log() != NULL) {
-        /* Only counted as a failure when shadow mode is actually
+        /* Only counted as a failure when projection emission is actually
          * enabled (event log non-NULL). A NULL log is the legitimate
-         * "shadow not wired yet" case, not an error. */
+         * "event log not wired yet" case, not an error. */
         atomic_fetch_add_explicit(&g_utxo_event_emit_fail_total, 1,
                                   memory_order_relaxed);
         fprintf(stderr,  // obs-ok:utxo-event-emit-failure
-                "[update_coins] shadow emit_add failed h=%u\n", height);
+                "[update_coins] projection emit_add failed h=%u\n", height);
     }
 }
 
-void update_coins_emit_utxo_spend_shadow(const uint8_t txid[32], uint32_t vout)
+void update_coins_emit_utxo_spend_projection(const uint8_t txid[32], uint32_t vout)
 {
-    /* B3: see update_coins_emit_utxo_add_shadow — yield once the stage
+    /* B3: see update_coins_emit_utxo_add_projection — yield once the stage
      * is the authority so the projection has a single writer. */
     if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
         return;
@@ -83,7 +83,7 @@ void update_coins_emit_utxo_spend_shadow(const uint8_t txid[32], uint32_t vout)
         atomic_fetch_add_explicit(&g_utxo_event_emit_fail_total, 1,
                                   memory_order_relaxed);
         fprintf(stderr,  // obs-ok:utxo-event-emit-failure
-                "[update_coins] shadow emit_spend failed\n");
+                "[update_coins] projection emit_spend failed\n");
     }
 }
 
@@ -139,10 +139,10 @@ bool update_coins_with_undo(const struct transaction *tx,
                                     entry->coins.vout[nPos].value,
                                     entry->coins.height);
 
-            /* Phase 4b shadow emission: also append EV_UTXO_SPEND to
+            /* Projection emission: also append EV_UTXO_SPEND to
              * the event_log so utxo_projection can derive the same
              * spend. Additive — does not gate the legacy path. */
-            update_coins_emit_utxo_spend_shadow(tx->vin[i].prevout.hash.data,
+            update_coins_emit_utxo_spend_projection(tx->vin[i].prevout.hash.data,
                                                 nPos);
 
             /* Pure domain mutation: snapshot the txout into the undo
@@ -181,10 +181,10 @@ bool update_coins_with_undo(const struct transaction *tx,
                                  new_entry->coins.vout[vi].value,
                                  nHeight);
 
-            /* Phase 4b shadow emission: also append EV_UTXO_ADD to
+            /* Projection emission: also append EV_UTXO_ADD to
              * the event_log so utxo_projection can derive the same
              * UTXO. Additive — does not gate the legacy path. */
-            update_coins_emit_utxo_add_shadow(tx->hash.data, (uint32_t)vi,
+            update_coins_emit_utxo_add_projection(tx->hash.data, (uint32_t)vi,
                                   new_entry->coins.vout[vi].value,
                                   (uint32_t)nHeight,
                                   new_entry->coins.is_coinbase,

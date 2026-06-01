@@ -56,17 +56,16 @@ static bool csb_batch_write_impl(void *self, struct coins_map *map_coins,
         LOG_FAIL("coins_view_stage_backing",
                  "batch_write: legacy backing has no batch_write");
 
-    /* Step-3 (reducer-as-ingest): the STAGE owns the authoritative
-     * coins.db write. When the author is STAGE and we hold the coins.db
+    /* The reducer UTXO stage owns the authoritative coins.db write.
+     * When the author is STAGE and we hold the coins.db
      * handle, commit this block's validated delta DURABLY to coins.db
      * ourselves (its own BEGIN IMMEDIATE / COMMIT) so coins.db is a STAGE
      * OUTPUT — the SHA3 UTXO checkpoint + gettxoutsetinfo (both read
      * coins.db) stay consistent with the projection the stage authors.
      *
      * This is the destination reducer-path writer, NOT a legacy surface:
-     * it is gated dormant behind UTXO_AUTHOR_STAGE (default LEGACY), so
-     * under the live default this branch is never taken and the path
-     * below is byte-identical to what ships today. */
+     * projection-backed reads are used only when the reducer owns UTXO
+     * authorship. */
     if (sb->coins_db &&
         utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         bool durable = coins_view_sqlite_batch_write( // one-write-path-ok:reducer-utxo-authority
@@ -122,8 +121,8 @@ bool coins_view_select_connect_backing_ex(struct coins_view *out,
      * authoritative set; a misconfiguration (author flipped but the
      * projection handle absent) must NOT silently read coins.db as if
      * authoritative — but it also must not crash the connect path.
-     * Log it and fall back to the legacy view (the caller proceeds; the
-     * cutover canary in B7 is what catches an actual STAGE divergence). */
+     * Log it and fall back to the legacy view; reducer/projection parity checks
+     * catch an actual STAGE divergence. */
     if (!proj || !sb) {
         *out = *legacy;
         fprintf(stderr, "[coins_view_stage_backing] %s:%d %s(): STAGE author "

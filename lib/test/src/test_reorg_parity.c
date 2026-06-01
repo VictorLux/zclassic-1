@@ -1,19 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Reorg parity proof — the cutover keystone.
+ * Reorg parity proof for the reducer-era UTXO invariants.
  *
- * docs/work/cutover.md §1 PROVE requires a "reorg corpus": prove that a
- * chain REORG produces a byte-identical UTXO/coin state regardless of
- * path. That is, unwinding a lighter branch A and applying a heavier
- * branch B must yield the EXACT SAME coin set as building branch B
- * directly from the fork point — never having seen A at all.
+ * The reducer architecture requires a chain REORG to produce a
+ * byte-identical UTXO/coin state regardless of path. That is, unwinding a
+ * lighter branch A and applying a heavier branch B must yield the EXACT SAME
+ * coin set as building branch B directly from the fork point — never having
+ * seen A at all.
  *
- * This is the disconnect/UTXO-unwind parity proof. The forward-only
- * linear replay (shadow_replay_proof.c) is NOT sufficient: a node that
- * can only roll forward halts on the first mainnet reorg. The new tip
- * path must unwind to byte-exact state, and this test is the offline
- * proof of that invariant before the cutover deletes the legacy
- * disconnect_tip path.
+ * This is the disconnect/UTXO-unwind parity proof. A forward-only replay is
+ * NOT sufficient: a node that can only roll forward halts on the first mainnet
+ * reorg. The new tip path must unwind to byte-exact state, and this test is
+ * the offline proof of that invariant for the reducer's reorg path.
  *
  * Strategy
  * --------
@@ -56,8 +54,8 @@
  *   ASSERTS path-independence: the queried recompute over the reorged view
  *   equals a from-scratch recompute, and equals the direct-build view.
  *
- *   This mirrors shadow_replay_proof's convergence idiom: the proof
- *   passes only when the two paths converge to an identical fingerprint
+ *   This mirrors the projection convergence idiom: the proof passes only when
+ *   the two paths converge to an identical fingerprint
  *   (every outpoint that should exist does, and nothing extra leaks).
  *
  * Reuses the block/tx/coinbase builders and disconnect/connect helpers

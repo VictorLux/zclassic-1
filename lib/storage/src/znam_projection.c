@@ -2,12 +2,9 @@
  *
  * znam_projection — Phase 4d-4 event-log consumer.
  *
- * Shadow mode only: the legacy ZNAM model (lib/znam/src/znam.c) still
- * writes znam_names / znam_addr_records / znam_text_records in node.db.
- * This module consumes EV_ZNAM_REGISTER / EV_ZNAM_UPDATE /
- * EV_ZNAM_TRANSFER / EV_ZNAM_RENEW / EV_ZNAM_EXPIRE into a
- * rebuildable SQLite projection used for diffing before a later
- * cutover. Mirror of peers_projection.c shape.
+ * Consumes EV_ZNAM_REGISTER / EV_ZNAM_UPDATE / EV_ZNAM_TRANSFER /
+ * EV_ZNAM_RENEW / EV_ZNAM_EXPIRE into a rebuildable SQLite projection.
+ * Mirror of peers_projection.c shape.
  */
 
 #include "storage/znam_projection.h"
@@ -645,7 +642,7 @@ uint64_t znam_projection_text_count(znam_projection_t *p)
     return count_table(p, "SELECT COUNT(*) FROM znam_text_records");
 }
 
-/* ── Shadow-emit globals ────────────────────────────────────────── */
+/* ── Projection-emit globals ────────────────────────────────────── */
 
 void znam_projection_set_event_log(event_log_t *log)
 {

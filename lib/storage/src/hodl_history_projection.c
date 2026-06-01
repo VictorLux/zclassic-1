@@ -264,7 +264,7 @@ static int64_t count_legacy_hodl_history(sqlite3 *db)
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM hodl_history",
                            -1, &s, NULL) != SQLITE_OK)
         return -1;
-    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-diff
+    if (sqlite3_step(s) == SQLITE_ROW)  // raw-sql-ok:projection-audit
         count = sqlite3_column_int64(s, 0);
     sqlite3_finalize(s);
     return count;
@@ -297,8 +297,8 @@ bool hodl_history_projection_diff_legacy(hodl_history_projection_t *p,
     }
 
     for (;;) {
-        int prc = sqlite3_step(ps);  // raw-sql-ok:projection-diff
-        int lrc = sqlite3_step(ls);  // raw-sql-ok:projection-diff
+        int prc = sqlite3_step(ps);  // raw-sql-ok:projection-audit
+        int lrc = sqlite3_step(ls);  // raw-sql-ok:projection-audit
         if (prc == SQLITE_DONE && lrc == SQLITE_DONE)
             break;
         int64_t ph = prc == SQLITE_ROW ? sqlite3_column_int64(ps, 0) : 0;

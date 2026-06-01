@@ -8,10 +8,10 @@
  * cache. This module supplies that backing, gated on the single-writer
  * authority flag (`utxo_projection_get_author()`):
  *
- *   author == UTXO_AUTHOR_LEGACY (default)  →  the legacy view, UNCHANGED.
+ *   author == UTXO_AUTHOR_LEGACY            →  the legacy view.
  *       The selector hands back the exact `struct coins_view` it was
  *       given (a copy of the coins_tip cache view). Byte-for-byte the
- *       same path that ships today. The whole STAGE machinery is DORMANT.
+ *       same fallback path that ships today.
  *
  *   author == UTXO_AUTHOR_STAGE              →  a COMPOSITE view:
  *       - get_coins / have_coins resolve through the UTXO **projection**
@@ -49,8 +49,8 @@ struct coins_view_stage_backing {
     struct coins_view view;                  /* published vtable (first) */
     struct coins_view_projection proj_view;  /* read side (owns nothing) */
     struct coins_view legacy;                /* write/best-block side (copy) */
-    /* Step-3 (reducer-as-ingest): the authoritative coins.db handle the
-     * STAGE owns. When non-NULL and author == UTXO_AUTHOR_STAGE,
+    /* Authoritative coins.db handle owned by the reducer UTXO stage. When
+     * non-NULL and author == UTXO_AUTHOR_STAGE,
      * batch_write commits the per-block delta DURABLY to coins.db itself
      * (the stage-owned authoritative write) instead of relying on the
      * legacy coins_tip flush. NULL (the default + the 4-arg selector)
@@ -74,8 +74,8 @@ struct coins_view_stage_backing {
  *              delta DURABLY to coins.db itself (the stage-owned
  *              authoritative write) AND keeps the legacy coins_tip mirror
  *              warm. NULL (and the LEGACY author) leaves the legacy write
- *              path byte-identical to what ships today. Dormant under the
- *              default LEGACY author. Borrowed; not owned. May be NULL.
+ *              path byte-identical to what ships today. Borrowed; not owned.
+ *              May be NULL.
  *
  * Behavior:
  *   - author == LEGACY, or STAGE with proj == NULL  →  *out = *legacy

@@ -3,11 +3,9 @@
  * utxo_projection — Phase 4b event-log consumer for the UTXO set.
  *
  * See `storage/utxo_projection.h` for the contract. This file is the
- * first PRODUCTION consumer of the Phase 4a event log primitive — the
- * second-most-critical authoritative cutover after Wave S C-8 (both
- * touch the UTXO set). Shadow mode only: legacy `update_coins()` still
- * writes coins.db; we additionally emit + consume events, and the
- * shadow-diff MCP tool gates the 24h cutover soak.
+ * first production consumer of the Phase 4a event log primitive for
+ * money-state replay. It consumes UTXO add/spend events and exposes
+ * count, lookup, and SHA3 commitment queries over the derived set.
  *
  * Design notes
  * ------------
@@ -82,18 +80,18 @@ struct utxo_projection {
 static _Atomic(utxo_projection_t *) g_projection = NULL;
 static _Atomic(event_log_t *)       g_event_log  = NULL;
 
-/* B3 single-writer authority. CUTOVER FLIP (step 13): STAGE is now the
- * default — utxo_apply_stage authors the UTXO events and the legacy
- * emitters no-op, so exactly one writer (the reducer) drives the
- * projection. LEGACY keeps the prior behavior, where update_coins()
- * authors the events as the legacy connect path runs (selectable via
- * utxo_projection_set_author for explicit-fallback paths and tests). */
+/* B3 single-writer authority. STAGE is the production default:
+ * utxo_apply_stage authors the UTXO events and the legacy emitters no-op, so
+ * exactly one writer (the reducer) drives the projection. Test binaries can
+ * still flip to LEGACY to exercise the old emitter path. */
 static _Atomic int g_author = (int)UTXO_AUTHOR_STAGE;
 
-void utxo_projection_set_author(utxo_author_t who)
+#ifdef ZCL_TESTING
+void utxo_projection_test_set_author(utxo_author_t who)
 {
     atomic_store_explicit(&g_author, (int)who, memory_order_release);
 }
+#endif
 
 utxo_author_t utxo_projection_get_author(void)
 {
@@ -101,7 +99,7 @@ utxo_author_t utxo_projection_get_author(void)
                                                memory_order_acquire);
 }
 
-/* Shadow-emission counters (independent of consumer counters so we can
+/* Projection-emission counters (independent of consumer counters so we can
  * tell emit failures from consume failures in observability). */
 static _Atomic uint64_t g_emit_add_total   = 0;
 static _Atomic uint64_t g_emit_spend_total = 0;
@@ -398,7 +396,7 @@ uint64_t utxo_projection_catch_up(utxo_projection_t *p)
     return p->last_consumed_offset;
 }
 
-/* ── One-time anchor-seed (cutover utxo_commitment gate) ───────────── */
+/* ── One-time anchor-seed for UTXO commitment parity ──────────────── */
 
 int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
                                          sqlite3 *legacy_db)
@@ -822,7 +820,7 @@ int utxo_projection_commitment(utxo_projection_t *p, uint8_t out[32])
     return 0;
 }
 
-/* ── Shadow emission ───────────────────────────────────────────────── */
+/* ── Projection emission ────────────────────────────────────────────── */
 
 bool utxo_projection_emit_add(const uint8_t txid[32], uint32_t vout,
                               int64_t value, uint32_t height,

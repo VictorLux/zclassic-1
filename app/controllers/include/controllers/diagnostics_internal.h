@@ -2,8 +2,8 @@
  *
  * Internal seam shared across the diagnostics controller family. The
  * diagnostics concern was split out of one mega-module into focused,
- * single-responsibility controller files (registry, cutover, nodelog,
- * dbquery, probe, projection-diff). They share two things:
+ * single-responsibility controller files (registry, nodelog, dbquery, probe).
+ * They share two things:
  *
  *   - the controller-level state (`main_state` + `datadir`), owned by
  *     diagnostics_registry.c and reachable here via accessors;

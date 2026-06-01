@@ -63,7 +63,7 @@ int rolling_anchor_extend_if_due(struct main_state *ms,
                                   const char *datadir);
 
 /* Boot-time entry: call rolling_anchor_init(datadir) and register a
- * periodic health tick that invokes rolling_anchor_extend_if_due(ms,
+ * chain-supervisor tick that invokes rolling_anchor_extend_if_due(ms,
  * datadir) every ~60 seconds. Idempotent. Returns ZCL_OK on success. */
 struct zcl_result rolling_anchor_start(struct main_state *ms, const char *datadir);
 

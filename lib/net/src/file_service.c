@@ -7,12 +7,12 @@
  * overhead visible to observers, wire-speed on gigabit links. */
 
 #include "platform/time_compat.h"
+#include "net/file_manifest.h"
 #include "net/file_service.h"
 #include "util/log_json.h"
 #include "crypto/sha3_crypt.h"
 #include "crypto/sha3.h"
 #include "core/random.h"
-#include "controllers/file_controller.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>

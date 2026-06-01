@@ -25,7 +25,7 @@ bool peers_projection_get(peers_projection_t *p,
 
 uint64_t peers_projection_count(peers_projection_t *p);
 
-/* Process-global shadow wiring used by the legacy peer model. NULL log
+/* Process-global projection wiring used by the peer model. NULL log
  * disables emission and keeps legacy writes authoritative.
  */
 void peers_projection_set_event_log(event_log_t *log);

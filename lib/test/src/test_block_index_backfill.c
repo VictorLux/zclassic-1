@@ -118,7 +118,7 @@ static int run_backfill_full(int *failures)
     char btdb_path[320]; snprintf(btdb_path, sizeof(btdb_path), "%s/blocktree", dir);
 
     /* --- (1) Build the legacy LevelDB index (carries the real solutions)
-     * BEFORE the event_log singleton is wired, so its own shadow-emit on
+     * BEFORE the event_log singleton is wired, so its own projection emit on
      * write does NOT pollute the log we measure. --- */
     struct block_tree_db btdb;
     bool btdb_ok = block_tree_db_open(&btdb, btdb_path, 1 << 20, false, true);

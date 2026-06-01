@@ -125,7 +125,7 @@ bool node_health_chain_advance_synced(const struct cac_decision *decision)
     const struct cac_source_status *source =
         &decision->sources[decision->selected_source];
     return source->available && source->healthy && source->selectable &&
-           !source->blocked && source->selection_blocker[0] == '\0';
+           !source->blocked && source->selection_reason[0] == '\0';
 }
 
 void node_health_collect(struct node_health_snapshot *snapshot,
@@ -277,10 +277,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snapshot->tip_lag = snapshot->peer_best_height - snapshot->tip_height;
     }
 
-    /* Prime Directive health = network_tip − log_head. log_head is the
-     * tip_finalize cursor (the reducer's finalized height). SHADOW: the
-     * live tip is still tip_height; this just makes the cutover's target
-     * number observable in one place. */
+    /* Prime Directive health = network_tip - log_head. log_head is the
+     * tip_finalize cursor (the reducer's finalized height). */
     {
         uint64_t lh = tip_finalize_stage_cursor();
         snapshot->log_head = (lh > 0) ? (int)(lh - 1) : -1;

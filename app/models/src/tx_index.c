@@ -188,6 +188,19 @@ bool db_tx_finalize_bulk_load(struct node_db *ndb)
     return true;
 }
 
+bool db_tx_configure_additive_build(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("tx_index", "additive build requested without an open database");
+
+    sqlite3_busy_timeout(ndb->db, 30000);
+    if (!node_db_exec(ndb, "PRAGMA synchronous=NORMAL"))
+        LOG_FAIL("tx_index", "failed to set synchronous=NORMAL for additive build");
+    if (!node_db_exec(ndb, "PRAGMA wal_autocheckpoint=0"))
+        LOG_FAIL("tx_index", "failed to disable WAL autocheckpoint for additive build");
+    return true;
+}
+
 bool db_tx_save_batch(struct node_db *ndb, const struct db_tx_index *txs,
                       size_t count)
 {

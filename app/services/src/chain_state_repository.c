@@ -595,7 +595,7 @@ enum csr_result csr_clear_active_tip(
     int from_height = csr->chain_active
         ? active_chain_height(csr->chain_active) : -1;
     if (csr->chain_active) {
-        if (!active_chain_set_tip(csr->chain_active, NULL)) {
+        if (!active_chain_move_window_tip(csr->chain_active, NULL)) {
             csr->commits_rejected[CSR_REJECTED_OOM]++;
             pthread_mutex_unlock(&csr->lock);
             return CSR_REJECTED_OOM;
@@ -651,7 +651,7 @@ bool csr_restore_in_memory_view(struct chain_state_repository *csr,
     pthread_mutex_lock(&csr->lock);
     bool ok = true;
     if (csr->chain_active)
-        ok = active_chain_set_tip(csr->chain_active, old_tip);
+        ok = active_chain_move_window_tip(csr->chain_active, old_tip);
     if (ok && csr->pindex_best_hdr)
         *csr->pindex_best_hdr = old_header;
     if (ok && csr->coins_tip && old_coins_best)
@@ -696,10 +696,10 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
 
     /* Publish the concrete in-memory view only after optional durable
      * cursor persistence succeeds. The remaining failure point is
-     * active_chain_set_tip realloc/OOM, which aborts before the other
+     * active_chain_move_window_tip realloc/OOM, which aborts before the other
      * in-memory sources are touched. */
     if (csr->chain_active) {
-        if (!active_chain_set_tip(csr->chain_active, commit->new_tip)) {
+        if (!active_chain_move_window_tip(csr->chain_active, commit->new_tip)) {
             csr->commits_rejected[CSR_REJECTED_OOM]++;
             csr_emit_rejected_event(csr, from_height, commit, CSR_REJECTED_OOM);
             pthread_mutex_unlock(&csr->lock);
@@ -728,6 +728,17 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
     printf("csr: tip committed from=%d to=%d reason=%s\n",
            from_height, commit->new_tip->nHeight, commit->reason);
     return CSR_OK;
+}
+
+struct zcl_result csr_commit_tip_result(
+    struct chain_state_repository *csr,
+    const struct chain_state_commit *commit)
+{
+    enum csr_result rc = csr_commit_tip(csr, commit);
+    if (rc == CSR_OK) return ZCL_OK;
+    return ZCL_ERR(-(1000 + (int)rc), "csr_commit_tip: %s reason=%s",
+                   csr_result_name(rc),
+                   commit && commit->reason ? commit->reason : "");
 }
 
 void csr_snapshot(struct chain_state_repository *csr,

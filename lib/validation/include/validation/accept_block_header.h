@@ -7,10 +7,10 @@
  * The legacy free function `accept_block_header()` (declared in
  * validation/process_block.h) is the high-level acceptance-into-the-
  * block-index entry point: it walks the block_index map, fixes
- * scrambled heights, and emits cutover-guard diagnostics. That
- * function intentionally stays in process_block.h to preserve the
- * existing include topology — wt callers of the high-level path
- * already wire it through process_block.h.
+ * scrambled heights, and runs contextual header checks. That function
+ * intentionally stays in process_block.h to preserve the existing include
+ * topology — wt callers of the high-level path already wire it through
+ * process_block.h.
  *
  * The wrappers exposed here are the THIN lib-side adapters around
  * domain/consensus/header_accept.h: they decode a domain
@@ -38,10 +38,10 @@ struct block_index;
  * `header`: inserts into ms->map_block_index, links pprev, and computes
  * nHeight + nChainWork. This is the sole runtime block_index producer
  * (relocated verbatim into accept_block_header.c). Declared here so the
- * Wave-S reducer (app/jobs header_admit stage, AUTHORITATIVE only) can
- * CREATE the index entry from raw header bytes without routing through
- * the legacy accept_block_header(). Returns NULL on allocation failure.
- * Does NOT touch coins.db, the active-chain tip, or disk. */
+ * Wave-S reducer (app/jobs header_admit stage) can CREATE the index entry
+ * from raw header bytes without routing through the legacy
+ * accept_block_header(). Returns NULL on allocation failure. Does NOT touch
+ * coins.db, the active-chain tip, or disk. */
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header);
 

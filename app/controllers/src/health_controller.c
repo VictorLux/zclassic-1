@@ -70,14 +70,14 @@ static void push_mirror_sync_fields(struct json_value *result)
     json_push_kv_str(result, "candidate_trust", ms.candidate_trust);
     json_push_kv_int(result, "candidate_lag", ms.lag);
     json_push_kv_str(result, "candidate_blocker",
-                     ms.activation_blocker[0] ? ms.activation_blocker
-                                              : ms.last_blocker_code);
+                     ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
+                                              : ms.last_blocker_id);
     json_push_kv_int(result, "legacy_height", ms.legacy_height);
     json_push_kv_int(result, "mirror_lag", ms.lag);
     json_push_kv_str(result, "mirror_activation_blocker",
-                     ms.activation_blocker);
+                     ms.activation_blocker_reason);
     json_push_kv_str(result, "mirror_last_blocker_code",
-                     ms.last_blocker_code);
+                     ms.last_blocker_id);
     json_push_kv_int(result, "mirror_blockers_total",
                      ms.blockers_total);
     json_push_kv_int(result, "mirror_unsafe_overrides_total",
@@ -321,8 +321,8 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
                          ms.candidate_trust);
         json_push_kv_int(&svc, "candidate_lag", ms.lag);
         json_push_kv_str(&svc, "candidate_blocker",
-                         ms.activation_blocker[0] ? ms.activation_blocker
-                                                  : ms.last_blocker_code);
+                         ms.activation_blocker_reason[0] ? ms.activation_blocker_reason
+                                                  : ms.last_blocker_id);
         json_push_kv_int(&svc, "legacy_height", ms.legacy_height);
         json_push_kv_int(&svc, "local_height", ms.local_height);
         json_push_kv_int(&svc, "lag", ms.lag);
@@ -347,9 +347,9 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
         json_push_kv_int(&svc, "lag_critical_seconds", ms.lag_critical_seconds);
         json_push_kv_str(&svc, "lag_breach_severity", ms.lag_breach_severity);
         json_push_kv_str(&svc, "activation_blocker",
-                         ms.activation_blocker);
+                         ms.activation_blocker_reason);
         json_push_kv_str(&svc, "last_blocker_code",
-                         ms.last_blocker_code);
+                         ms.last_blocker_id);
         json_push_kv_int(&svc, "overrides_total", ms.overrides_total);
         json_push_kv_int(&svc, "unsafe_overrides_total",
                          ms.unsafe_overrides_total);
@@ -417,7 +417,7 @@ static bool rpc_getservicehealth(const struct json_value *params, bool help,
             json_push_kv_bool(&svc, "selected_source_selectable",
                               s->selectable);
             json_push_kv_str(&svc, "selected_source_selection_blocker",
-                             s->selection_blocker);
+                             s->selection_reason);
             json_push_kv_int(&svc, "selected_source_score_base",
                              s->score_base);
             json_push_kv_int(&svc, "selected_source_score_health",

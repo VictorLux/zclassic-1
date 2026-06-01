@@ -9,11 +9,10 @@
  *
  *   diagnostics_registry.c          dumpstate / zcl_state + g_dumpers[]
  *                                   + controller-level state ownership
- *   cutover_controller.c            cutovermode / cutoverpreflight
  *   nodelog_controller.c            getnodelog
  *   dbquery_controller.c            dbquery
  *   probe_controller.c              probezclassicd
- *   projection_diff_controller.c    getmirrorstatus + *projectiondiff
+ *   mirror_status_controller.c      getmirrorstatus
  *
  * The public state-wiring + subsystem-CSV API (diagnostics_controller.h)
  * is implemented in diagnostics_registry.c, which owns g_diag. */

@@ -33,7 +33,7 @@ bool accept_block_header(const struct block_header *header,
 
 /* accept_block / connect_tip / disconnect_tip / activate_best_chain /
  * process_new_block were the legacy single-engine validation surface. They
- * were DELETED with the one-engine cutover: the reducer (reducer_ingest_block
+ * were DELETED by the one-engine refactor: the reducer (reducer_ingest_block
  * / reducer_kick, see services/chain_activation_controller.h) is now the sole
  * block-connect engine. accept_block_header (below) survives — header admit
  * still uses it. */

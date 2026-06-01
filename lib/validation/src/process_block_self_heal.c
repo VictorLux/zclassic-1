@@ -706,7 +706,7 @@ void process_block_note_utxo_failure(struct main_state *ms,
                 "[recovery] %d UTXO failures at h=%d — stage-unwinding tip "
                 "h=%d to retry (reducer-authoritative)\n",
                 s_utxo_fail_count, height, tip->nHeight);
-            if (active_chain_set_tip(&ms->chain_active, tip->pprev)) {
+            if (active_chain_move_window_tip(&ms->chain_active, tip->pprev)) {
                 (void)reducer_kick(boot_activation_controller());
                 s_utxo_fail_count = 0;
                 s_utxo_fail_height = -1;

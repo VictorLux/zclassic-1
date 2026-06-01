@@ -707,6 +707,28 @@ bool node_db_exec(struct node_db *ndb, const char *sql)
     return true;
 }
 
+bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
+                                    sqlite3_stmt **stmt_out)
+{
+    if (!ndb || !ndb->open || !sql || !stmt_out)
+        LOG_FAIL("db", "prepare_readonly_query called with invalid arguments");
+
+    *stmt_out = NULL;
+    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, stmt_out, NULL);
+    node_db_note_activity(ndb, "prepare_readonly_query", rc);
+    if (rc != SQLITE_OK || !*stmt_out) {
+        LOG_FAIL("db", "prepare_readonly_query failed: rc=%d msg=%s sql=%s",
+                 rc, sqlite3_errmsg(ndb->db), sql);
+    }
+    if (!sqlite3_stmt_readonly(*stmt_out)) {
+        sqlite3_finalize(*stmt_out);
+        *stmt_out = NULL;
+        LOG_FAIL("db", "prepare_readonly_query rejected writable statement: %s",
+                 sql);
+    }
+    return true;
+}
+
 bool node_db_begin(struct node_db *ndb)
 {
     bool ok = node_db_exec(ndb, "BEGIN TRANSACTION");
@@ -776,4 +798,3 @@ void node_db_get_status(struct node_db *ndb, struct node_db_status *out)
 
 /* node_db_state_*, node_db_schema_version, and node_db_migrate live
  * in database_migrate.c (the KV store + migration runner). */
-

@@ -46,6 +46,144 @@
 #define UTXO_CHECKPOINT_NEAR_WINDOW 144
 #define UTXO_BOOT_REWIND_MAX_ROWS 32
 
+static struct zcl_result recovery_exec_status_ok(void)
+{
+    return ZCL_OK;
+}
+
+static bool urs_block_height_for_hash(struct node_db *ndb,
+                                      const uint8_t hash[32],
+                                      int64_t *out_height)
+{
+    if (!ndb || !ndb->open || !ndb->db || !hash || !out_height)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT height FROM blocks WHERE hash=? AND status>=3",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("chain", "stale cursor repair: block lookup prepare "
+                 "failed: %s", sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    sqlite3_bind_blob(st, 1, hash, 32, SQLITE_STATIC);
+    bool ok = false;
+    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
+        *out_height = sqlite3_column_int64(st, 0);
+        ok = true;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool urs_utxo_height_summary(struct node_db *ndb,
+                                    bool *out_have_utxos,
+                                    int64_t *out_max_height)
+{
+    if (!ndb || !ndb->open || !ndb->db ||
+        !out_have_utxos || !out_max_height)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT MAX(height), COUNT(*) FROM utxos",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("chain", "stale cursor repair: utxo summary prepare "
+                 "failed: %s", sqlite3_errmsg(ndb->db));
+        return false;
+    }
+
+    bool ok = false;
+    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
+        *out_have_utxos = sqlite3_column_int64(st, 1) > 0;
+        *out_max_height = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+            ? sqlite3_column_int64(st, 0) : -1;
+        ok = true;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool utxo_recovery_repair_stale_cursor_from_sync_projection(
+    struct node_db *ndb)
+{
+    if (!ndb || !ndb->open || !ndb->db)
+        return false;
+
+    uint8_t coins_hash[32];
+    size_t len = 0;
+    if (!node_db_state_get(ndb, "coins_best_block",
+                           coins_hash, sizeof(coins_hash), &len) ||
+        len != sizeof(coins_hash))
+        return false;
+
+    int64_t sync_h = -1;
+    if (!node_db_state_get_int(ndb, "sync_projection_tip_height", &sync_h) ||
+        sync_h <= 0)
+        return false;
+
+    uint8_t sync_hash[32];
+    len = 0;
+    if (!node_db_state_get(ndb, "sync_projection_tip_hash",
+                           sync_hash, sizeof(sync_hash), &len) ||
+        len != sizeof(sync_hash))
+        return false;
+
+    int64_t coins_h = -1;
+    if (!urs_block_height_for_hash(ndb, coins_hash, &coins_h))
+        return false;
+
+    int64_t resolved_sync_h = -1;
+    if (!urs_block_height_for_hash(ndb, sync_hash, &resolved_sync_h) ||
+        resolved_sync_h != sync_h)
+        return false;
+    if (sync_h <= coins_h)
+        return false;
+
+    bool have_utxos = false;
+    int64_t max_utxo_h = -1;
+    if (!urs_utxo_height_summary(ndb, &have_utxos, &max_utxo_h) ||
+        !have_utxos || max_utxo_h < sync_h)
+        return false;
+
+    if (max_utxo_h > sync_h + 1) {
+        LOG_WARN("chain", "stale cursor repair refused: coins_h=%lld "
+                 "sync_h=%lld max_utxo_h=%lld exceeds one-block guard",
+                 (long long)coins_h, (long long)sync_h,
+                 (long long)max_utxo_h);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+            "stale_cursor_repair_refused coins_h=%lld sync_h=%lld "
+            "max_utxo_h=%lld",
+            (long long)coins_h, (long long)sync_h,
+            (long long)max_utxo_h);
+        return false;
+    }
+
+    if (max_utxo_h > sync_h) {
+        int deleted = coins_rewind_above_tip(
+            ndb->db, sync_h, UTXO_BOOT_REWIND_MAX_ROWS);
+        if (deleted < 0)
+            return false;
+    } else {
+        (void)node_db_exec(ndb,
+            "DELETE FROM node_state WHERE key='utxo_commitment'");
+    }
+
+    if (!node_db_state_set(ndb, "coins_best_block",
+                           sync_hash, sizeof(sync_hash)))
+        return false;
+    (void)node_db_state_set_int(ndb, "cec.coins_best_block_height", sync_h);
+
+    LOG_WARN("chain", "stale cursor repair: advanced coins_best_block "
+             "from h=%lld to sync projection h=%lld (max_utxo_h=%lld)",
+             (long long)coins_h, (long long)sync_h,
+             (long long)max_utxo_h);
+    event_emitf(EV_RECOVERY_ACTION, 0,
+        "action=repair_stale_coins_cursor from=%lld to=%lld max_utxo=%lld",
+        (long long)coins_h, (long long)sync_h, (long long)max_utxo_h);
+    return true;
+}
+
 bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
                               struct block_index *tip,
                               const char *reason,
@@ -115,8 +253,6 @@ bool utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
                                   reason ? reason : "utxo_recovery_genesis",
                                   true))
         return false;
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
     return true;
 }
 
@@ -245,7 +381,6 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
                     bi, ctx->datadir)) {
                 if (utxo_recovery_commit_tip(
                         ctx, bi, "best_have_data", true)) {
-                    coins_view_cache_flush(ctx->coins_tip);
                     printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
                            max_h);
                 }
@@ -258,16 +393,21 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
 }
 
 /* Helper: wipe UTXOs and reset to genesis for clean re-sync */
-static void reset_to_genesis(struct utxo_recovery_ctx *ctx)
+static bool reset_to_genesis(struct utxo_recovery_ctx *ctx)
 {
-    (void)utxo_recovery_wipe(ctx->ndb, "boot.reset_to_genesis");
+    if (!utxo_recovery_wipe(ctx->ndb, "boot.reset_to_genesis"))
+        return false;
 
     struct block_index *genesis = block_map_find(
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (genesis) {
-        if (utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true))
-            coins_view_cache_flush(ctx->coins_tip);
+        if (!utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true))
+            return false;
+    } else {
+        LOG_WARN("utxo_recovery",
+                 "reset_to_genesis: genesis missing from block index");
+        return false;
     }
 
     /* Clear migration flag for LevelDB re-import on next boot */
@@ -278,6 +418,7 @@ static void reset_to_genesis(struct utxo_recovery_ctx *ctx)
     atomic_store(&g_utxo_commitment_skip, true);
 
     set_flush_policy(3600, 1000000, 500);
+    return true;
 }
 
 /* Helper: boot-time integrity checks when BOOT_OK */
@@ -385,7 +526,22 @@ struct recovery_exec_result utxo_recovery_execute(
     struct utxo_recovery_ctx *ctx,
     struct boot_validation_result *vr)
 {
-    struct recovery_exec_result res = {0};
+    struct recovery_exec_result res = {
+        .status = recovery_exec_status_ok(),
+    };
+
+    if (!ctx || !vr || !ctx->state || !ctx->ndb ||
+        !ctx->activation_ctl) {
+        res.status = ZCL_ERR(-30,
+            "utxo_recovery_execute: invalid ctx=%p vr=%p state=%p "
+            "ndb=%p activation_ctl=%p",
+            (void *)ctx, (void *)vr,
+            ctx ? (void *)ctx->state : NULL,
+            ctx ? (void *)ctx->ndb : NULL,
+            ctx ? (void *)ctx->activation_ctl : NULL);
+        LOG_WARN("utxo_recovery", "%s", res.status.message);
+        return res;
+    }
 
     /* Check activation controller — skip when ANCHOR_ACTIVE */
     struct utxo_wipe_decision wd;
@@ -411,7 +567,25 @@ struct recovery_exec_result utxo_recovery_execute(
             break;
         }
 
-        reset_to_genesis(ctx);
+        if (!ctx->params) {
+            res.status = ZCL_ERR(-31,
+                "utxo_recovery_execute: %s requires chain params",
+                vr->action == BOOT_RECOVER_REIMPORT
+                    ? "reimport" : "wipe_wait");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+            break;
+        }
+
+        if (!reset_to_genesis(ctx)) {
+            res.status = ZCL_ERR(-32,
+                "utxo_recovery_execute: reset_to_genesis failed for "
+                "action=%s chain_height=%d coins_height=%d",
+                vr->action == BOOT_RECOVER_REIMPORT
+                    ? "reimport" : "wipe_wait",
+                vr->chain_height, vr->coins_height);
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+            break;
+        }
         res.recovered = true;
         break;
 
@@ -426,11 +600,29 @@ struct recovery_exec_result utxo_recovery_execute(
                        "will replay %d blocks.\n",
                        vr->chain_height, vr->coins_height,
                        vr->chain_height - vr->coins_height);
-                (void)utxo_recovery_commit_tip(
-                    ctx, coins_block, "chain_coins_mismatch_reset", true);
+                if (!utxo_recovery_commit_tip(
+                        ctx, coins_block,
+                        "chain_coins_mismatch_reset", true)) {
+                    res.status = ZCL_ERR(-33,
+                        "utxo_recovery_execute: failed to reset chain "
+                        "to coins tip h=%d", vr->coins_height);
+                    LOG_WARN("utxo_recovery", "%s", res.status.message);
+                    break;
+                }
             } else {
                 LOG_WARN("chain", "Chain tip/coins mismatch: coins tip h=%d is not " "disk-backed; refusing active-tip reset", vr->coins_height);
+                res.status = ZCL_ERR(-34,
+                    "utxo_recovery_execute: coins tip h=%d is not "
+                    "disk-backed", vr->coins_height);
+                LOG_WARN("utxo_recovery", "%s", res.status.message);
+                break;
             }
+        } else {
+            res.status = ZCL_ERR(-35,
+                "utxo_recovery_execute: coins tip h=%d is missing from "
+                "block index", vr->coins_height);
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+            break;
         }
         res.recovered = true;
         break;
@@ -439,18 +631,45 @@ struct recovery_exec_result utxo_recovery_execute(
         struct block_index *chain_tip =
             active_chain_tip(&ctx->state->chain_active);
         if (chain_tip) {
-            (void)utxo_recovery_commit_tip(
-                ctx, chain_tip, "coins_cursor_to_chain_tip", true);
+            if (!utxo_recovery_commit_tip(
+                    ctx, chain_tip, "coins_cursor_to_chain_tip", true)) {
+                res.status = ZCL_ERR(-36,
+                    "utxo_recovery_execute: failed to reset coins cursor "
+                    "to active chain tip h=%d", chain_tip->nHeight);
+                LOG_WARN("utxo_recovery", "%s", res.status.message);
+                break;
+            }
             res.recovered = true;
+        } else {
+            res.status = ZCL_ERR(-37,
+                "utxo_recovery_execute: cannot reset coins cursor because "
+                "active chain tip is missing");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
         }
         break;
     }
     case BOOT_RECOVER_RESET_COINS_TO_GENESIS:
-        if (utxo_recovery_commit_genesis(ctx, "coins_cursor_to_genesis"))
+        if (!ctx->params) {
+            res.status = ZCL_ERR(-38,
+                "utxo_recovery_execute: reset coins to genesis requires "
+                "chain params");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+        } else if (utxo_recovery_commit_genesis(ctx,
+                                                "coins_cursor_to_genesis")) {
             res.recovered = true;
+        } else {
+            res.status = ZCL_ERR(-39,
+                "utxo_recovery_execute: failed to reset coins cursor "
+                "to genesis");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+        }
         break;
     case BOOT_OK:
-        integrity_checks_boot_ok(ctx, &res.skip_activate);
+        if (!integrity_checks_boot_ok(ctx, &res.skip_activate)) {
+            res.status = ZCL_ERR(-40,
+                "utxo_recovery_execute: BOOT_OK integrity checks failed");
+            LOG_WARN("utxo_recovery", "%s", res.status.message);
+        }
         break;
     }
 
@@ -462,7 +681,8 @@ struct recovery_exec_result utxo_recovery_execute(
 int utxo_recovery_clean_above_tip(struct node_db *ndb,
                                    struct main_state *state)
 {
-    if (!ndb->open) return 0;
+    if (!ndb || !state || !ndb->open)
+        return 0;
 
     struct block_index *tip = active_chain_tip(&state->chain_active);
     int tip_h = tip ? tip->nHeight : 0;
@@ -486,139 +706,4 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
     printf("Boot: removed %d UTXOs above tip h=%d\n",
            deleted_total, tip_h);
     return deleted_total;
-}
-
-/* ── Shielded value backfill ────────────────────────────────── */
-
-struct shielded_backfill_ctx {
-    int updated;
-    struct main_state *state;
-    const char *datadir;
-};
-
-extern const char *g_datadir;
-
-static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
-{
-    struct shielded_backfill_ctx *bctx = ctx_ptr;
-    if (!ndb || !ndb->open) LOG_FAIL("utxo_recovery", "backfill_shielded called with null or closed db");
-
-    sqlite3_stmt *stmt = NULL;
-    const char *sql =
-        "INSERT OR REPLACE INTO blocks"
-        "(hash,height,prev_hash,version,merkle_root,"
-        "time,bits,nonce,solution,chain_work,status,"
-        "file_num,data_pos,undo_pos,num_tx,"
-        "sapling_root,sprout_root,sapling_value,sprout_value)"
-        " VALUES(?,?,?,?,?,?,?,?,X'',X'',?,?,?,0,?,NULL,NULL,?,?)";
-    if (sqlite3_prepare_v2(ndb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        fprintf(stderr, "backfill: prepare failed: %s\n",
-                sqlite3_errmsg(ndb->db));
-        return false;
-    }
-
-    int updated = 0, batch = 0;
-    node_db_begin(ndb);
-
-    size_t iter = 0;
-    struct block_index *bi;
-    while (block_map_next(&bctx->state->map_block_index, &iter, NULL, &bi)) {
-        if (!bi) continue;
-        if (bi->nFile < 0 || !(bi->nStatus & 8)) continue;
-        if (bi->nDataPos == 0 && bi->nHeight > 0) continue;
-
-        int64_t sprout_val = bi->nSproutValue;
-        int64_t sapling_val = bi->nSaplingValue;
-
-        /* If block_index has no values, read from disk */
-        if (sprout_val == 0 && sapling_val == 0) {
-            struct block blk;
-            if (!read_block_from_disk_index(&blk, bi, bctx->datadir))
-                continue;
-            for (size_t i = 0; i < blk.num_vtx; i++) {
-                const struct transaction *tx = &blk.vtx[i];
-                for (size_t j = 0; j < tx->num_joinsplit; j++) {
-                    sprout_val += tx->v_joinsplit[j].vpub_old;
-                    sprout_val -= tx->v_joinsplit[j].vpub_new;
-                }
-                sapling_val += tx->value_balance;
-            }
-            block_free(&blk);
-            if (sprout_val == 0 && sapling_val == 0) continue;
-            bi->nSproutValue = sprout_val;
-            bi->nSaplingValue = sapling_val;
-        }
-
-        sqlite3_reset(stmt);
-        sqlite3_bind_blob(stmt, 1, bi->phashBlock->data, 32, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 2, bi->nHeight);
-        sqlite3_bind_blob(stmt, 3,
-            bi->pprev ? bi->pprev->phashBlock->data : (const uint8_t[32]){0},
-            32, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 4, bi->nVersion);
-        sqlite3_bind_blob(stmt, 5, bi->hashMerkleRoot.data, 32, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 6, bi->nTime);
-        sqlite3_bind_int(stmt, 7, (int)bi->nBits);
-        sqlite3_bind_blob(stmt, 8, bi->nNonce.data, 32, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 9, bi->nStatus);
-        sqlite3_bind_int(stmt, 10, bi->nFile);
-        sqlite3_bind_int(stmt, 11, (int)bi->nDataPos);
-        sqlite3_bind_int(stmt, 12, bi->nTx);
-        sqlite3_bind_int64(stmt, 13, sapling_val);
-        sqlite3_bind_int64(stmt, 14, sprout_val);
-
-        if (AR_STEP_ROW_READONLY(stmt) != SQLITE_DONE) {
-            static int errs = 0;
-            if (++errs <= 3)
-                LOG_INFO("chain", "backfill h=%d: %s", bi->nHeight, sqlite3_errmsg(ndb->db));
-        } else {
-            updated++;
-        }
-
-        if (++batch >= 5000) {
-            node_db_commit(ndb);
-            node_db_begin(ndb);
-            batch = 0;
-            printf("  backfill: %d blocks so far...\n", updated);
-            fflush(stdout);
-        }
-    }
-
-    node_db_commit(ndb);
-    sqlite3_finalize(stmt);
-    node_db_state_set_int(ndb, "shielded_backfilled", 1);
-
-    bctx->updated = updated;
-    printf("Shielded backfill complete: %d blocks with "
-           "JoinSplit/Sapling data\n", updated);
-    fflush(stdout);
-    return true;
-}
-
-int utxo_recovery_backfill_shielded(struct node_db *ndb,
-                                     struct db_service *dbsvc,
-                                     struct main_state *state,
-                                     const char *datadir)
-{
-    struct shielded_backfill_ctx bctx = {
-        .updated = 0,
-        .state = state,
-        .datadir = datadir,
-    };
-    bool ok = false;
-
-    printf("Backfilling shielded values from block_index...\n");
-    if (dbsvc)
-        ok = db_service_run_write(dbsvc, backfill_shielded_write, &bctx);
-    else
-        ok = backfill_shielded_write(ndb, &bctx);
-
-    if (ok) {
-        printf("Backfill: updated %d blocks with shielded values\n",
-               bctx.updated);
-        fflush(stdout);
-        return bctx.updated;
-    }
-
-    LOG_ERR("recovery", "backfill: failed to update shielded values");
 }

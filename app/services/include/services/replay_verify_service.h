@@ -3,8 +3,7 @@
  * replay_verify_service — offline integrity / PoW verification sweep over
  * the legacy on-disk block log.
  *
- * This is the non-colliding Tier-1 piece of the cutover "PROVE" phase: it
- * re-derives the four cheap consensus invariants directly from zclassicd's
+ * This re-derives the four cheap consensus invariants directly from zclassicd's
  * persisted block storage, with no dependence on the live node's in-memory
  * chainstate. Given a datadir, it opens the read-only block_log_legacy
  * adapter (block_log_port.iter_from) and, for each block from

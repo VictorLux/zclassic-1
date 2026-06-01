@@ -173,7 +173,7 @@ bool db_peer_save(struct node_db *ndb, const struct db_peer *p)
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_observed(p->ip, p->port, p->services,
                                         p->last_seen, -1)) {
-        LOG_WARN("net", "peer projection shadow emit failed for save");
+        LOG_WARN("net", "peer projection emit failed for save");
     }
     return ok;
 }
@@ -186,7 +186,7 @@ bool db_peer_save_advisory(struct node_db *ndb, const struct db_peer *p)
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_observed(p->ip, p->port, p->services,
                                         p->last_seen, -1)) {
-        LOG_WARN("net", "peer projection shadow emit failed for advisory save");
+        LOG_WARN("net", "peer projection emit failed for advisory save");
     }
     return ok;
 }
@@ -228,7 +228,7 @@ bool db_peer_delete(struct node_db *ndb, const uint8_t ip[16], uint16_t port)
         ar_run_after_destroy(cbs, &p);
     if (ok && peers_projection_event_log() &&
         !peers_projection_emit_dropped(ip, port, 1)) {
-        LOG_WARN("net", "peer projection shadow emit failed for delete");
+        LOG_WARN("net", "peer projection emit failed for delete");
     }
     return ok;
 }

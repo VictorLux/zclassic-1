@@ -36,15 +36,18 @@
  * snapshot_controller_internal.h, used by the import and tx-index
  * siblings) ── */
 
-bool snapshot_sql_exec_checked(sqlite3 *db,
+bool snapshot_sql_exec_checked(struct node_db *ndb,
                                const char *sql,
                                const char *label)
 {
-    if (!db || !sql)
-        LOG_FAIL("snapshot", "sql_exec_checked: db=%p sql=%p", (void *)db, (void *)sql);
-    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+    if (!ndb || !ndb->open || !sql) {
+        LOG_FAIL("snapshot", "sql_exec_checked: ndb=%p open=%d sql=%p",
+                (void *)ndb, ndb ? ndb->open : 0, (void *)sql);
+    }
+    if (!node_db_exec(ndb, sql)) {
         LOG_FAIL("snapshot", "snapshot: %s failed: %s",
-                label, sqlite3_errmsg(db));
+                label, ndb->db ? sqlite3_errmsg(ndb->db)
+                               : "db unavailable");
     }
     return true;
 }

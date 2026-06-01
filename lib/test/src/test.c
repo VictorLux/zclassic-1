@@ -523,6 +523,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "rolling_anchor") == 0) {
+        printf("[test] ZCL_TEST_ONLY=rolling_anchor — running rolling anchor subset\n");
+        failures += test_rolling_anchor_service();
+        printf("\n=== rolling_anchor subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "net") == 0) {
         printf("[test] ZCL_TEST_ONLY=net — running net subset\n");
         failures += test_net();
@@ -675,6 +682,7 @@ int main(void)
     failures += test_file_controller();
     failures += test_file_ops();
     failures += test_integrity();
+    failures += test_rolling_anchor_service();
     failures += test_protocols();
     failures += test_chain_restore_planner();
     failures += test_chain_restore_service();

@@ -310,19 +310,19 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
     if (ctx->coins_tip)
         coins_view_cache_flush(ctx->coins_tip);
 
-    char *sqlite_err = NULL;
-    if (sqlite3_exec(ctx->node_db->db, "BEGIN", NULL, NULL,
-                     &sqlite_err) != SQLITE_OK) {
-        LOG_WARN("repairutxos", "repairutxos: sqlite BEGIN failed: %s", sqlite_err ? sqlite_err : "unknown");
-        sqlite3_free(sqlite_err);
-        json_set_str(result, "Database transaction begin failed");
+    if (!node_db_begin(ctx->node_db)) {
+        LOG_WARN("repairutxos",
+                 "repairutxos: database BEGIN failed");
+        json_set_str(result,
+                     "Database transaction begin failed");
+        /* node_db_begin already logged database context. */
         return false;
     }
 
     size_t blk_buf_size = 4 * 1024 * 1024;
     char *blk_buf = zcl_malloc(blk_buf_size, "repair_blk_buf");
     if (!blk_buf) {
-        sqlite3_exec(ctx->node_db->db, "ROLLBACK", NULL, NULL, NULL);
+        node_db_rollback(ctx->node_db);
         json_set_str(result, "Out of memory");
         return false;
     }
@@ -509,12 +509,12 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
     }
 
     free(blk_buf);
-    sqlite_err = NULL;
-    if (sqlite3_exec(ctx->node_db->db, "COMMIT", NULL, NULL,
-                     &sqlite_err) != SQLITE_OK) {
-        LOG_WARN("repairutxos", "repairutxos: sqlite COMMIT failed: %s", sqlite_err ? sqlite_err : "unknown");
-        sqlite3_free(sqlite_err);
-        json_set_str(result, "Database transaction commit failed");
+    if (!node_db_commit(ctx->node_db)) {
+        LOG_WARN("repairutxos",
+                 "repairutxos: database COMMIT failed");
+        json_set_str(result,
+                     "Database transaction commit failed");
+        /* node_db_commit already logged database context. */
         return false;
     }
 
@@ -554,4 +554,3 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
 }
 
 /* ── repairheights: fix height=0 UTXOs from transaction index ──── */
-

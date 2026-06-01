@@ -32,10 +32,8 @@ struct node_health_snapshot {
     /* Prime Directive health = network_tip − log_head, expressed as one
      * real number. `log_head` is the tip_finalize stage cursor (the
      * height the reducer has finalized through the event log);
-     * `log_head_gap` = peer_best_height − log_head. SHADOW today (the
-     * live tip is still `tip_height` from chain_active); this is the
-     * instrument the B5/B7 cutover and the no-forward-progress canary
-     * read. -1 when unknown. */
+     * `log_head_gap` = peer_best_height − log_head. The no-forward-progress
+     * canary reads this. -1 when unknown. */
     int log_head;
     int log_head_gap;
     int64_t tip_stale_seconds;

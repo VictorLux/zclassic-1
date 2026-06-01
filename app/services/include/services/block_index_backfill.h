@@ -6,8 +6,8 @@
  * Why
  * ---
  * block_index_projection (lib/storage) materializes the chain index from
- * EV_BLOCK_HEADER events in the append-only event_log. In the shadow era
- * it only ever saw the *tail* of the chain — every block this node
+ * EV_BLOCK_HEADER events in the append-only event_log. Before the historical
+ * backfill it only saw the tail of the chain — every block this node
  * connected since the projection was wired emits an event, but the
  * millions of historical headers the legacy loaders imported from
  * zclassicd's LevelDB were never replayed into the log. The projection is

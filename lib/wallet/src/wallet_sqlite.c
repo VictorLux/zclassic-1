@@ -209,6 +209,9 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
           "SELECT pubkey, privkey, compressed"
           " FROM wallet_keys WHERE pubkey_hash=?",
           "wallet_keys", "key_read_one" },
+        { &ws->stmt_key_delete,
+          "DELETE FROM wallet_keys WHERE pubkey_hash=?",
+          "wallet_keys", "key_delete" },
         { &ws->stmt_tx_write,
           "INSERT OR REPLACE INTO wallet_transactions"
           " (txid, raw_tx, block_hash, block_height, time_received, from_me)"
@@ -293,6 +296,7 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_key_write)    { sqlite3_finalize(ws->stmt_key_write);    ws->stmt_key_write = NULL; }
     if (ws->stmt_key_read)     { sqlite3_finalize(ws->stmt_key_read);     ws->stmt_key_read = NULL; }
     if (ws->stmt_key_read_one) { sqlite3_finalize(ws->stmt_key_read_one); ws->stmt_key_read_one = NULL; }
+    if (ws->stmt_key_delete)   { sqlite3_finalize(ws->stmt_key_delete);   ws->stmt_key_delete = NULL; }
     if (ws->stmt_tx_write)     { sqlite3_finalize(ws->stmt_tx_write);     ws->stmt_tx_write = NULL; }
     if (ws->stmt_tx_read)      { sqlite3_finalize(ws->stmt_tx_read);      ws->stmt_tx_read = NULL; }
     if (ws->stmt_seed_write)   { sqlite3_finalize(ws->stmt_seed_write);   ws->stmt_seed_write = NULL; }
@@ -469,6 +473,29 @@ bool wallet_sqlite_write_key(struct wallet_sqlite *ws, const struct pubkey *pk,
     LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
              r.code,
              r.source_file ? r.source_file : "?", r.source_line, r.message);
+}
+
+struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
+                                             const struct pubkey *pk)
+{
+    if (!ws)
+        return ZCL_ERR(WSQL_NULL_ARG, "wallet_sqlite pointer is NULL");
+    if (!pk)
+        return ZCL_ERR(WSQL_NULL_ARG, "pubkey pointer is NULL");
+    if (!ws->open)
+        return wsql_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
+            "delete_key: wallet_sqlite is not open"));
+
+    struct key_id kid = pubkey_get_id(pk);
+    sqlite3_stmt *s = ws->stmt_key_delete;
+    sqlite3_reset(s);
+    sqlite3_bind_blob(s, 1, kid.id.data, 20, SQLITE_STATIC);
+
+    int rc = AR_STEP_WRITE(s);
+    if (rc != SQLITE_DONE)
+        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
+            "delete_key: step rc=%d: %s", rc, sqlite3_errmsg(ws->db)));
+    return ZCL_OK;
 }
 
 struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
