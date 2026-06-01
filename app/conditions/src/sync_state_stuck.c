@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "conditions/watchdog_dissolve_pr2.h"
+#include "conditions/sync_state_stuck.h"
 #include "util/log_macros.h"
 #include "framework/condition.h"
 

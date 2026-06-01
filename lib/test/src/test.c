@@ -397,10 +397,10 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "watchdog_dissolve_pr2") == 0) {
-        printf("[test] ZCL_TEST_ONLY=watchdog_dissolve_pr2 — running only\n");
-        failures += test_watchdog_dissolve_pr2();
-        printf("\n=== watchdog_dissolve_pr2 subset complete: %d failure(s) ===\n",
+    if (only && strcmp(only, "sync_watchdog_conditions") == 0) {
+        printf("[test] ZCL_TEST_ONLY=sync_watchdog_conditions - running only\n");
+        failures += test_sync_watchdog_conditions();
+        printf("\n=== sync_watchdog_conditions subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -411,10 +411,10 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
-    if (only && strcmp(only, "watchdog_conditions_pr3") == 0) {
-        printf("[test] ZCL_TEST_ONLY=watchdog_conditions_pr3 — running only\n");
-        failures += test_watchdog_conditions_pr3();
-        printf("\n=== watchdog_conditions_pr3 subset complete: %d failure(s) ===\n",
+    if (only && strcmp(only, "peer_snapshot_conditions") == 0) {
+        printf("[test] ZCL_TEST_ONLY=peer_snapshot_conditions - running only\n");
+        failures += test_peer_snapshot_conditions();
+        printf("\n=== peer_snapshot_conditions subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }
@@ -775,8 +775,8 @@ int main(void)
     failures += test_supervisor_domains();
     failures += test_condition_engine();
     failures += test_utxo_activation_paused();
-    failures += test_watchdog_dissolve_pr2();
-    failures += test_watchdog_conditions_pr3();
+    failures += test_sync_watchdog_conditions();
+    failures += test_peer_snapshot_conditions();
     failures += test_snapshot_receive_stalled_condition();
     failures += test_legacy_mirror_stuck_condition();
     failures += test_snapshot_negotiation_stalled_condition();

@@ -2,7 +2,9 @@
 
 #include "test/test_helpers.h"
 
-#include "conditions/watchdog_dissolve_pr3.h"
+#include "conditions/peer_floor_violated.h"
+#include "conditions/snapshot_offer_ready.h"
+#include "conditions/sync_violation_lag.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
 #include "jobs/header_admit_stage.h"
@@ -16,17 +18,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WDP3_CHECK(name, expr) do { \
-    printf("watchdog_conditions_pr3: %s... ", (name)); \
+#define PEER_SNAPSHOT_CHECK(name, expr) do { \
+    printf("peer_snapshot_conditions: %s... ", (name)); \
     if (expr) printf("OK\n"); \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
-void register_peer_floor_violated(void);
-void register_sync_violation_lag(void);
-void register_snapshot_offer_ready(void);
-
-struct fake_clock_pr3 {
+struct fake_clock_peer_snapshot {
     _Atomic int64_t wall_ms;
 };
 
@@ -38,11 +36,13 @@ static int64_t fake_now_mono(void *self)
 
 static int64_t fake_now_wall(void *self)
 {
-    struct fake_clock_pr3 *c = (struct fake_clock_pr3 *)self;
+    struct fake_clock_peer_snapshot *c =
+        (struct fake_clock_peer_snapshot *)self;
     return atomic_load(&c->wall_ms);
 }
 
-static void fake_clock_install(struct fake_clock_pr3 *c, int64_t unix_s)
+static void fake_clock_install(struct fake_clock_peer_snapshot *c,
+                               int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
     static clock_iface_t iface;
@@ -52,14 +52,14 @@ static void fake_clock_install(struct fake_clock_pr3 *c, int64_t unix_s)
     clock_set_default(&iface);
 }
 
-static void fake_clock_set(struct fake_clock_pr3 *c, int64_t unix_s)
+static void fake_clock_set(struct fake_clock_peer_snapshot *c, int64_t unix_s)
 {
     atomic_store(&c->wall_ms, unix_s * 1000);
 }
 
-static void reset_pr3(struct connman *cm,
-                      struct download_manager *dm,
-                      struct main_state *ms)
+static void reset_peer_snapshot_conditions(struct connman *cm,
+                                           struct download_manager *dm,
+                                           struct main_state *ms)
 {
     condition_engine_reset_for_testing();
     peer_floor_violated_test_reset();
@@ -78,7 +78,7 @@ static void reset_pr3(struct connman *cm,
     sync_monitor_set_context(cm, dm, ms);
 }
 
-static void cleanup_pr3(void)
+static void cleanup_peer_snapshot_conditions(void)
 {
     condition_engine_reset_for_testing();
     sync_monitor_set_context(NULL, NULL, NULL);
@@ -88,18 +88,18 @@ static void cleanup_pr3(void)
         sync_set_state(SYNC_IDLE, "test cleanup");
 }
 
-int test_watchdog_conditions_pr3(void)
+int test_peer_snapshot_conditions(void)
 {
-    printf("\n=== watchdog PR-3 condition tests ===\n");
+    printf("\n=== peer and snapshot condition tests ===\n");
     int failures = 0;
 
     {
-        struct fake_clock_pr3 clock;
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 1000);
         struct connman cm;
         struct download_manager dm;
         struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
         bool ok = true;
         register_peer_floor_violated();
 
@@ -116,17 +116,17 @@ int test_watchdog_conditions_pr3(void)
         condition_engine_tick();
         ok = ok && peer_floor_violated_test_remedy_calls() == 1;
         ok = ok && stuck.disconnect;
-        WDP3_CHECK("peer floor kicks unhealthy outbound slots", ok);
-        cleanup_pr3();
+        PEER_SNAPSHOT_CHECK("peer floor kicks unhealthy outbound slots", ok);
+        cleanup_peer_snapshot_conditions();
     }
 
     {
-        struct fake_clock_pr3 clock;
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 2000);
         struct connman cm;
         struct download_manager dm;
         struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
         bool ok = true;
         register_peer_floor_violated();
         setenv("ZCL_PEERLESS_OK", "1", 1);
@@ -135,17 +135,17 @@ int test_watchdog_conditions_pr3(void)
         fake_clock_set(&clock, 2061);
         condition_engine_tick();
         ok = ok && peer_floor_violated_test_remedy_calls() == 0;
-        WDP3_CHECK("peer floor honors peerless test mode", ok);
-        cleanup_pr3();
+        PEER_SNAPSHOT_CHECK("peer floor honors peerless test mode", ok);
+        cleanup_peer_snapshot_conditions();
     }
 
     {
-        struct fake_clock_pr3 clock;
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 3000);
         struct connman cm;
         struct download_manager dm;
         struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
         bool ok = true;
         register_sync_violation_lag();
 
@@ -169,17 +169,17 @@ int test_watchdog_conditions_pr3(void)
         ok = ok && condition_engine_get_unresolved_count() == 1;
         condition_engine_tick();
         ok = ok && sync_violation_lag_test_remedy_calls() == 1;
-        WDP3_CHECK("sync violation rotates peers once and pages", ok);
-        cleanup_pr3();
+        PEER_SNAPSHOT_CHECK("sync violation rotates peers once and pages", ok);
+        cleanup_peer_snapshot_conditions();
     }
 
     {
-        struct fake_clock_pr3 clock;
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 4000);
         struct connman cm;
         struct download_manager dm;
         struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
         bool ok = true;
         register_snapshot_offer_ready();
 
@@ -203,17 +203,17 @@ int test_watchdog_conditions_pr3(void)
 
         condition_engine_tick();
         ok = ok && snapshot_offer_ready_test_remedy_calls() == 1;
-        WDP3_CHECK("snapshot offer ready reasserts snapshot receive", ok);
-        cleanup_pr3();
+        PEER_SNAPSHOT_CHECK("snapshot offer ready reasserts snapshot receive", ok);
+        cleanup_peer_snapshot_conditions();
     }
 
     {
-        struct fake_clock_pr3 clock;
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 4500);
         struct connman cm;
         struct download_manager dm;
         struct main_state ms;
-        reset_pr3(&cm, &dm, &ms);
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
         bool ok = true;
         register_snapshot_offer_ready();
 
@@ -240,10 +240,10 @@ int test_watchdog_conditions_pr3(void)
         ok = ok && snapshot_offer_ready_test_remedy_calls() == 0;
         ok = ok && sync_get_state() == SYNC_AT_TIP;
         ok = ok && condition_engine_get_active_count() == 0;
-        WDP3_CHECK("snapshot offer ready ignores at-tip state", ok);
-        cleanup_pr3();
+        PEER_SNAPSHOT_CHECK("snapshot offer ready ignores at-tip state", ok);
+        cleanup_peer_snapshot_conditions();
     }
 
-    cleanup_pr3();
+    cleanup_peer_snapshot_conditions();
     return failures;
 }

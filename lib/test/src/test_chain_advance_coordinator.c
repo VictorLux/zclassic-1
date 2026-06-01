@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 
+#include "conditions/local_header_refill_needed.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/snapshot_sync_service.h"
@@ -15,9 +16,6 @@
 #include "net/download.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
-
-void register_local_header_refill_needed(void);
-void local_header_refill_needed_test_reset(void);
 
 static void init_source(struct cac_plan_input *in,
                         enum cac_source source,

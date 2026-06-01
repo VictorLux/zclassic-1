@@ -1,16 +1,17 @@
 # app/supervisors/
 
-**Shape:** Supervisor — liveness tree with restart policy.
+**Shape:** Supervisor — declared liveness tree with restart/stall policy.
 
-Each file in `src/` is one supervisor root using `SUPERVISOR_ROOT(...)`
-from `lib/framework/supervisor.h`. A supervisor declares a tree of
-supervised children (Jobs, other supervisors) with restart policies
-(TRANSIENT / PERMANENT / TEMPORARY — Erlang/OTP semantics).
+Each source file in `src/` owns one supervisor domain or one narrow liveness
+registration surface. Supervisors register `struct liveness_contract` children
+through `lib/util/supervisor.h`, grouped by domain in `domains.c`.
 
-See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) § 3.5 for the contract.
+Current roots include network, chain, staged-sync, legacy-mirror, and
+self-heal/condition-engine liveness. Boot still wires lifecycle dependencies,
+so this shape is partial; do not add placeholder roots or macro-only scaffold.
+A supervisor file should make a running child visible through the root
+liveness tree or it should not exist.
 
-Existing supervisor primitives at `lib/util/supervisor.{c,h}` will move
-to `lib/framework/supervisor.{c,h}` in Phase 1.
-
-First file landing here (Phase 0): `self_heal.c` — registers the
-condition engine as a supervisor child.
+See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the destination shape
+and [`docs/REFACTOR_STATUS.md`](../../docs/REFACTOR_STATUS.md) for remaining
+supervisor cleanup.

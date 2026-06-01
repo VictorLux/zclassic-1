@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "conditions/watchdog_dissolve_pr3.h"
+#include "conditions/snapshot_offer_ready.h"
 #include "util/log_macros.h"
 #include "framework/condition.h"
 

@@ -480,6 +480,13 @@ node soak.
   `reducer_ingest_block` plus the eight Wave-S Job stages, and
   `test_make_lint_gates` has a production-source guard that fails if those
   names reappear outside tests/views.
+- The condition-layer PR-number scaffold headers were deleted. Each affected
+  sync/peer/snapshot condition now has a condition-named public header for its
+  registration and `ZCL_TESTING` hooks, and the old PR-number test groups were
+  renamed to behavior-named condition suites.
+- `lib/framework/README.md` no longer describes Phase-0 scaffold or retired
+  macro DSL forms; it now documents the framework primitives that actually
+  exist today.
 
 ## Active Debt
 
@@ -557,6 +564,39 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after deleting condition-layer PR scaffold headers
+  and renaming the watchdog condition test groups to behavior names.
+- `make -j$(nproc)`: pass after the condition header/test rename and README
+  doc cleanup.
+- `make test_parallel`: pass after rebuilding the parallel runner with
+  `sync_watchdog_conditions` and `peer_snapshot_conditions`.
+- Focused filtered tests passed:
+  `./test_parallel --only=sync_watchdog_conditions --timeout=120 --verbose`,
+  `./test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`,
+  and `./test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`.
+- `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- Stale scaffold searches returned no matches for the deleted PR-number
+  condition/test group names or retired framework README scaffold paths.
+- Production stale terminology searches still returned no matches for
+  `shadow`/`cutover`/`projection-diff`/`projection_diff` in the guarded
+  production C/H surface, nor for deleted single-engine block-connection names
+  across production C/H files.
+- `./test_parallel --timeout=180`: pass after the condition scaffold cleanup,
+  `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 14:39:15 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after normalizing deleted single-engine
   block-connection names to reducer/stage language across production C/H files
   and architecture docs.

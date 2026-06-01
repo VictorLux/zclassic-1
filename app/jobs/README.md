@@ -1,15 +1,24 @@
 # app/jobs/
 
-**Shape:** Job — idempotent, cursor-stamped async stage.
+**Shape:** Job — idempotent, cursor-stamped reducer stage.
 
-Each file in `src/` is one Job using the `JOB(...)` macro from
-`lib/framework/job.h`. Jobs run periodically (their `PERIOD_SECS`), read
-state via models, mutate via models, advance a cursor in `progress.kv`,
-and emit events.
+Each source file in `src/` owns one bounded stepper or one narrow helper for
+the Wave-S reducer pipeline:
 
-See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) § 3.4 for the contract
-and § 7.2 for the cookbook to add a new Job.
+```
+header_admit -> validate_headers -> body_fetch -> body_persist
+             -> script_validate -> proof_validate -> utxo_apply -> tip_finalize
+```
 
-Canonical existing stage (pre-framework, target migration):
-`app/services/src/header_admit_stage.c`, `validate_headers_stage.c`,
-`body_fetch_stage.c`. These move here as Phase 2 (Wave S finish).
+Jobs return `job_result_t` from `app/jobs/include/jobs/job.h`:
+`JOB_ADVANCED`, `JOB_BLOCKED`, `JOB_IDLE`, or `JOB_FATAL`. The generic stage
+runner in `lib/util/stage.h` handles cursor/replay mechanics; job files own the
+stage-specific work and must advance a durable cursor or name a typed blocker.
+
+Do not add macro-only job scaffold. If a helper is shared by stages, keep it
+purpose-named (`stage_helpers.c`, `utxo_apply_delta.c`) and out of the hot path
+unless it removes real duplicated stage mechanics.
+
+See [`docs/FRAMEWORK.md`](../../docs/FRAMEWORK.md) for the contract and
+[`docs/REFACTOR_STATUS.md`](../../docs/REFACTOR_STATUS.md) for active cleanup
+work.
