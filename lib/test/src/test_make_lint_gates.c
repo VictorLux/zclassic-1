@@ -1539,6 +1539,29 @@ static int t_header_peer_votes_are_callback_injected(void)
     return failures;
 }
 
+static int t_process_block_db_open_check_is_runtime_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("process block node_db open check is runtime owned") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "config/src/runtime.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
+        ASSERT(strstr(buf, "ndb->open") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_repaired_index_persistence_contract(void)
 {
     int failures = 0;
@@ -1744,6 +1767,7 @@ int test_make_lint_gates(void)
     failures += t_flyclient_proof_builder_is_callback_injected();
     failures += t_net_sync_planners_are_lib_owned();
     failures += t_header_peer_votes_are_callback_injected();
+    failures += t_process_block_db_open_check_is_runtime_owned();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_sha3_window_tool_check_contract();

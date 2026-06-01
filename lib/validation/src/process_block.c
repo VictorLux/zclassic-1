@@ -24,7 +24,6 @@
 #include "validation/process_block.h"
 #include "validation/process_block_internals.h"
 #include "config/runtime.h"
-#include "models/database.h"
 
 #include "process_block_internal.h"
 
@@ -48,9 +47,9 @@ void process_block_set_node_db(struct node_db *ndb)
 struct node_db *process_block_node_db_internal(void)
 {
     struct node_db *ndb = app_runtime_node_db();
-    if (ndb && ndb->open)
+    if (app_runtime_node_db_handle_open(ndb))
         return ndb;
-    return (g_process_block_node_db && g_process_block_node_db->open)
+    return app_runtime_node_db_handle_open(g_process_block_node_db)
          ? g_process_block_node_db
          : NULL;
 }

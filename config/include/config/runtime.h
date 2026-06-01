@@ -6,6 +6,7 @@
 #define ZCL_RUNTIME_H
 
 #include "config/db_service.h"
+#include <stdbool.h>
 
 struct node_db;
 struct snapshot_sync_service;
@@ -29,6 +30,8 @@ const struct app_runtime_context *app_runtime_current(void);
 
 struct db_service *app_runtime_db_service(void);
 struct node_db *app_runtime_node_db(void);
+bool app_runtime_node_db_handle_open(const struct node_db *ndb);
+bool app_runtime_node_db_is_open(void);
 sqlite3 *app_runtime_query_db(void);
 struct snapshot_sync_service *app_runtime_snapshot_sync(void);
 struct tx_mempool *app_runtime_mempool(void);

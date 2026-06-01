@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "config/runtime.h"
+#include "models/database.h"
 #include <stddef.h>
 
 static struct app_runtime_context *g_current_runtime = NULL;
@@ -28,6 +29,16 @@ struct node_db *app_runtime_node_db(void)
 {
     struct db_service *svc = app_runtime_db_service();
     return db_service_node_db(svc);
+}
+
+bool app_runtime_node_db_handle_open(const struct node_db *ndb)
+{
+    return ndb && ndb->open;
+}
+
+bool app_runtime_node_db_is_open(void)
+{
+    return app_runtime_node_db_handle_open(app_runtime_node_db());
 }
 
 sqlite3 *app_runtime_query_db(void)
