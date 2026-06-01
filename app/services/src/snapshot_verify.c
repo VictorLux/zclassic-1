@@ -23,6 +23,7 @@
 #include "net/fast_sync.h"
 #include "core/serialize.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
 #include "validation/main_state.h"

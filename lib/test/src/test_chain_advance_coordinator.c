@@ -9,6 +9,7 @@
 #include "services/sync_monitor.h"
 #include "config/runtime.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "framework/condition.h"
 #include "models/block.h"
 #include "models/database.h"

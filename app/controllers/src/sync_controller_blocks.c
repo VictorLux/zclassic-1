@@ -38,6 +38,7 @@
 #include "sapling/note_encryption.h"
 #include "support/cleanse.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "config/runtime.h"
 #include <stdio.h>
 #include <stdlib.h>

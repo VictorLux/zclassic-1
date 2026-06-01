@@ -38,6 +38,7 @@
 #include "util/log_macros.h"
 #include "util/sync.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "core/uint256.h"
 #include <pthread.h>
 #include <stdio.h>

@@ -12,6 +12,7 @@
 #include "services/block_pruning_service.h"
 #include "chain/chain.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 

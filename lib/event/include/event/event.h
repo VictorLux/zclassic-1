@@ -243,11 +243,9 @@ enum peer_state {
     PEER_NUM_STATES            /* sentinel */
 };
 
-/* The sync state machines now live in lib/sync/. event.h re-exports
- * the type names + setters/getters for backward compatibility — the
- * ~28 existing consumers continue to compile unchanged. New code
- * should `#include "sync/sync_state.h"` directly. */
-#include "sync/sync_state.h"
+/* Sync state machines live in lib/sync/. Files that use sync or snapshot
+ * state APIs must include "sync/sync_state.h" directly; event.h owns only
+ * the event bus and peer state machine. */
 
 /* ── Event structure ────────────────────────────────────── */
 

@@ -15,6 +15,7 @@
 #include "models/utxo.h"
 #include "coins/utxo_commitment.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/trace.h"

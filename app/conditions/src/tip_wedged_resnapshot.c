@@ -6,6 +6,7 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "net/snapshot_sync_contract.h"
+#include "sync/sync_state.h"
 #include "services/sync_monitor.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"

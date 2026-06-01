@@ -14,6 +14,7 @@
 #include "services/chain_state_repository.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "config/runtime.h"

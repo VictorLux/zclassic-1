@@ -113,6 +113,7 @@
 #include "validation/mirror_consensus.h"
 #include "validation/process_block.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
 #include "sapling/params_init.h"

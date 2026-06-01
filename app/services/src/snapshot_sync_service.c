@@ -32,6 +32,7 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "net/fast_sync.h"
+#include "sync/sync_state.h"
 #include "net/net.h"
 #include "util/log_macros.h"
 

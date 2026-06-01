@@ -74,6 +74,7 @@
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>

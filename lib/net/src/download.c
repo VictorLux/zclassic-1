@@ -6,6 +6,7 @@
 #include "platform/time_compat.h"
 #include "net/download.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>

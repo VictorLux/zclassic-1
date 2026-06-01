@@ -7,6 +7,7 @@
 #include "chain/mmr.h"
 #include "coins/utxo_commitment.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "framework/condition.h"
 #include "models/database.h"
 #include "platform/clock.h"

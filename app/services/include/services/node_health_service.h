@@ -6,6 +6,7 @@
 #define ZCL_NODE_HEALTH_SERVICE_H
 
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

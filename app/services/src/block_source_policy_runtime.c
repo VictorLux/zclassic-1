@@ -23,6 +23,7 @@
 #include "net/connman.h"
 #include "net/peer_lifecycle.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "util/sync.h"

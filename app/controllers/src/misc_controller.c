@@ -6,6 +6,7 @@
 #include "controllers/misc_controller.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "net/download.h"
 #include "validation/contextual_check_tx.h"
 #include "controllers/wallet_helpers.h"

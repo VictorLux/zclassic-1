@@ -22,6 +22,7 @@
 #include "config/runtime.h"
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "keys/key_io.h"
 #include "models/database.h"
 #include "models/block.h"

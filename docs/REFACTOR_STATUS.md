@@ -226,6 +226,11 @@ node soak.
   for header, block, and aggregate sync planning were deleted; app/test callers
   include the lib-owned planner contract directly, and the lib-to-app include
   baseline remains empty.
+- `lib/event/include/event/event.h` no longer re-exports the sync/snapshot
+  FSM API from `lib/sync`. The event header owns event bus declarations plus
+  peer state only; app/config/net/test callers that use `sync_get_state()`,
+  `enum sync_state`, `snapsync_get_state()`, or snapshot FSM names include
+  `sync/sync_state.h` directly.
 - The header-anchor repair path no longer requires the net header handler to
   include the app chain-tip service. The current CSR-less fallback routes
   through boot-owned chain-state callbacks, and the lib-to-app include
@@ -562,6 +567,32 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after removing the `event/event.h` sync-state
+  compatibility re-export and adding direct `sync/sync_state.h` includes at
+  the real sync/snapshot FSM call sites.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  direct sync-state include path.
+- Focused filtered tests passed:
+  `./test_parallel --only=event --timeout=120 --verbose`,
+  `./test_parallel --only=sync_state_fsm --timeout=120 --verbose`,
+  `./test_parallel --only=state_machine --timeout=120 --verbose`,
+  `./test_parallel --only=wallet_view --timeout=120 --verbose`,
+  `./test_parallel --only=node_health --timeout=120 --verbose`,
+  `./test_parallel --only=block_pruning --timeout=120 --verbose`,
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
+  `./test_parallel --only=net --timeout=120 --verbose`.
+- `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- `./test_parallel --timeout=180`: pass after the `event.h` re-export removal,
+  `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 15:11:12 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and read-only journal checks
+  had no entries. The service was not restarted; this slice stayed read-only
+  and preserved the `8023` port expectation.
 - `git diff --check`: pass after deleting the three sync-planning app-layer
   re-export headers and routing app/test callers directly to
   `sync/sync_planner.h`.

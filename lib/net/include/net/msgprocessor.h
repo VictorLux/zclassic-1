@@ -15,6 +15,7 @@
 #include "config/runtime.h"
 #include "net/fast_sync.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

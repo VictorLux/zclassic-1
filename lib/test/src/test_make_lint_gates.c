@@ -1695,6 +1695,13 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "syncsvc_plan_periodic_getheaders") != NULL);
         ASSERT(strstr(buf, "syncsvc_assign_peer_blocks") != NULL);
         ASSERT(strstr(buf, "services/") == NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/event/include/event/event.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "EV_SYNC_STATE_CHANGE") != NULL);
+        ASSERT(strstr(buf, "#include \"sync/sync_state.h\"") == NULL);
+        ASSERT(strstr(buf, "enum sync_state") == NULL);
         PASS();
     } _test_next:;
     free(buf);

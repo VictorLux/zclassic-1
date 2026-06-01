@@ -14,6 +14,7 @@
 #include "net/tip_watchdog.h"
 #include "net/download.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include <sqlite3.h>
 #include <unistd.h>
 #include <pthread.h>

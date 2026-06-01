@@ -25,6 +25,7 @@
 #include "event/event.h"
 #include "json/json.h"
 #include "supervisors/domains.h"
+#include "sync/sync_state.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -46,11 +47,6 @@ struct block_pruning_service *g_block_pruning = NULL;
 static struct liveness_contract g_prune_contract;
 static _Atomic supervisor_child_id g_prune_supervisor_id =
     SUPERVISOR_INVALID_ID;
-
-/* ── Helpers ───────────────────────────────────────────────── */
-
-/* Get the current sync state to avoid pruning during IBD. */
-extern enum sync_state sync_get_state(void);
 
 /* Maximum file number we'll ever scan. blk files are 0..99998,
  * and 255 is the special sync file (never pruned). */

@@ -48,6 +48,7 @@
 #include "core/serialize.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"

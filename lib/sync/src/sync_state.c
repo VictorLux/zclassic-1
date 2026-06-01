@@ -6,9 +6,8 @@
  *
  * EV_SYNC_STATE_CHANGE / EV_SNAPSYNC_STATE_CHANGE are still defined
  * in lib/event/include/event/event.h and emitted via event_emit;
- * this file imports event.h for that purpose. The reverse direction
- * (event.h importing sync_state.h) is preserved as a backward-compat
- * re-export so the ~28 existing consumers compile unchanged.
+ * this file imports event.h for that purpose. The reverse direction is
+ * intentionally forbidden: event.h does not re-export sync state APIs.
  */
 
 #include "sync/sync_state.h"

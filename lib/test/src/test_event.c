@@ -3,6 +3,7 @@
 
 #include "test/test_helpers.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>

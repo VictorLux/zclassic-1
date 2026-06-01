@@ -16,6 +16,7 @@
 #include "validation/process_block.h"
 #include "net/download.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "coins/coins_view.h"

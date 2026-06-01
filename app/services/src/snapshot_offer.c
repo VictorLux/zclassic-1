@@ -19,6 +19,7 @@
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "config/runtime.h"
+#include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "core/serialize.h"
 

@@ -27,6 +27,7 @@
 #include "config/runtime.h"
 #include "event/event.h"
 #include "net/flyclient.h"
+#include "sync/sync_state.h"
 #include "util/result.h"
 #include <stddef.h>
 #include <stdint.h>
