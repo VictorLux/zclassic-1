@@ -1,13 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_fetch.c — Phase 2: chunk receive.
+ * snapshot_fetch.c — snapshot chunk receive.
  *
  * Owns the receive-mode database PRAGMA tuning ("turbo mode"),
  * the staging table maintenance, the chunk wire-format parser,
  * and the chunk-application write path. Also handles the trigger
- * point for handing off to verify (snapsync_handle_end).
- *
- * Pure code-motion split from snapshot_sync_service.c. */
+ * point for handing off to verify (snapsync_handle_end). */
 
 #include "net/snapshot_sync_contract.h"
 #include "models/database.h"

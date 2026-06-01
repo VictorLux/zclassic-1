@@ -2,10 +2,10 @@
  *
  * Snapshot Sync Service — high-performance UTXO snapshot sync.
  *
- * Two-phase cryptographic verification:
- *   Phase 1: FlyClient — 50 random block samples with MMB proofs
- *            + PoW target checks (≥150-bit forgery security)
- *   Phase 2: SHA3-256 over all UTXOs in canonical order
+ * Two-step cryptographic verification:
+ *   FlyClient — 50 random block samples with MMB proofs
+ *               + PoW target checks (≥150-bit forgery security)
+ *   SHA3-256 over all UTXOs in canonical order
  *
  * Uses ActiveRecord models, shared node_db connection with turbo
  * mode, batch COMMIT every SNAPSYNC_BATCH_COMMIT_ROWS rows.

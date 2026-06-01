@@ -64,13 +64,11 @@ static int cmp_height(const void *a, const void *b)
     return 0;
 }
 
-/* Forward pass over a height-sorted block_index array: recompute
- * nChainWork, nChainTx, skip links, cached branch id, and failed-child
- * propagation from each entry's (already-linked) pprev. Lifted verbatim
- * from load_block_index's post-load loop; shared by the legacy LevelDB
- * loader and the event-log projection rebuild so both compute the
- * pointer-graph-derived fields identically. Declared in
- * services/block_index_loader.h (internal cross-TU helper). */
+/* Forward pass over a height-sorted block_index array: recompute nChainWork,
+ * nChainTx, skip links, cached branch id, and failed-child propagation from
+ * each entry's already-linked pprev. Shared by the legacy LevelDB loader and
+ * the event-log projection rebuild so both compute pointer-graph-derived
+ * fields through one helper. Declared in services/block_index_loader.h. */
 void block_index_forward_pass(struct block_index **sorted,
                               size_t count)
 {
@@ -280,7 +278,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
             LOG_WARN("block_index_flat", "block_index_flat: by_height calloc failed " "(%d entries) — pprev linking will be slow", max_h + 1);
     }
 
-    /* Phase 1: bulk insert — direct hash table, no locks */
+    /* Bulk insert directly into the hash table; loader is single-threaded. */
     struct block_map *bm = &ms->map_block_index;
     for (uint32_t i = 0; i < count; i++) {
         if (uint256_is_null((const struct uint256 *)entries[i].hash))
@@ -326,7 +324,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
             by_height[pindex->nHeight] = pindex;
     }
 
-    /* Phase 2: Link pprev via prev_hash lookup (handles orphans correctly).
+    /* Link pprev via prev_hash lookup (handles orphans correctly).
      * Height-based linking breaks when orphan blocks at the same height
      * overwrite the main chain entry in by_height[], causing the pprev
      * chain to follow orphan forks instead of the main chain. */
@@ -553,7 +551,7 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     }
     sqlite3_finalize(sel);
 
-    /* Phase 2: Link pprev pointers */
+    /* Link pprev pointers after every cached index entry is loaded. */
     sel = NULL;
     if (sqlite3_prepare_v2(ndb->db,
             "SELECT hash,prev_hash FROM block_index_cache "

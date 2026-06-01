@@ -1,13 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_offer.c — Phase 1: incoming snapshot offer evaluation.
+ * snapshot_offer.c — incoming snapshot offer evaluation.
  *
  * Validates the offer manifest (size, chunks, schema, finality,
  * chainwork) and transitions IDLE → NEGOTIATING. Also owns the
  * follow-up action helpers and the small wire-format helpers used
- * to parse/write the offer and FlyClient request envelopes.
- *
- * Pure code-motion split from snapshot_sync_service.c. */
+ * to parse/write the offer and FlyClient request envelopes. */
 
 #include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"

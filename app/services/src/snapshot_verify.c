@@ -1,14 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_verify.c — Phase 3: FlyClient + SHA3 verification.
+ * snapshot_verify.c — FlyClient + SHA3 snapshot verification.
  *
  * Owns the FlyClient challenge/response wire format, the FlyClient
- * proof verification (Phase 1 cryptographic gate), and the snapshot
- * finalize path (Phase 2 SHA3-256 over the staging UTXOs). On
- * SHA3 pass it hands off to snapshot_apply via
- * snapsync_stage_promote_active_internal.
- *
- * Pure code-motion split from snapshot_sync_service.c. */
+ * proof verification gate, and the SHA3-256 finalization over staging UTXOs.
+ * On SHA3 pass it hands off to snapshot_apply via
+ * snapsync_stage_promote_active_internal. */
 
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_evidence_controller.h"
@@ -432,9 +429,9 @@ struct zcl_result snapsync_write_fc_response(struct byte_stream *s,
     return ZCL_OK;
 }
 
-/* ── FlyClient verification (Phase 1) ────────────────────── */
+/* -- FlyClient proof verification --------------------------------------- */
 
-/* Action: verify FlyClient proofs — Phase 1 chain verification.
+/* Action: verify FlyClient proofs before accepting snapshot UTXO staging.
  * Checks 20 random block samples with MMB inclusion proofs
  * and PoW target verification (block_hash < target(nBits)). */
 struct zcl_result snapsync_verify_flyclient(struct snapshot_sync_service *svc,

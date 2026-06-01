@@ -1,13 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_sync_internal.h — shared declarations across the four
- * phase-aligned files that make up snapshot sync:
+ * snapshot_sync_internal.h — shared declarations across the purpose-named
+ * files that make up snapshot sync:
  *
  *   snapshot_sync_service.c   — public API + init/free + dispatch
- *   snapshot_offer.c          — Phase 1: offer evaluation/accept
- *   snapshot_fetch.c          — Phase 2: chunk receive
- *   snapshot_verify.c         — Phase 3: SHA3 + FlyClient verify
- *   snapshot_apply.c          — Phase 4: promote staged UTXOs + activate tip
+ *   snapshot_offer.c          — offer evaluation/accept
+ *   snapshot_fetch.c          — chunk receive
+ *   snapshot_verify.c         — SHA3 + FlyClient verify
+ *   snapshot_apply.c          — promote staged UTXOs + activate tip
  *
  * NOT a public header. Only included by the five files above. The
  * trailing "_internal" suffix marks these symbols as file-local to

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_apply.c — Phase 4: promote staging + activate tip.
+ * snapshot_apply.c — promote staging + activate tip.
  *
  * After verify passes, this file promotes the staged UTXOs into the
  * active utxos table inside one transaction and records the

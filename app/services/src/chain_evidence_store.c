@@ -150,9 +150,8 @@ struct zcl_result chain_evidence_store_load(struct node_db *ndb,
 {
     struct persisted_evidence_record p;
     size_t len = 0;
-    /* Decision order preserved verbatim: reject null out first, then zero
-     * out, then attempt the load, then parse. Each branch now reports why
-     * instead of returning a bare false. */
+    /* Reject null out before clearing caller storage; then load and parse.
+     * Each branch reports why instead of returning a bare false. */
     if (!out) {
         LOG_WARN("cec.store", "load: null out key=%s", key ? key : "(null)");
         return ZCL_ERR(-1, "load: null out key=%s", key ? key : "(null)");

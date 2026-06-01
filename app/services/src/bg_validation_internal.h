@@ -1,11 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * bg_validation_internal — sibling-private declarations shared between
- * bg_validation_service.c (the thread + public API) and its extracted
- * verification TUs (bg_validation_scripts.c, bg_validation_proofs.c).
- *
- * NOT a public header. Behaviour is byte-identical to the pre-split
- * monolith; functions were moved verbatim and only made non-static. */
+ * bg_validation_service.c (the thread + public API) and the script/proof
+ * verification translation units. This is not a public header. */
 
 #ifndef ZCL_BG_VALIDATION_INTERNAL_H
 #define ZCL_BG_VALIDATION_INTERNAL_H

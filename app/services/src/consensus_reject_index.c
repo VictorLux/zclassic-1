@@ -9,10 +9,9 @@
  *
  *     "hash=<64hex> reason=<name> dos=<N>"
  *
- * which is emitted verbatim by check_block.c and check_transaction.c.
- * We parse it with a sscanf-shaped manual scan (no sscanf — the
- * reason field may contain any non-space ASCII, and we want a
- * bounded copy not a %s overflow).
+ * which is emitted by check_block.c and check_transaction.c. We parse it with
+ * a sscanf-shaped manual scan (no sscanf — the reason field may contain any
+ * non-space ASCII, and we want a bounded copy not a %s overflow).
  *
  * The ring uses a power-of-two capacity so write-head advancement
  * is a cheap AND. Lookups walk backwards from the newest write to
