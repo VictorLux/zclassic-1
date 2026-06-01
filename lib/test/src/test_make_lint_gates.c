@@ -1376,12 +1376,16 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "boot_submit_p2p_block") != NULL);
         ASSERT(strstr(buf, "REDUCER_SRC_P2P") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_block_submit") != NULL);
+        ASSERT(strstr(buf, "boot_block_connected_observer") != NULL);
+        ASSERT(strstr(buf, "sync_monitor_on_block_connected") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_block_connected") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_blocks.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mp->block_submit") != NULL);
         ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_note_block_connected") != NULL);
         ASSERT(strstr(buf, "reducer_ingest_block") == NULL);
         ASSERT(strstr(buf, "boot_activation_controller") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
@@ -1389,6 +1393,7 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);

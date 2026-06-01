@@ -742,6 +742,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->snapshot_active_ctx = NULL;
     mp->wallet_tx_accepted = NULL;
     mp->wallet_tx_accepted_ctx = NULL;
+    mp->block_connected = NULL;
+    mp->block_connected_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -823,10 +825,28 @@ void msg_processor_set_wallet_tx_accepted(
     mp->wallet_tx_accepted_ctx = ctx;
 }
 
+void msg_processor_set_block_connected(
+    struct msg_processor *mp,
+    msg_block_connected_fn connected,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->block_connected = connected;
+    mp->block_connected_ctx = ctx;
+}
+
 bool msg_processor_snapshot_active(const struct msg_processor *mp)
 {
     return mp && mp->snapshot_active &&
            mp->snapshot_active(mp->snapshot_active_ctx);
+}
+
+void msg_processor_note_block_connected(const struct msg_processor *mp,
+                                        int height)
+{
+    if (mp && mp->block_connected)
+        mp->block_connected(height, mp->block_connected_ctx);
 }
 
 int msg_get_height(void *ctx)

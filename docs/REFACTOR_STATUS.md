@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 41 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 40 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -197,6 +197,10 @@ node soak.
   callback. `lib/net/src/msg_blocks.c` owns block/getdata/getblocks protocol
   handling without including app controller/model/activation/snapshot headers.
   The lib-to-app include baseline is down from 46 to 41.
+- Block-connected tip observers are now a net-layer callback registered by
+  boot. `lib/net/src/msg_blocks.c` no longer includes the sync monitor service;
+  boot owns the `sync_monitor_on_block_connected()` side effect. The
+  lib-to-app include baseline is down from 41 to 40.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -301,7 +305,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 41 grandfathered lib-to-app includes.
+  with 40 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -322,6 +326,36 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after callback-injecting the block-connected
+  observer from boot and removing the sync monitor service include from
+  `lib/net/src/msg_blocks.c`.
+- `make test_parallel`: pass after rebuilding the parallel runner for the
+  expanded lint-gate assertion.
+- `tools/scripts/check_lib_layering.sh`: pass with 40 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations after updating the same three
+  `boot_services.c` baseline line numbers shifted by the boot-owned callback.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`, and
+  `./test_parallel --only=chain_activation_controller --timeout=120 --verbose`.
+- `make lint`: pass after the block-connected observer callback move; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 40 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the block-connected observer
+  callback move, `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 06:54:50 UTC after the block-connected
+  observer callback move: `systemctl --user is-active zclassic23` reported
+  `active`, `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1357526`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8023` / `[::]:8023` with no `8033` listener in the sample, and a
+  journal scan over the previous 10 minutes found no low-tip regression,
+  integrity failure, OOM, fatal, segfault, assert, panic, corrupt-state, or
+  `DB_ERR_TIP_MISMATCH` signal. This is a continuity check, not the final
+  soak.
 - `make -j$(nproc)`: pass after callback-injecting P2P block reducer
   submission from boot and removing app controller/model/activation/snapshot
   includes from `lib/net/src/msg_blocks.c`.

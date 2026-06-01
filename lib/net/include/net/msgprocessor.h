@@ -31,6 +31,7 @@ typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_snapshot_active_fn)(void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
+typedef void (*msg_block_connected_fn)(int height, void *ctx);
 
 struct msg_processor {
     struct main_state *main_state;
@@ -50,6 +51,8 @@ struct msg_processor {
     void *snapshot_active_ctx;
     msg_wallet_tx_accepted_fn wallet_tx_accepted;
     void *wallet_tx_accepted_ctx;
+    msg_block_connected_fn block_connected;
+    void *block_connected_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -99,6 +102,10 @@ void msg_processor_set_snapshot_active(struct msg_processor *mp,
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,
+    void *ctx);
+void msg_processor_set_block_connected(
+    struct msg_processor *mp,
+    msg_block_connected_fn connected,
     void *ctx);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);

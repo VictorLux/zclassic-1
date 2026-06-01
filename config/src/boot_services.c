@@ -745,6 +745,12 @@ static bool boot_snapshot_active(void *ctx)
     return snapsync_is_active();
 }
 
+static void boot_block_connected_observer(int height, void *ctx)
+{
+    (void)ctx;
+    sync_monitor_on_block_connected(height);
+}
+
 static void boot_wallet_tx_accepted(const struct transaction *tx, void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
@@ -2518,6 +2524,8 @@ bool app_init_services(struct app_context *ctx,
                                       boot_snapshot_active, svc);
     msg_processor_set_wallet_tx_accepted(svc->msg_processor,
                                          boot_wallet_tx_accepted, svc);
+    msg_processor_set_block_connected(svc->msg_processor,
+                                      boot_block_connected_observer, svc);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {

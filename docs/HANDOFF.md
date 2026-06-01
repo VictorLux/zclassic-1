@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 41 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 40 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -101,8 +101,9 @@ If the node is not running, record that explicitly before claiming live proof.
   controller/model/service headers. P2P block reducer submission is now
   callback-injected from boot, and `lib/net/src/msg_blocks.c` uses the
   injected snapshot-active check, so that file no longer includes app
-  controller/model/activation/snapshot headers. Keep shrinking it; do not add
-  new entries.
+  controller/model/activation/snapshot headers. Block-connected tip observers
+  are now callback-injected from boot too, so `msg_blocks.c` no longer includes
+  the sync monitor service. Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,
