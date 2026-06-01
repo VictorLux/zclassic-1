@@ -706,6 +706,10 @@ void msg_processor_init(struct msg_processor *mp,
     mp->file_service_save_ctx = NULL;
     mp->snapshot_active = NULL;
     mp->snapshot_active_ctx = NULL;
+    mp->snapshot_anchor_get = NULL;
+    mp->snapshot_anchor_get_ctx = NULL;
+    mp->snapshot_anchor_set = NULL;
+    mp->snapshot_anchor_set_ctx = NULL;
     mp->wallet_tx_accepted = NULL;
     mp->wallet_tx_accepted_ctx = NULL;
     mp->block_connected = NULL;
@@ -818,6 +822,21 @@ void msg_processor_set_snapshot_active(struct msg_processor *mp,
     mp->snapshot_active_ctx = ctx;
 }
 
+void msg_processor_set_snapshot_anchor_accessors(
+    struct msg_processor *mp,
+    msg_snapshot_anchor_get_fn get_anchor,
+    void *get_ctx,
+    msg_snapshot_anchor_set_fn set_anchor,
+    void *set_ctx)
+{
+    if (!mp)
+        return;
+    mp->snapshot_anchor_get = get_anchor;
+    mp->snapshot_anchor_get_ctx = get_ctx;
+    mp->snapshot_anchor_set = set_anchor;
+    mp->snapshot_anchor_set_ctx = set_ctx;
+}
+
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,
@@ -888,6 +907,20 @@ bool msg_processor_snapshot_active(const struct msg_processor *mp)
 {
     return mp && mp->snapshot_active &&
            mp->snapshot_active(mp->snapshot_active_ctx);
+}
+
+struct block_index *msg_processor_snapshot_anchor(const struct msg_processor *mp)
+{
+    if (!mp || !mp->snapshot_anchor_get)
+        return NULL;
+    return mp->snapshot_anchor_get(mp->snapshot_anchor_get_ctx);
+}
+
+void msg_processor_set_snapshot_anchor(const struct msg_processor *mp,
+                                       struct block_index *anchor)
+{
+    if (mp && mp->snapshot_anchor_set)
+        mp->snapshot_anchor_set(anchor, mp->snapshot_anchor_set_ctx);
 }
 
 void msg_processor_note_block_connected(const struct msg_processor *mp,

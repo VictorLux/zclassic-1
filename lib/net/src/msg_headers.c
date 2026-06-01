@@ -16,7 +16,6 @@
 #include "services/chain_state_repository.h"
 #include "services/chain_activation_controller.h"
 #include "services/block_index_integrity.h"
-#include "services/snapshot_sync_service.h"
 #include "validation/process_block.h"
 #include "config/boot_internal.h"
 #include "net/download.h"
@@ -306,7 +305,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     /* Defer header processing during any snapshot sync state — header parsing
      * and block index updates consume CPU and starve P2P reads.
      * During NEGOTIATING: headers trigger getblocks which compete. */
-    if (snapsync_is_active())
+    if (msg_processor_snapshot_active(mp))
         return true;
 
     uint64_t count;
@@ -560,7 +559,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
          * clear it so blocks can be connected. Set chain tip to the
          * anchor so connect_tip starts from the right UTXO state. */
         {
-            struct block_index *anc = snapsync_get_anchor();
+            struct block_index *anc = msg_processor_snapshot_anchor(mp);
             if (syncsvc_should_release_snapshot_anchor(anc, pindex_last)) {
                 /* Verify the header chain reaches the anchor via pprev */
                 struct block_index *walk = pindex_last;
@@ -625,7 +624,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                             "without block hash h=%d", anc->nHeight);
                     }
                     if (anchor_recommitted) {
-                        snapsync_set_anchor(NULL);
+                        msg_processor_set_snapshot_anchor(mp, NULL);
                         activation_clear_anchor(boot_activation_controller(),
                                                 "headers_past_anchor");
                     }
@@ -795,7 +794,7 @@ void push_getheaders_from(struct msg_processor *mp,
     if (from && !from->phashBlock) return;
 
     /* Don't request headers during any snapshot sync state. */
-    if (snapsync_is_active())
+    if (msg_processor_snapshot_active(mp))
         return;
 
     /* Build locator for getheaders request.
@@ -877,7 +876,7 @@ void push_getheaders_from(struct msg_processor *mp,
 
 void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
 {
-    if (snapsync_is_active())
+    if (msg_processor_snapshot_active(mp))
         return;
 
     /* Use the active-chain locator, including recent ancestors. A locator
@@ -907,7 +906,7 @@ void push_getheaders(struct msg_processor *mp, struct p2p_node *node)
     }
 
     /* After snapshot sync, use the snapshot anchor as the locator start. */
-    struct block_index *anchor = snapsync_get_anchor();
+    struct block_index *anchor = msg_processor_snapshot_anchor(mp);
     if (anchor && anchor->phashBlock)
         push_getheaders_from(mp, node, anchor);
     else

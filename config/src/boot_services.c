@@ -750,6 +750,18 @@ static bool boot_snapshot_active(void *ctx)
     return snapsync_is_active();
 }
 
+static struct block_index *boot_snapshot_anchor_get(void *ctx)
+{
+    (void)ctx;
+    return snapsync_get_anchor();
+}
+
+static void boot_snapshot_anchor_set(struct block_index *anchor, void *ctx)
+{
+    (void)ctx;
+    snapsync_set_anchor(anchor);
+}
+
 static void boot_block_connected_observer(int height, void *ctx)
 {
     (void)ctx;
@@ -2673,6 +2685,9 @@ bool app_init_services(struct app_context *ctx,
                                         boot_save_file_service, svc);
     msg_processor_set_snapshot_active(svc->msg_processor,
                                       boot_snapshot_active, svc);
+    msg_processor_set_snapshot_anchor_accessors(
+        svc->msg_processor, boot_snapshot_anchor_get, svc,
+        boot_snapshot_anchor_set, svc);
     msg_processor_set_wallet_tx_accepted(svc->msg_processor,
                                          boot_wallet_tx_accepted, svc);
     msg_processor_set_block_connected(svc->msg_processor,

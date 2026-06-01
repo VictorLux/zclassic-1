@@ -25,6 +25,7 @@ struct zmsg_message;
 struct file_offer;
 struct validation_state;
 struct active_chain;
+struct block_index;
 struct fc_challenge;
 struct fc_response;
 
@@ -45,6 +46,9 @@ typedef bool (*msg_file_service_save_fn)(const uint8_t ip[16],
                                          bool is_zcl23,
                                          void *ctx);
 typedef bool (*msg_snapshot_active_fn)(void *ctx);
+typedef struct block_index *(*msg_snapshot_anchor_get_fn)(void *ctx);
+typedef void (*msg_snapshot_anchor_set_fn)(struct block_index *anchor,
+                                           void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
 typedef void (*msg_block_connected_fn)(int height, void *ctx);
@@ -88,6 +92,10 @@ struct msg_processor {
     void *file_service_save_ctx;
     msg_snapshot_active_fn snapshot_active;
     void *snapshot_active_ctx;
+    msg_snapshot_anchor_get_fn snapshot_anchor_get;
+    void *snapshot_anchor_get_ctx;
+    msg_snapshot_anchor_set_fn snapshot_anchor_set;
+    void *snapshot_anchor_set_ctx;
     msg_wallet_tx_accepted_fn wallet_tx_accepted;
     void *wallet_tx_accepted_ctx;
     msg_block_connected_fn block_connected;
@@ -155,6 +163,12 @@ void msg_processor_set_file_service_save(struct msg_processor *mp,
 void msg_processor_set_snapshot_active(struct msg_processor *mp,
                                        msg_snapshot_active_fn active,
                                        void *ctx);
+void msg_processor_set_snapshot_anchor_accessors(
+    struct msg_processor *mp,
+    msg_snapshot_anchor_get_fn get_anchor,
+    void *get_ctx,
+    msg_snapshot_anchor_set_fn set_anchor,
+    void *set_ctx);
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,

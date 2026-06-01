@@ -145,6 +145,9 @@ struct block_index;
 bool msg_blocks_should_mark_seen(const struct active_chain *chain,
                                   const struct block_index *bi);
 bool msg_processor_snapshot_active(const struct msg_processor *mp);
+struct block_index *msg_processor_snapshot_anchor(const struct msg_processor *mp);
+void msg_processor_set_snapshot_anchor(const struct msg_processor *mp,
+                                       struct block_index *anchor);
 void msg_processor_note_block_connected(const struct msg_processor *mp,
                                         int height);
 void msg_processor_record_peer_header_vote(const struct msg_processor *mp,

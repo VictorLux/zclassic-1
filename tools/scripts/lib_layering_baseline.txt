@@ -19,7 +19,6 @@
 lib/net/src/msg_headers.c:#include "services/block_index_integrity.h"
 lib/net/src/msg_headers.c:#include "services/chain_activation_controller.h"
 lib/net/src/msg_headers.c:#include "services/chain_state_repository.h"
-lib/net/src/msg_headers.c:#include "services/snapshot_sync_service.h"
 lib/net/src/msgprocessor_snapshot.c:#include "services/snapshot_sync_service.h"
 lib/validation/src/process_block_core.c:#include "controllers/blockchain_controller.h"
 lib/validation/src/process_block_core.c:#include "controllers/sync_controller.h"

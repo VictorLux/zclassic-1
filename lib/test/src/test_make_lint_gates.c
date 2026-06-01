@@ -1385,6 +1385,7 @@ static int t_tx_wallet_sync_is_callback_injected(void)
         ASSERT(strstr(buf, "wallet_sync_transaction") != NULL);
         ASSERT(strstr(buf, "node_db_sync_wallet_tx") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_anchor_accessors") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_wallet_tx_accepted") != NULL);
         free(buf);
         buf = NULL;
@@ -1529,9 +1530,16 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_headers.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_anchor") != NULL);
         ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "snapsync_is_active") == NULL);
+        ASSERT(strstr(buf, "snapsync_get_anchor") == NULL);
+        ASSERT(strstr(buf, "snapsync_set_anchor") == NULL);
         ASSERT(strstr(buf, "TIP_FROM_P2P_REPAIR = 6") != NULL);
         free(buf);
         buf = NULL;
