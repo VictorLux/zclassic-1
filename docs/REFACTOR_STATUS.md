@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 59 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 58 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -166,6 +166,11 @@ node soak.
   `blog_discover_onion_peers()`, and `lib/net/src/connman.c` no longer
   includes the blog controller. The lib-to-app include baseline is down from
   60 to 59.
+- Onion service blog serving and peer discovery are now net-layer app-handler
+  callbacks registered by boot. `lib/net/src/onion_service.c` owns Tor/onion
+  routing only, delegates blog responses through `onion_blog_serve_fn`, and no
+  longer includes the blog controller. The lib-to-app include baseline is down
+  from 59 to 58.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -266,7 +271,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 59 grandfathered lib-to-app includes.
+  with 58 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -287,6 +292,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after callback-injecting onion-service app handlers
+  from boot, removing `onion_service.c`'s blog-controller include, and adding
+  direct `/blog` route coverage for the injected handler. `make test_parallel`
+  was then run explicitly to rebuild the parallel runner.
+- `make lint`: pass after the onion-service callback move; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 58 grandfathered includes.
+- `tools/scripts/check_lib_layering.sh`: pass with 58 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations.
+- Focused filtered tests passed:
+  `./test_parallel --only=net --timeout=120 --verbose`,
+  `./test_parallel --only=blog --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the onion-service callback move,
+  `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 05:23:49 UTC after the onion-service
+  callback move: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1354429`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8023` / `[::]:8023` with no `8033` listener in the sample, and a
+  journal scan over the previous 10 minutes found no low-tip regression,
+  integrity failure, OOM, fatal, segfault, assert, panic, corrupt-state, or
+  `DB_ERR_TIP_MISMATCH` signal. This is a continuity check, not the final
+  soak.
 - `make -j$(nproc)`: pass after callback-injecting connman onion peer discovery
   from boot and removing `connman.c`'s blog-controller include.
 - `make lint`: pass after the connman callback move; E1, E2, supervisor, E7,

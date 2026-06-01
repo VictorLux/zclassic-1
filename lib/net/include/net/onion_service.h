@@ -1,19 +1,28 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Onion service integration — bridges Tor dynhost to zclassic23 MVC.
+ * Onion service integration - bridges Tor dynhost to zclassic23 app handlers.
  *
- * This is the glue between our Tor fork's dynhost and our app layer.
+ * This is the glue between our Tor fork's dynhost and the injected app layer.
  * When a request arrives over a Tor circuit:
- *   dynhost → onion_service_handle_request → MVC controllers → response
+ *   dynhost -> onion_service_handle_request -> app handlers -> response
  *
  * No SOCKS. No ports. No HTTP server. Just C function calls. */
 
 #ifndef ZCL_NET_ONION_SERVICE_H
 #define ZCL_NET_ONION_SERVICE_H
 
+#include "net/onion_discovery.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+
+typedef size_t (*onion_blog_serve_fn)(const char *datadir,
+                                      const char *path,
+                                      char *out,
+                                      size_t out_len);
+
+void onion_service_set_app_handlers(onion_blog_serve_fn blog_serve,
+                                    onion_peer_discover_fn peer_discover);
 
 /* Initialize the onion service layer.
  * Called from app_init() after Tor is linked in.

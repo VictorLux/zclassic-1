@@ -8,7 +8,6 @@
 #include "net/tor_integration.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
-#include "controllers/blog_controller.h"
 #include "util/path_check.h"
 #include "util/template.h"
 #include <stdio.h>
@@ -23,6 +22,8 @@ struct onion_context {
     char address[128];
     const char *datadir;
     time_t start_time;
+    onion_blog_serve_fn blog_serve;
+    onion_peer_discover_fn peer_discover;
 };
 
 static struct onion_context g_onion_ctx = {0};
@@ -30,6 +31,22 @@ static struct onion_context g_onion_ctx = {0};
 static struct onion_context *onion_ctx(void)
 {
     return &g_onion_ctx;
+}
+
+void onion_service_set_app_handlers(onion_blog_serve_fn blog_serve,
+                                    onion_peer_discover_fn peer_discover)
+{
+    struct onion_context *ctx = onion_ctx();
+    ctx->blog_serve = blog_serve;
+    ctx->peer_discover = peer_discover;
+}
+
+static int onion_discover_peers(struct onion_peer *out, size_t max)
+{
+    struct onion_context *ctx = onion_ctx();
+    if (!ctx->datadir || !ctx->peer_discover)
+        return 0;
+    return ctx->peer_discover(ctx->datadir, out, max);
 }
 
 /* Simple global rate limiter: max 100 requests/second */
@@ -100,8 +117,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     /* Discover registered .onion sites from chain */
     struct onion_peer peers[64];
     int num_peers = 0;
-    if (ctx->datadir)
-        num_peers = blog_discover_onion_peers(ctx->datadir, peers, 64);
+    num_peers = onion_discover_peers(peers, 64);
 
     const char *onion = ctx->address[0] ? ctx->address : NULL;
 
@@ -267,11 +283,9 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
 
 static size_t serve_search(const char *query, uint8_t *response, size_t max)
 {
-    struct onion_context *ctx = onion_ctx();
     struct onion_peer peers[64];
     int num_peers = 0;
-    if (ctx->datadir)
-        num_peers = blog_discover_onion_peers(ctx->datadir, peers, 64);
+    num_peers = onion_discover_peers(peers, 64);
 
     char safe_query[512];
     html_escape(safe_query, sizeof(safe_query), query ? query : "");
@@ -374,7 +388,7 @@ static void populate_directory_from_chain(sqlite3 *db)
     if (!ctx->datadir) return;
 
     struct onion_peer peers[256];
-    int found = blog_discover_onion_peers(ctx->datadir, peers, 256);
+    int found = onion_discover_peers(peers, 256);
 
     if (found <= 0) return;
 
@@ -768,9 +782,10 @@ size_t onion_service_handle_request(const char *method,
 
     /* Blog (static files from datadir) */
     if (strncmp(path, "/blog", 5) == 0) {
-        if (onion_ctx()->datadir)
-            return blog_serve(onion_ctx()->datadir, path,
-                              (char *)response, response_max);
+        struct onion_context *ctx = onion_ctx();
+        if (ctx->datadir && ctx->blog_serve)
+            return ctx->blog_serve(ctx->datadir, path,
+                                   (char *)response, response_max);
     }
 
     /* 404 */

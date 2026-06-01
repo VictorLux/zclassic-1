@@ -2357,6 +2357,7 @@ bool app_init_services(struct app_context *ctx,
     svc->connman->datadir = ctx->datadir;
     connman_set_onion_peer_discovery(svc->connman, ctx->datadir,
                                      blog_discover_onion_peers);
+    onion_service_set_app_handlers(blog_serve, blog_discover_onion_peers);
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);

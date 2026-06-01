@@ -30,6 +30,22 @@ static int test_onion_peer_discover(const char *datadir,
     return (datadir && out && max > 0) ? 0 : -1;
 }
 
+static size_t test_onion_blog_serve(const char *datadir,
+                                    const char *path,
+                                    char *out,
+                                    size_t out_len)
+{
+    if (!datadir || !path || !out || out_len == 0)
+        return 0;
+    int n = snprintf(out, out_len,
+                     "HTTP/1.1 200 OK\r\n"
+                     "Content-Type: text/plain\r\n"
+                     "Connection: close\r\n\r\n"
+                     "blog:%s:%s",
+                     datadir, path);
+    return n < 0 ? 0 : (size_t)n;
+}
+
 static void test_updated_block_tip(void *ctx, int height)
 {
     (void)ctx;
@@ -2187,6 +2203,31 @@ int test_net(void)
         ok = ok && (strstr(resp, "\"version\"") != NULL);
         ok = ok && (strstr(resp, "\"uptime\"") != NULL);
         ok = ok && (strstr(resp, "\"version\":\"0.1.0\"") != NULL);
+        if (ok) printf("OK (%zu bytes)\n", len);
+        else { printf("FAIL (%zu bytes: %.200s)\n", len, resp); failures++; }
+    }
+
+    printf("onion_service: /blog uses injected app handler... ");
+    {
+        char tmpdir[256];
+        uint8_t buf[4096];
+        test_make_tmpdir(tmpdir, sizeof(tmpdir), "onion_blog", "route");
+        onion_service_stop();
+        onion_service_set_app_handlers(test_onion_blog_serve,
+                                       test_onion_peer_discover);
+        onion_service_start(tmpdir);
+        size_t len = onion_service_handle_request(
+            "GET", "/blog/test-post", NULL, 0, buf, sizeof(buf));
+        buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
+        const char *resp = (const char *)buf;
+        bool ok = (len > 0);
+        ok = ok && (strstr(resp, "HTTP/1.1 200 OK") != NULL);
+        ok = ok && (strstr(resp, "blog:") != NULL);
+        ok = ok && (strstr(resp, tmpdir) != NULL);
+        ok = ok && (strstr(resp, "/blog/test-post") != NULL);
+        onion_service_set_app_handlers(NULL, NULL);
+        onion_service_stop();
+        test_cleanup_tmpdir(tmpdir);
         if (ok) printf("OK (%zu bytes)\n", len);
         else { printf("FAIL (%zu bytes: %.200s)\n", len, resp); failures++; }
     }
