@@ -1929,7 +1929,29 @@ static void *address_backfill_service_thread(void *arg)
 }
 
 /* ── Global MMB leaf store for FlyClient proofs ─────────────── */
-struct mmb_leaf_store g_mmb_leaf_store = {0};
+static struct mmb_leaf_store g_mmb_leaf_store = {0};
+
+static bool boot_build_flyclient_proof(struct fc_response *resp,
+                                       const struct fc_challenge *challenge,
+                                       const struct active_chain *chain_active,
+                                       void *ctx)
+{
+    (void)ctx;
+
+    if (!resp || !challenge || !chain_active)
+        LOG_FAIL("boot", "FlyClient proof build missing resp=%p challenge=%p chain=%p",
+                 (void *)resp, (const void *)challenge,
+                 (const void *)chain_active);
+
+    struct mmb *mmb = rpc_blockchain_get_mmb();
+    const uint8_t (*all_hashes)[32] =
+        mmb_leaf_store_all(&g_mmb_leaf_store);
+    if (!mmb || mmb->num_leaves == 0 || !all_hashes)
+        return false;
+
+    return snapsync_build_fc_response(resp, challenge, chain_active,
+                                      &g_mmb_leaf_store).ok;
+}
 
 static bool boot_mmb_leaf_store_catchup_legacy(struct mmb_leaf_store *store,
                                                int tip_height)
@@ -2526,6 +2548,8 @@ bool app_init_services(struct app_context *ctx,
                                          boot_wallet_tx_accepted, svc);
     msg_processor_set_block_connected(svc->msg_processor,
                                       boot_block_connected_observer, svc);
+    msg_processor_set_flyclient_proof_builder(
+        svc->msg_processor, boot_build_flyclient_proof, svc);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {

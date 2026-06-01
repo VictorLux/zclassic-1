@@ -24,7 +24,6 @@
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "services/sync_monitor.h"
 #include "services/quorum_oracle_service.h"
 #include "services/chain_tip.h"
 #include "coins/coins_view.h"

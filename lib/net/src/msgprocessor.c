@@ -42,7 +42,6 @@
 #include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
 #include "services/snapshot_sync_service.h"
 #include "services/block_sync_service.h"
-#include "services/chain_state_repository.h"
 #include "services/header_sync_service.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
@@ -744,6 +743,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->wallet_tx_accepted_ctx = NULL;
     mp->block_connected = NULL;
     mp->block_connected_ctx = NULL;
+    mp->flyclient_proof = NULL;
+    mp->flyclient_proof_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -834,6 +835,17 @@ void msg_processor_set_block_connected(
         return;
     mp->block_connected = connected;
     mp->block_connected_ctx = ctx;
+}
+
+void msg_processor_set_flyclient_proof_builder(
+    struct msg_processor *mp,
+    msg_flyclient_proof_fn build,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->flyclient_proof = build;
+    mp->flyclient_proof_ctx = ctx;
 }
 
 bool msg_processor_snapshot_active(const struct msg_processor *mp)

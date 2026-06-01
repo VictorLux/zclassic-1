@@ -20,6 +20,9 @@
 struct block;
 struct transaction;
 struct validation_state;
+struct active_chain;
+struct fc_challenge;
+struct fc_response;
 
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
@@ -32,6 +35,11 @@ typedef bool (*msg_snapshot_active_fn)(void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
 typedef void (*msg_block_connected_fn)(int height, void *ctx);
+typedef bool (*msg_flyclient_proof_fn)(
+    struct fc_response *resp,
+    const struct fc_challenge *challenge,
+    const struct active_chain *chain_active,
+    void *ctx);
 
 struct msg_processor {
     struct main_state *main_state;
@@ -53,6 +61,8 @@ struct msg_processor {
     void *wallet_tx_accepted_ctx;
     msg_block_connected_fn block_connected;
     void *block_connected_ctx;
+    msg_flyclient_proof_fn flyclient_proof;
+    void *flyclient_proof_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -106,6 +116,10 @@ void msg_processor_set_wallet_tx_accepted(
 void msg_processor_set_block_connected(
     struct msg_processor *mp,
     msg_block_connected_fn connected,
+    void *ctx);
+void msg_processor_set_flyclient_proof_builder(
+    struct msg_processor *mp,
+    msg_flyclient_proof_fn build,
     void *ctx);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);

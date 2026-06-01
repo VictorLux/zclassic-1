@@ -32,15 +32,9 @@
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
 #include "models/block.h"
-#include "models/database.h"
 #include "coins/utxo_commitment.h"
 #include "coins/coins_view.h"
-#include "controllers/blockchain_controller.h"
-#include "controllers/sync_controller.h"
 #include "services/snapshot_sync_service.h"
-#include "services/chain_state_repository.h"
-#include "chain/mmb.h"
-#include "models/mmb_leaf_store.h"
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
@@ -1035,22 +1029,12 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     stream_read_u64_le(s, &challenge.chain_length) &&
                     stream_read_bytes(s, challenge.mmb_root, 32)) {
 
-                    /* Build FlyClient response with real MMB proofs.
-                     * Uses mmb_leaf_store (mmap'd flat file of all leaf
-                     * hashes) for mmb_prove() + block index for leaf data. */
-                    struct mmb *mmb = rpc_blockchain_get_mmb();
-                    extern struct mmb_leaf_store g_mmb_leaf_store;
-                    const uint8_t (*all_hashes)[32] =
-                        mmb_leaf_store_all(&g_mmb_leaf_store);
-
-                    if (mmb && mmb->num_leaves > 0 && all_hashes) {
-                        /* Build response: leaves from block index,
-                         * proofs from mmb_prove() via leaf store */
+                    if (mp && mp->flyclient_proof) {
                         struct fc_response resp;
-                        if (snapsync_build_fc_response(
+                        if (mp->flyclient_proof(
                                 &resp, &challenge,
                                 &mp->main_state->chain_active,
-                                &g_mmb_leaf_store).ok) {
+                                mp->flyclient_proof_ctx)) {
                             /* Send zfcproofs */
                             p2p_node_begin_message(node, MSG_FC_PROOFS,
                                 mp->params->pchMessageStart);
