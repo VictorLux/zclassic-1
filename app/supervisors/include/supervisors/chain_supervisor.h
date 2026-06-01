@@ -4,8 +4,8 @@
  *
  * Owns the chain.coord_escalation child: after 900 s of fatal mirror-lag
  * breach + frozen local height, it tries evidence-based revalidation of the
- * next-child block (Wave M) and reports the named stall if revalidation cannot
- * help. Registered in the `chain` domain (g_chain_sup). */
+ * next-child block and reports the named stall if revalidation cannot help.
+ * Registered in the `chain` domain (g_chain_sup). */
 
 #ifndef ZCL_CHAIN_SUPERVISOR_H
 #define ZCL_CHAIN_SUPERVISOR_H

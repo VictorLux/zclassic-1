@@ -70,12 +70,11 @@ static void coord_esc_stall(struct liveness_contract *c)
         LOG_WARN("supervisor", "[supervisor] chain.coord_escalation stalled without main_state");
         return;
     }
-    /* Wave M: before falling back to the legacy force-mirror hammer,
-     * try evidence-based revalidation of the next-child block. If the
-     * stuck height has a BLOCK_FAILED_VALID pindex AND ≥2 oracles
-     * agree on its hash, clear the bit and re-run activation. The
-     * canonical wedge class (BLOCK_FAILED_VALID set on the only
-     * candidate above the active tip) becomes self-healing within
+    /* Before surfacing the stall, try evidence-based revalidation of the
+     * next-child block. If the stuck height has a BLOCK_FAILED_VALID pindex
+     * and sufficient oracle evidence agrees on its hash, clear the bit and
+     * re-run activation. The canonical wedge class (BLOCK_FAILED_VALID set
+     * on the only candidate above the active tip) becomes self-healing within
      * the supervisor's natural 60s tick. */
     int tip_h = active_chain_height(&g_coord_esc_ms->chain_active);
     int stuck_h = tip_h + 1;

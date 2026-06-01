@@ -102,8 +102,8 @@ enum activation_request_source {
     ACTIVATION_SRC_BLOCK_FILE_SCAN,
     ACTIVATION_SRC_HEADERS_ALL_DATA,
     ACTIVATION_SRC_NEW_BLOCK,
-    /* Wave M: supervisor-driven evidence-based revalidation of a
-     * previously-failed block. Triggered by `chain.coord_escalation`
+    /* Supervisor-driven evidence-based revalidation of a previously-failed
+     * block. Triggered by `chain.coord_escalation`
      * after `process_block_revalidate` clears BLOCK_FAILED_VALID on
      * oracle-verified evidence. See
      * `lib/validation/include/validation/process_block_revalidate.h`. */

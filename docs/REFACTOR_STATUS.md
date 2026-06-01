@@ -581,6 +581,11 @@ node soak.
   instead of the old wave labels. The scaffold-label guard now covers those
   files too and rejects the hyphenated retired wave label plus the stale
   chain-selection marker it flushed out.
+- Failed-block revalidation, chain-domain escalation, and boot supervisor
+  comments now describe current ownership instead of old Wave-M / round
+  scaffold labels. The scaffold-label guard now covers the revalidation
+  headers/source plus the chain supervisor header and rejects the retired
+  Wave-M label across the guarded production comment set.
 
 ## Active Debt
 
@@ -658,6 +663,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- Failed-block revalidation label scan after the revalidation/supervisor
+  cleanup: clean for `Wave M` / `Wave-M` across the touched revalidation,
+  chain-supervisor, activation-controller, and boot-service files.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened scaffold-label guard.
+- Focused filtered tests passed after the revalidation/supervisor cleanup:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  (`0/1` failed in 11s),
+  `./test_parallel --only=revalidate --timeout=120 --verbose`
+  (`0/1` failed in 1s),
+  `./test_parallel --only=chain_activation_controller --timeout=120 --verbose`
+  (`0/1` failed in 1s), and
+  `./test_parallel --only=supervisor --timeout=120 --verbose`
+  (`0/2` failed in 1s).
+- `make -j$(nproc)`: pass after the revalidation/supervisor cleanup.
+- `make lint`: pass after the revalidation/supervisor cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the revalidation/supervisor
+  cleanup, `0/279` groups failed in 57.0s.
+- Live sample attempt at 2026-06-01 18:10:29 UTC after the
+  revalidation/supervisor cleanup: no continuity proof was available.
+  `systemctl --user status zclassic23` could not connect to the user bus,
+  `./tools/zcl-rpc getblockcount` and `gettxoutsetinfo` exited with code 7,
+  no `zclassic23` process was running, no `8023` or `18232` listener existed,
+  and the last 20 minutes of `zclassic23` journal output had no entries. `ss`
+  did show the separate `zclassicd` process listening on `8033` and `8232`;
+  this slice did not touch port wiring or restart services.
 - Active reducer terminology scan after the reducer-ingest/header-admit
   cleanup: clean for retired wave labels and the stale chain-selection marker
   across production C/H files, `app/jobs/README.md`, `docs/FRAMEWORK.md`, and

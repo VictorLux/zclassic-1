@@ -7,14 +7,14 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
-/* Wave M: the verify-never-trust contract for clearing BLOCK_FAILED_VALID
- * requires (a) ≥2-oracle consensus on the block hash and (b) routing the
- * post-clear connect through the activation controller's mutex. Both
- * services are app-layer concerns conceptually, but the actual nStatus
- * mutation + LevelDB persistence belong to validation. Splitting this
- * into two files across layers (a validation low-level primitive + an
- * app-services orchestrator) adds two files for no behavioral gain.
- * Tagged so the lib_layering gate doesn't have to grow its baseline. */
+/* The verify-never-trust contract for clearing BLOCK_FAILED_VALID requires
+ * (a) sufficient oracle consensus on the block hash and (b) routing the
+ * post-clear connect through the activation controller's mutex. Both services
+ * are app-layer concerns conceptually, but the actual nStatus mutation and
+ * LevelDB persistence belong to validation. Splitting this into two files
+ * across layers (a validation low-level primitive plus an app-services
+ * orchestrator) adds two files for no behavioral gain. Tagged so the
+ * lib_layering gate doesn't have to grow its baseline. */
 #include "services/chain_activation_controller.h"  // lib-layer-ok:wave-m-revalidate
 #include "services/quorum_oracle_service.h"        // lib-layer-ok:wave-m-revalidate
 #include "storage/block_index_db.h"
@@ -174,8 +174,8 @@ enum reval_result process_block_revalidate(int target_height,
      * Two acceptance pathways, both preserving verify-never-trust:
      *
      *   (A) MULTI-ORACLE QUORUM (original 2-of-N contract): ≥min_agree
-     *       independent sources return the same hash. Original Wave M
-     *       behavior. Required when we have a peer mesh.
+     *       independent sources return the same hash. This multi-oracle path
+     *       is required when we have a peer mesh.
      *
      *   (B) SINGLE-SOURCE LOCAL AUTHORITY (personal sovereignty stack):
      *       on a personal-stack node the always-on local `zclassicd`

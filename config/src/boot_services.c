@@ -3635,7 +3635,7 @@ bool app_init_services(struct app_context *ctx,
      * record_blocker. Idempotent. */
     blocker_module_init();
 
-    /* Round 5 C3: outbound peer-floor liveness contract.
+    /* Outbound peer-floor liveness contract.
      *
      * Failure mode being addressed: on 2026-05-21 the node sat with 0
      * outbound peers + 1 stuck inbound for 8.6 h. thread_open_connections
@@ -3656,9 +3656,9 @@ bool app_init_services(struct app_context *ctx,
      * thread has fresh targets to try. */
     net_supervisor_register(svc->connman);
     chain_supervisor_register(svc->state);
-    /* Wave M-W: tip-stuck overlord watchdog. Single-purpose: watches
-     * active_chain_height advance, emits a named stall event, and lets
-     * the operator-needed/condition loop handle recovery. */
+    /* Tip-stuck watchdog. Single-purpose: watches active_chain_height
+     * advance, emits a named stall event, and lets the operator-needed /
+     * condition loop handle recovery. */
     chain_tip_watchdog_register(svc->state);
     condition_registry_register_all();
     /* Close the alert loop: install the event→sink routing (incl. the

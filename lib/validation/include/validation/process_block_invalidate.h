@@ -9,8 +9,8 @@
  *
  * Why this exists
  * ---------------
- * `process_block_revalidate` (Wave M) clears a FAILED bit, but only on
- * ≥2-oracle (or local-authority) evidence at a *height*, and only in the
+ * `process_block_revalidate` clears a FAILED bit, but only on ≥2-oracle
+ * (or local-authority) evidence at a *height*, and only in the
  * clear direction. There is no lever to say "this specific block hash is
  * bad, drop it and reorg". When the live node is stuck connecting a
  * stale data-bearing block that the evidence controller correctly

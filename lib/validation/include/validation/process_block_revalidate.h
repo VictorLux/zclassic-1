@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * process_block_revalidate — Wave M.
+ * process_block_revalidate — evidence-based failed-block revalidation.
  *
  * The wedge class this function exists to extinct
  * ------------------------------------------------
@@ -10,11 +10,9 @@
  * (e.g., snapshot import competing with connect_block on a UTXO miss
  * that was actually recoverable) — there is NO existing code path that
  * can clear it based on subsequent peer or mirror evidence. The chain
- * stops at that height. Forever. The live node on 2026-05-23 has been
- * wedged at h=3,115,059 for 5.5 days because the block at h=3,115,060
- * carries BLOCK_FAILED_VALID, and the legacy zclassicd at h=3,121,466
- * disagrees — but nothing in our codebase consults that disagreement
- * to clear the bit.
+ * stops at that height until an operator manually intervenes, even when an
+ * independent local authority disagrees with the failure mark. Nothing in
+ * the base chain-selection path consults that disagreement to clear the bit.
  *
  * This function adds that consult.
  *
@@ -30,7 +28,7 @@
  *      QO_SRC_PEER (recent peer header votes)
  *
  *   2. We require `qr.verdict == QO_VERDICT_QUORUM_MATCH` AND
- *      `qr.winning_hash_hex` equal to OUR pindex's hash (verbatim,
+ *      `qr.winning_hash_hex` equal to OUR pindex's hash (exact
  *      32-byte SHA256d). Two independent sources must agree on the
  *      same hash we already have a block_index entry for. Anything
  *      less and we leave BLOCK_FAILED_VALID set.
