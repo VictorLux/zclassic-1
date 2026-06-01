@@ -4,7 +4,7 @@
  *
  * The body+sidecar hashing, atomic write, header parse, and
  * quarantine logic are shared with block_index_sidecar_integrity.c
- * via services/sha3_sidecar_io.h so the two sidecars behave
+ * via storage/sha3_sidecar_io.h so the two sidecars behave
  * identically. The aii_* functions below are thin wrappers that pass
  * the addrman-specific constants (magic "ADIX", filenames peers.dat,
  * EV_ADDRMAN_CORRUPT) into that shared module and translate its
@@ -14,8 +14,8 @@
  * no on-chain "tip" for the peer file).
  */
 
-#include "services/addrman_integrity.h"
-#include "services/sha3_sidecar_io.h"
+#include "net/addrman_integrity.h"
+#include "storage/sha3_sidecar_io.h"
 
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"

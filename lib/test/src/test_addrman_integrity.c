@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tests for app/services/addrman_integrity.
+ * Tests for lib/net/addrman_integrity.
  *
  * Each case creates a scratch datadir (`./test-tmp/aii_<pid>_*`)
  * containing a synthetic `peers.dat` body, exercises the sidecar
@@ -9,7 +9,7 @@
  */
 
 #include "test/test_helpers.h"
-#include "services/addrman_integrity.h"
+#include "net/addrman_integrity.h"
 #include "event/event.h"
 
 #include <fcntl.h>

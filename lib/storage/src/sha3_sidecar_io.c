@@ -1,10 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * sha3_sidecar_io — see services/sha3_sidecar_io.h for the contract.
+ * sha3_sidecar_io — see storage/sha3_sidecar_io.h for the contract.
  *
  * This is the single source of truth for the body+sidecar hashing,
  * atomic-write, header-parse, and quarantine logic shared by
- * addrman_integrity (peers.dat) and block_index_sidecar_integrity
+ * net/addrman_integrity (peers.dat) and block_index_sidecar_integrity
  * (block_index.bin). Those modules keep their public aii_* / bii_*
  * functions as thin wrappers that pass a `struct ssio_spec`.
  *
@@ -14,7 +14,7 @@
  */
 
 #include "platform/time_compat.h"
-#include "services/sha3_sidecar_io.h"
+#include "storage/sha3_sidecar_io.h"
 
 #include "crypto/sha3.h"
 #include "util/log_macros.h"

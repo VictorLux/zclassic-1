@@ -14,7 +14,7 @@
 #include "net/peer_bandwidth.h"
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
-#include "services/addrman_integrity.h"
+#include "net/addrman_integrity.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/tor_integration.h"

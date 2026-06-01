@@ -5,7 +5,7 @@
  * verifier and structural repair paths stay separately readable. */
 
 #include "services/block_index_integrity.h"
-#include "services/sha3_sidecar_io.h"
+#include "storage/sha3_sidecar_io.h"
 
 #include "adapters/outbound/persistence/block_index_sidecar_sqlite.h"
 #include "encoding/utilstrencodings.h"

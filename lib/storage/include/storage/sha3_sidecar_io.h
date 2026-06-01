@@ -2,7 +2,7 @@
  *
  * sha3_sidecar_io — shared SHA3 "body + 48-byte sidecar" machinery.
  *
- * Both addrman_integrity (peers.dat / "ADIX") and
+ * Both net/addrman_integrity (peers.dat / "ADIX") and
  * block_index_sidecar_integrity (block_index.bin / "BIIX") store a
  * body file alongside a 48-byte sidecar that commits to the body's
  * size and SHA3-256 digest. The streaming hash, atomic sidecar
@@ -18,8 +18,8 @@
  * lint gates, and the existing tests stay unchanged.
  */
 
-#ifndef ZCL_SERVICES_SHA3_SIDECAR_IO_H
-#define ZCL_SERVICES_SHA3_SIDECAR_IO_H
+#ifndef ZCL_STORAGE_SHA3_SIDECAR_IO_H
+#define ZCL_STORAGE_SHA3_SIDECAR_IO_H
 
 #include "event/event.h"
 #include "util/result.h"
@@ -89,4 +89,4 @@ enum ssio_read_verdict ssio_read_sidecar(const char *datadir,
 void ssio_quarantine(const char *datadir, const struct ssio_spec *spec,
                      const char *verdict_name);
 
-#endif /* ZCL_SERVICES_SHA3_SIDECAR_IO_H */
+#endif /* ZCL_STORAGE_SHA3_SIDECAR_IO_H */

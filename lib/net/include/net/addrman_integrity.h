@@ -45,12 +45,12 @@
  * -------------------
  * `AII_SIDECAR_MISSING` is returned when the body exists but the
  * sidecar does not. This is the expected state during the first
- * boot after this service ships — the caller should accept the
+ * boot after this module ships — the caller should accept the
  * body in that case (a subsequent save will generate the sidecar).
  */
 
-#ifndef ZCL_SERVICES_ADDRMAN_INTEGRITY_H
-#define ZCL_SERVICES_ADDRMAN_INTEGRITY_H
+#ifndef ZCL_NET_ADDRMAN_INTEGRITY_H
+#define ZCL_NET_ADDRMAN_INTEGRITY_H
 
 #include "util/result.h"
 
@@ -94,4 +94,4 @@ struct zcl_result aii_write_sidecar(const char *datadir);
  * ignored. Emits `EV_ADDRMAN_CORRUPT`. */
 void aii_quarantine_corrupt(const char *datadir, enum aii_verdict v);
 
-#endif /* ZCL_SERVICES_ADDRMAN_INTEGRITY_H */
+#endif /* ZCL_NET_ADDRMAN_INTEGRITY_H */
