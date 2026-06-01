@@ -31,7 +31,7 @@ struct tx_out;
  * commitment is taken over (txid|vout|value|script|height|is_coinbase),
  * so a restored coin MUST carry its original height/is_coinbase/script
  * or the post-reorg commitment diverges byte-for-byte. Mirrors exactly
- * what legacy disconnect_block pulls from undo->txout/undo->height
+ * what the former disconnect block path pulls from undo->txout/undo->height
  * (connect_block.c:733-757).
  *
  * `script` points into caller-owned storage and is copied immediately by

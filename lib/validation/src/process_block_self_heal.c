@@ -16,7 +16,7 @@
 #include "validation/main_logic.h"
 #include "validation/connect_block.h"
 /* AUTHORITATIVE recovery retry routes through the reducer (cursor move +
- * reducer_kick) instead of legacy disconnect_tip — same app-layer
+ * reducer_kick) instead of the deleted block-disconnect engine — same app-layer
  * controller reach process_block_revalidate.c/process_block_invalidate.c
  * already take. Inline marker keeps the lib_layering baseline flat. */
 #include "validation/chainstate.h"

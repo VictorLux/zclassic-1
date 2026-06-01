@@ -68,7 +68,7 @@ bool block_tree_db_write_block_index(struct block_tree_db *btdb,
  * LevelDB write with WriteOptions{.sync=true} so the write is durable
  * before this call returns.
  *
- * Used by the connect_tip path so kill -9 cannot leave the LevelDB
+ * Used by the tip-advance path so kill -9 cannot leave the LevelDB
  * block_index lagging coins.db / node.db. Per-block fsync costs
  * ~1-2 ms on a warm disk; only call this from the tip-advance path,
  * not from snapshot/legacy-import bulk loaders. */

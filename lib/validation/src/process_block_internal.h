@@ -36,6 +36,7 @@ struct validation_state;
 struct coins_view_sqlite;
 struct incremental_merkle_tree;
 struct block_tree_db;
+struct disk_block_index;
 struct node_db;
 struct wallet;
 struct tx_mempool;
@@ -189,6 +190,8 @@ bool find_block_pos(struct disk_block_pos *pos, unsigned int block_size,
 void block_index_refresh_header(struct block_index *pindex,
                                 const struct block_header *header);
 extern unsigned int g_last_block_file_size; /* defined in process_block_index.c */
+void block_index_snapshot_for_persist(struct disk_block_index *dbi,
+                                      const struct block_index *pindex);
 bool block_index_hydrate_from_disk(struct block_index *pindex,
                                    const char *datadir);
 
@@ -200,9 +203,9 @@ bool block_index_hydrate_from_disk(struct block_index *pindex,
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header);
 
-/* process_block_tip_publish.c helpers. update_tip is used by the deleted
- * legacy connect/disconnect wrappers' surviving tests and process-block
- * internals; process_block_commit_tip is also wrapped by
+/* process_block_tip_publish.c helpers. update_tip is used by historical
+ * tip-publication tests and process-block internals; process_block_commit_tip
+ * is also wrapped by
  * process_block_commit_tip_ext for the chain-advance protocol. */
 struct coins_view_cache;
 bool update_tip(struct main_state *ms, struct block_index *pindex_new);

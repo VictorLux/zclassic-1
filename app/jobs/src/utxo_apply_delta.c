@@ -463,9 +463,9 @@ bool utxo_apply_delta_persist(sqlite3 *db, int height,
  * The stage-side disconnect path. Structurally mirrors tip_finalize's
  * rewind_cursor_if_active_chain_reorged: detect that the active chain
  * has diverged from what we applied, walk DOWN to the fork point, emit
- * inverse UTXO events for the abandoned blocks (the EXACT inverse of
- * legacy disconnect_block — restored spent coin → ADD, erased created
- * coin → SPEND), delete the now-invalid log+delta rows, and rewind the
+ * inverse UTXO events for the abandoned blocks (the exact inverse of the
+ * former disconnect block path: restored spent coin -> ADD, erased created
+ * coin -> SPEND), delete the now-invalid log+delta rows, and rewind the
  * stage cursor to the fork boundary so step_apply re-applies the winning
  * branch forward. Bounded by ZCL_FINALITY_DEPTH (legacy's floor). */
 
@@ -661,12 +661,12 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     /* DRIVER vs FOLLOWER. Under UTXO_AUTHOR_STAGE the stage is itself the
      * tip authority (tip_finalize sets the in-mem chain[] — design step 1),
      * so the active chain at C-1 reflects the stage's OWN tip, not a tip the
-     * legacy engine already swapped ahead of us. Under the default
+     * old engine already swapped ahead of us. Under the default
      * UTXO_AUTHOR_LEGACY the stage is a FOLLOWER: it re-converges onto a
-     * chain[] that legacy connect_tip/activate_best_chain drove, and must
-     * WAIT (no-op) until legacy has populated C-1. The driver flag selects
-     * which discipline applies; the divergence detection + fork walk below
-     * are identical in both. */
+     * chain[] that an external authority drove, and must WAIT (no-op) until
+     * that authority has populated C-1. The driver flag selects which
+     * discipline applies; the divergence detection + fork walk below are
+     * identical in both. */
 
     /* Compare the OLD branch hash recorded for the highest applied height
      * (C-1) against the block now occupying that height on the active

@@ -72,11 +72,12 @@ If the node is not running, record that explicitly before claiming live proof.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk
-  placement/hydration, tip-publication evidence/commit mechanics, and
-  active-tip child discovery/disk verification, and contextual-header skip
-  policy into purpose-named validation files. It now carries best-work chain
-  selection only. `process_block_self_heal_legacy_rpc.c` now owns the
-  zclassicd RPC recovery source and JSON-lite parsing.
+  placement/hydration/persistence-snapshot construction, tip-publication
+  evidence/commit mechanics, active-tip child discovery/disk verification,
+  and contextual-header skip policy into purpose-named validation files. It
+  now carries best-work chain selection only.
+  `process_block_self_heal_legacy_rpc.c` now owns the zclassicd RPC recovery
+  source and JSON-lite parsing.
   `process_block_self_heal_chain_scan.c` now owns bounded active-chain disk
   scan recovery plus tx-index backfill.
   `process_block_self_heal_sqlite_tx_index.c` now owns runtime TxIndex lookup

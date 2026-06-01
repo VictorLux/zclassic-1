@@ -17,6 +17,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
+#include "storage/block_index_db.h"
 #include "util/safe_alloc.h"
 #include "validation/main_constants.h"
 
@@ -89,6 +90,36 @@ void block_index_refresh_header(struct block_index *pindex,
         return;
     memcpy(pindex->nSolution, header->nSolution, header->nSolutionSize);
     pindex->nSolutionSize = header->nSolutionSize;
+}
+
+void block_index_snapshot_for_persist(struct disk_block_index *dbi,
+                                      const struct block_index *pindex)
+{
+    if (!dbi)
+        return;
+
+    disk_block_index_init(dbi);
+    if (!pindex)
+        return;
+
+    if (pindex->pprev && pindex->pprev->phashBlock)
+        dbi->hashPrev = *pindex->pprev->phashBlock;
+    dbi->nHeight = pindex->nHeight;
+    dbi->nStatus = pindex->nStatus;
+    dbi->nTx = pindex->nTx;
+    dbi->nFile = pindex->nFile;
+    dbi->nDataPos = pindex->nDataPos;
+    dbi->nUndoPos = pindex->nUndoPos;
+    dbi->nCachedBranchId = pindex->nCachedBranchId;
+    dbi->nVersion = pindex->nVersion;
+    dbi->hashMerkleRoot = pindex->hashMerkleRoot;
+    dbi->hashFinalSaplingRoot = pindex->hashFinalSaplingRoot;
+    dbi->nTime = pindex->nTime;
+    dbi->nBits = pindex->nBits;
+    dbi->nNonce = pindex->nNonce;
+    if (pindex->nSolution && pindex->nSolutionSize > 0)
+        memcpy(dbi->nSolution, pindex->nSolution, pindex->nSolutionSize);
+    dbi->nSolutionSize = pindex->nSolutionSize;
 }
 
 bool block_index_hydrate_from_disk(struct block_index *pindex,

@@ -377,16 +377,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                     next_h, fail_vin);
     } else {
         atomic_fetch_add(&g_verified_total, 1);
-        /* Single-engine BLOCKER 1 PIECE 4: raise the in-memory validity
-         * level to BLOCK_VALID_SCRIPTS — the bit tip_finalize.preconditions_ok
-         * (tip_finalize_stage.c:262) HARD-REQUIRES and that connect_tip.c
-         * (a delete target) is the only current setter of. Same idiom as
-         * connect_tip.c:157-158/641-642: VALID_SCRIPTS is the validity LEVEL
-         * stored in the low BLOCK_VALID_MASK bits (not an OR-able flag), so
-         * clear the mask then set the level. Then re-emit EV_BLOCK_HEADER so
-         * the projection persists the new nStatus (survives restart). bi is
-         * the live in-memory entry from active_chain_at (:329); blk was freed
-         * above but bi is independent. Additive — the legacy setter stays. */
+        /* Raise the in-memory validity level to BLOCK_VALID_SCRIPTS, which
+         * tip_finalize.preconditions_ok requires before publication. This is
+         * a validity LEVEL stored in the low BLOCK_VALID_MASK bits, not an
+         * OR-able flag, so clear the mask before setting it. Re-emit
+         * EV_BLOCK_HEADER so the projection persists the new nStatus across
+         * restart. bi is the live in-memory entry from active_chain_at; blk
+         * was freed above but bi is independent. */
         bi->nStatus = (bi->nStatus & ~(unsigned)BLOCK_VALID_MASK)
                       | BLOCK_VALID_SCRIPTS;
         block_index_emit_header_event(bi, "script_validate", &g_header_event_emit_total, &g_header_event_emit_fail_total);

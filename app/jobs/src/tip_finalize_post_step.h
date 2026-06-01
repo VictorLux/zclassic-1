@@ -3,8 +3,8 @@
  * tip_finalize_post_step — reducer post-finalize side effects.
  *
  * The post-finalize side-effect step: once tip_finalize has moved the
- * in-memory active-chain window, this runs the
- * derived effects the legacy connect_tip path performs at tip-connect —
+ * in-memory active-chain window, this runs the derived effects that belong to
+ * tip connection but are not reducer cursor authority:
  * wallet transaction sync + Sapling trial-decrypt/note-persist, nullifier
  * spend marking, mempool removal of confirmed txs, and the MMR/MMB appends.
  * Split out of tip_finalize_stage.c to keep that file under the E1 800-LOC
@@ -25,8 +25,7 @@ struct block_index;
  * failure) is a benign skip.
  *
  * Every subsystem handle (wallet, mempool, node_db) is fetched via the
- * public app_runtime_* accessors and individually NULL-guarded, matching
- * the legacy connect_tip guards exactly. */
+ * public app_runtime_* accessors and individually NULL-guarded. */
 void tip_finalize_run_post_finalize(struct block_index *pindex_new);
 
 #endif /* ZCL_JOBS_TIP_FINALIZE_POST_STEP_H */

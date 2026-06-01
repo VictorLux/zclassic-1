@@ -42,10 +42,10 @@
  *      crash. Then trigger `activation_request_connect()` with the new
  *      source class ACTIVATION_SRC_REVALIDATE.
  *
- *   4. If `connect_block` re-runs and the block IS actually valid,
- *      the chain advances naturally. If it re-fails, the existing
- *      `connect_tip.c:541` path re-marks BLOCK_FAILED_VALID with the
- *      fresh state — no consensus rule changes, no validation skipping.
+ *   4. If the reducer's validation pass re-runs and the block IS actually
+ *      valid, the chain advances naturally. If it re-fails, the reducer
+ *      re-marks BLOCK_FAILED_VALID with the fresh state — no consensus rule
+ *      changes, no validation skipping.
  *
  * Why this is NOT "skip verification"
  * ------------------------------------

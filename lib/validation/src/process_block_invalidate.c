@@ -3,15 +3,15 @@
  * process_block_invalidate — see header for the consensus-safety
  * contract. Mirrors Bitcoin Core's InvalidateBlock / ReconsiderBlock.
  *
- * Mechanism reuse (no reinvention of disconnect/reorg):
+ * Mechanism reuse (no reinvention of reducer reorg machinery):
  *   - mark failed         : process_block_propagate_failed_child (the
- *                           same descendant-CHILD walk connect_tip uses).
- *   - roll the chain back : disconnect_tip (the validated reorg path).
- *   - reconnect best chain: activation_request_connect → activate_best_chain
- *                           → find_most_work_chain (which already skips
+ *                           same descendant-CHILD walk used by chain advance).
+ *   - roll the chain back : active-chain cursor move + reducer kick.
+ *   - reconnect best chain: reducer stage drain via the activation controller
+ *                           and find_most_work_chain (which already skips
  *                           BLOCK_FAILED entries).
- *   - persist status flips: block_tree_db_write_block_index (same LevelDB
- *                           handle connect_tip persists to).
+ *   - persist status flips: block_tree_db_write_block_index against the shared
+ *                           block-index LevelDB handle.
  */
 
 #include "validation/process_block_invalidate.h"
@@ -32,16 +32,17 @@
 #include "validation/main_state.h"
 #include "validation/process_block.h"
 
+#include "process_block_internal.h"
+
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 /* The block_tree_db handle is owned by config/src/boot.c and exposed as
- * a process-wide pointer used by connect_tip and friends. We reuse the
- * same handle here so flipped status updates land in the same LevelDB
- * the rest of the validation path persists to. Shared with
- * process_block_revalidate.c. */
+ * a process-wide pointer for validation. We reuse the same handle here so
+ * flipped status updates land in the same LevelDB the rest of the validation
+ * path persists to. Shared with process_block_revalidate.c. */
 extern struct block_tree_db *g_active_block_tree;
 
 const char *invalidate_result_name(enum invalidate_result r)
@@ -69,34 +70,6 @@ const char *reconsider_result_name(enum reconsider_result r)
     return "?";
 }
 
-/* Build a disk_block_index snapshot from an in-memory pindex so we can
- * persist a status-only update. Mirrors dbi_snapshot_from_pindex in
- * process_block_revalidate.c and the field-by-field copy in
- * connect_tip.c — when either side adds a field, all sides must update. */
-static void invalidate_dbi_snapshot(struct disk_block_index *dbi,
-                                    const struct block_index *pindex)
-{
-    disk_block_index_init(dbi);
-    if (pindex->pprev && pindex->pprev->phashBlock)
-        dbi->hashPrev = *pindex->pprev->phashBlock;
-    dbi->nHeight = pindex->nHeight;
-    dbi->nStatus = pindex->nStatus;
-    dbi->nTx = pindex->nTx;
-    dbi->nFile = pindex->nFile;
-    dbi->nDataPos = pindex->nDataPos;
-    dbi->nUndoPos = pindex->nUndoPos;
-    dbi->nCachedBranchId = pindex->nCachedBranchId;
-    dbi->nVersion = pindex->nVersion;
-    dbi->hashMerkleRoot = pindex->hashMerkleRoot;
-    dbi->hashFinalSaplingRoot = pindex->hashFinalSaplingRoot;
-    dbi->nTime = pindex->nTime;
-    dbi->nBits = pindex->nBits;
-    dbi->nNonce = pindex->nNonce;
-    if (pindex->nSolution && pindex->nSolutionSize > 0)
-        memcpy(dbi->nSolution, pindex->nSolution, pindex->nSolutionSize);
-    dbi->nSolutionSize = pindex->nSolutionSize;
-}
-
 /* Persist a single pindex's current nStatus to the shared block_tree_db.
  * Returns true on success (or when there is no db handle — tests run
  * without one and rely on the in-memory flip). */
@@ -105,7 +78,7 @@ static bool invalidate_persist_pindex(const struct block_index *p)
     if (!g_active_block_tree)
         return true;
     struct disk_block_index dbi;
-    invalidate_dbi_snapshot(&dbi, p);
+    block_index_snapshot_for_persist(&dbi, p);
     return block_tree_db_write_block_index(g_active_block_tree, &dbi);
 }
 
@@ -129,8 +102,8 @@ void process_block_mark_invalid(struct main_state *ms,
     target->nStatus |= BLOCK_FAILED_VALID;
 
     /* Propagate BLOCK_FAILED_CHILD to every descendant. Reuse the same
-     * height-sorted single-pass walk connect_tip uses on a failed
-     * connect. last_propagate_sec=NULL → unconditional (no rate limit):
+     * height-sorted single-pass walk the chain-advance failure path uses.
+     * last_propagate_sec=NULL → unconditional (no rate limit):
      * an operator-issued invalidate must take effect immediately. */
     size_t propagated = 0;
     enum propagate_failed_child_result pr =
@@ -203,7 +176,7 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
                                          struct block_index *target,
                                          const char *datadir)
 {
-    /* The reducer is the engine; the legacy disconnect_tip path is gone.
+    /* The reducer is the engine; the old block-disconnect path is gone.
      * state / coins_tip / params / datadir are retained in the signature
      * (callers pass the controller-owned context) but the stage-side unwind
      * needs only the active-chain cursor + a reducer kick. */

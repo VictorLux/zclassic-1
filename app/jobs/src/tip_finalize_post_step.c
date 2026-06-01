@@ -3,10 +3,11 @@
  * tip_finalize_post_step — reducer post-finalize side effects.
  * See tip_finalize_post_step.h for the contract.
  *
- * The body of tip_finalize_run_post_finalize is lifted VERBATIM from
- * connect_tip.c:781-877 (the wallet_sync / Sapling trial-decrypt /
- * nullifier-spend / mempool-remove / MMR / MMB block). The only
- * differences from the legacy source are mechanical, not behavioural:
+ * tip_finalize_run_post_finalize owns the wallet_sync / Sapling trial-decrypt
+ * / nullifier-spend / mempool-remove / MMR / MMB side effects that used to
+ * live inside the old block-connect engine. The reducer now runs them after
+ * tip publication; the differences from the old inline source are mechanical,
+ * not behavioural:
  *
  *   - the connected block is READ BACK from disk via
  *     stage_default_block_reader rather than received as a parameter (the
@@ -112,7 +113,8 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                 (unsigned int)pindex_new->nHeight);
     }
 
-    /* Projection-deferred DIAGNOSTIC (preserved from legacy connect_tip).
+    /* Projection-deferred DIAGNOSTIC (preserved from the old inline
+     * block-connect side effect).
      * The reducer consensus path does NOT write the derived block/tx SQLite
      * projection inline — the active chain, block index, and coins view are
      * authoritative and the projection is repairable from verified block

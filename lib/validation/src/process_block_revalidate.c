@@ -22,6 +22,8 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include "process_block_internal.h"
+
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -30,9 +32,9 @@
 #include <strings.h>
 
 /* The block_tree_db handle is owned by config/src/boot.c and exposed as
- * a process-wide pointer used by connect_tip and friends. We reuse the
- * same handle here so cleared status updates land in the same LevelDB
- * the rest of the validation path persists to. */
+ * a process-wide pointer for validation. We reuse the same handle here so
+ * cleared status updates land in the same LevelDB the rest of the validation
+ * path persists to. */
 extern struct block_tree_db *g_active_block_tree;
 
 const char *reval_result_name(enum reval_result r)
@@ -93,36 +95,6 @@ static struct block_index *find_failed_pindex_by_hash(
             return p;
     }
     return NULL;
-}
-
-/* Build a disk_block_index snapshot from an in-memory pindex so we can
- * persist a status-only update. Caller has already mutated pindex
- * nStatus; this copies the current state into the disk format.
- *
- * Mirrors the field-by-field copy in connect_tip.c:771-791 — when
- * either side adds a field, both sides must update. */
-static void dbi_snapshot_from_pindex(struct disk_block_index *dbi,
-                                     const struct block_index *pindex)
-{
-    disk_block_index_init(dbi);
-    if (pindex->pprev && pindex->pprev->phashBlock)
-        dbi->hashPrev = *pindex->pprev->phashBlock;
-    dbi->nHeight = pindex->nHeight;
-    dbi->nStatus = pindex->nStatus;
-    dbi->nTx = pindex->nTx;
-    dbi->nFile = pindex->nFile;
-    dbi->nDataPos = pindex->nDataPos;
-    dbi->nUndoPos = pindex->nUndoPos;
-    dbi->nCachedBranchId = pindex->nCachedBranchId;
-    dbi->nVersion = pindex->nVersion;
-    dbi->hashMerkleRoot = pindex->hashMerkleRoot;
-    dbi->hashFinalSaplingRoot = pindex->hashFinalSaplingRoot;
-    dbi->nTime = pindex->nTime;
-    dbi->nBits = pindex->nBits;
-    dbi->nNonce = pindex->nNonce;
-    if (pindex->nSolution && pindex->nSolutionSize > 0)
-        memcpy(dbi->nSolution, pindex->nSolution, pindex->nSolutionSize);
-    dbi->nSolutionSize = pindex->nSolutionSize;
 }
 
 enum reval_result process_block_revalidate(int target_height,
@@ -333,7 +305,7 @@ enum reval_result process_block_revalidate(int target_height,
          * and the revalidate fires again on the next 900s tick. */
         if (g_active_block_tree) {
             struct disk_block_index dbi;
-            dbi_snapshot_from_pindex(&dbi, p);
+            block_index_snapshot_for_persist(&dbi, p);
             if (block_tree_db_write_block_index(g_active_block_tree, &dbi)) {
                 persisted++;
             } else {

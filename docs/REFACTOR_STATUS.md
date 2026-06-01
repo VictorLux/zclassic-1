@@ -311,6 +311,12 @@ node soak.
   `find_block_pos()`, `block_index_refresh_header()`,
   `block_index_hydrate_from_disk()`, and the test hydration wrapper. At that
   slice, `process_block_core.c` was down from 893 to 776 lines.
+- Block-index persistence snapshot construction is centralized in
+  `process_block_index.c` via `block_index_snapshot_for_persist()`.
+  `process_block_invalidate.c` and `process_block_revalidate.c` no longer
+  duplicate the field-by-field `disk_block_index` copy, and their production
+  comments now describe reducer/stage authority instead of deleted
+  `connect_tip` / `disconnect_tip` files.
 - Tip-publication evidence and commit mechanics moved from
   `process_block_core.c` into `process_block_tip_publish.c`. The new file owns
   `process_block_tip_is_best_work()`, `process_block_commit_tip()`,
@@ -520,6 +526,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` now owns best-work chain
   selection only.
+- `lib/validation/src/process_block_index.c` now owns block-file placement,
+  block-index hydration, and shared `disk_block_index` persistence snapshot
+  construction for invalidate/revalidate status flips.
 - `lib/validation/src/process_block_self_heal.c` now owns missing-UTXO
   failure tracking only; keep auditing the process-block split set for stale
   helper boundaries as adjacent recovery code changes.
@@ -540,6 +549,37 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after centralizing block-index persistence snapshot
+  construction in `process_block_index.c`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production stale terminology searches returned no matches:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
+  and
+  `rg -n "connect_tip\\.c|disconnect_tip\\.c|activate_best_chain\\.c|legacy connect|legacy disconnect|delete target|legacy setter stays|connect_tip uses|connect_tip path|disconnect_tip path" app lib config tools --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make -j$(nproc)`: pass after adding
+  `block_index_snapshot_for_persist()` and routing invalidate/revalidate
+  status persistence through it.
+- `make lint`: pass after the block-index snapshot cleanup; E1, E2, E6,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates all report zero grandfathered entries.
+- Focused filtered tests passed:
+  `./test_parallel --only=process_block_revalidate --timeout=120 --verbose`,
+  `./test_parallel --only=invalidateblock --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make test_parallel`: pass after rebuilding the parallel runner.
+- `./test_parallel --timeout=180`: pass after the block-index snapshot cleanup,
+  `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 14:02:48 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after splitting recovered-UTXO injection out of
   `process_block_self_heal.c`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing

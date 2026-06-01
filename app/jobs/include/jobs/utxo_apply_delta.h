@@ -37,7 +37,7 @@ struct delta_entry {
      * B5 reorg-unwind: SPENT entries ALSO carry the full pre-image
      * (height + is_coinbase + script) so a stage-side disconnect can
      * emit a correct restore-ADD (the inverse of the SPEND), matching
-     * legacy disconnect_block byte-for-byte. For a spent entry the
+     * the former disconnect block path byte-for-byte. For a spent entry the
      * script bytes live in the owned `script_owned` buffer (the live
      * block's tx_out is gone by disconnect time), and `script` aliases
      * into it; `height` is the coin's ORIGINAL creation height. For an
