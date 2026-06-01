@@ -31,8 +31,6 @@
 #include "net/peer_scoring.h"
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
-#include "models/block.h"
-#include "coins/utxo_commitment.h"
 #include "coins/coins_view.h"
 #include "services/snapshot_sync_service.h"
 #include "validation/main_state.h"
@@ -1361,29 +1359,29 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             /* Verify SHA3 UTXO commitment matches the
                              * snapshot offer's root hash. This catches
                              * any data corruption during transfer. */
-                            {
-                                struct node_db *ndb = msg_node_db(mp);
-                                if (ndb && ndb->db) {
+                            if (mp->utxo_sha3_compute) {
                                 uint8_t local_root[32];
                                 uint64_t local_count = 0;
-                                utxo_commitment_sha3_compute(
-                                    ndb->db,
-                                    local_root, &local_count);
-                                const uint8_t *expected_root =
-                                    g_swarm.manifest.utxo_sha3;
-                                if (memcmp(expected_root,
-                                           (const uint8_t[32]){0}, 32) == 0)
-                                    expected_root =
-                                        g_swarm.manifest.merkle_root;
-                                if (memcmp(local_root, expected_root, 32) == 0) {
-                                    printf("SHA3 UTXO verification: PASSED "
-                                           "(%lu UTXOs)\n",
-                                           (unsigned long)local_count);
-                                } else {
-                                    printf("SHA3 UTXO verification: FAILED "
-                                           "— snapshot data corrupted!\n");
+
+                                if (mp->utxo_sha3_compute(
+                                        local_root, &local_count,
+                                        mp->utxo_sha3_compute_ctx)) {
+                                    const uint8_t *expected_root =
+                                        g_swarm.manifest.utxo_sha3;
+                                    if (memcmp(expected_root,
+                                               (const uint8_t[32]){0}, 32) == 0)
+                                        expected_root =
+                                            g_swarm.manifest.merkle_root;
+                                    if (memcmp(local_root, expected_root,
+                                               32) == 0) {
+                                        printf("SHA3 UTXO verification: PASSED "
+                                               "(%lu UTXOs)\n",
+                                               (unsigned long)local_count);
+                                    } else {
+                                        printf("SHA3 UTXO verification: FAILED "
+                                               "— snapshot data corrupted!\n");
+                                    }
                                 }
-                            }
                             }
 
                             swarm_sync_free(&g_swarm);
@@ -1505,11 +1503,12 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 if (piece_end > bm.end_height)
                     piece_end = bm.end_height;
 
-                /* Read block hashes via ActiveRecord model */
                 uint8_t piece_hashes[BLOCKS_PER_PIECE][32];
-                int block_count = db_block_hashes_in_range(
-                    msg_node_db(mp), piece_start, piece_end,
-                    piece_hashes, BLOCKS_PER_PIECE);
+                int block_count = mp->block_hashes_range
+                    ? mp->block_hashes_range(piece_start, piece_end,
+                                             piece_hashes, BLOCKS_PER_PIECE,
+                                             mp->block_hashes_range_ctx)
+                    : 0;
                 if (block_count > 0) {
                     struct byte_stream bs_msg;
                     stream_init(&bs_msg, 4 + 4 + 32 * (size_t)block_count);

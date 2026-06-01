@@ -1414,16 +1414,28 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "boot_build_flyclient_proof") != NULL);
         ASSERT(strstr(buf, "snapsync_build_fc_response") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_flyclient_proof_builder") != NULL);
+        ASSERT(strstr(buf, "boot_load_block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "boot_compute_utxo_sha3") != NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_utxo_sha3_compute") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),
                          "lib/net/src/msgprocessor_snapshot.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mp->flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
+        ASSERT(strstr(buf, "mp->utxo_sha3_compute") != NULL);
+        ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);
+        ASSERT(strstr(buf, "utxo_commitment_sha3_compute") == NULL);
         ASSERT(strstr(buf, "rpc_blockchain_get_mmb") == NULL);
         ASSERT(strstr(buf, "g_mmb_leaf_store") == NULL);
         ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
         ASSERT(strstr(buf, "models/mmb_leaf_store.h") == NULL);
+        ASSERT(strstr(buf, "models/block.h") == NULL);
+        ASSERT(strstr(buf, "coins/utxo_commitment.h") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);

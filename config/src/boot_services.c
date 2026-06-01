@@ -65,6 +65,7 @@
 #include "chain/subsidy.h"
 #include "core/uint256.h"
 #include "coins/coins_view.h"
+#include "coins/utxo_commitment.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/hodl_controller.h"
@@ -1953,6 +1954,44 @@ static bool boot_build_flyclient_proof(struct fc_response *resp,
                                       &g_mmb_leaf_store).ok;
 }
 
+static int boot_load_block_hashes_range(int32_t start_height,
+                                        int32_t end_height,
+                                        uint8_t (*hashes_out)[32],
+                                        size_t max,
+                                        void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !hashes_out || max == 0) {
+        LOG_WARN("boot",
+                 "block hash range load missing svc=%p ndb=%p out=%p max=%zu",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (void *)hashes_out, max);
+        return 0;
+    }
+
+    return db_block_hashes_in_range(svc->node_db, start_height, end_height,
+                                    hashes_out, max);
+}
+
+static bool boot_compute_utxo_sha3(uint8_t out[32],
+                                   uint64_t *utxo_count,
+                                   void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !svc->node_db->db || !out || !utxo_count) {
+        LOG_WARN("boot",
+                 "UTXO SHA3 compute missing svc=%p ndb=%p out=%p count=%p",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (void *)out, (void *)utxo_count);
+        return false;
+    }
+
+    utxo_commitment_sha3_compute(svc->node_db->db, out, utxo_count);
+    return true;
+}
+
 static bool boot_mmb_leaf_store_catchup_legacy(struct mmb_leaf_store *store,
                                                int tip_height)
 {
@@ -2550,6 +2589,10 @@ bool app_init_services(struct app_context *ctx,
                                       boot_block_connected_observer, svc);
     msg_processor_set_flyclient_proof_builder(
         svc->msg_processor, boot_build_flyclient_proof, svc);
+    msg_processor_set_block_hashes_range(
+        svc->msg_processor, boot_load_block_hashes_range, svc);
+    msg_processor_set_utxo_sha3_compute(
+        svc->msg_processor, boot_compute_utxo_sha3, svc);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {

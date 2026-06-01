@@ -16,6 +16,8 @@
 #include "net/fast_sync.h"
 #include "event/event.h"
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 struct block;
 struct transaction;
@@ -40,6 +42,14 @@ typedef bool (*msg_flyclient_proof_fn)(
     const struct fc_challenge *challenge,
     const struct active_chain *chain_active,
     void *ctx);
+typedef int (*msg_block_hashes_range_fn)(int32_t start_height,
+                                         int32_t end_height,
+                                         uint8_t (*hashes_out)[32],
+                                         size_t max,
+                                         void *ctx);
+typedef bool (*msg_utxo_sha3_compute_fn)(uint8_t out[32],
+                                         uint64_t *utxo_count,
+                                         void *ctx);
 
 struct msg_processor {
     struct main_state *main_state;
@@ -63,6 +73,10 @@ struct msg_processor {
     void *block_connected_ctx;
     msg_flyclient_proof_fn flyclient_proof;
     void *flyclient_proof_ctx;
+    msg_block_hashes_range_fn block_hashes_range;
+    void *block_hashes_range_ctx;
+    msg_utxo_sha3_compute_fn utxo_sha3_compute;
+    void *utxo_sha3_compute_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -120,6 +134,14 @@ void msg_processor_set_block_connected(
 void msg_processor_set_flyclient_proof_builder(
     struct msg_processor *mp,
     msg_flyclient_proof_fn build,
+    void *ctx);
+void msg_processor_set_block_hashes_range(
+    struct msg_processor *mp,
+    msg_block_hashes_range_fn load,
+    void *ctx);
+void msg_processor_set_utxo_sha3_compute(
+    struct msg_processor *mp,
+    msg_utxo_sha3_compute_fn compute,
     void *ctx);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);

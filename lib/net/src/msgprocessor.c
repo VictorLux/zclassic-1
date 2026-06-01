@@ -745,6 +745,10 @@ void msg_processor_init(struct msg_processor *mp,
     mp->block_connected_ctx = NULL;
     mp->flyclient_proof = NULL;
     mp->flyclient_proof_ctx = NULL;
+    mp->block_hashes_range = NULL;
+    mp->block_hashes_range_ctx = NULL;
+    mp->utxo_sha3_compute = NULL;
+    mp->utxo_sha3_compute_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -846,6 +850,28 @@ void msg_processor_set_flyclient_proof_builder(
         return;
     mp->flyclient_proof = build;
     mp->flyclient_proof_ctx = ctx;
+}
+
+void msg_processor_set_block_hashes_range(
+    struct msg_processor *mp,
+    msg_block_hashes_range_fn load,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->block_hashes_range = load;
+    mp->block_hashes_range_ctx = ctx;
+}
+
+void msg_processor_set_utxo_sha3_compute(
+    struct msg_processor *mp,
+    msg_utxo_sha3_compute_fn compute,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->utxo_sha3_compute = compute;
+    mp->utxo_sha3_compute_ctx = ctx;
 }
 
 bool msg_processor_snapshot_active(const struct msg_processor *mp)

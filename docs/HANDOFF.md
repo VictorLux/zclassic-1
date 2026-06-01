@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 32 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 31 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -109,7 +109,10 @@ If the node is not running, record that explicitly before claiming live proof.
   app-layer includes were removed from `msg_headers.c`, `msgprocessor.c`, and
   `msgprocessor_snapshot.c`; FlyClient proof building is now callback-injected
   from boot, so the net snapshot handler no longer includes the blockchain
-  controller or MMB leaf-store model. Keep shrinking it; do not add new
+  controller or MMB leaf-store model. Snapshot block-piece serving now loads
+  block-hash ranges and computes the local UTXO SHA3 through boot-owned
+  callbacks too, so the net snapshot handler no longer includes the Block model
+  or reaches through `struct node_db`. Keep shrinking it; do not add new
   entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
