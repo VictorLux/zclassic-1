@@ -11,9 +11,6 @@ app/controllers/src/blockchain_controller_admin.c:192: coins_view_cache_flush(ct
 app/controllers/src/blockchain_controller_admin.c:203: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
 app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
-config/src/boot_index.c:156: coins_view_cache_flush(cvtip);
-config/src/boot_index.c:226: coins_view_cache_flush(cvtip);
-config/src/boot_index.c:239: coins_view_cache_flush(cvtip);
 config/src/boot_services.c:3753: if (coins_view_cache_flush(svc->coins_tip)) {
 config/src/boot_services.c:3769: coins_view_cache_flush(svc->coins_tip);
 config/src/boot_services.c:3904: coins_view_cache_flush(svc->coins_tip);

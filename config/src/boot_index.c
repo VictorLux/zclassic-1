@@ -20,6 +20,7 @@
 #include "crypto/sha256.h"
 #include "primitives/block.h"
 #include "core/serialize.h"
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 #include <stdio.h>
@@ -134,6 +135,30 @@ bool fast_rebuild_chainstate(struct coins_view_sqlite *cvs,
 
 /* ── Full chainstate reindex: replay all blocks ────────────── */
 
+static bool boot_index_flush_reindex_coins(struct coins_view_sqlite *cvs,
+                                           struct coins_view_cache *cvtip)
+{
+    if (!cvs || !cvtip)
+        LOG_FAIL("boot_index",
+                 "reindex coins flush: NULL arg cvs=%p cvtip=%p",
+                 (void *)cvs, (void *)cvtip);
+
+    bool ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:boot-reindex-single-writer
+        cvs, &cvtip->cache_coins, &cvtip->hash_block, &cvtip->commitment);
+    if (!ok) {
+        fprintf(stderr, // obs-ok:helper-context-logged
+                "reindex-chainstate: coins flush failed; retaining %zu "
+                "dirty entries\n",
+                cvtip->cache_coins.size);
+        return false;
+    }
+
+    coins_map_free(&cvtip->cache_coins);
+    coins_map_init(&cvtip->cache_coins);
+    utxo_commitment_init(&cvtip->commitment);
+    return true;
+}
+
 bool reindex_chainstate(struct main_state *ms,
                           struct coins_view_sqlite *cvs,
                           struct coins_view_cache *cvtip,
@@ -153,10 +178,10 @@ bool reindex_chainstate(struct main_state *ms,
 
     mallopt(M_MMAP_THRESHOLD, 32768);
 
-    coins_view_cache_flush(cvtip);
+    if (!boot_index_flush_reindex_coins(cvs, cvtip))
+        return false;
     coins_view_cache_free(cvtip);
 
-    (void)cvs;
     if (ndb->open) {
         sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
         sqlite3_exec(ndb->db,
@@ -223,7 +248,10 @@ bool reindex_chainstate(struct main_state *ms,
         bool need_flush = (h % 10000 == 0) ||
                           (cvtip->cache_coins.size > 200000);
         if (need_flush) {
-            coins_view_cache_flush(cvtip);
+            if (!boot_index_flush_reindex_coins(cvs, cvtip)) {
+                errors++;
+                break;
+            }
             malloc_trim(0);
             if (h % 1000 == 0) {
                 int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
@@ -236,7 +264,8 @@ bool reindex_chainstate(struct main_state *ms,
         }
     }
 
-    coins_view_cache_flush(cvtip);
+    if (!boot_index_flush_reindex_coins(cvs, cvtip))
+        errors++;
 
     atomic_store(&g_utxo_commitment_skip, false);
 
