@@ -4,7 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "services/header_sync_service.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "net/net.h"
 #include "net/netaddr.h"
 #include "validation/chainstate.h"

@@ -4,7 +4,7 @@
 #include "util/log_macros.h"
 
 #include "config/runtime.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

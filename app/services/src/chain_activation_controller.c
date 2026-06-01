@@ -24,7 +24,7 @@
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
 #include "event/event.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "core/utiltime.h"
 #include <stdio.h>
 #include <string.h>

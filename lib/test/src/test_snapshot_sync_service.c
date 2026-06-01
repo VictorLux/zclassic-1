@@ -2,7 +2,7 @@
  * Tests for snapshot sync service policy helpers. */
 
 #include "test/test_helpers.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "config/db_service.h"
 #include "config/runtime.h"

@@ -4,7 +4,7 @@
 
 #include "test/test_helpers.h"
 #include "services/chain_activation_controller.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "validation/main_state.h"
 #include "util/blocker.h"
 #include <string.h>

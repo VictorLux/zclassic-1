@@ -24,7 +24,7 @@
 #include "models/database.h"
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
 #include "services/block_index_loader.h"

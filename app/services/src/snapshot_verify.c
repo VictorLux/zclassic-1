@@ -10,7 +10,7 @@
  *
  * Pure code-motion split from snapshot_sync_service.c. */
 
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/chain_evidence_controller.h"
 #include "models/database.h"
 #include "models/db_txn.h"

@@ -11,7 +11,7 @@
 #include "encoding/utilstrencodings.h"
 #include "controllers/explorer_factoids.h"
 #include "controllers/file_controller.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/zslp_service.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/game_controller.h"

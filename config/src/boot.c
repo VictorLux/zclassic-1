@@ -9,7 +9,7 @@
 #include "config/boot_snapshot_import.h"
 #include "config/file_ops.h"
 #include "platform/rng.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_executor.h"

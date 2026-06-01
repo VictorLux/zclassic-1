@@ -9,7 +9,7 @@
  *
  * Pure code-motion split from snapshot_sync_service.c. */
 
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "services/block_source_policy.h"
 #include "chain/mmb.h"

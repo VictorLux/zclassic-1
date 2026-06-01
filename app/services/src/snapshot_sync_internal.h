@@ -17,7 +17,7 @@
 #ifndef ZCL_SNAPSHOT_SYNC_INTERNAL_H
 #define ZCL_SNAPSHOT_SYNC_INTERNAL_H
 
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "models/database.h"
 #include "util/result.h"

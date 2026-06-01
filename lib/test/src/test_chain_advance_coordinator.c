@@ -5,7 +5,7 @@
 #include "conditions/local_header_refill_needed.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/sync_monitor.h"
 #include "config/runtime.h"
 #include "event/event.h"

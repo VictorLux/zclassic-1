@@ -36,7 +36,7 @@
 
 #include "adapters/outbound/persistence/snapshot_store_sqlite.h"
 #include "ports/snapshot_store_port.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "models/database.h"
 #include "models/utxo.h"
 

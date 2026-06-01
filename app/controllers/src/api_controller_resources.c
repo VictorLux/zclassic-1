@@ -30,7 +30,7 @@
 #include "net/download.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/node_health_service.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/zslp_service.h"
 #include "validation/contextual_check_tx.h"
 #include "validation/main_state.h"

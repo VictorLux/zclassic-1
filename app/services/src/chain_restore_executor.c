@@ -8,7 +8,7 @@
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "models/db_txn.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

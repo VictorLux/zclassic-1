@@ -1465,7 +1465,7 @@ static int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(strstr(buf, "sync/sync_planner.h") != NULL);
         ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1497,7 +1497,7 @@ static int t_tx_wallet_sync_is_callback_injected(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1534,7 +1534,7 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
         PASS();
     } _test_next:;
@@ -1581,7 +1581,7 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/" "snapshot_sync_" "service.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1647,7 +1647,7 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "config/boot_internal.h") == NULL);
         ASSERT(strstr(buf, "boot_activation_controller") == NULL);
         ASSERT(strstr(buf, "activation_request_connect") == NULL);
@@ -1900,7 +1900,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
-        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick") == NULL);
         ASSERT(strstr(buf, "process_block_set_tip_publication_hooks") == NULL);
         ASSERT(strstr(buf, "process_block_propagate_failed_child(") == NULL);

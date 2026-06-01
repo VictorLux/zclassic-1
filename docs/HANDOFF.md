@@ -93,10 +93,9 @@ If the node is not running, record that explicitly before claiming live proof.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to
-  `lib/net/include/net/snapshot_sync_contract.h` and leaving
-  `app/services/include/services/snapshot_sync_service.h` as a compatibility
-  wrapper for app callers. Keep this baseline empty; do not add new upward
-  includes from `lib/` to `app/`.
+  `lib/net/include/net/snapshot_sync_contract.h`; the old app-layer
+  compatibility include has been deleted. Keep this baseline empty; do not add
+  new upward includes from `lib/` to `app/`.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

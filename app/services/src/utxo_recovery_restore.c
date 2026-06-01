@@ -22,7 +22,7 @@
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_tip.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "config/boot_internal.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"

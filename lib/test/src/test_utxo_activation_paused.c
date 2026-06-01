@@ -10,7 +10,7 @@
 #include "framework/condition.h"
 #include "models/database.h"
 #include "platform/clock.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include "services/sync_monitor.h"
 #include "validation/process_block.h"
 

@@ -16,7 +16,7 @@
 #include "chain/pow.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
-#include "services/snapshot_sync_service.h"
+#include "net/snapshot_sync_contract.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

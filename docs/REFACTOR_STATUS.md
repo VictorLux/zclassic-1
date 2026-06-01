@@ -370,11 +370,10 @@ node soak.
   leaving `process_block_self_heal.c` focused on missing-UTXO failure
   tracking. `process_block_self_heal.c` is down from 177 to 138 lines.
 - The snapshot-sync router contract now lives in
-  `lib/net/include/net/snapshot_sync_contract.h`, with
-  `app/services/include/services/snapshot_sync_service.h` kept as a
-  compatibility wrapper for app callers. `lib/net/src/msgprocessor_snapshot.c`
-  now includes the lib-owned contract instead of the app service header, and
-  the lib-to-app include baseline is empty.
+  `lib/net/include/net/snapshot_sync_contract.h`. The old
+  app-layer compatibility wrapper was deleted; app/config/test callers include
+  the lib-owned contract directly, and the lib-to-app include baseline remains
+  empty.
 - Read-only chain diagnostics no longer flush consensus state as a side
   effect. `getdataintegrity`, `gethodlwave`, and `gethodlwaveimage` scan the
   persisted read models instead of calling `coins_view_cache_flush()`, dropping
@@ -564,6 +563,36 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after deleting the snapshot-sync app-layer
+  compatibility header and routing app/config/test callers directly to the
+  lib-owned router contract.
+- `make -j$(nproc)`: pass after the contract include migration.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  direct contract include path.
+- Focused filtered tests passed:
+  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`,
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
+  `./test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`.
+- `make lint`: pass after rerunning it outside the focused lint-gate test's
+  temporary fixture window; all framework, layering, controller raw-SQL,
+  one-write, service-result, supervisor, typed-blocker, raw allocation, and doc
+  gates stayed at zero grandfathered entries.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- Deleted wrapper include searches returned no matches across guarded
+  app/lib/config/tools/docs C/H and Markdown surfaces.
+- `./test_parallel --timeout=180`: pass after the snapshot-sync wrapper
+  deletion, `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 14:49:42 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and read-only journal checks
+  had no entries. The service was not restarted; this slice stayed read-only
+  and preserved the `8023` port expectation.
 - `git diff --check`: pass after deleting condition-layer PR scaffold headers
   and renaming the watchdog condition test groups to behavior names.
 - `make -j$(nproc)`: pass after the condition header/test rename and README
