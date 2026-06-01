@@ -17,6 +17,13 @@
 #include "event/event.h"
 #include <stdbool.h>
 
+struct block;
+struct validation_state;
+
+typedef bool (*msg_compact_block_submit_fn)(struct block *block,
+                                            struct validation_state *out,
+                                            void *ctx);
+
 struct msg_processor {
     struct main_state *main_state;
     struct tx_mempool *mempool;
@@ -25,6 +32,8 @@ struct msg_processor {
     const char *datadir;
     struct net_manager *net_mgr;
     const struct app_runtime_context *runtime;
+    msg_compact_block_submit_fn compact_block_submit;
+    void *compact_block_submit_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -57,6 +66,11 @@ void msg_processor_init(struct msg_processor *mp,
                          const char *datadir,
                          struct net_manager *net_mgr,
                          const struct app_runtime_context *runtime);
+
+void msg_processor_set_compact_block_submit(
+    struct msg_processor *mp,
+    msg_compact_block_submit_fn submit,
+    void *ctx);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);

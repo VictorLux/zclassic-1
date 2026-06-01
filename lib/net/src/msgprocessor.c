@@ -732,6 +732,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->datadir = datadir;
     mp->net_mgr = net_mgr;
     mp->runtime = runtime;
+    mp->compact_block_submit = NULL;
+    mp->compact_block_submit_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -759,6 +761,17 @@ void msg_processor_init(struct msg_processor *mp,
     /* Snapshot/fast-sync init: builds the initial block piece manifest
      * if we have a chain to publish. */
     mp_snapshot_init(mp);
+}
+
+void msg_processor_set_compact_block_submit(
+    struct msg_processor *mp,
+    msg_compact_block_submit_fn submit,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->compact_block_submit = submit;
+    mp->compact_block_submit_ctx = ctx;
 }
 
 int msg_get_height(void *ctx)

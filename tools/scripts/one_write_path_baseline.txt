@@ -17,9 +17,9 @@ app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->co
 config/src/boot_index.c:156: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:226: coins_view_cache_flush(cvtip);
 config/src/boot_index.c:239: coins_view_cache_flush(cvtip);
-config/src/boot_services.c:3080: if (coins_view_cache_flush(svc->coins_tip)) {
-config/src/boot_services.c:3096: coins_view_cache_flush(svc->coins_tip);
-config/src/boot_services.c:3229: coins_view_cache_flush(svc->coins_tip);
+config/src/boot_services.c:3094: if (coins_view_cache_flush(svc->coins_tip)) {
+config/src/boot_services.c:3110: coins_view_cache_flush(svc->coins_tip);
+config/src/boot_services.c:3243: coins_view_cache_flush(svc->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
 lib/storage/include/storage/coins_view_sqlite.h:49:bool coins_view_sqlite_batch_write(struct coins_view_sqlite *cvs,

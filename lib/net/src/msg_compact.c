@@ -13,7 +13,6 @@
 #include "net/peer_scoring.h"
 #include "storage/disk_block_io.h"
 #include "validation/process_block.h"
-#include "services/chain_activation_controller.h"
 #include "consensus/validation.h"
 #include "event/event.h"
 #include "util/log_macros.h"
@@ -44,9 +43,6 @@ static void compact_submit_block(struct msg_processor *mp,
                                  struct p2p_node *node,
                                  struct block *blk)
 {
-    /* mp retained for call-site symmetry; the reducer resolves the chain
-     * context from boot_activation_controller() internally. */
-    (void)mp;
     struct uint256 hash;
     block_header_get_hash(&blk->header, &hash);
 
@@ -57,18 +53,18 @@ static void compact_submit_block(struct msg_processor *mp,
                  node->addr_name, hex);
         return;
     }
-    block_mark_seen(&hash);
 
     struct validation_state state;
     validation_state_init(&state);
-    /* Compact-block intake: the synchronous reducer_ingest_block drives the
-     * eight Wave-S stages on the reassembled block and fills the
-     * validation_state. The verdict in `state` preserves the exact
-     * already-seen / DoS-scoring contract below. force=false mirrors the
-     * relay-pre-filter semantics of the full-block P2P intake site
-     * (msg_blocks). */
-    reducer_ingest_block(boot_activation_controller(), blk,
-                         REDUCER_SRC_COMPACT, false, &state);
+    if (!mp || !mp->compact_block_submit) {
+        validation_state_error(&state, "compact-submit-unavailable");
+    } else {
+        block_mark_seen(&hash);
+        bool accepted = mp->compact_block_submit(blk, &state,
+                                                 mp->compact_block_submit_ctx);
+        if (!accepted && validation_state_is_valid(&state))
+            validation_state_error(&state, "compact-submit-failed");
+    }
 
     if (!validation_state_is_valid(&state)) {
         char hex[65];
