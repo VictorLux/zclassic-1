@@ -3,8 +3,7 @@
  * Wallet coins-page view (/wallet/coins). The controller fetches the
  * unspent UTXOs, grouped shielded notes, and held tokens via the
  * wallet_view port, then delegates each section's HTML assembly here.
- * Controllers must not build views. Output is byte-identical to the
- * prior inline controller code. */
+ * Controllers must not build views. */
 
 #ifndef ZCL_VIEWS_WALLET_VIEW_COINS_VIEW_H
 #define ZCL_VIEWS_WALLET_VIEW_COINS_VIEW_H

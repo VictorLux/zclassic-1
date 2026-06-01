@@ -1,9 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet node-page view: the peer table for /wallet/node. Moved out of
- * wallet_view_node.c so the controller does not build views and does not
- * name sqlite. The HTML is byte-identical to the prior inline code — the
- * per-row markup still comes from TMPL_NODE_PEER_ROW. */
+ * Wallet node-page view: the peer table for /wallet/node. The controller
+ * fetches rows through the wallet_view port; this file owns the table HTML
+ * and uses TMPL_NODE_PEER_ROW for each peer row. */
 
 #include "views/wallet_view_node_view.h"
 #include "views/wallet_templates_gen.h"

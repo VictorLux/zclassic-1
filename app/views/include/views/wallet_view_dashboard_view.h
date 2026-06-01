@@ -4,8 +4,7 @@
  * token-card summary, the recent ledger rows, and the recent shielded
  * notes via the wallet_view port, then delegates the HTML assembly for
  * the "Tokens" card and the "Recent transactions" list here. Controllers
- * must not build views. Output is byte-identical to the prior inline
- * controller code. */
+ * must not build views. */
 
 #ifndef ZCL_VIEWS_WALLET_VIEW_DASHBOARD_VIEW_H
 #define ZCL_VIEWS_WALLET_VIEW_DASHBOARD_VIEW_H

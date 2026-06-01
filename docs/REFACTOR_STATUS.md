@@ -143,6 +143,11 @@ node soak.
   test now covers the process-block top-level wiring, crash hooks,
   failed-child propagation, flush policy, internal helper header, and missing
   UTXO self-heal coordinator, and rejects stale split/code-motion labels there.
+- Wallet/explorer view-template comments now describe current View ownership
+  instead of extraction/parity history. The scaffold-label lint guard now covers
+  the remaining wallet/explorer view fragments plus the adjacent explorer block
+  controller and rejects generic stale parity wording such as `byte-identical`,
+  `prior inline`, and `not a redesign`.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2613,6 +2618,34 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   process was running, no listener existed on ports `8023`, `8033`, `18232`,
   or `8232`, and the last 20 minutes of `zclassic23` journal output had no
   entries. This is a failed live sample, not a refactor completion proof.
+- Wallet/explorer view-template scaffold scan after the view ownership comment
+  cleanup: clean for `byte-identical`, `byte-identically`,
+  `prior controller implementation`, `prior inline`, `not a redesign`,
+  `move, not a redesign`, `Moved out of`, and `moved out of` under app views,
+  the adjacent explorer block controller, and `utxo_apply_stage.c`.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened generic parity-wording guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the view-template/parity-wording guard; `0/1` group failed in
+  11.0s.
+- `make -j$(nproc)`: pass after the view-template purpose-comment cleanup.
+- `make lint`: pass after the view-template purpose-comment cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the view-template
+  purpose-comment cleanup, `0/279` groups failed in 57.0s.
+- Post-status doc checks after the view-template purpose-comment cleanup:
+  `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh` passed, the
+  zero-baseline/allowlist scan found no non-comment entries in the ratcheted
+  baseline files, and the production C/H scan under app controllers, services,
+  jobs, conditions, supervisors, models, lib, and MCP found no `shadow`,
+  `cutover`, `projection-diff`, or `projection_diff` terminology.
+- Live sample attempt at 2026-06-01 16:29 UTC after the view-template
+  purpose-comment cleanup: no continuity proof was available. `systemctl
+  --user` could not connect to the user bus, `./tools/zcl-rpc getblockcount`
+  and `gettxoutsetinfo` exited with code 7, no `zclassic23` process was
+  running, no listener existed on ports `8023`, `8033`, `18232`, or `8232`,
+  and the last 20 minutes of `zclassic23` journal output had no entries. This
+  is a failed live sample, not a refactor completion proof.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

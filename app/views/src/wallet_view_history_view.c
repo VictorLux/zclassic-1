@@ -1,10 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet history-page view: timeline transaction cards + the shielded
- * notes section for /wallet/history. Moved out of wallet_view_history.c
- * so the controller does not build views and does not name sqlite. The
- * HTML (templates + inline note markup) is byte-identical to the prior
- * inline controller code. */
+ * Wallet history-page view: timeline transaction cards and the shielded
+ * notes section for /wallet/history. The controller fetches rows through
+ * the wallet_view port; this file owns the HTML fragments. */
 
 #include "views/wallet_view_history_view.h"
 #include "controllers/explorer_internal.h"   /* APPEND */

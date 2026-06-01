@@ -1,9 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet shield-page view: the "nothing to shield" panel. Moved out of
- * wallet_view_shield.c so the controller does not build views. The HTML
- * (breadcrumb template + inline body) is byte-identical to the prior
- * inline controller code. */
+ * Wallet shield-page view: the "nothing to shield" panel for /wallet/shield.
+ * The controller decides which panel to show; this file owns the breadcrumb
+ * and empty-state HTML. */
 
 #include "views/wallet_view_shield_view.h"
 #include "controllers/explorer_internal.h"  /* APPEND macro */

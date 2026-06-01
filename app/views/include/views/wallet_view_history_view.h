@@ -3,8 +3,7 @@
  * Wallet history-page view (/wallet/history). The controller parses the
  * page/filter/search, fetches the matching ledger rows and shielded
  * notes via the wallet_view port, and delegates the per-row HTML
- * assembly here. Controllers must not build views. Output is
- * byte-identical to the prior inline controller code. */
+ * assembly here. Controllers must not build views. */
 
 #ifndef ZCL_VIEWS_WALLET_VIEW_HISTORY_VIEW_H
 #define ZCL_VIEWS_WALLET_VIEW_HISTORY_VIEW_H

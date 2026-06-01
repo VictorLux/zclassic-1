@@ -3,7 +3,7 @@
  * Wallet shield-page view — the "nothing to shield" panel for
  * /wallet/shield when the transparent balance is dust. The controller
  * decides which panel to show and fetches the balances; this view owns
- * the inline HTML. Output is byte-identical to the prior controller. */
+ * the inline HTML. */
 
 #ifndef ZCL_VIEWS_WALLET_VIEW_SHIELD_VIEW_H
 #define ZCL_VIEWS_WALLET_VIEW_SHIELD_VIEW_H

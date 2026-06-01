@@ -1,10 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Wallet dashboard-page view: the "Tokens" card and the "Recent
- * transactions" list for /wallet. Moved out of wallet_view_dashboard.c
- * so the controller does not build views and does not name sqlite. The
- * HTML (inline token markup + TMPL_TX_ROW rows + inline empty-state) is
- * byte-identical to the prior inline controller code. */
+ * transactions" list for /wallet. The controller fetches rows through the
+ * wallet_view port; this file owns the HTML fragments. */
 
 #include "views/wallet_view_dashboard_view.h"
 #include "views/wallet_templates_gen.h"

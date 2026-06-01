@@ -83,8 +83,8 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
     d.tx_count = tx_count;
     d.has_tx_array = (txarr != NULL);
 
-    /* Parse up to 100 txids into the row array (view emits with the
-     * same buffer-bound guard, so output stays byte-identical). */
+    /* Parse up to 100 txids into the row array; the view applies the
+     * same buffer-bound guard when emitting rows. */
     struct explorer_block_rpc_tx_row rows[100];
     size_t nrows = 0;
     if (txarr) {

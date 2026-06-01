@@ -1,11 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Wallet coins-page view: builds the transparent UTXO table rows, the
- * shielded-note <tr> rows, and the token-table <tr> rows for
- * /wallet/coins. Moved out of wallet_view_coins.c so the controller does
- * not build views and does not name sqlite. The HTML (including the
- * snprintf format strings and U+2014 em-dash placeholders) is
- * byte-identical to the prior inline controller code. */
+ * shielded-note <tr> rows, and the token-table <tr> rows for /wallet/coins.
+ * The controller fetches rows through the wallet_view port; this file owns
+ * the HTML fragments. */
 
 #include "views/wallet_view_coins_view.h"
 

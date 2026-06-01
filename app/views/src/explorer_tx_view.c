@@ -1,11 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Explorer transaction VIEW: the /explorer/tx/{txid} page (native +
- * RPC-proxy variants) and the bad-request / not-found error pages. View
- * shape — the controller parses + fetches, this file assembles the HTML.
- * Moved out of explorer_controller_tx.c (controllers must not build views).
- * Output is byte-identical to the prior controller implementation; this was
- * a move, not a redesign. */
+ * Explorer transaction view: the /explorer/tx/{txid} page (native +
+ * RPC-proxy variants) and the bad-request / not-found error pages. The
+ * controller parses and fetches; this file owns HTML assembly. */
 
 #include "views/explorer_tx_view.h"
 #include "controllers/explorer_internal.h"

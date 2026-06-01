@@ -165,8 +165,8 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
  * (compute_block_delta rejects collisions), and the only intra-block key
  * interaction is create-then-spend of the same output — which add-then-spend
  * resolves to "absent", matching the legacy per-tx order. The projection is a
- * set, so the resulting final state is byte-identical to legacy's interleaved
- * emission (proven empirically by test_utxo_apply_authorship_parity). */
+ * set, so the resulting final state matches legacy interleaved emission
+ * (proven empirically by test_utxo_apply_authorship_parity). */
 static void emit_delta(const struct delta_summary *s, uint32_t height)
 {
     for (size_t i = 0; i < s->added_count; i++)

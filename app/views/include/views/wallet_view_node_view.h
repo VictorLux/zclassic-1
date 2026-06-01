@@ -2,9 +2,7 @@
  *
  * Wallet node-page view — the peer table for /wallet/node. The
  * controller fetches the peer rows via the wallet_view port, packs them
- * into the struct below, and delegates the HTML assembly here.
- * Controllers must not build views (the zclassic23 way). Output is
- * byte-identical to the prior inline controller code. */
+ * into the struct below, and delegates the HTML assembly here. */
 
 #ifndef ZCL_VIEWS_WALLET_VIEW_NODE_VIEW_H
 #define ZCL_VIEWS_WALLET_VIEW_NODE_VIEW_H
