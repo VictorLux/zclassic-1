@@ -3858,40 +3858,39 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     main_state_free(svc->state);
     sapling_free_params();
 
-    /* Wave S shutdown order: bottom-up through the saga so each stage's
-     * upstream is still alive while it drains in-flight work. S-9
+    /* Staged-sync shutdown order: bottom-up through the reducer pipeline so
+     * each stage's upstream is still alive while it drains in-flight work.
      * tip_finalize reads from utxo_apply_log; tear it down first. */
     tip_finalize_stage_shutdown();
 
-    /* S-8 utxo_apply reads from proof_validate_log; tear it down before
+    /* utxo_apply reads from proof_validate_log; tear it down before
      * proof_validate. */
     utxo_apply_stage_shutdown();
 
-    /* S-7 proof_validate reads from script_validate_log; tear it down first. */
+    /* proof_validate reads from script_validate_log; tear it down first. */
     proof_validate_stage_shutdown();
 
-    /* S-6 script_validate reads from body_persist_log; tear it down before
+    /* script_validate reads from body_persist_log; tear it down before
      * body_persist. */
     script_validate_stage_shutdown();
 
-    /* S-5 body_persist reads from body_fetch_log; tear it down before
+    /* body_persist reads from body_fetch_log; tear it down before
      * body_fetch. */
     body_persist_stage_shutdown();
 
-    /* S-4 body_fetch reads from validate_headers_log; tear it down
+    /* body_fetch reads from validate_headers_log; tear it down
      * before validate_headers. */
     body_fetch_stage_shutdown();
 
-    /* Wave S, S-3: stop the validate_headers stage next so its workers
-     * (which read disk) don't outlive the disk_block_io cache. */
+    /* Stop validate_headers next so its workers do not outlive the
+     * disk_block_io cache. */
     validate_headers_stage_shutdown();
 
-    /* Wave S, S-2: stop the header_admit stage before closing
-     * progress.kv (so any in-flight step finishes). */
+    /* Stop header_admit before closing progress.kv so any in-flight step
+     * finishes. */
     header_admit_stage_shutdown();
 
-    /* Wave S, S-1: graceful checkpoint + close of progress.kv. No-op if
-     * never opened. */
+    /* Graceful checkpoint and close of progress.kv. No-op if never opened. */
     progress_store_close();
 
     boot_stop_projection_storage();

@@ -2,11 +2,9 @@
  *
  * progress_store — singleton owner of the `progress.kv` SQLite file.
  *
- * Wave S, milestone S-1.
- *
  * Why this exists
  * ----------------
- * The staged-sync pipeline (Wave S) decomposes chain advance into eight
+ * The staged-sync pipeline decomposes chain advance into eight reducer
  * stages, each of which owns a 64-bit cursor on disk. Crash-mid-step
  * replays the step idempotently because the cursor is unchanged on next
  * boot. The F-2 `stage` primitive already implements that contract on
@@ -65,7 +63,7 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key);
  * A general-purpose blob k/v table colocated with stage_cursor in
  * progress.kv. The schema is `(key TEXT PRIMARY KEY, value BLOB)`.
  *
- * Wave S, S-4b introduces this table to host:
+ * This table hosts:
  *   - `import_in_progress` sentinel (1-byte blob {0x01})
  *   - `legacy_attach_tip_hash` (32 bytes, little-endian)
  *   - `legacy_attach_tip_height` (4 bytes int32, native byte order)

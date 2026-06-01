@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h.
- * S-9 consumes utxo_apply_log and records the live tip-finalize event; it
+ * Consumes utxo_apply_log and records the live tip-finalize event; it
  * writes only tip_finalize_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * script_validate_stage — Wave S, S-6 stage.
+ * script_validate_stage — reducer Job stage.
  *
  * Consumes `body_persist_log`; for each height where the body was
  * verified-on-disk, runs script verification on every input and logs the

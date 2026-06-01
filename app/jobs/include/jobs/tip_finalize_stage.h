@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_stage — Wave S, S-9.
+ * tip_finalize_stage — reducer Job stage.
  *
  * Consumes `utxo_apply_log`; for each height where UTXO apply passed,
  * observes that the live chain has advanced to the next active tip and

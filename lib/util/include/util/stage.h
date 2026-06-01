@@ -4,7 +4,7 @@
  *
  * Why this exists
  * ----------------
- * The wedge class the master plan promises to extinct (`Wave S`) is
+ * The wedge class this primitive removes is
  * "chain advance silently stops making progress and nobody notices."
  * Today that progress lives in transient memory inside the chain-
  * advance coordinator. A stage primitive turns chain advance — and

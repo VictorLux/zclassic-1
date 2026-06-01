@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * header_admit_stage — Wave S, S-2.
+ * header_admit_stage — reducer Job stage.
  *
- * The first concrete saga consumer of progress.kv. Operates in
+ * The first concrete staged-sync consumer of progress.kv. Operates in
  * authoritative mode: reads from the live in-memory active chain, writes
  * its durable `header_admit_log` row to progress.kv, and admits headers
  * into the reducer-owned block index.
@@ -66,7 +66,7 @@ struct json_value;
  * `progress_store_open` to have succeeded first. */
 bool header_admit_stage_init(struct main_state *ms);
 
-/* Run one saga step. Returns the F-2 result code. Safe to call before
+/* Run one stage step. Returns the stage result code. Safe to call before
  * init (returns JOB_IDLE). */
 job_result_t header_admit_stage_step_once(void);
 

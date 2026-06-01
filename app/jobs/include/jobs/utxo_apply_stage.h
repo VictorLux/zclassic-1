@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_apply_stage — Wave S, S-8 stage.
+ * utxo_apply_stage — reducer Job stage.
  *
  * Consumes `proof_validate_log`; for each height where proof validation
  * passed, computes the transparent UTXO delta, records the result, and emits

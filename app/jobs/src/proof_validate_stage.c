@@ -2,8 +2,8 @@
  *
  * proof_validate_stage — implementation. See jobs/proof_validate_stage.h.
  *
- * S-7 consumes script_validate_log and replays shielded proof verification
- * over block bodies that have already passed S-6. It writes
+ * Consumes script_validate_log and replays shielded proof verification
+ * over block bodies that have already passed script_validate. It writes
  * proof_validate_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"

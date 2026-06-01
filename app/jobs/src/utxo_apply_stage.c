@@ -2,7 +2,7 @@
  *
  * utxo_apply_stage — implementation. See jobs/utxo_apply_stage.h.
  *
- * S-8 consumes proof_validate_log and computes a transparent UTXO delta.
+ * Consumes proof_validate_log and computes a transparent UTXO delta.
  * It writes only utxo_apply_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"

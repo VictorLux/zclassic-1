@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * validate_headers_stage — Wave S, S-3.
+ * validate_headers_stage — reducer Job stage.
  *
- * Second saga stage. Consumes `header_admit_log` (produced by S-2) and
+ * Consumes `header_admit_log` and
  * records the result of full header validation in `validate_headers_log`.
  * A passing stage row also marks the in-memory block_index entry as at least
  * BLOCK_VALID_HEADER.
@@ -22,7 +22,7 @@
  *  5. Validate the Equihash solution against (N, K) from the active
  *     chain params at this height.
  *  6. Write a `validate_headers_log` row in the same `BEGIN IMMEDIATE`
- *     transaction that bumps the cursor (F-2 saga contract).
+ *     transaction that bumps the cursor.
  *
  * Worker pool
  * -----------

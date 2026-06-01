@@ -2,9 +2,9 @@
  *
  * script_validate_stage — implementation. See jobs/script_validate_stage.h.
  *
- * S-6 consumes body_persist_log and replays script verification over block
- * bodies already proven readable by S-5. It writes script_validate_log plus
- * its stage cursor in progress.kv. */
+ * Consumes body_persist_log and replays script verification over block
+ * bodies already proven readable by body_persist. It writes
+ * script_validate_log plus its stage cursor in progress.kv. */
 
 #include "platform/time_compat.h"
 #include "jobs/script_validate_stage.h"

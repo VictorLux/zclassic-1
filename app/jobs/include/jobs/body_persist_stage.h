@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * body_persist_stage — Wave S, S-5 stage.
+ * body_persist_stage — reducer Job stage.
  *
  * Consumes `body_fetch_log`; for each height where the body is on disk,
  * reads the body, verifies header+merkle consistency, and logs the result.

@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * proof_validate_stage — Wave S, S-7 stage.
+ * proof_validate_stage — reducer Job stage.
  *
  * Consumes `script_validate_log`; for each height where script validation
  * passed, verifies shielded proofs and Sapling binding signatures, then logs

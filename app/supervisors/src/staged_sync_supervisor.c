@@ -87,7 +87,7 @@ static void staged_header_admit_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-3: validate_headers stage supervisor child ─────────── */
+/* validate_headers stage supervisor child. */
 static struct liveness_contract g_vh_contract;
 static supervisor_child_id      g_vh_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_vh_ms = NULL;
@@ -136,7 +136,7 @@ static void staged_validate_headers_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-4: body_fetch stage supervisor child ──────────────── */
+/* body_fetch stage supervisor child. */
 static struct liveness_contract g_bf_contract;
 static supervisor_child_id      g_bf_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_bf_ms = NULL;
@@ -185,7 +185,7 @@ static void staged_body_fetch_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-5: body_persist stage supervisor child ────────────── */
+/* body_persist stage supervisor child. */
 static struct liveness_contract g_bp_contract;
 static supervisor_child_id      g_bp_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_bp_ms = NULL;
@@ -229,7 +229,7 @@ static void staged_body_persist_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-6: script_validate stage supervisor child ───────────── */
+/* script_validate stage supervisor child. */
 static struct liveness_contract g_sv_contract;
 static supervisor_child_id      g_sv_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_sv_ms = NULL;
@@ -273,7 +273,7 @@ static void staged_script_validate_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-7: proof_validate stage supervisor child ────────────── */
+/* proof_validate stage supervisor child. */
 static struct liveness_contract g_pv_contract;
 static supervisor_child_id      g_pv_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_pv_ms = NULL;
@@ -317,7 +317,7 @@ static void staged_proof_validate_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-8: utxo_apply stage supervisor child ───────────────── */
+/* utxo_apply stage supervisor child. */
 static struct liveness_contract g_uv_contract;
 static supervisor_child_id      g_uv_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_uv_ms = NULL;
@@ -361,7 +361,7 @@ static void staged_utxo_apply_register(struct main_state *ms)
     }
 }
 
-/* ── Wave S, S-9: tip_finalize stage supervisor child ─────────────── */
+/* tip_finalize stage supervisor child. */
 static struct liveness_contract g_tf_contract;
 static supervisor_child_id      g_tf_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_tf_ms = NULL;
@@ -409,8 +409,7 @@ void staged_sync_supervisor_register(struct main_state *ms)
 {
     if (!ms) return;
     supervisor_domains_init();
-    /* Pipeline order — identical to the original boot_services.c
-     * registration sequence (S-2 → S-9). */
+    /* Pipeline order follows the reducer dataflow. */
     staged_header_admit_register(ms);
     staged_validate_headers_register(ms);
     staged_body_fetch_register(ms);

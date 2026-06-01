@@ -1552,8 +1552,8 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
 
-    /* Wave S, S-1: open the dedicated progress.kv SQLite file that will
-     * host every staged-sync stage's cursor. Independent of node.db so
+    /* Open the dedicated progress.kv SQLite file that hosts every
+     * staged-sync stage cursor. Independent of node.db so
      * cursor commits stay off the hot path of larger transactions. */
     if (!progress_store_open(ctx->datadir)) {
         fprintf(stderr,

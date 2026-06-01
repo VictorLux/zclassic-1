@@ -572,6 +572,10 @@ node soak.
   `utxo_reimport_flag` primitive. Boot and tests that check or clear the
   needs-reimport sentinel include `storage/utxo_reimport_flag.h` directly,
   while the recovery service header owns only recovery-service contracts.
+- Staged Job/progress/supervisor comments and diagnostics now describe the
+  current reducer stage names instead of Wave-S/S-n scaffold history. The
+  scaffold-label guard covers those stage/progress files and rejects `Wave S`
+  plus `S-2` through `S-9` there.
 
 ## Active Debt
 
@@ -649,6 +653,39 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- Staged reducer label scan after the stage/progress/supervisor cleanup:
+  clean for `Wave S` and `S-2` through `S-9` across the guarded staged-sync
+  headers, stage sources, progress store, diagnostics registry, boot, and
+  staged-sync supervisor files.
+- `git diff --check`: pass after the staged reducer label cleanup.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
+  after widening the production-comment guard to cover the stage/progress
+  files; `0/1` groups failed in 11.0s.
+- `./test_parallel --only=staged_sync_supervisor --timeout=120 --verbose`:
+  no validation group exists for this exact filter; the harness reported that
+  it matched no groups.
+- `./test_parallel --only=supervisor --timeout=120 --verbose`: pass; `0/2`
+  supervisor groups failed in 1.0s.
+- `make -j$(nproc)`: pass after the staged reducer label cleanup.
+- `make lint`: pass after the staged reducer label cleanup; all zero-baseline
+  ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the staged reducer label
+  cleanup, `0/279` groups failed in 57.0s.
+- Live sample attempt at 2026-06-01 17:49:42 UTC after the staged reducer
+  label cleanup: no continuity proof was available. `systemctl --user status
+  zclassic23` could not connect to the user bus, `./tools/zcl-rpc
+  getblockcount` and `gettxoutsetinfo` exited with code 7, no `zclassic23`
+  process was running, no `8023` or `18232` listener existed, and the last 20
+  minutes of `zclassic23` journal output had no entries. `ss` did show the
+  separate `zclassicd` process listening on `8033` and `8232`; this slice did
+  not touch port wiring or restart services.
+- Post-status doc/scans after the staged reducer label cleanup:
+  `tools/scripts/check_doc_accuracy.sh` passed, `git diff --check` passed, the
+  zero-baseline / allowlist scan found no non-comment entries in the ratcheted
+  baseline files, the production C/H scan under app controllers, services,
+  jobs, conditions, supervisors, models, lib, and MCP found no `shadow`,
+  `cutover`, `projection-diff`, or `projection_diff` terminology, and the
+  staged reducer label scan remained clean for `Wave S` / `S-2` through `S-9`.
 - `make -j$(nproc)`: pass after normalizing projection-storage/event-log
   comments and rebuilding `zclassic23` / `test_zcl`.
 - `make lint`: pass; all framework, lib-layering, controller raw-SQL,

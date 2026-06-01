@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * body_fetch_stage — Wave S, S-4.
+ * body_fetch_stage — reducer Job stage.
  *
- * Third saga stage. Consumes `validate_headers_log` (S-3's output) and
+ * Consumes `validate_headers_log` and
  * records, per height, whether the block body is observable on disk.
  * This stage is an authoritative reducer input, but it does not fetch from
  * peers directly; `msg_blocks` and the block source policy still own body
- * acquisition while S-4 records the durable observation.
+ * acquisition while this stage records the durable observation.
  *
  * Per-height behaviour
  * --------------------
@@ -49,7 +49,7 @@
  * Lifecycle
  * ----------
  * `init` binds the stage to a `main_state`, ensures the
- * `body_fetch_log` schema, and stages the F-2 saga primitive. `step_once`
+ * `body_fetch_log` schema, and stages the cursor primitive. `step_once`
  * runs one step. `shutdown` disposes the stage and clears per-init
  * counters. Supervisor wiring lives in `config/src/boot_services.c` —
  * `staged.body_fetch` is registered with `period_secs=2`. */
@@ -76,7 +76,7 @@ struct json_value;
  * first. */
 bool body_fetch_stage_init(struct main_state *ms);
 
-/* Run one saga step. Returns the F-2 result code. Safe to call before
+/* Run one stage step. Returns the stage result code. Safe to call before
  * init (returns JOB_IDLE). */
 job_result_t body_fetch_stage_step_once(void);
 

@@ -2,7 +2,7 @@
  *
  * body_persist_stage — implementation. See jobs/body_persist_stage.h.
  *
- * S-5 consumes body_fetch_log and verifies that bodies observed on disk are
+ * Consumes body_fetch_log and verifies that bodies observed on disk are
  * readable, hash to the active-chain header, and merkle-reconstruct to the
  * admitted header's root. It writes body_persist_log plus its stage cursor in
  * progress.kv, and emits verified bodies into the append-only event log. */
