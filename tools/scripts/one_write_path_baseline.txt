@@ -3,9 +3,8 @@
 #
 # The legacy validation engine (process_new_block / accept_block / connect_tip
 # / disconnect_tip / activate_best_chain) has been DELETED — the reducer
-# (reducer_ingest_block / reducer_kick) is the sole block-connect engine. The
-# surfaces below are the remaining durable cursor / UTXO-projection writers the
-# reducer/stage path and boot/recovery wrappers go through.
-lib/storage/include/storage/coins_view_sqlite.h:52:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/storage/src/coins_view_sqlite.c:689:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-lib/validation/src/process_block_flush_policy.c:236: ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
+# (reducer_ingest_block / reducer_kick) is the sole block-connect engine.
+#
+# Intentionally empty. Destination reducer/stage, boot, shutdown, and canonical
+# SQLite writer surfaces use inline `one-write-path-ok:<tag>` markers so any
+# untagged new chain-state writer fails this ratchet immediately.

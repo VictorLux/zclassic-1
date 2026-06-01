@@ -233,10 +233,9 @@ bool flush_coins_if_needed(struct coins_view_cache *coins_tip,
      * SAVEPOINT between flush and commitment write. */
     bool ok;
     if (g_coins_sqlite_ptr) {
-        ok = coins_view_sqlite_batch_write_ex(g_coins_sqlite_ptr,
-                                               &coins_tip->cache_coins,
-                                               &coins_tip->hash_block,
-                                               &coins_tip->commitment);
+        ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:process-block-flush-policy
+            g_coins_sqlite_ptr, &coins_tip->cache_coins,
+            &coins_tip->hash_block, &coins_tip->commitment);
         if (ok) {
             coins_map_free(&coins_tip->cache_coins);
             coins_map_init(&coins_tip->cache_coins);

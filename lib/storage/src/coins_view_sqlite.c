@@ -686,10 +686,9 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
 
 /* ── batch_write_ex: flush dirty coins_map to SQLite ───────────── */
 
-bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,
-                                       struct coins_map *map_coins,
-                                       const struct uint256 *hash_block,
-                                       const struct utxo_commitment *commit)
+bool coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-sqlite-writer-impl
+    struct coins_view_sqlite *cvs, struct coins_map *map_coins,
+    const struct uint256 *hash_block, const struct utxo_commitment *commit)
 {
     if (!cvs->db)
         LOG_FAIL("coins_view", "batch_write: db handle is NULL");

@@ -64,10 +64,11 @@ If the node is not running, record that explicitly before claiming live proof.
   `tools/scripts/one_result_type_baseline.txt` is empty. Keep it empty; migrate
   legacy bool compatibility call sites to `struct zcl_result` as adjacent files
   are split or touched.
-- E6 write-path debt:
-  the remaining `coins_view_sqlite_batch_write_ex()` SQLite writer entry
-  point and process-block flush-policy write paths. Current E6 baseline:
-  3 write surfaces.
+- E6 one-write-path guardrail:
+  `tools/scripts/one_write_path_baseline.txt` is empty. Canonical reducer,
+  boot, shutdown, and SQLite-writer surfaces carry inline
+  `one-write-path-ok:<tag>` markers; any untagged new chain-state writer must
+  fail the ratchet.
 - Process-block split debt:
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk

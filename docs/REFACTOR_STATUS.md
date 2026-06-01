@@ -20,10 +20,10 @@ node soak.
   C/H surfaces no longer describe active reducer read-model paths as
   shadow/cutover/projection-diff infrastructure; remaining historical wording
   is test/doc context only.
-- E1, E2, supervisor, E7, typed-blocker, controller raw-SQL adoption,
-  lib-layering, and raw allocation debt are at zero grandfathered entries; E6
-  is down to 3 grandfathered write surfaces, and other ratchet baselines still
-  grandfather real debt.
+- E1, E2, E6, supervisor, E7, typed-blocker, controller raw-SQL adoption,
+  lib-layering, and raw allocation debt are at zero grandfathered entries.
+  Remaining refactor work is now code-shape cleanup, process-block splitting,
+  doc honesty, and live-node proof rather than baseline burn-down.
 
 ## Completed Architecture Moves
 
@@ -369,6 +369,12 @@ node soak.
   comments now refer to the flush policy rather than the old generic cache
   flush entry point. The E6 one-write-path baseline is down from 5 to 3 write
   surfaces.
+- The E6 one-write-path baseline is empty. The canonical
+  `coins_view_sqlite_batch_write_ex()` contract/implementation and the
+  process-block flush-policy call are explicitly tagged as destination writer
+  surfaces, alongside the already-tagged reducer, boot-reindex, shutdown, and
+  vtable-adapter surfaces. Untagged new chain-state writers now fail the
+  ratchet without grandfathering.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -446,16 +452,16 @@ at zero grandfathered service files. Remaining work is call-site cleanup:
 legacy compatibility bool APIs should migrate toward `struct zcl_result` as
 their owning files are split or touched for adjacent debt.
 
-### E6 One-Write-Path Debt
+### E6 One-Write-Path Guardrail
 
-From `tools/scripts/one_write_path_baseline.txt`:
+`tools/scripts/one_write_path_baseline.txt` is empty. Canonical reducer, boot,
+shutdown, vtable-adapter, process-block flush-policy, and SQLite writer
+surfaces carry inline `one-write-path-ok:<tag>` markers. Any untagged new
+chain-state writer fails the ratchet.
 
-- the remaining `coins_view_sqlite_batch_write_ex()` SQLite writer entry point
-- process-block flush-policy write paths
-
-The final form is one durable writer and one cursor authority.
-Current guardrail: low-level active-chain cache/window moves and stale
-`tip_finalize` cursors cannot regress the public reducer tip.
+The final form remains one durable writer and one cursor authority. Current
+guardrail: low-level active-chain cache/window moves and stale `tip_finalize`
+cursors cannot regress the public reducer tip.
 
 ### Supervisor Debt
 
@@ -485,13 +491,35 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 3. Keep import/catchup/legacy-import code below the file-size ceiling while
    moving remaining mixed-purpose code toward the correct framework shape.
 4. Split `process_block_core.c` by responsibility.
-5. Keep E1/E2/controller-SQL/lib-layering baselines empty and pay down E6
-   until it is empty.
+5. Keep every lint baseline empty while continuing process-block and
+   mixed-purpose file cleanup.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
    node progress with a soak.
 
 ## Latest Verification
 
+- `git diff --check`: pass after emptying the E6 baseline.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- `tools/scripts/check_one_write_path.sh`: pass with 0 grandfathered write
+  surfaces and no new violations.
+- All tracked lint baselines/allowlists are empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make -j$(nproc)`: pass after emptying the E6 baseline and tagging the
+  canonical writer surfaces.
+- `make lint`: pass after emptying the E6 baseline; E1, E2, E6, supervisor,
+  E7, typed-blocker, raw-sqlite-step, controller raw-SQL, lib-layering, and
+  raw-malloc gates all report zero grandfathered entries.
+- `./test_parallel --timeout=180`: pass after emptying the E6 baseline,
+  `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 12:56:06 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after making the cache flush helper test-only.
 - `git diff --check`: pass.
 - `tools/scripts/check_one_write_path.sh`: pass with 3 grandfathered write

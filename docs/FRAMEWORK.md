@@ -164,12 +164,11 @@ no third state. That is strictly stronger than detectors watching proxies.
 
 **Today vs target:** the staged reducer is now the authoritative
 chain-advance architecture and the legacy block-connect engine files have been
-deleted. The remaining work is to make that truth complete everywhere: retire
-the remaining stale cutover/shadow docs and comments, finish the coins.db
-write-path cleanup, finish migrating mixed-purpose code toward the correct
-shapes, and shrink the remaining ratchet baselines to zero. The E1/E2 and
-typed-blocker baselines are already empty; the checklist tracks the remaining
-cleanup move by move.
+deleted. The lint baselines are now empty; the remaining work is to make that
+truth complete everywhere: keep stale cutover/shadow language out, keep the
+coins.db write path explicit through inline guardrail tags, finish migrating
+mixed-purpose code toward the correct shapes, and prove the result on a live
+node. The checklist tracks that cleanup move by move.
 
 ---
 
@@ -366,9 +365,9 @@ The framework holds; the implementation moves.
   (the build checklist — what's done, what's next) and
   [`docs/USER_BENCHMARKS.md`](./USER_BENCHMARKS.md) (the five acceptance numbers
   + the operator-paging clause everything is judged against).
-- **Driving the north star:** finish deleting the old cutover/shadow language
-  and pay down the remaining ratchet baselines until the reducer/log authority
-  is the only architecture described in production docs.
+- **Driving the north star:** keep the lint baselines empty, finish deleting
+  old cutover/shadow language, and keep reducer/log authority as the only
+  architecture described in production docs.
 - **Worker assignment:** [`docs/work/agent-protocol.md`](./work/agent-protocol.md),
   then your spec under `docs/work/`.
 - **Reviewing a PR:** every changed file matches its folder's shape; lint
