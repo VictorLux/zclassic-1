@@ -19,6 +19,7 @@
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_reimport_flag.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
 #include "services/wallet_backup_service.h"

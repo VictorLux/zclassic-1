@@ -1667,6 +1667,43 @@ static int t_framework_reexport_headers_stay_deleted(void)
     return failures;
 }
 
+static int t_utxo_reimport_flag_is_storage_owned(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("utxo reimport flag is storage owned") {
+        char path[PATH_MAX];
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/include/services/utxo_recovery_service.h")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") == NULL);
+        ASSERT(strstr(buf, "re-export") == NULL);
+        ASSERT(strstr(buf, "re-exports") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_check_and_clear") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_check_and_clear") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_hot_loop.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "storage/utxo_reimport_flag.h") != NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") != NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_net_sync_planners_are_lib_owned(void)
 {
     int failures = 0;
@@ -2360,6 +2397,7 @@ int test_make_lint_gates(void)
     failures += t_flyclient_proof_builder_is_callback_injected();
     failures += t_fast_sync_uses_lib_sqlite_helpers();
     failures += t_framework_reexport_headers_stay_deleted();
+    failures += t_utxo_reimport_flag_is_storage_owned();
     failures += t_net_sync_planners_are_lib_owned();
     failures += t_header_peer_votes_are_callback_injected();
     failures += t_process_block_node_db_access_is_runtime_owned();

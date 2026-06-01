@@ -495,6 +495,10 @@ node soak.
   typed inbox helpers, and `chain_projection.c` includes `util/projection.h`
   directly for snapshot reads. `lib/framework` now owns only the real
   condition engine rather than forwarding primitive headers.
+- `utxo_recovery_service.h` no longer re-exports the storage-owned
+  `utxo_reimport_flag` primitive. Boot and tests that check or clear the
+  needs-reimport sentinel include `storage/utxo_reimport_flag.h` directly,
+  while the recovery service header owns only recovery-service contracts.
 
 ## Active Debt
 
@@ -572,6 +576,28 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after removing the `utxo_reimport_flag` storage
+  primitive re-export from `utxo_recovery_service.h`.
+- `make test_parallel`: pass after rebuilding the parallel runner with direct
+  `storage/utxo_reimport_flag.h` includes at the actual reimport-flag call
+  sites.
+- Focused filtered tests passed:
+  `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`,
+  `./test_parallel --only=utxo_reimport_flag --timeout=120 --verbose`,
+  `./test_parallel --only=orphan_utxo_above_tip --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- `./test_parallel --timeout=180`: pass after the reimport-flag include
+  boundary cleanup, `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 15:26:24 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and read-only journal checks
+  had no entries. The service was not restarted; this slice stayed read-only
+  and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after deleting the framework mailbox/projection
   re-export headers and routing callers to the real util primitives.
 - `make test_parallel`: pass after rebuilding the parallel runner with the

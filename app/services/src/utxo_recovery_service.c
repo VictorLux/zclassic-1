@@ -327,10 +327,9 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 }
 
 /* ── Auto-reimport flag ──────────────────────────────────────── */
-/* The read-side helper now lives in lib/storage/ as the
- * `utxo_reimport_flag_check_and_clear` primitive (Phase 3 PR-1).
- * Only the reimport-prep helper remains here, because it touches
- * `node_db` state and is conceptually a recovery-service concern. */
+/* The read-side needs-reimport sentinel lives in lib/storage as
+ * `utxo_reimport_flag_check_and_clear`. This service owns only the
+ * node_db state transition needed before reimport starts. */
 
 bool utxo_recovery_prepare_reimport(struct node_db *ndb)
 {

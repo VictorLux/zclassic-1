@@ -8,6 +8,7 @@
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
 #include "services/chain_state_repository.h"
+#include "storage/utxo_reimport_flag.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "models/database.h"
