@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Self-heal coordination for missing UTXOs and stuck-tip recovery. Split out
- * of process_block.c and then narrowed into recovery-source files.
+ * Self-heal coordination for missing UTXOs and stuck-tip recovery.
  *
  * Contents:
  *   - s_utxo_* failure-tracking state

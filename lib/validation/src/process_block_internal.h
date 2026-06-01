@@ -70,7 +70,7 @@ extern _Atomic uint64_t g_self_heal_scan_hits;
 extern _Atomic uint64_t g_self_heal_scan_exhausted;
 extern _Atomic uint64_t g_self_heal_scan_blocks_checked_total;
 
-/* ── Internal helpers exposed across split files ───────────── */
+/* ── Internal helpers shared by the process-block translation units ── */
 
 /* process_block.c */
 struct node_db *process_block_node_db_internal(void);

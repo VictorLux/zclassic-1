@@ -24,8 +24,8 @@
  * cgroup high-water mark in 2h51m (see
  * docs/archive/2026-04/2026-04-19-bip30-stall.md).
  *
- * Extracted verbatim first (RED), then gated by two cheap early
- * returns (GREEN). See the header for the full guard description. */
+ * The two early returns are part of the production contract; see the header
+ * for the full guard description. */
 enum propagate_failed_child_result
 process_block_propagate_failed_child(struct block_map *map,
                                       const struct block_index *pindex_root,

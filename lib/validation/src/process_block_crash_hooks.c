@@ -8,8 +8,7 @@
  * `_exit(137)`s at the named protocol point. Production never sets a stage; the
  * atomic_load + branch per check site is the only cost (negligible).
  *
- * Split out of process_block.c — pure code motion from the original
- * file. See <validation/process_block.h> for the stage semantics. */
+ * See <validation/process_block.h> for the stage semantics. */
 
 #include <stdatomic.h>
 #include <stdio.h>

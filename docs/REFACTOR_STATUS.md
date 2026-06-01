@@ -138,6 +138,11 @@ node soak.
   `move, not a redesign`, `prior controller implementation`, `Extracted from`,
   `pure refactor`, `single-engine replacement`, and boot-decomposition phase
   wording.
+- Process-block ownership comments now describe current helper boundaries
+  instead of split/code-motion scaffolding. The guarded scaffold-label lint
+  test now covers the process-block top-level wiring, crash hooks,
+  failed-child propagation, flush policy, internal helper header, and missing
+  UTXO self-heal coordinator, and rejects stale split/code-motion labels there.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2579,6 +2584,35 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   running, no listener existed on ports `8023`, `8033`, `18232`, or `8232`,
   and the last 20 minutes of `zclassic23` journal output had no entries. This
   is a failed live sample, not a refactor completion proof.
+- Process-block scaffold scan after the helper-boundary comment cleanup:
+  clean for stale split/code-motion terms across `process_block*.c`,
+  `process_block_internal.h`, and the public `process_block*.h` headers. The
+  scaffold-label lint guard now covers the process-block top-level wiring,
+  crash hooks, failed-child propagation, flush policy, internal helper header,
+  and missing-UTXO self-heal coordinator.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened process-block scaffold-label guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the process-block guard; `0/1` group failed in 11.0s.
+- `make -j$(nproc)`: pass after the process-block helper-boundary comment
+  cleanup.
+- `make lint`: pass after the process-block helper-boundary comment cleanup;
+  all zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the process-block
+  helper-boundary comment cleanup, `0/279` groups failed in 56.0s.
+- Post-status doc checks after the process-block helper-boundary comment
+  cleanup: `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh`
+  passed, the zero-baseline/allowlist scan found no non-comment entries in the
+  ratcheted baseline files, and the production C/H scan under app controllers,
+  services, jobs, conditions, supervisors, models, lib, and MCP found no
+  `shadow`, `cutover`, `projection-diff`, or `projection_diff` terminology.
+- Live sample attempt at 2026-06-01 16:20 UTC after the process-block
+  helper-boundary comment cleanup: no continuity proof was available.
+  `systemctl --user` could not connect to the user bus, `./tools/zcl-rpc
+  getblockcount` and `gettxoutsetinfo` exited with code 7, no `zclassic23`
+  process was running, no listener existed on ports `8023`, `8033`, `18232`,
+  or `8232`, and the last 20 minutes of `zclassic23` journal output had no
+  entries. This is a failed live sample, not a refactor completion proof.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

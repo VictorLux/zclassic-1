@@ -5,7 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
  * process_block.c — top-level wiring for the validation/process_block
- * translation units. Split into:
+ * translation units:
  *   process_block_core.c             : best-work chain selection
  *   process_block_contextual_header.c: sparse-header contextual skip policy
  *   process_block_self_heal.c        : missing-UTXO failure tracking
@@ -20,7 +20,7 @@
  *
  * This file keeps the cross-module accessor functions, the node_db
  * wiring, the "more pending" signal, and the misc helpers that don't
- * naturally belong to a specific split. */
+ * naturally belong to a narrower owner. */
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -35,7 +35,7 @@
 #include "process_block_internal.h"
 
 /* ── Externs published by other subsystems ───────────────────── */
-/* Set in boot.c; we re-declare here so split files can use without
+/* Set in boot.c; re-declare here so process-block helpers can use it without
  * dragging in boot.h. (Mirrors original process_block.c.) */
 /* extern struct block_tree_db *g_active_block_tree; — declared in internal.h */
 /* extern volatile sig_atomic_t g_shutdown_requested; — declared in internal.h */
@@ -48,7 +48,7 @@ void process_block_set_node_db(struct node_db *ndb)
     g_process_block_node_db = ndb;
 }
 
-/* Both an internal helper (used inside the split files) and the
+/* Both an internal helper (used inside the process-block helpers) and the
  * public accessor have the same body. The public one is kept for
  * external callers (services include process_block.h directly). */
 struct node_db *process_block_node_db_internal(void)

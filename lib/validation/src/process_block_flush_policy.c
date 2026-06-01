@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Flush policy + coins/Sapling persistence helpers. Split out of
- * process_block.c — pure code motion from the original file.
+ * Flush policy + coins/Sapling persistence helpers for process_block.
  *
  * Contents:
  *   - g_flush_policy + tunable setter
