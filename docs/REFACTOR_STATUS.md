@@ -222,6 +222,10 @@ node soak.
 - Production raw malloc/calloc/realloc allowlist debt is at zero active
   entries after migrating the boot-services DB path allocation to
   `zcl_malloc()` and the connman deferred-free resize to `zcl_realloc()`.
+- Test-only small-projection comparison helpers were removed from the
+  production `lib/storage` API. The contacts, onion-announcement, and HODL
+  projection parity check now lives in `test_small_projections`, which compares
+  the projection SQLite files directly against the legacy fixture database.
 
 ## Active Debt
 
@@ -292,6 +296,32 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after removing the test-only small-projection
+  comparison helpers from the production storage API.
+- `make test_parallel`: pass after rebuilding the parallel runner for the
+  local projection-table comparison test move.
+- `make lint`: pass after the small-projection production-surface cleanup; E1,
+  E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 58 grandfathered includes.
+- `./test_parallel --only=small_projections --timeout=120 --verbose`: pass
+  with the parity checks comparing projection SQLite files directly against
+  the legacy fixture DB.
+- `./test_parallel --timeout=180`: pass after the small-projection production
+  API cleanup, `0/279` groups failed in 77.1s.
+- Production stale-surface search:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]'`
+  now returns only generated wallet CSS `box-shadow` matches under
+  `app/views`, not reducer/cutover/shadow code.
+- Quick live sample at 2026-06-01 05:34:31 UTC after the small-projection
+  cleanup: `systemctl --user is-active zclassic23` reported `active`,
+  `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
+  `txouts=1357526`, RPC listened on `127.0.0.1:18232`, P2P listened on
+  `0.0.0.0:8023` / `[::]:8023` with no `8033` listener in the sample, and a
+  journal scan over the previous 10 minutes found no low-tip regression,
+  integrity failure, OOM, fatal, segfault, assert, panic, corrupt-state, or
+  `DB_ERR_TIP_MISMATCH` signal. This is a continuity check, not the final
+  soak.
 - `make -j$(nproc)`: pass after callback-injecting onion-service app handlers
   from boot, removing `onion_service.c`'s blog-controller include, and adding
   direct `/blog` route coverage for the injected handler. `make test_parallel`

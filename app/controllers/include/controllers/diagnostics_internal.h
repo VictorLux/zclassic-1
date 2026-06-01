@@ -50,9 +50,8 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
 bool diag_rpc_probezclassicd(const struct json_value *params, bool help,
                              struct json_value *result);
 
-/* projection_diff_controller.c — getmirrorstatus is a keeper (legacy
- * mirror monitor); the per-table *projectiondiff RPC surfaces are deleted
- * (stage 4). The implementing .c file is removed in a later stage. */
+/* getmirrorstatus remains as the legacy mirror monitor; the old per-table
+ * comparison RPC surfaces are gone. */
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
                               struct json_value *result);
 

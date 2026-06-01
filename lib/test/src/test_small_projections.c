@@ -193,6 +193,120 @@ static bool exec_test_sql(sqlite3 *db, const char *sql)
     return true;
 }
 
+static bool test_query_i64(sqlite3 *db, const char *sql, int64_t *out)
+{
+    sqlite3_stmt *s = NULL;
+    bool ok = false;
+    if (!db || !sql || !out)
+        return false;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK)
+        return false;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        *out = sqlite3_column_int64(s, 0);
+        ok = true;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
+static const char *test_stmt_key(sqlite3_stmt *s, char *buf, size_t n)
+{
+    if (!s || !buf || n == 0)
+        return "";
+    int type = sqlite3_column_type(s, 0);
+    if (type == SQLITE_INTEGER)
+        snprintf(buf, n, "%lld", (long long)sqlite3_column_int64(s, 0));
+    else if (type == SQLITE_FLOAT)
+        snprintf(buf, n, "%.17g", sqlite3_column_double(s, 0));
+    else {
+        const char *text = (const char *)sqlite3_column_text(s, 0);
+        snprintf(buf, n, "%s", text ? text : "");
+    }
+    return buf;
+}
+
+static bool test_column_equal(sqlite3_stmt *a, sqlite3_stmt *b, int col)
+{
+    int at = sqlite3_column_type(a, col);
+    int bt = sqlite3_column_type(b, col);
+    if (at == SQLITE_NULL || bt == SQLITE_NULL)
+        return at == bt;
+    if (at == SQLITE_INTEGER && bt == SQLITE_INTEGER)
+        return sqlite3_column_int64(a, col) == sqlite3_column_int64(b, col);
+    if (at == SQLITE_FLOAT || bt == SQLITE_FLOAT)
+        return sqlite3_column_double(a, col) == sqlite3_column_double(b, col);
+    if (at == SQLITE_BLOB || bt == SQLITE_BLOB) {
+        int an = sqlite3_column_bytes(a, col);
+        int bn = sqlite3_column_bytes(b, col);
+        return an == bn &&
+               memcmp(sqlite3_column_blob(a, col),
+                      sqlite3_column_blob(b, col), (size_t)an) == 0;
+    }
+    const char *av = (const char *)sqlite3_column_text(a, col);
+    const char *bv = (const char *)sqlite3_column_text(b, col);
+    return strcmp(av ? av : "", bv ? bv : "") == 0;
+}
+
+static bool test_projection_db_matches_legacy(
+    const char *projection_path,
+    sqlite3 *legacy_db,
+    const char *count_sql,
+    const char *row_sql,
+    int columns,
+    int64_t *projection_count,
+    int64_t *legacy_count,
+    char *first_diff,
+    size_t first_diff_len)
+{
+    sqlite3 *projection_db = NULL;
+    sqlite3_stmt *ps = NULL;
+    sqlite3_stmt *ls = NULL;
+    bool ok = false;
+    if (!projection_path || !legacy_db || !count_sql || !row_sql ||
+        columns <= 0 || !projection_count || !legacy_count ||
+        !first_diff || first_diff_len == 0)
+        return false;
+    first_diff[0] = '\0';
+    if (sqlite3_open_v2(projection_path, &projection_db,
+                        SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+        goto done;
+    if (!test_query_i64(projection_db, count_sql, projection_count) ||
+        !test_query_i64(legacy_db, count_sql, legacy_count))
+        goto done;
+    if (sqlite3_prepare_v2(projection_db, row_sql, -1, &ps, NULL) !=
+        SQLITE_OK ||
+        sqlite3_prepare_v2(legacy_db, row_sql, -1, &ls, NULL) != SQLITE_OK)
+        goto done;
+    ok = true;
+    for (;;) {
+        int prc = sqlite3_step(ps);
+        int lrc = sqlite3_step(ls);
+        if (prc == SQLITE_DONE && lrc == SQLITE_DONE)
+            break;
+        if (prc != SQLITE_ROW || lrc != SQLITE_ROW) {
+            char key[128];
+            sqlite3_stmt *source = prc == SQLITE_ROW ? ps : ls;
+            snprintf(first_diff, first_diff_len, "%s",
+                     test_stmt_key(source, key, sizeof(key)));
+            break;
+        }
+        for (int i = 0; i < columns; i++) {
+            if (!test_column_equal(ps, ls, i)) {
+                char key[128];
+                snprintf(first_diff, first_diff_len, "%s",
+                         test_stmt_key(ps, key, sizeof(key)));
+                goto done_compare;
+            }
+        }
+    }
+done_compare:
+done:
+    if (ps) sqlite3_finalize(ps);
+    if (ls) sqlite3_finalize(ls);
+    if (projection_db) sqlite3_close(projection_db);
+    return ok;
+}
+
 static int t_projection_skeletons_fresh(void)
 {
     int failures = 0;
@@ -621,28 +735,40 @@ static int t_projection_emit_helpers(void)
         int64_t pc = 0;
         int64_t lc = 0;
         char first_diff[256] = {0};
-        SP_CHECK("emit contacts diff match",
-                 contacts_projection_diff_legacy(contacts, legacy, &pc, &lc,
-                                                 first_diff,
-                                                 sizeof(first_diff)) &&
+        SP_CHECK("emit contacts table match",
+                 test_projection_db_matches_legacy(
+                     contacts_path, legacy,
+                     "SELECT COUNT(*) FROM contacts",
+                     "SELECT address,name,last_used "
+                     "FROM contacts ORDER BY address ASC",
+                     3, &pc, &lc, first_diff, sizeof(first_diff)) &&
                  pc == 1 && lc == 1 && first_diff[0] == '\0');
-        SP_CHECK("emit onion diff match",
-                 onion_ann_projection_diff_legacy(onion, legacy, &pc, &lc,
-                                                  first_diff,
-                                                  sizeof(first_diff)) &&
+        SP_CHECK("emit onion table match",
+                 test_projection_db_matches_legacy(
+                     onion_path, legacy,
+                     "SELECT COUNT(*) FROM onion_announcements",
+                     "SELECT onion_address,announced_at,script_hex "
+                     "FROM onion_announcements ORDER BY onion_address ASC",
+                     3, &pc, &lc, first_diff, sizeof(first_diff)) &&
                  pc == 1 && lc == 1 && first_diff[0] == '\0');
-        SP_CHECK("emit hodl diff match",
-                 hodl_history_projection_diff_legacy(hodl, legacy, &pc, &lc,
-                                                     first_diff,
-                                                     sizeof(first_diff)) &&
+        SP_CHECK("emit hodl table match",
+                 test_projection_db_matches_legacy(
+                     hodl_path, legacy,
+                     "SELECT COUNT(*) FROM hodl_history",
+                     "SELECT height,time,total_zat,older_1y_zat,"
+                     "older_1y_pct FROM hodl_history ORDER BY height ASC",
+                     5, &pc, &lc, first_diff, sizeof(first_diff)) &&
                  pc == 1 && lc == 1 && first_diff[0] == '\0');
         SP_CHECK("emit contacts first diff",
                  exec_test_sql(legacy,
                      "UPDATE contacts SET name='Alicia' "
                      "WHERE address='t1EmitAlice'") &&
-                 contacts_projection_diff_legacy(contacts, legacy, &pc, &lc,
-                                                 first_diff,
-                                                 sizeof(first_diff)) &&
+                 test_projection_db_matches_legacy(
+                     contacts_path, legacy,
+                     "SELECT COUNT(*) FROM contacts",
+                     "SELECT address,name,last_used "
+                     "FROM contacts ORDER BY address ASC",
+                     3, &pc, &lc, first_diff, sizeof(first_diff)) &&
                  strcmp(first_diff, "t1EmitAlice") == 0);
         sqlite3_close(legacy);
     }

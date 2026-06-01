@@ -9,8 +9,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct sqlite3 sqlite3;
-
 typedef struct contacts_projection contacts_projection_t;
 contacts_projection_t *contacts_projection_open(const char *path,
                                                 event_log_t *log);
@@ -26,12 +24,6 @@ struct json_value;
 bool contacts_projection_dump_state_json(struct json_value *out,
                                          const char *key);
 contacts_projection_t *contacts_projection_current(void);
-bool contacts_projection_diff_legacy(contacts_projection_t *p,
-                                     sqlite3 *legacy_db,
-                                     int64_t *projection_count,
-                                     int64_t *legacy_count,
-                                     char *first_diff,
-                                     size_t first_diff_len);
 
 typedef struct onion_ann_projection onion_ann_projection_t;
 onion_ann_projection_t *onion_ann_projection_open(const char *path,
@@ -46,12 +38,6 @@ bool onion_ann_projection_emit(const char *onion_address,
 bool onion_ann_projection_dump_state_json(struct json_value *out,
                                           const char *key);
 onion_ann_projection_t *onion_ann_projection_current(void);
-bool onion_ann_projection_diff_legacy(onion_ann_projection_t *p,
-                                      sqlite3 *legacy_db,
-                                      int64_t *projection_count,
-                                      int64_t *legacy_count,
-                                      char *first_diff,
-                                      size_t first_diff_len);
 
 typedef struct hodl_history_projection hodl_history_projection_t;
 hodl_history_projection_t *hodl_history_projection_open(
@@ -68,11 +54,5 @@ bool hodl_history_projection_emit_snapshot(int32_t height,
 bool hodl_history_projection_dump_state_json(struct json_value *out,
                                              const char *key);
 hodl_history_projection_t *hodl_history_projection_current(void);
-bool hodl_history_projection_diff_legacy(hodl_history_projection_t *p,
-                                         sqlite3 *legacy_db,
-                                         int64_t *projection_count,
-                                         int64_t *legacy_count,
-                                         char *first_diff,
-                                         size_t first_diff_len);
 
 #endif /* ZCL_STORAGE_SMALL_PROJECTIONS_H */
