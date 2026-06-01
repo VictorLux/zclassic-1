@@ -1538,9 +1538,12 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "msg_processor_repair_post_activation_anchor") != NULL);
         ASSERT(strstr(buf, "msg_processor_scan_block_files") != NULL);
         ASSERT(strstr(buf, "msg_processor_block_index_heights_repaired") != NULL);
+        ASSERT(strstr(buf, "msg_processor_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "msg_processor_recommit_snapshot_anchor") != NULL);
         ASSERT(strstr(buf, "services/block_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/block_index_integrity.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
         ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
@@ -1549,12 +1552,16 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "activation_request_connect") == NULL);
         ASSERT(strstr(buf, "activation_clear_anchor") == NULL);
         ASSERT(strstr(buf, "bii_repair_post_activation_anchor") == NULL);
+        ASSERT(strstr(buf, "csr_commit_tip") == NULL);
+        ASSERT(strstr(buf, "csr_commit_header_tip") == NULL);
+        ASSERT(strstr(buf, "csr_instance") == NULL);
+        ASSERT(strstr(buf, "chain_state_commit") == NULL);
         ASSERT(strstr(buf, "scan_block_files_mark_data") == NULL);
         ASSERT(strstr(buf, "block_index_heights_repaired()") == NULL);
         ASSERT(strstr(buf, "snapsync_is_active") == NULL);
         ASSERT(strstr(buf, "snapsync_get_anchor") == NULL);
         ASSERT(strstr(buf, "snapsync_set_anchor") == NULL);
-        ASSERT(strstr(buf, "TIP_FROM_P2P_REPAIR = 6") != NULL);
+        ASSERT(strstr(buf, "TIP_FROM_P2P_REPAIR") == NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
@@ -1571,6 +1578,12 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "boot_header_block_index_heights_repaired") != NULL);
         ASSERT(strstr(buf, "block_index_heights_repaired") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_header_index_hooks") != NULL);
+        ASSERT(strstr(buf, "boot_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "csr_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "boot_recommit_snapshot_anchor") != NULL);
+        ASSERT(strstr(buf, "csr_commit_tip") != NULL);
+        ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_header_chainstate_hooks") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),

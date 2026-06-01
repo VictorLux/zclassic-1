@@ -61,6 +61,11 @@ typedef void (*msg_activation_anchor_clear_fn)(const char *reason,
 typedef void (*msg_post_activation_repair_fn)(void *ctx);
 typedef int (*msg_block_file_scan_fn)(void *ctx);
 typedef bool (*msg_block_index_heights_repaired_fn)(void *ctx);
+typedef bool (*msg_header_tip_commit_fn)(struct block_index *header_tip,
+                                         void *ctx);
+typedef bool (*msg_snapshot_anchor_recommit_fn)(struct block_index *anchor,
+                                                int from_height,
+                                                void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
 typedef void (*msg_block_connected_fn)(int height, void *ctx);
@@ -118,6 +123,10 @@ struct msg_processor {
     void *block_file_scan_ctx;
     msg_block_index_heights_repaired_fn block_index_heights_repaired;
     void *block_index_heights_repaired_ctx;
+    msg_header_tip_commit_fn header_tip_commit;
+    void *header_tip_commit_ctx;
+    msg_snapshot_anchor_recommit_fn snapshot_anchor_recommit;
+    void *snapshot_anchor_recommit_ctx;
     msg_wallet_tx_accepted_fn wallet_tx_accepted;
     void *wallet_tx_accepted_ctx;
     msg_block_connected_fn block_connected;
@@ -205,6 +214,12 @@ void msg_processor_set_header_index_hooks(
     void *scan_ctx,
     msg_block_index_heights_repaired_fn heights_repaired,
     void *heights_repaired_ctx);
+void msg_processor_set_header_chainstate_hooks(
+    struct msg_processor *mp,
+    msg_header_tip_commit_fn commit_header_tip,
+    void *commit_header_tip_ctx,
+    msg_snapshot_anchor_recommit_fn recommit_anchor,
+    void *recommit_anchor_ctx);
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,

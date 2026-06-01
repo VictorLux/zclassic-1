@@ -13,7 +13,6 @@
 #include "net/fast_sync.h"
 #include "sync/sync_planner.h"
 #include "storage/disk_block_io.h"
-#include "services/chain_state_repository.h"
 #include "validation/process_block.h"
 #include "net/download.h"
 #include "event/event.h"
@@ -33,18 +32,6 @@ extern volatile sig_atomic_t g_shutdown_requested;
  * This file handles the receive-side header processing. */
 
 #include <stdatomic.h>
-
-#ifdef ZCL_TESTING
-/* Test harness fallback for CSR-less header-anchor repair. Keep this local so
- * the net layer does not include the app chain-tip service. */
-enum tip_source {
-    TIP_FROM_P2P_REPAIR = 6,
-};
-struct zcl_result chain_set_active_tip(struct main_state *ms,
-                                       struct block_index *new_tip,
-                                       enum tip_source src,
-                                       const char *reason);
-#endif
 
 /* ── Sync diagnostic counters ──────────────────────────────────── */
 
@@ -503,8 +490,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
          * Conservative fallback: if either side's nChainWork has not been
          * stamped yet (still zero), fall back to the historical height
          * comparison so a valid higher header is never dropped just
-         * because its work is not yet computed. The csr promotion gate
-         * (csr_validate_header_locked) enforces the same rule. */
+         * because its work is not yet computed. The boot-owned chain-state
+         * callback enforces the same promotion gate. */
         struct block_index *cur_best = mp->main_state->pindex_best_header;
         bool best_header_advances = false;
         if (pindex_last) {
@@ -521,22 +508,10 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             }
         }
         if (best_header_advances) {
-            struct chain_state_header_commit header_commit = {
-                .new_header_tip = pindex_last,
-                .rollback_auth = NULL,
-                .reason = "msg_headers.best_header",
-            };
-            enum csr_result hrc = csr_commit_header_tip(csr_instance(),
-                                                        &header_commit);
-#ifdef ZCL_TESTING
-            if (hrc == CSR_REJECTED_NOT_INITIALIZED)
-                mp->main_state->pindex_best_header = pindex_last;
-            else
-#endif
-            if (hrc != CSR_OK) {
+            if (!msg_processor_commit_header_tip(mp, pindex_last)) {
                 LOG_WARN("sync",
-                        "csr rejected best-header promotion (%s) h=%d",
-                        csr_result_name(hrc), pindex_last->nHeight);
+                        "best-header promotion rejected h=%d",
+                        pindex_last->nHeight);
             }
         }
 
@@ -567,54 +542,25 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                            "anchor h=%d — enabling block connection\n",
                            pindex_last->nHeight - anc->nHeight,
                            anc->nHeight);
-                    /* Re-anchor active_chain at the snapshot anchor via
-                     * csr so block_map/coins_tip/header agree. In
-                     * production this is typically a no-op move
-                     * (active_chain is already at `anc`), but routing
-                     * it through csr_commit_tip gives the transition a
-                     * structured event and guards against any drift
-                     * that snuck in since snapsync_activate_verified_tip
-                     * ran. */
+                    /* Re-anchor active_chain at the snapshot anchor through
+                     * the boot-owned chain-state boundary so
+                     * block_map/coins_tip/header agree. In production this
+                     * is typically a no-op move (active_chain is already at
+                     * `anc`), but routing it through the single authority
+                     * gives the transition a structured event and guards
+                     * against drift since snapshot activation ran. */
                     bool anchor_recommitted = false;
                     if (anc->phashBlock) {
-                        struct chain_state_rollback_authorization rollback_auth = {
-                            .source = CSR_ROLLBACK_SOURCE_HEADER_SYNC,
-                            .decision = POLICY_ALLOW,
-                            .from_height = mp->main_state
-                                ? active_chain_height(&mp->main_state->chain_active) : -1,
-                            .to_height = anc->nHeight,
-                            .max_depth = INT64_MAX,
-                            .evidence_class = "header_chain_extends_snapshot_anchor",
-                            .reason = "msgprocessor.headers_past_anchor",
-                        };
-                        struct chain_state_commit commit = {
-                            .new_tip             = anc,
-                            .new_coins_best      = *anc->phashBlock,
-                            .expected_utxo_count = 0,
-                            .update_header_tip   = false,
-                            .rollback_auth       = &rollback_auth,
-                            .wallet_scan_height  = -1,
-                            .reason              = "msgprocessor.headers_past_anchor",
-                        };
-                        enum csr_result rc = csr_commit_tip(
-                            csr_instance(), &commit);
-                        if (rc == CSR_OK) {
-                            anchor_recommitted = true;
-                        } else if (rc != CSR_REJECTED_NOT_INITIALIZED) {
+                        int from_height = mp->main_state ?
+                            active_chain_height(&mp->main_state->chain_active) : -1;
+                        anchor_recommitted =
+                            msg_processor_recommit_snapshot_anchor(
+                                mp, anc, from_height);
+                        if (!anchor_recommitted) {
                             LOG_WARN("sync",
-                                "csr rejected anchor re-commit (%s) h=%d",
-                                csr_result_name(rc), anc->nHeight);
+                                "anchor re-commit rejected h=%d",
+                                anc->nHeight);
                         }
-#ifdef ZCL_TESTING
-                        if (rc == CSR_REJECTED_NOT_INITIALIZED) {
-                            /* Test harness path: use the canonical
-                             * helper so events still fire. */
-                            (void)chain_set_active_tip(mp->main_state, anc,
-                                TIP_FROM_P2P_REPAIR,
-                                "anchor_recommit_csr_uninit");
-                            anchor_recommitted = true;
-                        }
-#endif
                     } else {
                         LOG_WARN("sync",
                             "refusing to clear snapshot anchor "

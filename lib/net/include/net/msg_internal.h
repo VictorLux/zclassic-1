@@ -155,6 +155,11 @@ void msg_processor_clear_activation_anchor(const struct msg_processor *mp,
 void msg_processor_repair_post_activation_anchor(const struct msg_processor *mp);
 int msg_processor_scan_block_files(const struct msg_processor *mp);
 bool msg_processor_block_index_heights_repaired(const struct msg_processor *mp);
+bool msg_processor_commit_header_tip(const struct msg_processor *mp,
+                                     struct block_index *header_tip);
+bool msg_processor_recommit_snapshot_anchor(const struct msg_processor *mp,
+                                            struct block_index *anchor,
+                                            int from_height);
 void msg_processor_note_block_connected(const struct msg_processor *mp,
                                         int height);
 void msg_processor_record_peer_header_vote(const struct msg_processor *mp,

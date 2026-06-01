@@ -720,6 +720,10 @@ void msg_processor_init(struct msg_processor *mp,
     mp->block_file_scan_ctx = NULL;
     mp->block_index_heights_repaired = NULL;
     mp->block_index_heights_repaired_ctx = NULL;
+    mp->header_tip_commit = NULL;
+    mp->header_tip_commit_ctx = NULL;
+    mp->snapshot_anchor_recommit = NULL;
+    mp->snapshot_anchor_recommit_ctx = NULL;
     mp->wallet_tx_accepted = NULL;
     mp->wallet_tx_accepted_ctx = NULL;
     mp->block_connected = NULL;
@@ -881,6 +885,21 @@ void msg_processor_set_header_index_hooks(
     mp->block_index_heights_repaired_ctx = heights_repaired_ctx;
 }
 
+void msg_processor_set_header_chainstate_hooks(
+    struct msg_processor *mp,
+    msg_header_tip_commit_fn commit_header_tip,
+    void *commit_header_tip_ctx,
+    msg_snapshot_anchor_recommit_fn recommit_anchor,
+    void *recommit_anchor_ctx)
+{
+    if (!mp)
+        return;
+    mp->header_tip_commit = commit_header_tip;
+    mp->header_tip_commit_ctx = commit_header_tip_ctx;
+    mp->snapshot_anchor_recommit = recommit_anchor;
+    mp->snapshot_anchor_recommit_ctx = recommit_anchor_ctx;
+}
+
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,
@@ -998,6 +1017,30 @@ bool msg_processor_block_index_heights_repaired(const struct msg_processor *mp)
 {
     return mp && mp->block_index_heights_repaired &&
            mp->block_index_heights_repaired(mp->block_index_heights_repaired_ctx);
+}
+
+bool msg_processor_commit_header_tip(const struct msg_processor *mp,
+                                     struct block_index *header_tip)
+{
+    if (mp && mp->header_tip_commit)
+        return mp->header_tip_commit(header_tip, mp->header_tip_commit_ctx);
+#ifdef ZCL_TESTING
+    if (mp && mp->main_state && header_tip) {
+        mp->main_state->pindex_best_header = header_tip;
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool msg_processor_recommit_snapshot_anchor(const struct msg_processor *mp,
+                                            struct block_index *anchor,
+                                            int from_height)
+{
+    if (mp && mp->snapshot_anchor_recommit)
+        return mp->snapshot_anchor_recommit(
+            anchor, from_height, mp->snapshot_anchor_recommit_ctx);
+    return false;
 }
 
 void msg_processor_note_block_connected(const struct msg_processor *mp,

@@ -816,6 +816,79 @@ static bool boot_header_block_index_heights_repaired(void *ctx)
     return block_index_heights_repaired();
 }
 
+static bool boot_commit_header_tip(struct block_index *header_tip, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    struct chain_state_header_commit commit = {
+        .new_header_tip = header_tip,
+        .rollback_auth = NULL,
+        .reason = "msg_headers.best_header",
+    };
+    enum csr_result rc = csr_commit_header_tip(csr_instance(), &commit);
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED && svc && svc->state && header_tip) {
+        svc->state->pindex_best_header = header_tip;
+        return true;
+    }
+#else
+    (void)svc;
+#endif
+    if (rc != CSR_OK) {
+        LOG_WARN("sync", "csr rejected best-header promotion (%s) h=%d",
+                 csr_result_name(rc), header_tip ? header_tip->nHeight : -1);
+        return false;
+    }
+    return true;
+}
+
+static bool boot_recommit_snapshot_anchor(struct block_index *anchor,
+                                          int from_height,
+                                          void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!anchor || !anchor->phashBlock)
+        return false;
+
+    struct chain_state_rollback_authorization rollback_auth = {
+        .source = CSR_ROLLBACK_SOURCE_HEADER_SYNC,
+        .decision = POLICY_ALLOW,
+        .from_height = from_height,
+        .to_height = anchor->nHeight,
+        .max_depth = INT64_MAX,
+        .evidence_class = "header_chain_extends_snapshot_anchor",
+        .reason = "msgprocessor.headers_past_anchor",
+    };
+    struct chain_state_commit commit = {
+        .new_tip = anchor,
+        .new_coins_best = *anchor->phashBlock,
+        .expected_utxo_count = 0,
+        .update_header_tip = false,
+        .rollback_auth = &rollback_auth,
+        .wallet_scan_height = -1,
+        .reason = "msgprocessor.headers_past_anchor",
+    };
+    enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
+
+#ifdef ZCL_TESTING
+    if (rc == CSR_REJECTED_NOT_INITIALIZED && svc && svc->state) {
+        struct zcl_result tr = chain_set_active_tip(
+            svc->state, anchor, TIP_FROM_P2P_REPAIR,
+            "anchor_recommit_csr_uninit");
+        return tr.ok;
+    }
+#else
+    (void)svc;
+#endif
+    if (rc != CSR_OK) {
+        LOG_WARN("sync", "csr rejected anchor re-commit (%s) h=%d",
+                 csr_result_name(rc), anchor->nHeight);
+        return false;
+    }
+    return true;
+}
+
 static void boot_block_connected_observer(int height, void *ctx)
 {
     (void)ctx;
@@ -2749,6 +2822,9 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_set_header_index_hooks(
         svc->msg_processor, boot_scan_header_block_files, svc,
         boot_header_block_index_heights_repaired, svc);
+    msg_processor_set_header_chainstate_hooks(
+        svc->msg_processor, boot_commit_header_tip, svc,
+        boot_recommit_snapshot_anchor, svc);
     msg_processor_set_wallet_tx_accepted(svc->msg_processor,
                                          boot_wallet_tx_accepted, svc);
     msg_processor_set_block_connected(svc->msg_processor,
