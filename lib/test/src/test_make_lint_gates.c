@@ -1486,6 +1486,26 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
     return failures;
 }
 
+static int t_fast_sync_uses_lib_sqlite_helpers(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("fast sync avoids direct AR and DB model includes") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/fast_sync.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/ar_step_readonly.h") != NULL);
+        ASSERT(strstr(buf, "AR_STEP_WRITE") != NULL);
+        ASSERT(strstr(buf, "models/activerecord.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "AR_BIND_") == NULL);
+        ASSERT(strstr(buf, "AR_STEP_DONE") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_net_sync_planners_are_lib_owned(void)
 {
     int failures = 0;
@@ -1797,6 +1817,7 @@ int test_make_lint_gates(void)
     failures += t_tx_wallet_sync_is_callback_injected();
     failures += t_p2p_block_submit_is_callback_injected();
     failures += t_flyclient_proof_builder_is_callback_injected();
+    failures += t_fast_sync_uses_lib_sqlite_helpers();
     failures += t_net_sync_planners_are_lib_owned();
     failures += t_header_peer_votes_are_callback_injected();
     failures += t_process_block_node_db_access_is_runtime_owned();

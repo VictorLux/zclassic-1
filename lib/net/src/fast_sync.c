@@ -5,8 +5,6 @@
 #include "platform/time_compat.h"
 #include "net/fast_sync.h"
 #include "coins/utxo_commitment.h"
-#include "models/activerecord.h"
-#include "models/database.h"
 #include "models/utxo.h"
 #include "core/hash.h"
 #include "crypto/sha256.h"
@@ -696,7 +694,7 @@ bool fast_sync_apply_chunk(const char *datadir,
     /* bulk UTXO insert must either land as a whole chunk or
      * roll back entirely. BEGIN + row-at-a-time INSERT + COMMIT gives
      * SQLite the atomicity guarantee; the loop below routes every
-     * step through AR_STEP_DONE instead of raw sqlite3_step so the
+     * step through AR_STEP_WRITE instead of raw sqlite3_step so the
      * defensive-coding invariant ("no raw step in our code") stays
      * intact even though the lint doesn't currently scan lib/net/.
      *
@@ -729,14 +727,14 @@ bool fast_sync_apply_chunk(const char *datadir,
     bool insert_ok = true;
     for (uint32_t i = 0; i < chunk->num_entries; i++) {
         sqlite3_reset(ins);
-        AR_BIND_BLOB(ins, 1, chunk->entries[i].txid, 32);
-        AR_BIND_INT(ins, 2, (int)chunk->entries[i].vout);
-        AR_BIND_INT(ins, 3, chunk->entries[i].value);
-        AR_BIND_BLOB(ins, 4, chunk->entries[i].script,
-                     (int)chunk->entries[i].script_len);
-        AR_BIND_INT(ins, 5, chunk->entries[i].height);
-        AR_BIND_INT(ins, 6, chunk->entries[i].is_coinbase ? 1 : 0);
-        if (!AR_STEP_DONE(ins)) {
+        sqlite3_bind_blob(ins, 1, chunk->entries[i].txid, 32, SQLITE_STATIC);
+        sqlite3_bind_int64(ins, 2, (int64_t)chunk->entries[i].vout);
+        sqlite3_bind_int64(ins, 3, chunk->entries[i].value);
+        sqlite3_bind_blob(ins, 4, chunk->entries[i].script,
+                          (int)chunk->entries[i].script_len, SQLITE_STATIC);
+        sqlite3_bind_int64(ins, 5, chunk->entries[i].height);
+        sqlite3_bind_int64(ins, 6, chunk->entries[i].is_coinbase ? 1 : 0);
+        if (AR_STEP_WRITE(ins) != SQLITE_DONE) {
             fprintf(stderr, "fast_sync_apply_chunk: insert %u/%u failed: %s\n",  // obs-ok:helper-context-logged
                     i, chunk->num_entries, sqlite3_errmsg(db));
             insert_ok = false;
@@ -1225,7 +1223,7 @@ bool swarm_sync_receive_chunk(struct swarm_sync *ss,
 
     /* verify SHA3-256 of the received chunk against the per-chunk
      * hash the peer advertised in the swarm manifest BEFORE handing any
-     * bytes to fast_sync_apply_chunk — otherwise the AR_STEP_DONE writer
+     * bytes to fast_sync_apply_chunk — otherwise the AR_STEP_WRITE writer
      * would commit attacker-controlled rows into the utxos table and the
      * only signal would be the end-of-sync Merkle root mismatch. */
     if (!fast_sync_verify_chunk(chunk, ss->manifest.chunk_hashes[idx])) {

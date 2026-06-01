@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 18 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 16 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -134,7 +134,10 @@ If the node is not running, record that explicitly before claiming live proof.
   longer includes the DB model header for SQLite query access. Self-heal
   tx-index recovery now uses a runtime-owned lookup result, so
   `process_block_self_heal.c` no longer includes the TxIndex model header
-  either.
+  either. Fast-sync chunk apply now uses direct SQLite binds plus the lib-side
+  `AR_STEP_WRITE` helper, so `lib/net/src/fast_sync.c` no longer includes the
+  ActiveRecord or DB model headers; its remaining direct `models/utxo.h`
+  include is still baseline debt.
   Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
