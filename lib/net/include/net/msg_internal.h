@@ -148,6 +148,13 @@ bool msg_processor_snapshot_active(const struct msg_processor *mp);
 struct block_index *msg_processor_snapshot_anchor(const struct msg_processor *mp);
 void msg_processor_set_snapshot_anchor(const struct msg_processor *mp,
                                        struct block_index *anchor);
+void msg_processor_request_activation(const struct msg_processor *mp,
+                                      enum msg_activation_request_source source);
+void msg_processor_clear_activation_anchor(const struct msg_processor *mp,
+                                           const char *reason);
+void msg_processor_repair_post_activation_anchor(const struct msg_processor *mp);
+int msg_processor_scan_block_files(const struct msg_processor *mp);
+bool msg_processor_block_index_heights_repaired(const struct msg_processor *mp);
 void msg_processor_note_block_connected(const struct msg_processor *mp,
                                         int height);
 void msg_processor_record_peer_header_vote(const struct msg_processor *mp,

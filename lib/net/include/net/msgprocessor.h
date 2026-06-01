@@ -49,6 +49,18 @@ typedef bool (*msg_snapshot_active_fn)(void *ctx);
 typedef struct block_index *(*msg_snapshot_anchor_get_fn)(void *ctx);
 typedef void (*msg_snapshot_anchor_set_fn)(struct block_index *anchor,
                                            void *ctx);
+enum msg_activation_request_source {
+    MSG_ACTIVATE_BLOCK_FILE_SCAN = 0,
+    MSG_ACTIVATE_HEADERS_ALL_DATA,
+};
+typedef void (*msg_activation_request_fn)(
+    enum msg_activation_request_source source,
+    void *ctx);
+typedef void (*msg_activation_anchor_clear_fn)(const char *reason,
+                                               void *ctx);
+typedef void (*msg_post_activation_repair_fn)(void *ctx);
+typedef int (*msg_block_file_scan_fn)(void *ctx);
+typedef bool (*msg_block_index_heights_repaired_fn)(void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
 typedef void (*msg_block_connected_fn)(int height, void *ctx);
@@ -96,6 +108,16 @@ struct msg_processor {
     void *snapshot_anchor_get_ctx;
     msg_snapshot_anchor_set_fn snapshot_anchor_set;
     void *snapshot_anchor_set_ctx;
+    msg_activation_request_fn activation_request;
+    void *activation_request_ctx;
+    msg_activation_anchor_clear_fn activation_anchor_clear;
+    void *activation_anchor_clear_ctx;
+    msg_post_activation_repair_fn post_activation_repair;
+    void *post_activation_repair_ctx;
+    msg_block_file_scan_fn block_file_scan;
+    void *block_file_scan_ctx;
+    msg_block_index_heights_repaired_fn block_index_heights_repaired;
+    void *block_index_heights_repaired_ctx;
     msg_wallet_tx_accepted_fn wallet_tx_accepted;
     void *wallet_tx_accepted_ctx;
     msg_block_connected_fn block_connected;
@@ -169,6 +191,20 @@ void msg_processor_set_snapshot_anchor_accessors(
     void *get_ctx,
     msg_snapshot_anchor_set_fn set_anchor,
     void *set_ctx);
+void msg_processor_set_activation_hooks(
+    struct msg_processor *mp,
+    msg_activation_request_fn request,
+    void *request_ctx,
+    msg_activation_anchor_clear_fn clear_anchor,
+    void *clear_ctx,
+    msg_post_activation_repair_fn repair,
+    void *repair_ctx);
+void msg_processor_set_header_index_hooks(
+    struct msg_processor *mp,
+    msg_block_file_scan_fn scan,
+    void *scan_ctx,
+    msg_block_index_heights_repaired_fn heights_repaired,
+    void *heights_repaired_ctx);
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,

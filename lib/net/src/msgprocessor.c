@@ -710,6 +710,16 @@ void msg_processor_init(struct msg_processor *mp,
     mp->snapshot_anchor_get_ctx = NULL;
     mp->snapshot_anchor_set = NULL;
     mp->snapshot_anchor_set_ctx = NULL;
+    mp->activation_request = NULL;
+    mp->activation_request_ctx = NULL;
+    mp->activation_anchor_clear = NULL;
+    mp->activation_anchor_clear_ctx = NULL;
+    mp->post_activation_repair = NULL;
+    mp->post_activation_repair_ctx = NULL;
+    mp->block_file_scan = NULL;
+    mp->block_file_scan_ctx = NULL;
+    mp->block_index_heights_repaired = NULL;
+    mp->block_index_heights_repaired_ctx = NULL;
     mp->wallet_tx_accepted = NULL;
     mp->wallet_tx_accepted_ctx = NULL;
     mp->block_connected = NULL;
@@ -837,6 +847,40 @@ void msg_processor_set_snapshot_anchor_accessors(
     mp->snapshot_anchor_set_ctx = set_ctx;
 }
 
+void msg_processor_set_activation_hooks(
+    struct msg_processor *mp,
+    msg_activation_request_fn request,
+    void *request_ctx,
+    msg_activation_anchor_clear_fn clear_anchor,
+    void *clear_ctx,
+    msg_post_activation_repair_fn repair,
+    void *repair_ctx)
+{
+    if (!mp)
+        return;
+    mp->activation_request = request;
+    mp->activation_request_ctx = request_ctx;
+    mp->activation_anchor_clear = clear_anchor;
+    mp->activation_anchor_clear_ctx = clear_ctx;
+    mp->post_activation_repair = repair;
+    mp->post_activation_repair_ctx = repair_ctx;
+}
+
+void msg_processor_set_header_index_hooks(
+    struct msg_processor *mp,
+    msg_block_file_scan_fn scan,
+    void *scan_ctx,
+    msg_block_index_heights_repaired_fn heights_repaired,
+    void *heights_repaired_ctx)
+{
+    if (!mp)
+        return;
+    mp->block_file_scan = scan;
+    mp->block_file_scan_ctx = scan_ctx;
+    mp->block_index_heights_repaired = heights_repaired;
+    mp->block_index_heights_repaired_ctx = heights_repaired_ctx;
+}
+
 void msg_processor_set_wallet_tx_accepted(
     struct msg_processor *mp,
     msg_wallet_tx_accepted_fn accepted,
@@ -921,6 +965,39 @@ void msg_processor_set_snapshot_anchor(const struct msg_processor *mp,
 {
     if (mp && mp->snapshot_anchor_set)
         mp->snapshot_anchor_set(anchor, mp->snapshot_anchor_set_ctx);
+}
+
+void msg_processor_request_activation(const struct msg_processor *mp,
+                                      enum msg_activation_request_source source)
+{
+    if (mp && mp->activation_request)
+        mp->activation_request(source, mp->activation_request_ctx);
+}
+
+void msg_processor_clear_activation_anchor(const struct msg_processor *mp,
+                                           const char *reason)
+{
+    if (mp && mp->activation_anchor_clear)
+        mp->activation_anchor_clear(reason, mp->activation_anchor_clear_ctx);
+}
+
+void msg_processor_repair_post_activation_anchor(const struct msg_processor *mp)
+{
+    if (mp && mp->post_activation_repair)
+        mp->post_activation_repair(mp->post_activation_repair_ctx);
+}
+
+int msg_processor_scan_block_files(const struct msg_processor *mp)
+{
+    if (!mp || !mp->block_file_scan)
+        return 0;
+    return mp->block_file_scan(mp->block_file_scan_ctx);
+}
+
+bool msg_processor_block_index_heights_repaired(const struct msg_processor *mp)
+{
+    return mp && mp->block_index_heights_repaired &&
+           mp->block_index_heights_repaired(mp->block_index_heights_repaired_ctx);
 }
 
 void msg_processor_note_block_connected(const struct msg_processor *mp,

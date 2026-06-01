@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 14 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 12 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -142,7 +142,10 @@ If the node is not running, record that explicitly before claiming live proof.
   active/anchor access is now callback-injected through
   `msg_processor_set_snapshot_anchor_accessors()`, so
   `lib/net/src/msg_headers.c` uses message-processor helpers instead of
-  including the snapshot sync service.
+  including the snapshot sync service. Header activation, block-file scan,
+  height-repair state, and post-activation anchor repair are now injected
+  from boot too, so `msg_headers.c` no longer includes the app
+  activation controller or block-index integrity service.
   Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after

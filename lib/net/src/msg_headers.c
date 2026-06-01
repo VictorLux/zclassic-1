@@ -14,10 +14,7 @@
 #include "sync/sync_planner.h"
 #include "storage/disk_block_io.h"
 #include "services/chain_state_repository.h"
-#include "services/chain_activation_controller.h"
-#include "services/block_index_integrity.h"
 #include "validation/process_block.h"
-#include "config/boot_internal.h"
 #include "net/download.h"
 #include "event/event.h"
 #include "util/log_macros.h"
@@ -625,8 +622,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     }
                     if (anchor_recommitted) {
                         msg_processor_set_snapshot_anchor(mp, NULL);
-                        activation_clear_anchor(boot_activation_controller(),
-                                                "headers_past_anchor");
+                        msg_processor_clear_activation_anchor(
+                            mp, "headers_past_anchor");
                     }
                 }
             }
@@ -642,16 +639,14 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             struct stat bfst;
             if (stat(bfp, &bfst) == 0 && bfst.st_size > 0) {
                 printf("P2P trigger: scanning block files for HAVE_DATA...\n");
-                int scan_m = scan_block_files_mark_data(
-                    mp->main_state, mp->datadir, mp->params);
+                int scan_m = msg_processor_scan_block_files(mp);
 
                 struct sync_chain_activation activation = {0};
                 syncsvc_build_block_file_scan_activation(&activation, scan_m);
                 if (activation.should_activate && !g_shutdown_requested) {
                     printf("P2P block file scan: %d blocks marked\n", scan_m);
-                    struct activation_exec_outcome ao;
-                    activation_request_connect(boot_activation_controller(),
-                        ACTIVATION_SRC_BLOCK_FILE_SCAN, NULL, &ao);
+                    msg_processor_request_activation(
+                        mp, MSG_ACTIVATE_BLOCK_FILE_SCAN);
                 }
 
                 /* structural repair moved out of the
@@ -659,10 +654,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                  * is no longer the right layer to fix block_map
                  * heights / restore active tip — that's repair-module
                  * surgery. */
-                struct bii_post_activation_result rr;
-                (void)bii_repair_post_activation_anchor(
-                    mp->main_state, mp->coins_tip,
-                    mp->datadir, &rr);
+                msg_processor_repair_post_activation_anchor(mp);
             }
         }
         if (header_plan.should_queue_needed_blocks) {
@@ -708,9 +700,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         queued, our_height, pindex_last->nHeight);
                 }
             } else if (has_data_successor) {
-                struct activation_exec_outcome ao;
-                activation_request_connect(boot_activation_controller(),
-                    ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
+                msg_processor_request_activation(
+                    mp, MSG_ACTIVATE_HEADERS_ALL_DATA);
             }
         }
 
@@ -724,9 +715,8 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             syncsvc_build_header_processing_activation(&activation,
                                                       &header_plan);
             if (activation.should_activate && !g_shutdown_requested) {
-                struct activation_exec_outcome ao;
-                activation_request_connect(boot_activation_controller(),
-                    ACTIVATION_SRC_HEADERS_ALL_DATA, NULL, &ao);
+                msg_processor_request_activation(
+                    mp, MSG_ACTIVATE_HEADERS_ALL_DATA);
             }
         }
         free(hashes);
@@ -803,7 +793,8 @@ void push_getheaders_from(struct msg_processor *mp,
      * Before repair, fall back to the safe 2-hash locator. */
     struct block_locator loc;
     block_locator_init(&loc);
-    if (from && from->phashBlock && block_index_heights_repaired()) {
+    if (from && from->phashBlock &&
+        msg_processor_block_index_heights_repaired(mp)) {
         /* Exponential locator: tip, tip-1, tip-2, tip-4, tip-8, ... genesis.
          * Walk pprev chain with exponentially increasing steps. */
         int max_hashes = 32;

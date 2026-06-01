@@ -7,6 +7,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "services/chain_activation_controller.h"
+#include "services/block_index_integrity.h"
 #include "services/block_source_policy.h"
 #include "services/chain_state_repository.h"
 #include "services/chain_tip.h"
@@ -760,6 +761,59 @@ static void boot_snapshot_anchor_set(struct block_index *anchor, void *ctx)
 {
     (void)ctx;
     snapsync_set_anchor(anchor);
+}
+
+static void boot_request_header_activation(
+    enum msg_activation_request_source source,
+    void *ctx)
+{
+    enum activation_request_source activation_source;
+    struct activation_exec_outcome outcome;
+
+    (void)ctx;
+    switch (source) {
+    case MSG_ACTIVATE_BLOCK_FILE_SCAN:
+        activation_source = ACTIVATION_SRC_BLOCK_FILE_SCAN;
+        break;
+    case MSG_ACTIVATE_HEADERS_ALL_DATA:
+    default:
+        activation_source = ACTIVATION_SRC_HEADERS_ALL_DATA;
+        break;
+    }
+    activation_request_connect(boot_activation_controller(),
+                               activation_source, NULL, &outcome);
+}
+
+static void boot_clear_header_activation_anchor(const char *reason, void *ctx)
+{
+    (void)ctx;
+    activation_clear_anchor(boot_activation_controller(), reason);
+}
+
+static void boot_repair_header_post_activation_anchor(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    struct bii_post_activation_result result;
+
+    if (!svc)
+        return;
+    (void)bii_repair_post_activation_anchor(svc->state, svc->coins_tip,
+                                            svc->datadir, &result);
+}
+
+static int boot_scan_header_block_files(void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc)
+        return 0;
+    return scan_block_files_mark_data(svc->state, svc->datadir, svc->params);
+}
+
+static bool boot_header_block_index_heights_repaired(void *ctx)
+{
+    (void)ctx;
+    return block_index_heights_repaired();
 }
 
 static void boot_block_connected_observer(int height, void *ctx)
@@ -2688,6 +2742,13 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_set_snapshot_anchor_accessors(
         svc->msg_processor, boot_snapshot_anchor_get, svc,
         boot_snapshot_anchor_set, svc);
+    msg_processor_set_activation_hooks(
+        svc->msg_processor, boot_request_header_activation, svc,
+        boot_clear_header_activation_anchor, svc,
+        boot_repair_header_post_activation_anchor, svc);
+    msg_processor_set_header_index_hooks(
+        svc->msg_processor, boot_scan_header_block_files, svc,
+        boot_header_block_index_heights_repaired, svc);
     msg_processor_set_wallet_tx_accepted(svc->msg_processor,
                                          boot_wallet_tx_accepted, svc);
     msg_processor_set_block_connected(svc->msg_processor,

@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 14 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 12 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -273,6 +273,13 @@ node soak.
   `msg_processor_snapshot_active()` / anchor helpers and no longer includes the
   snapshot sync service. The lib-to-app include baseline is down from 15 to
   14.
+- Header activation, block-file scanning, height-repair state, and
+  post-activation anchor repair are now callback-injected through the message
+  processor. Boot owns `activation_request_connect()`,
+  `activation_clear_anchor()`, `scan_block_files_mark_data()`,
+  `block_index_heights_repaired()`, and `bii_repair_post_activation_anchor()`,
+  while `lib/net/src/msg_headers.c` uses app-free message-processor helpers.
+  The lib-to-app include baseline is down from 14 to 12.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -377,7 +384,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 14 grandfathered lib-to-app includes.
+  with 12 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -398,6 +405,37 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after callback-injecting header activation,
+  block-file scan, height-repair state, and post-activation anchor repair
+  through the message processor.
+- `tools/scripts/check_lib_layering.sh`: pass with 12 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
+  surfaces and no new violations; only existing `boot_services.c`
+  `coins_view_cache_flush()` baseline line numbers shifted after adding the
+  boot-owned callbacks.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `./test_parallel --only=header_sync --timeout=120 --verbose`,
+  `./test_parallel --only=net --timeout=120 --verbose`, and
+  `./test_parallel --only=block_index_integrity --timeout=120 --verbose`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- `make lint`: pass after the header activation/index callback injection; E1,
+  E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
+  raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
+  surfaces, and lib-layering is 12 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the header activation/index
+  callback injection, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 09:49:59 UTC after the header
+  activation/index callback injection did not prove live-node health: no
+  `zclassic23` process was running, `zcl-rpc` exited 7 for both
+  `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or
+  `18232` listener, the previous 20 minutes of `zclassic23.service` journal
+  had no entries, and the broader read-only journal scan still shows the
+  earlier OOM kill at 2026-06-01 07:58:58 UTC. The service was not restarted;
+  this slice stayed read-only for live checks and preserved the `8023` port
+  expectation.
 - `make -j$(nproc)`: pass after callback-injecting header-sync snapshot
   active/anchor access through the message processor.
 - `make test_parallel`: pass after rebuilding the parallel runner for the new
