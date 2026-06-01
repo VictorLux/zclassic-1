@@ -2327,6 +2327,22 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/jobs/include/jobs/utxo_apply_delta.h",
             "app/jobs/src/utxo_apply_delta.c",
             "app/jobs/src/utxo_apply_stage.c",
+            "app/controllers/src/wallet_controller_history.c",
+            "app/controllers/src/transaction_controller_sign.c",
+            "app/controllers/src/wallet_controller_keys.c",
+            "app/controllers/src/repair_controller_utxo.c",
+            "app/controllers/src/wallet_controller_multisig.c",
+            "app/controllers/src/store_controller_schema.c",
+            "app/controllers/src/wallet_shielded_send.c",
+            "app/controllers/src/wallet_shielded_keys.c",
+            "app/controllers/src/wallet_shielded_send_shielded.c",
+            "app/controllers/src/wallet_shielded_controller.c",
+            "app/controllers/src/wallet_rescan_controller_coins.c",
+            "app/controllers/src/wallet_rescan_controller_witness.c",
+            "app/controllers/src/wallet_view_emit.c",
+            "app/controllers/src/wallet_view_sync.c",
+            "app/controllers/src/sync_controller_import.c",
+            "app/controllers/src/sync_controller_catchup.c",
         };
         const char *stale[] = {
             "Phase 3 dissolve",
@@ -2351,6 +2367,13 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "until Phase 3",
             "Phase 3 unblocks",
             "Phase 3: release refs",
+            "Split out of",
+            "split out of",
+            "behavior byte-identical",
+            "behavior unchanged",
+            "byte-identically",
+            "pre-split monolith",
+            "extracted from",
         };
 
         for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {

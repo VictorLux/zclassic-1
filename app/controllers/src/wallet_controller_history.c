@@ -3,9 +3,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Transparent wallet transaction-listing handlers (listtransactions,
- * gettransaction). Split out of wallet_controller.c (D5); behavior
- * byte-identical. */
+ * Transparent wallet transaction-listing RPC handlers: listtransactions and
+ * gettransaction. */
 
 #include "controllers/wallet_controller_internal.h"
 
@@ -194,4 +193,3 @@ bool rpc_gettransaction(const struct json_value *params, bool help,
 
     return true;
 }
-

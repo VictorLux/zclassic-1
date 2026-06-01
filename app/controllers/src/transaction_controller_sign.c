@@ -3,8 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * signrawtransaction RPC + per-input signing helper. Split out of
- * transaction_controller.c (D5); behavior byte-identical. */
+ * signrawtransaction RPC and per-input transparent signing helpers. */
 
 #include "controllers/transaction_controller_internal.h"
 
@@ -373,4 +372,3 @@ bool rpc_signrawtransaction(const struct json_value *params, bool help,
     transaction_free(&tx);
     return true;
 }
-

@@ -3,8 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * rescanwitnesses RPC. Split out of wallet_rescan_controller.c (D5);
- * behavior byte-identical. */
+ * rescanwitnesses RPC: rebuild Sapling Merkle witnesses for unspent notes. */
 
 #include "controllers/wallet_rescan_controller_internal.h"
 
@@ -291,4 +290,3 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     json_push_kv_int(result, "elapsed_seconds", elapsed);
     return true;
 }
-

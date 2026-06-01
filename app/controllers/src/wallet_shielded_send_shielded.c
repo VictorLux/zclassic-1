@@ -4,8 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
  * z_sendmany shielded-spend branch (z->z, z->t): spend selected notes,
- * build spend/output descriptions, sign and broadcast. Split out of
- * wallet_shielded_send.c (D5); behavior byte-identical. */
+ * build spend/output descriptions, sign, and broadcast. */
 
 #include "controllers/wallet_shielded_internal.h"
 

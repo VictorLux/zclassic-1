@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet view shared helpers — extracted from wallet_view_controller.c.
- * Global state, DB access, RPC, QR codes, HTML chrome, form parsing. */
+ * Wallet view HTML emit helpers: navigation, QR SVG, headers, footers, and
+ * shared page chrome. */
 
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
@@ -17,8 +17,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-/* HTML emit helpers (nav, QR SVG, header, footer) for wallet view pages.
-   Split out of wallet_view_helpers.c (D5); behavior byte-identical. */
+/* HTML emit helpers for wallet view pages. */
 
 /* ── Navigation ────────────────────────────────────────────── */
 

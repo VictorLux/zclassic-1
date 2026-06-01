@@ -3,11 +3,9 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * z_sendmany — the shielded send handler (t->t, t->z, z->z, z->t).
- * Split out of wallet_shielded_controller.c (D5). The shielded-spend
- * branch (z->z, z->t) is the static helper z_sendmany_shielded();
- * the transparent-spend branch (t->t, t->z) stays inline in the
- * handler. Behavior is byte-identical to the pre-split monolith. */
+ * z_sendmany RPC handler for transparent and shielded sends (t->t, t->z,
+ * z->z, z->t). The shielded-spend branch lives in z_sendmany_shielded();
+ * transparent-spend handling stays inline with the RPC validation flow. */
 
 #include "controllers/wallet_shielded_internal.h"
 

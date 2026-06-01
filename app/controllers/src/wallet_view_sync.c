@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Wallet view shared helpers — extracted from wallet_view_controller.c.
- * Global state, DB access, RPC, QR codes, HTML chrome, form parsing. */
+ * Wallet view sync helpers: zclassicd RPC calls and the JSON mini-parser used
+ * by wallet pages. */
 
 #include "platform/time_compat.h"
 #include "controllers/wallet_view_internal.h"
@@ -17,8 +17,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-/* Wallet sync from zclassicd + its JSON mini-parser. Split out of
-   wallet_view_helpers.c (D5); behavior byte-identical. */
+/* Wallet sync from zclassicd plus its JSON mini-parser. */
 
 /* ── JSON mini-parser (internal) ───────────────────────────── */
 

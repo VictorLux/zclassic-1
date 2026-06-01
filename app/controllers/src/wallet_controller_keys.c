@@ -3,9 +3,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Transparent wallet key/address import-export handlers (dumpprivkey,
- * importprivkey, importaddress). Split out of wallet_controller.c (D5);
- * behavior byte-identical. */
+ * Transparent wallet key/address import-export RPC handlers: dumpprivkey,
+ * importprivkey, and importaddress. */
 
 #include "controllers/wallet_controller_internal.h"
 

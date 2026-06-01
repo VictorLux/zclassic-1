@@ -12,8 +12,8 @@
  *   - wallet_keys copy (idempotent).
  *   - mempool save/load (on shutdown / startup).
  *
- * Split out of sync_controller.c. See sync_controller_internal.h for
- * cross-file glue. */
+ * sync_controller_internal.h owns cross-file glue for the catchup/import
+ * controller siblings. */
 
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"

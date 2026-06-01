@@ -6,8 +6,7 @@
  *
  * Reader thread feeds a ring buffer; N decoder threads deserialize
  * coins-format entries; a single writer thread bulk-inserts into the
- * utxos table. Split out of sync_controller.c. See
- * sync_controller_internal.h for cross-file glue. */
+ * utxos table. sync_controller_internal.h owns cross-file glue. */
 
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"

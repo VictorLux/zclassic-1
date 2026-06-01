@@ -2,8 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Store SQLite schema bootstrap. Split out of store_controller.c (D5);
- * behavior byte-identical. */
+ * Store SQLite schema bootstrap and default product seeding. */
 
 #include "controllers/store_controller_internal.h"
 

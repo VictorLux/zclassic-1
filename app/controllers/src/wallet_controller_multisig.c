@@ -3,9 +3,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Transparent wallet multisig + multi-recipient send handlers
- * (createmultisig, sendmany, addmultisigaddress). Split out of
- * wallet_controller.c (D5); behavior byte-identical. */
+ * Transparent wallet multisig and multi-recipient send RPC handlers:
+ * createmultisig, sendmany, and addmultisigaddress. */
 
 #include "controllers/wallet_controller_internal.h"
 
@@ -247,5 +246,4 @@ bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     json_push_kv_str(result, "redeemScript", redeem_hex);
     return true;
 }
-
 

@@ -2,8 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * repairutxos RPC + UTXO refetch/insert helpers. Split out of
- * repair_controller.c (D5); behavior byte-identical. */
+ * repairutxos RPC and UTXO refetch/insert helpers. */
 
 #include "controllers/repair_controller_internal.h"
 

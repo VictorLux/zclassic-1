@@ -3,10 +3,10 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Sapling shielded wallet RPC controller — registration + address/
- * balance/listing handlers. z_sendmany lives in wallet_shielded_send.c
- * and key import/export + memo in wallet_shielded_keys.c (D5 split).
- * Shared includes + wallet_ctx() + handler decls are in
+ * Sapling shielded wallet RPC controller: registration plus address, balance,
+ * and listing handlers. z_sendmany lives in wallet_shielded_send.c; key
+ * import/export and memo lookup live in wallet_shielded_keys.c. Shared
+ * includes, wallet_ctx(), and handler declarations live in
  * controllers/wallet_shielded_internal.h. */
 
 #include "controllers/wallet_shielded_internal.h"

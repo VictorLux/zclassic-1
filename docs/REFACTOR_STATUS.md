@@ -124,6 +124,12 @@ node soak.
   B3/B5/C3 code-motion scaffolding. The guarded production files include the
   UTXO apply inverse-delta seam, the UTXO reimport sentinel, and boot
   projection-storage wiring.
+- Wallet, transaction, repair, store, shielded-wallet, wallet-rescan,
+  wallet-view, and sync controller file headers now describe their current RPC
+  or helper purpose instead of D5 split/code-motion history. The guarded
+  scaffold-label lint test now covers those controller files and rejects stale
+  `Split out of`, `behavior byte-identical`, `behavior unchanged`,
+  `pre-split monolith`, and `extracted from` wording.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -2496,6 +2502,42 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   no listener existed on ports `8023`, `8033`, `18232`, or `8232`, and the last
   20 minutes of `zclassic23` journal output had no entries. This is a failed
   live sample, not a refactor completion proof.
+- Targeted controller scaffold scan after the controller purpose-comment
+  cleanup: clean for `Split out of`, `split out of`, `D5`,
+  `behavior byte-identical`, `behavior unchanged`, `byte-identically`,
+  `pre-split monolith`, and `extracted from` in the touched controller files.
+- `git diff --check`: pass after the controller purpose-comment cleanup.
+- `make -j$(nproc)`: pass after the controller purpose-comment cleanup.
+- `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
+  widening the scaffold-label guard to the controller files.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+  widening the production-comment guard to cover the controller files.
+- `./test_parallel --only=wallet --timeout=120 --verbose`: pass; `0/32`
+  wallet and wallet-view groups failed in 7.0s.
+- `./test_parallel --only=transaction --timeout=120 --verbose`: pass; `0/1`
+  transaction group failed in 1.0s.
+- `./test_parallel --only=repair --timeout=120 --verbose`: no validation group
+  exists for this filter; the harness reported `--only=repair matched no
+  groups`.
+- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass; `0/2`
+  sync and snapshot-sync groups failed in 6.0s.
+- `make lint`: pass after the controller purpose-comment cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the controller purpose-comment
+  cleanup, `0/279` groups failed in 56.0s.
+- Live sample attempt at 2026-06-01 15:57 UTC after the controller
+  purpose-comment cleanup: no continuity proof was available. `systemctl
+  --user` could not connect to the user bus, `./tools/zcl-rpc getblockcount`
+  and `gettxoutsetinfo` exited with code 7, no `zclassic23` process was
+  running, no listener existed on ports `8023`, `8033`, `18232`, or `8232`,
+  and the last 20 minutes of `zclassic23` journal output had no entries. This
+  is a failed live sample, not a refactor completion proof.
+- Post-status doc checks after recording the controller slice:
+  `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh` passed,
+  the zero-baseline/allowlist scan found no non-comment entries in the
+  ratcheted baseline files, and the production C/H scan under app controllers,
+  services, jobs, conditions, supervisors, models, lib, and MCP found no
+  `shadow`, `cutover`, `projection-diff`, or `projection_diff` terminology.
 
 Do not mark this refactor complete while any ratchet baseline contains a real
 entry or the live node proof is missing.

@@ -3,8 +3,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Shielded key/viewing-key import-export and memo lookup handlers.
- * Split out of wallet_shielded_controller.c (D5); behavior unchanged. */
+ * Shielded key/viewing-key import-export and memo lookup RPC handlers. */
 
 #include "controllers/wallet_shielded_internal.h"
 

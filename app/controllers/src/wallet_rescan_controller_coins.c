@@ -3,8 +3,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * coinanalysis RPC. Split out of wallet_rescan_controller.c (D5);
- * behavior byte-identical. */
+ * coinanalysis RPC: compare wallet-tracked UTXOs against chainstate and
+ * report recoverable transparent balance. */
 
 #include "controllers/wallet_rescan_controller_internal.h"
 
@@ -201,4 +201,3 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
 
     return true;
 }
-
