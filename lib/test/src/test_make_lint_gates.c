@@ -1685,6 +1685,24 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "process_block_publish_tip(") == NULL);
         ASSERT(strstr(buf, "process_block_clear_tip(") == NULL);
         ASSERT(strstr(buf, "process_block_tip_is_best_work(") == NULL);
+        ASSERT(strstr(buf, "process_block_verify_active_tip_child_on_disk(")
+               == NULL);
+        ASSERT(strstr(buf, "find_best_active_tip_child(") == NULL);
+        ASSERT(strstr(buf, "find_verified_unlinked_active_tip_child(") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_tip_child.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_verify_active_tip_child_on_disk")
+               != NULL);
+        ASSERT(strstr(buf, "find_best_active_tip_child") != NULL);
+        ASSERT(strstr(buf, "find_verified_unlinked_active_tip_child") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
         free(buf);
         buf = NULL;
 

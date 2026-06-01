@@ -2,8 +2,9 @@
  *
  * Internal declarations shared across the process_block_* translation
  * units (process_block.c, process_block_core.c, process_block_index.c,
- * process_block_tip_publish.c, process_block_runtime_hooks.c,
- * process_block_failed_child.c, process_block_self_heal.c,
+ * process_block_tip_child.c, process_block_tip_publish.c,
+ * process_block_runtime_hooks.c, process_block_failed_child.c,
+ * process_block_self_heal.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
  * for use outside this directory; the public surface lives in
  * <validation/process_block.h>. */
@@ -199,7 +200,7 @@ bool process_block_commit_tip(struct main_state *ms,
  * keeper tests and active-tip repair paths. */
 struct block_index *find_most_work_chain(struct main_state *ms);
 
-/* WS-6.5: helpers exposed for activate_best_chain.c. */
+/* process_block_tip_child.c helpers exposed for active-tip repair paths. */
 bool process_block_verify_active_tip_child_on_disk(
     const struct block_index *candidate,
     const struct block_index *tip,
