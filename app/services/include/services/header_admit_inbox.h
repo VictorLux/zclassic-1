@@ -8,8 +8,8 @@
 #define ZCL_SERVICES_HEADER_ADMIT_INBOX_H
 
 #include "core/uint256.h"
-#include "framework/mailbox.h"
 #include "primitives/block.h"
+#include "util/mailbox.h"
 
 #include <stdbool.h>
 #include <stdint.h>

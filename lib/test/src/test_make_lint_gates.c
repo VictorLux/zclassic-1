@@ -1622,6 +1622,51 @@ static int t_fast_sync_uses_lib_sqlite_helpers(void)
     return failures;
 }
 
+static int t_framework_reexport_headers_stay_deleted(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("framework primitive re-export headers stay deleted") {
+        char path[PATH_MAX];
+        struct stat st;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/framework/include/framework/mailbox.h") == 0);
+        errno = 0;
+        ASSERT(stat(path, &st) != 0 && errno == ENOENT);
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/framework/include/framework/projection.h") == 0);
+        errno = 0;
+        ASSERT(stat(path, &st) != 0 && errno == ENOENT);
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/include/services/header_admit_inbox.h") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/mailbox.h") != NULL);
+        ASSERT(strstr(buf, "framework/mailbox.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/chain_projection.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "util/projection.h") != NULL);
+        ASSERT(strstr(buf, "framework/projection.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/framework/README.md") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "only purpose is to re-export") != NULL);
+        ASSERT(strstr(buf, "include/framework/mailbox.h") == NULL);
+        ASSERT(strstr(buf, "include/framework/projection.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_net_sync_planners_are_lib_owned(void)
 {
     int failures = 0;
@@ -2314,6 +2359,7 @@ int test_make_lint_gates(void)
     failures += t_p2p_block_submit_is_callback_injected();
     failures += t_flyclient_proof_builder_is_callback_injected();
     failures += t_fast_sync_uses_lib_sqlite_helpers();
+    failures += t_framework_reexport_headers_stay_deleted();
     failures += t_net_sync_planners_are_lib_owned();
     failures += t_header_peer_votes_are_callback_injected();
     failures += t_process_block_node_db_access_is_runtime_owned();

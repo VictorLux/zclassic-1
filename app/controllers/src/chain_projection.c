@@ -2,10 +2,10 @@
 
 #include "controllers/chain_projection.h"
 
-#include "framework/projection.h"
 #include "mcp/rpc_client.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
+#include "util/projection.h"
 
 #include <stdint.h>
 
@@ -18,11 +18,14 @@ static int64_t chain_projection_query_i64(const char *label, const char *sql)
     char db_path[1024];
     zcl_node_db_path(db_path, sizeof(db_path), datadir);
 
-    projection_t *p = FRAMEWORK_PROJECTION_OPEN(label, db_path);
+    projection_t *p = projection_open(db_path);
     if (!p)
         LOG_RETURN(-1, "chain_projection", "%s: projection open failed", label);
 
-    int64_t v = PROJECTION_QUERY_INT64_OR(p, label, sql, -1);
+    int64_t v = -1;
+    if (projection_query_int64(p, sql, &v) != 0)
+        LOG_ERR("chain_projection", "query miss label=%s sql=%s",
+                label ? label : "(null)", sql ? sql : "(null)");
     projection_close(p);
     return v;
 }

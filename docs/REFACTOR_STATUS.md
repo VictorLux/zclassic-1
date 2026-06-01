@@ -490,6 +490,11 @@ node soak.
 - `lib/framework/README.md` no longer describes Phase-0 scaffold or retired
   macro DSL forms; it now documents the framework primitives that actually
   exist today.
+- The `lib/framework` mailbox/projection re-export headers were deleted.
+  `header_admit_inbox.h` includes the real `util/mailbox.h` primitive with
+  typed inbox helpers, and `chain_projection.c` includes `util/projection.h`
+  directly for snapshot reads. `lib/framework` now owns only the real
+  condition engine rather than forwarding primitive headers.
 
 ## Active Debt
 
@@ -567,6 +572,28 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after deleting the framework mailbox/projection
+  re-export headers and routing callers to the real util primitives.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  direct util primitive includes.
+- Focused filtered tests passed:
+  `./test_parallel --only=mailbox --timeout=120 --verbose`,
+  `./test_parallel --only=mailbox_adoption --timeout=120 --verbose`,
+  `./test_parallel --only=projection_adoption --timeout=120 --verbose`,
+  `./test_parallel --only=header_admit_stage --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- `./test_parallel --timeout=180`: pass after the framework re-export deletion,
+  `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 15:19:45 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and read-only journal checks
+  had no entries. The service was not restarted; this slice stayed read-only
+  and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after removing the `event/event.h` sync-state
   compatibility re-export and adding direct `sync/sync_state.h` includes at
   the real sync/snapshot FSM call sites.
