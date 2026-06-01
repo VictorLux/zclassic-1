@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 31 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 29 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -214,6 +214,10 @@ node soak.
   and local UTXO SHA3 computation from boot. `msgprocessor_snapshot.c` no
   longer includes the Block model or dereferences `struct node_db`; the
   lib-to-app include baseline is down from 32 to 31.
+- ZMSG, file-offer, and file-service P2P persistence is now callback-injected
+  from boot. `lib/net/src/msgprocessor.c` owns protocol handling without
+  including the node DB model header or the FileService model; the lib-to-app
+  include baseline is down from 31 to 29.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -318,7 +322,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 31 grandfathered lib-to-app includes.
+  with 29 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -339,27 +343,27 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after callback-injecting snapshot block-piece
-  hash-range loading and local UTXO SHA3 computation from boot.
+- `make -j$(nproc)`: pass after callback-injecting ZMSG, file-offer, and
+  file-service P2P persistence from boot.
 - `make test_parallel`: pass after rebuilding the parallel runner for the new
-  snapshot callback lint-gate assertions.
-- `tools/scripts/check_lib_layering.sh`: pass with 31 grandfathered
+  P2P app-persistence callback lint-gate assertions.
+- `tools/scripts/check_lib_layering.sh`: pass with 29 grandfathered
   lib-to-app includes and no new violations.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations after updating the same three
   `boot_services.c` baseline line numbers shifted by the boot-owned callback.
 - Focused filtered tests passed:
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`.
-- `make lint`: pass after the snapshot callback move; E1, E2, supervisor,
+  `./test_parallel --only=net --timeout=120 --verbose`,
+  `./test_parallel --only=file_market --timeout=120 --verbose`, and
+  `./test_parallel --only=models --timeout=120 --verbose`.
+- `make lint`: pass after the P2P app-persistence callback move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
-  lib-layering is 31 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the snapshot callback move,
+  lib-layering is 29 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the P2P app-persistence callback move,
   `0/279` groups failed in 57.0s.
-- Quick live sample at 2026-06-01 07:32:27 UTC after the snapshot callback
+- Quick live sample at 2026-06-01 07:44:34 UTC after the P2P app-persistence callback
   move: `systemctl --user is-active zclassic23` reported `active`,
   `getblockcount=3130701`, `gettxoutsetinfo.height=3130701`,
   `txouts=1357526`, RPC listened on `127.0.0.1:18232`, P2P listened on

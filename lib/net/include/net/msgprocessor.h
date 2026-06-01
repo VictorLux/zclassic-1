@@ -21,6 +21,8 @@
 
 struct block;
 struct transaction;
+struct zmsg_message;
+struct file_offer;
 struct validation_state;
 struct active_chain;
 struct fc_challenge;
@@ -33,6 +35,15 @@ typedef bool (*msg_block_submit_fn)(struct block *block,
                                     struct validation_state *out,
                                     void *ctx);
 typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
+typedef bool (*msg_zmsg_save_fn)(const struct zmsg_message *msg, void *ctx);
+typedef bool (*msg_file_offer_save_fn)(const struct file_offer *offer,
+                                       void *ctx);
+typedef bool (*msg_file_service_save_fn)(const uint8_t ip[16],
+                                         uint16_t port,
+                                         uint16_t p2p_port,
+                                         int64_t last_seen,
+                                         bool is_zcl23,
+                                         void *ctx);
 typedef bool (*msg_snapshot_active_fn)(void *ctx);
 typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
                                           void *ctx);
@@ -65,6 +76,12 @@ struct msg_processor {
     void *compact_block_submit_ctx;
     msg_peer_save_fn peer_save;
     void *peer_save_ctx;
+    msg_zmsg_save_fn zmsg_save;
+    void *zmsg_save_ctx;
+    msg_file_offer_save_fn file_offer_save;
+    void *file_offer_save_ctx;
+    msg_file_service_save_fn file_service_save;
+    void *file_service_save_ctx;
     msg_snapshot_active_fn snapshot_active;
     void *snapshot_active_ctx;
     msg_wallet_tx_accepted_fn wallet_tx_accepted;
@@ -120,6 +137,15 @@ void msg_processor_set_block_submit(struct msg_processor *mp,
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx);
+void msg_processor_set_zmsg_save(struct msg_processor *mp,
+                                 msg_zmsg_save_fn save,
+                                 void *ctx);
+void msg_processor_set_file_offer_save(struct msg_processor *mp,
+                                       msg_file_offer_save_fn save,
+                                       void *ctx);
+void msg_processor_set_file_service_save(struct msg_processor *mp,
+                                         msg_file_service_save_fn save,
+                                         void *ctx);
 void msg_processor_set_snapshot_active(struct msg_processor *mp,
                                        msg_snapshot_active_fn active,
                                        void *ctx);

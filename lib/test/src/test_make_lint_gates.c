@@ -1334,6 +1334,41 @@ static int t_handshake_peer_save_is_async(void)
     return failures;
 }
 
+static int t_p2p_app_persistence_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("p2p app persistence is injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_save_zmsg") != NULL);
+        ASSERT(strstr(buf, "db_zmsg_save") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_zmsg_save") != NULL);
+        ASSERT(strstr(buf, "boot_save_file_offer") != NULL);
+        ASSERT(strstr(buf, "db_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "boot_save_file_service") != NULL);
+        ASSERT(strstr(buf, "db_file_service_save") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_service_save") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msgprocessor.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->zmsg_save") != NULL);
+        ASSERT(strstr(buf, "mp->file_offer_save") != NULL);
+        ASSERT(strstr(buf, "mp->file_service_save") != NULL);
+        ASSERT(strstr(buf, "db_zmsg_save") == NULL);
+        ASSERT(strstr(buf, "db_file_offer_save") == NULL);
+        ASSERT(strstr(buf, "db_file_service_save") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/file_service.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_tx_wallet_sync_is_callback_injected(void)
 {
     int failures = 0;
@@ -1644,6 +1679,7 @@ int test_make_lint_gates(void)
     failures += t_boot_shutdown_persistence_order_contract();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();
+    failures += t_p2p_app_persistence_is_callback_injected();
     failures += t_tx_wallet_sync_is_callback_injected();
     failures += t_p2p_block_submit_is_callback_injected();
     failures += t_flyclient_proof_builder_is_callback_injected();

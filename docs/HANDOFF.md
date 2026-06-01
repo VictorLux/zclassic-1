@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 31 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 29 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -112,8 +112,10 @@ If the node is not running, record that explicitly before claiming live proof.
   controller or MMB leaf-store model. Snapshot block-piece serving now loads
   block-hash ranges and computes the local UTXO SHA3 through boot-owned
   callbacks too, so the net snapshot handler no longer includes the Block model
-  or reaches through `struct node_db`. Keep shrinking it; do not add new
-  entries.
+  or reaches through `struct node_db`. ZMSG, file-offer, and file-service P2P
+  persistence is now callback-injected from boot, so `msgprocessor.c` no longer
+  includes the node DB model header or the FileService model. Keep shrinking
+  it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

@@ -34,8 +34,6 @@
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
-#include "models/database.h"
-#include "models/file_service.h"
 /* lib/net still reaches the controller-owned manifest cache for P2P file
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
  * the remaining controller dependency is the cache ownership boundary. */
@@ -294,10 +292,8 @@ static bool handle_zmsg(struct msg_processor *mp, struct p2p_node *node,
     /* Store locally */
     bool is_new = zmsg_store_add(&msg);
 
-    /* Persist to SQLite */
-    struct node_db *ndb = msg_node_db(mp);
-    if (ndb)
-        db_zmsg_save(ndb, &msg);
+    if (mp->zmsg_save)
+        (void)mp->zmsg_save(&msg, mp->zmsg_save_ctx);
 
     /* Send acknowledgment */
     struct byte_stream os;
@@ -350,10 +346,8 @@ static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
         /* Store locally */
         bool is_new = file_market_add_offer(&offer);
 
-        /* Persist to SQLite */
-        struct node_db *ndb = msg_node_db(mp);
-        if (ndb)
-            db_file_offer_save(ndb, &offer);
+        if (mp->file_offer_save)
+            (void)mp->file_offer_save(&offer, mp->file_offer_save_ctx);
 
         /* Re-gossip to other peers if new and TTL > 1 */
         if (is_new && offer.ttl > 1 && mp->net_mgr) {
@@ -557,17 +551,11 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
         uint8_t fip[16];
         memcpy(fip, node->addr.svc.addr.ip, 16);
 
-        struct node_db *ndb = msg_node_db(mp);
-        if (ndb && ndb->open) {
-            struct db_file_service fs;
-            memset(&fs, 0, sizeof(fs));
-            memcpy(fs.ip, fip, 16);
-            fs.port = fport;
-            fs.p2p_port = node->addr.svc.port;
-            fs.last_seen = (int64_t)platform_time_wall_time_t();
-            fs.is_zcl23 = true;
-            db_file_service_save(ndb, &fs);
-        }
+        if (mp->file_service_save)
+            (void)mp->file_service_save(
+                fip, fport, node->addr.svc.port,
+                (int64_t)platform_time_wall_time_t(), true,
+                mp->file_service_save_ctx);
         char ipbuf[64];
         net_addr_to_string(&node->addr.svc.addr, ipbuf, sizeof(ipbuf));
         printf("Peer %s: file service at port %d (saved)\n",
@@ -737,6 +725,12 @@ void msg_processor_init(struct msg_processor *mp,
     mp->compact_block_submit_ctx = NULL;
     mp->peer_save = NULL;
     mp->peer_save_ctx = NULL;
+    mp->zmsg_save = NULL;
+    mp->zmsg_save_ctx = NULL;
+    mp->file_offer_save = NULL;
+    mp->file_offer_save_ctx = NULL;
+    mp->file_service_save = NULL;
+    mp->file_service_save_ctx = NULL;
     mp->snapshot_active = NULL;
     mp->snapshot_active_ctx = NULL;
     mp->wallet_tx_accepted = NULL;
@@ -807,6 +801,36 @@ void msg_processor_set_peer_save(struct msg_processor *mp,
         return;
     mp->peer_save = save;
     mp->peer_save_ctx = ctx;
+}
+
+void msg_processor_set_zmsg_save(struct msg_processor *mp,
+                                 msg_zmsg_save_fn save,
+                                 void *ctx)
+{
+    if (!mp)
+        return;
+    mp->zmsg_save = save;
+    mp->zmsg_save_ctx = ctx;
+}
+
+void msg_processor_set_file_offer_save(struct msg_processor *mp,
+                                       msg_file_offer_save_fn save,
+                                       void *ctx)
+{
+    if (!mp)
+        return;
+    mp->file_offer_save = save;
+    mp->file_offer_save_ctx = ctx;
+}
+
+void msg_processor_set_file_service_save(struct msg_processor *mp,
+                                         msg_file_service_save_fn save,
+                                         void *ctx)
+{
+    if (!mp)
+        return;
+    mp->file_service_save = save;
+    mp->file_service_save_ctx = ctx;
 }
 
 void msg_processor_set_snapshot_active(struct msg_processor *mp,

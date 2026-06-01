@@ -56,8 +56,11 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "models/block.h"
+#include "models/file_offer.h"
+#include "models/file_service.h"
 #include "models/peer.h"
 #include "models/utxo.h"
+#include "models/zmsg.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/chainparams.h"
 #include "chain/mmr.h"
@@ -827,6 +830,61 @@ static void boot_save_peer_advisory(const struct p2p_node *node, void *ctx)
 
     if (ndb && ndb->open && !db_peer_save_advisory(ndb, &peer))
         peer_lifecycle_note_cache_skipped(node, "save_advisory");
+}
+
+static bool boot_save_zmsg(const struct zmsg_message *msg, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !msg) {
+        LOG_WARN("boot", "zmsg save missing svc=%p ndb=%p msg=%p",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (const void *)msg);
+        return false;
+    }
+
+    return db_zmsg_save(svc->node_db, msg);
+}
+
+static bool boot_save_file_offer(const struct file_offer *offer, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !offer) {
+        LOG_WARN("boot", "file offer save missing svc=%p ndb=%p offer=%p",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (const void *)offer);
+        return false;
+    }
+
+    return db_file_offer_save(svc->node_db, offer);
+}
+
+static bool boot_save_file_service(const uint8_t ip[16],
+                                   uint16_t port,
+                                   uint16_t p2p_port,
+                                   int64_t last_seen,
+                                   bool is_zcl23,
+                                   void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    struct db_file_service fs;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !ip || port == 0) {
+        LOG_WARN("boot",
+                 "file service save missing svc=%p ndb=%p ip=%p port=%u",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (const void *)ip, (unsigned)port);
+        return false;
+    }
+
+    memset(&fs, 0, sizeof(fs));
+    memcpy(fs.ip, ip, sizeof(fs.ip));
+    fs.port = port;
+    fs.p2p_port = p2p_port;
+    fs.last_seen = last_seen;
+    fs.is_zcl23 = is_zcl23;
+    return db_file_service_save(svc->node_db, &fs);
 }
 
 static int boot_known_zcl23_peers(void *ctx,
@@ -2581,6 +2639,11 @@ bool app_init_services(struct app_context *ctx,
                                            boot_submit_compact_block, svc);
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,
                                 svc);
+    msg_processor_set_zmsg_save(svc->msg_processor, boot_save_zmsg, svc);
+    msg_processor_set_file_offer_save(svc->msg_processor,
+                                      boot_save_file_offer, svc);
+    msg_processor_set_file_service_save(svc->msg_processor,
+                                        boot_save_file_service, svc);
     msg_processor_set_snapshot_active(svc->msg_processor,
                                       boot_snapshot_active, svc);
     msg_processor_set_wallet_tx_accepted(svc->msg_processor,
