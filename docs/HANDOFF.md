@@ -75,9 +75,11 @@ If the node is not running, record that explicitly before claiming live proof.
   placement/hydration, tip-publication evidence/commit mechanics, and
   active-tip child discovery/disk verification, and contextual-header skip
   policy into purpose-named validation files. It now carries best-work chain
-  selection only. The next likely process-block split target is
-  `process_block_self_heal.c`, which still combines missing-UTXO recovery
-  sources, legacy-RPC parsing, scan counters, and hot-loop pause signaling.
+  selection only. `process_block_self_heal_legacy_rpc.c` now owns the
+  zclassicd RPC recovery source and JSON-lite parsing. Remaining
+  process-block split debt is mostly inside `process_block_self_heal.c`:
+  SQLite tx-index recovery, bounded chain scan, scan counters, and hot-loop
+  pause signaling still share one file.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

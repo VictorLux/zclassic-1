@@ -5,7 +5,7 @@
  * process_block_tip_child.c, process_block_tip_publish.c,
  * process_block_contextual_header.c, process_block_runtime_hooks.c,
  * process_block_failed_child.c,
- * process_block_self_heal.c,
+ * process_block_self_heal.c, process_block_self_heal_legacy_rpc.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
  * for use outside this directory; the public surface lives in
  * <validation/process_block.h>. */
