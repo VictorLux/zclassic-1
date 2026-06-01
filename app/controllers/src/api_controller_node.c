@@ -4,17 +4,14 @@
 
 /* Node / diagnostics route handlers for the REST API controller.
  *
- * These functions are the formerly-inline route blocks of
- * api_handle_request (api_controller.c), lifted verbatim into named
- * helpers. They are called from the same router slots. None of them
- * touch the background cache buffers — they read g_api_ctx + lock-free
- * atomics + node state and write directly into the caller's response
- * buffer, exactly as before. */
+ * These functions own node, diagnostics, event-log, and explorer factoid
+ * response helpers for the route table in api_controller.c. They read
+ * g_api_ctx, lock-free atomics, and node state, then write directly into the
+ * caller's response buffer. */
 
 #include "platform/time_compat.h"
 #include "controllers/api_controller.h"
 #include "controllers/blockchain_controller.h"
-#include "controllers/explorer_factoids.h"
 #include "controllers/file_controller.h"
 #include "api_controller_internal.h"
 #include "chain/mmb.h"
@@ -35,6 +32,7 @@
 #include "net/snapshot_sync_contract.h"
 #include "validation/contextual_check_tx.h"
 #include "validation/main_state.h"
+#include "views/explorer_factoids_view.h"
 
 #include <inttypes.h>
 #include <math.h>

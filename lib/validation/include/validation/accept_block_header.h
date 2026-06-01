@@ -12,13 +12,9 @@
  * topology — wt callers of the high-level path already wire it through
  * process_block.h.
  *
- * The wrappers exposed here are the THIN lib-side adapters around
- * domain/consensus/header_accept.h: they decode a domain
- * `zcl_result` into the same validation_state shape the legacy
- * REJECT_* macros produce, so callers can route domain rejections
- * through the existing peer-visible reject path without converting
- * call sites. The reject_reason strings are byte-identical to the
- * legacy P2P-visible tokens — the cross-checked tests pin this.
+ * The wrappers exposed here are the thin lib-side adapters around
+ * domain/consensus/header_accept.h: they decode a domain `zcl_result` into
+ * the validation_state shape expected by the peer-visible reject path.
  */
 
 #ifndef ZCL_VALIDATION_ACCEPT_BLOCK_HEADER_H
@@ -36,9 +32,9 @@ struct block_index;
 
 /* Create (or return the already-mapped) in-memory block_index entry for
  * `header`: inserts into ms->map_block_index, links pprev, and computes
- * nHeight + nChainWork. This is the sole runtime block_index producer
- * (relocated verbatim into accept_block_header.c). Declared here so the
- * Wave-S reducer (app/jobs header_admit stage) can CREATE the index entry
+ * nHeight + nChainWork. This is the sole runtime block_index producer.
+ * Declared here so the Wave-S reducer (app/jobs header_admit stage) can
+ * create the index entry
  * from raw header bytes without routing through the legacy
  * accept_block_header(). Returns NULL on allocation failure. Does NOT touch
  * coins.db, the active-chain tip, or disk. */

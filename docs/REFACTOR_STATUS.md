@@ -171,6 +171,12 @@ node soak.
   now covers the snapshot sync source/header split, bg-validation private
   header, chain-evidence store, and consensus reject index, and rejects generic
   `verbatim` / `Pure code-motion` wording in guarded production comments.
+- Explorer factoids/stats controller compatibility shim headers were deleted.
+  API and explorer controllers now include the View shape headers directly,
+  while adjacent diagnostics, blockchain, supervisor, boot-index, and
+  header-accept comments describe current ownership instead of legacy
+  extraction/verbatim/single-engine scaffold. The scaffold-label guard covers
+  those files and blocks the deleted shim/include and stale wording patterns.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -633,6 +639,38 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after deleting the explorer factoids/stats
+  controller compatibility headers and routing callers directly to the view
+  headers.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened scaffold-label guard.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  (`0/1` failed in 11s),
+  `./test_parallel --only=explorer --timeout=120 --verbose`
+  (`0/1` failed in 1s),
+  `./test_parallel --only=api --timeout=120 --verbose`
+  (`0/1` failed in 1s),
+  `./test_parallel --only=domain_consensus_header_accept --timeout=120 --verbose`
+  (`0/1` failed in 1s), and
+  `./test_parallel --only=supervisor --timeout=120 --verbose`
+  (`0/2` failed in 1s).
+- `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
+  service-result, supervisor, typed-blocker, raw allocation, and doc gates
+  stayed at zero grandfathered entries.
+- `./test_parallel --timeout=180`: pass after this shim deletion / comment
+  cleanup, `0/279` groups failed in 57.0s.
+- `tools/scripts/check_doc_accuracy.sh`, `git diff --check`, the empty
+  baseline scan, the deleted explorer-shim include scan, the focused
+  stale-scaffold scan, and the production shadow/cutover scan all passed after
+  this slice.
+- Quick live sample attempt at 2026-06-01 17:07:07 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `8233`, `18232`, or `8232` listener,
+  `systemctl --user status zclassic23` could not connect to the user bus, and
+  read-only journal checks had no entries. The service was not restarted; this
+  slice stayed read-only and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after normalizing service comments around snapshot
   sync, background validation, block-index loading, chain-evidence storage,
   and consensus reject indexing.

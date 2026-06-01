@@ -4,7 +4,6 @@
 
 #include "controllers/api_controller.h"
 #include "controllers/blockchain_controller.h"
-#include "controllers/explorer_factoids.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/file_controller.h"
 #include "controllers/file_market_controller.h"
@@ -28,6 +27,7 @@
 #include "models/peer.h"
 #include "models/zslp.h"
 #include "net/download.h"
+#include "views/explorer_factoids_view.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/node_health_service.h"
 #include "net/snapshot_sync_contract.h"

@@ -347,7 +347,7 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
     int64_t num_txs = 0;
     int64_t num_txouts = 0;
 
-    /* UTXO set statistics from the log-derived projection (single engine). */
+    /* UTXO set statistics from the log-derived reducer projection. */
     utxo_projection_setinfo(proj, &num_txs, &num_txouts, &total_amount);
 
     json_set_object(result);

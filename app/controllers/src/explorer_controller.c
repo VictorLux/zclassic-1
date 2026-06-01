@@ -6,8 +6,6 @@
 
 #include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
-#include "controllers/explorer_stats.h"
-#include "controllers/explorer_factoids.h"
 #include "controllers/api_controller.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -31,6 +29,8 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
+#include "views/explorer_factoids_view.h"
+#include "views/explorer_stats_view.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

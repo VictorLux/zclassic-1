@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Net domain supervisor children. Moved verbatim out of
- * config/src/boot_services.c (Round 5 C3) so the liveness tree is
- * readable in one place. Same contract, same domain, same policy. */
+ * Net domain supervisor children. Owns the outbound peer-floor liveness
+ * contract for the net supervisor domain. */
 
 #include "supervisors/net_supervisor.h"
 #include "util/log_macros.h"
@@ -16,7 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* ── Round 5 C3: outbound peer floor supervisor child ──────────── */
+/* Outbound peer floor supervisor child. */
 static struct connman          *g_peer_floor_cm        = NULL;
 static struct liveness_contract g_peer_floor_contract;
 static supervisor_child_id      g_peer_floor_id        = SUPERVISOR_INVALID_ID;

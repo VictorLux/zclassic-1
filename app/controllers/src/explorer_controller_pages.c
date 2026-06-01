@@ -15,8 +15,6 @@
 #include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
 #include "controllers/explorer_internal.h"
-#include "controllers/explorer_stats.h"
-#include "controllers/explorer_factoids.h"
 #include "explorer_controller_internal.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"

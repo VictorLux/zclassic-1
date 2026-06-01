@@ -4,10 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * accept_block_header — header-only acceptance into the block index.
- *
- * Extracted from process_block_core.c (WS-6 phase 1, file-level split).
- * Pure code motion; function body is byte-identical to its prior site. */
+ * accept_block_header — header-only acceptance into the block index. */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,11 +26,9 @@
 
 /* ── Lib-side wrappers around the pure DOMAIN header checks ──────
  *
- * These translate a domain `zcl_result` into a `validation_state`
- * populated identically to the legacy REJECT_* macros. The reject
- * reason strings are byte-identical to what legacy
- * check_block_header_impl / contextual_check_block_header produce on
- * the same rejection — peer-visible REJECT messages MUST NOT drift.
+ * These translate a domain `zcl_result` into a `validation_state` populated
+ * with the consensus reject code, reason, and DoS score expected by the P2P
+ * reject path.
  *
  * Each domain function writes the reason and DoS score into its
  * out-params; the wrapper forwards them through

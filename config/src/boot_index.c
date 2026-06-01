@@ -2,8 +2,8 @@
  * Block index management: chainstate rebuild/reindex, address backfill,
  * block file scanning.
  *
- * Block index flat file save/load and SQLite cache functions have been
- * extracted to app/services/src/block_index_loader.c (Phase A). */
+ * Block index flat-file save/load and SQLite cache functions live in
+ * app/services/src/block_index_loader.c. */
 
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
@@ -1007,7 +1007,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
     const struct uint256 *genesis = &params->consensus.hashGenesisBlock;
     int resolved = 0, read_errors = 0;
 
-    /* Phase 1: read hashPrevBlock from disk for orphans, link pprev */
+    /* Read hashPrevBlock from disk for orphans, then link pprev. */
     /* Group reads by file to avoid open/close churn */
     for (int file_idx = 0; file_idx < 256; file_idx++) {
         char path[576];
@@ -1059,7 +1059,7 @@ static int resolve_orphan_pprev_from_disk(struct main_state *ms,
         fprintf(stderr, "resolve_orphan_pprev: %d disk read errors\n",
                 read_errors);
 
-    /* Phase 2: propagate heights from pprev chains.
+    /* Propagate heights from pprev chains.
      *
      * Old approach used 40 fixed passes in hash order — only 40 levels
      * deep from any correct ancestor.  After an LDB UTXO import the flat

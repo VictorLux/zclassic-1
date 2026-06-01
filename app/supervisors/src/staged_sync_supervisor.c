@@ -1,9 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Staged-sync supervisor children. Moved verbatim out of
- * config/src/boot_services.c (Wave S, S-2..S-9) so the eight-stage
- * staged pipeline's liveness tree is readable in one place. Same
- * contracts, same `chain` domain, same drain cadence and quiet windows.
+ * Staged-sync supervisor children. Owns liveness contracts for the
+ * authoritative eight-stage reducer pipeline in the chain domain.
  *
  * staged_sync_supervisor_register() registers them in pipeline order:
  *   header_admit → validate_headers → body_fetch → body_persist →
@@ -34,7 +32,7 @@
  * COORD_ESC_QUIET_US escalation window in chain_supervisor.c. */
 #define STAGED_STAGE_QUIET_US ((int64_t)1800 * 1000 * 1000)
 
-/* ── Wave S, S-2: header_admit stage supervisor child ──── */
+/* Header-admit stage supervisor child. */
 static struct liveness_contract g_header_admit_contract;
 static supervisor_child_id      g_header_admit_id = SUPERVISOR_INVALID_ID;
 static struct main_state       *g_header_admit_ms = NULL;

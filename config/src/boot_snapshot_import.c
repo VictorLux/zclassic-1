@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Extracted from config/src/boot_services.c (Wave 11A) so both the
- * pre-restore probe in boot.c and the post-services receive path in
- * boot_services.c can share one implementation. The function takes
+ * Shared snapshot import implementation for the pre-restore probe in boot.c
+ * and the post-services receive path in boot_services.c. The function takes
  * `struct node_db *` directly (not boot_svc_ctx) so it can run before
  * services have been composed. See config/include/config/boot_snapshot_import.h.
  */

@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Chain domain supervisor children. Moved verbatim out of
- * config/src/boot_services.c (Round 5 C4 + Wave M) so the liveness tree
- * is readable in one place. Same contract, same domain, same policy. */
+ * Chain domain supervisor children. Owns chain-advance escalation liveness
+ * contracts and supervised recovery policy for the chain domain. */
 
 #include "supervisors/chain_supervisor.h"
 #include "util/log_macros.h"
@@ -23,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── Round 5 C4: coordinator escalation supervisor child ───────── */
+/* Coordinator escalation supervisor child. */
 static struct main_state       *g_coord_esc_ms       = NULL;
 static struct liveness_contract g_coord_esc_contract;
 static supervisor_child_id      g_coord_esc_id        = SUPERVISOR_INVALID_ID;
