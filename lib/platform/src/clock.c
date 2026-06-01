@@ -58,7 +58,7 @@ static const clock_iface_t g_real_iface = {
  * the read lock-free is essentially free and keeps the contract clean. */
 static _Atomic(const clock_iface_t *) g_default = &g_real_iface;
 
-/* Phase 6a install-hook source. NULL in production. */
+/* Installed simulator/tape source. NULL in production. */
 static _Atomic(struct platform_clock_source *) g_clock_source = NULL;
 
 const clock_iface_t *clock_default(void)

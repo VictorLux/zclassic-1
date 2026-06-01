@@ -1,19 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Phase 5a-1 — crypto_registry skeleton tests.
- *
- * Test cases per docs/work/wt-phase5a1-crypto-registry-skeleton.md §Task 7:
- *   1. register_lookup_basic
- *   2. register_collision_rejected
- *   3. lookup_unregistered_returns_null
- *   4. is_usable_false_for_unregistered
- *   5. hash_vectors (sha256, blake2b-256)
- *   6. sig_verify_known_good (ECDSA)
- *   7. sig_verify_known_bad_rejected
- *   8. zk_verify_* (Groth16 — uses malformed-input rejection here since
- *      loading the multi-megabyte proving params is too fragile for a
- *      unit test; the wrapper exercises groth16_proof_read +
- *      groth16_vk_read_raw which is the same code path real proofs use)
+ * Unit tests for the crypto_registry scheme catalog and verifier dispatch.
+ * Groth16 coverage uses malformed-input rejection because loading the
+ * multi-megabyte proving params is too fragile for a unit test; the wrapper
+ * still exercises groth16_proof_read + groth16_vk_read_raw, which is the same
+ * parse path real proofs use.
  */
 
 #include "test/test_helpers.h"

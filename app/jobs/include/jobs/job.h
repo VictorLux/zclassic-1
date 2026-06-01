@@ -9,9 +9,9 @@
  * returns exactly one of four results. This is the single shape every
  * app/jobs/src reducer (the eight stages) conforms to.
  *
- * The Job result REPLACES the old kernel-local `stage_result_t`. The
- * enumerator integer values are preserved byte-for-byte so the mapping
- * is a pure rename:
+ * The Job result owns the reducer outcome vocabulary. Its enumerator
+ * integer values intentionally match the kernel-local `stage_result_t`
+ * values consumed by the generic stage runner:
  *
  *   STAGE_ADVANCED (0) -> JOB_ADVANCED
  *   STAGE_BLOCKED  (1) -> JOB_BLOCKED

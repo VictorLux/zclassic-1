@@ -1,13 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Injectable RNG interface (Wave F-5b).
+ * Injectable RNG interface.
  *
  * Why:
  *   Determinism. Today, every part of the node that wants randomness
  *   reaches for `getrandom(2)` (or worse, `random()` / `time(NULL)`).
- *   That makes the future deterministic simulator (Wave T) impossible
- *   to seed — same simulation seed, different protocol-level outcomes,
- *   no way to bisect a failure.
+ *   That makes deterministic simulation impossible to seed — same simulation
+ *   seed, different protocol-level outcomes, no way to bisect a failure.
  *
  *   This header offers a one-pointer abstraction: production resolves
  *   to a static vtable that wraps `getrandom(2)` (with `/dev/urandom`
@@ -18,10 +17,6 @@
  *   Crucially, the production path is unchanged — `rng_fill` still
  *   reads from the kernel CSPRNG. The abstraction has zero security
  *   cost; it only adds an indirect call.
- *
- * Scope of Wave F-5b:
- *   - Add the abstraction alongside today's direct getrandom callers.
- *   - Do NOT rewire existing call sites; rewiring is Wave T.
  *
  * Thread safety:
  *   `rng_set_default` / `rng_reset_default` are atomic pointer swaps.
@@ -80,7 +75,7 @@ void rng_set_default(const rng_iface_t *iface);
 /* Restore the real-syscall default. Safe to call any number of times. */
 void rng_reset_default(void);
 
-/* ── Phase 6a: install-hook API for the seed tape / simulator ───────
+/* Install-hook API for the seed tape / simulator.
  *
  * The install-hook is a thinner, faster path than `rng_set_default`:
  * it intercepts ONLY the `rng_u64` fast path (the simulator's hot

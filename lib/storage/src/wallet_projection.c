@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * wallet_projection — Phase 4d-3 event-log consumer skeleton.
+ * wallet_projection — event-log consumer for the rebuildable wallet view.
  *
  * This projection stores public, rebuildable wallet view state and never
  * stores private keys, seeds, spending keys, or wallet secret material.

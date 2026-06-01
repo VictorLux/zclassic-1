@@ -6,8 +6,8 @@
 // one-result-type-ok:single-boot-validation-result — E2 (one way out):
 // the sole fallible entry point returns one domain type,
 // struct boot_validation_result (carrying action + heights + coins hash).
-// That is richer than zcl_result and is the byte-for-byte contract its
-// callers switch on; collapsing it to zcl_result would drop the decision
+// That is richer than zcl_result and is the domain contract its callers
+// switch on; collapsing it to zcl_result would drop the decision
 // payload. Failure context still travels via EV_BOOT_VALIDATION_FAILED /
 // EV_RECOVERY_ACTION events emitted on every non-OK branch.
 

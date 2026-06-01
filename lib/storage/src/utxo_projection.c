@@ -1,17 +1,16 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_projection — Phase 4b event-log consumer for the UTXO set.
+ * utxo_projection — event-log consumer for the rebuildable UTXO set.
  *
- * See `storage/utxo_projection.h` for the contract. This file is the
- * first production consumer of the Phase 4a event log primitive for
- * money-state replay. It consumes UTXO add/spend events and exposes
- * count, lookup, and SHA3 commitment queries over the derived set.
+ * See `storage/utxo_projection.h` for the contract. This file consumes
+ * UTXO add/spend events and exposes count, lookup, and SHA3 commitment
+ * queries over the derived money-state set.
  *
  * Design notes
  * ------------
  * - Schema mirrors the legacy `utxos` table column-for-column so the
- *   commitment SHA3 is byte-identical (canonical serialisation comes
- *   from `lib/coins/src/utxo_commitment.c:utxo_commitment_sha3_compute_table`).
+ *   commitment uses the same canonical serialisation from
+ *   `lib/coins/src/utxo_commitment.c:utxo_commitment_sha3_compute_table`.
  *
  * - `catch_up` wraps the entire stream in a single SQLite IMMEDIATE
  *   txn so a crash mid-batch either replays cleanly (cursor unchanged)
@@ -421,8 +420,7 @@ int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
         return -1;
 
     /* Clear any tail-delta rows so the seed is a clean snapshot of
-     * coins.db (byte-for-byte SHA3), not a merge that could strand a
-     * since-spent tail UTXO. */
+     * coins.db, not a merge that could strand a since-spent tail UTXO. */
     if (!exec_sql(p->db, "DELETE FROM utxo", "seed clear")) {
         exec_sql(p->db, "ROLLBACK", "seed rollback");
         return -1;
@@ -521,8 +519,8 @@ int64_t utxo_projection_seed_from_snapshot(utxo_projection_t *p,
         return -1;
 
     /* Clear any tail-delta rows so the seed is a clean snapshot of the
-     * verified staging set (byte-for-byte SHA3), not a merge that could
-     * strand a since-spent tail UTXO. */
+     * verified staging set, not a merge that could strand a since-spent
+     * tail UTXO. */
     if (!exec_sql(p->db, "DELETE FROM utxo", "snapshot-seed clear")) {
         exec_sql(p->db, "ROLLBACK", "snapshot-seed rollback");
         return -1;
@@ -633,11 +631,11 @@ bool utxo_projection_get(utxo_projection_t *p,
     return found;
 }
 
-/* B4: reconstruct a `struct coins` for a txid from the projection's
+/* Reconstruct a `struct coins` for a txid from the projection's
  * live rows — the read primitive behind the projection-backed
- * coins_view. Mirrors coins_view_sqlite_get_coins() byte-for-byte:
- * two-pass (find max vout, then fill), version hardcoded to 1 (exactly
- * what coins_view_sqlite returns; `version` is consensus-inert here —
+ * coins_view. Uses the same two-pass shape as coins_view_sqlite_get_coins()
+ * (find max vout, then fill), with version hardcoded to 1 (matching
+ * coins_view_sqlite; `version` is consensus-inert here —
  * coins.db never persists it and the UTXO commitment omits it).
  * Returns false (with out coins_init'd, num_vout==0) if the txid has no
  * live outputs. */
@@ -718,7 +716,7 @@ uint64_t utxo_projection_count(utxo_projection_t *p)
 /* gettxoutsetinfo aggregate over the projection: distinct txids, total UTXO
  * outputs, and summed value (zatoshi). The SQL mirrors the legacy coins.db
  * gettxoutsetinfo exactly (same columns, table `utxo` not `utxos`) so the
- * projection-backed RPC returns byte-identical numbers. */
+ * projection-backed RPC returns matching numbers. */
 bool utxo_projection_setinfo(utxo_projection_t *p, int64_t *num_txs,
                              int64_t *num_txouts, int64_t *total_amount)
 {

@@ -1,10 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Phase 6c chaos harness skeleton.
+ * Deterministic chaos scenario runner.
  *
- * This first slice proves the scenario parser and command dispatcher without
- * booting production node paths. Later Phase 6c tasks replace the stubs with
- * real peer, clock, network, and allocation fault injection.
+ * Runs declarative scenarios against simulated peers, virtual time, network
+ * partitions, allocation faults, and crash/restart artifacts. The harness is
+ * intentionally process-local so failures collapse into reproducible seeds
+ * before they reach the production node paths.
  */
 
 #include <ctype.h>

@@ -6,9 +6,9 @@
  * block_index_sidecar_integrity (block_index.bin / "BIIX") store a
  * body file alongside a 48-byte sidecar that commits to the body's
  * size and SHA3-256 digest. The streaming hash, atomic sidecar
- * write, sidecar header parse, and quarantine-rename logic are
- * byte-for-byte identical between the two consumers — they differ
- * only in the body/sidecar filenames, the 4-byte magic, the schema
+ * write, sidecar header parse, and quarantine-rename logic are shared
+ * between the two consumers. They differ only in the body/sidecar
+ * filenames, the 4-byte magic, the schema
  * version, a domain string used in log/quarantine messages, and the
  * corruption event type.
  *

@@ -3,10 +3,9 @@
  * projection_util — tiny stateless helpers shared by the event-log
  * projection consumers (the *_projection.c files under lib/storage/src).
  *
- * These were copy-pasted byte-for-byte across eight projection files
- * (utxo, peers, mempool, znam, wallet, contacts, hodl_history,
- * onion_announcements). They are gathered here verbatim so there is one
- * source of truth. Behavior is identical to the former per-file copies.
+ * Centralizes the small helpers shared by utxo, peers, mempool, znam, wallet,
+ * contacts, hodl_history, and onion_announcements projections so those
+ * consumers share one implementation.
  *
  * They are `static inline` (not plain `static`): the app/lib build runs
  * with `-Wall -Wextra -Werror`, and `bounded_strlen` is only called in

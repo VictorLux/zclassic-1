@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * utxo_projection — Phase 4b: the FIRST production consumer of the
- * append-only event_log (Phase 4a).
+ * utxo_projection — rebuildable UTXO read model over the append-only
+ * event_log.
  *
  * The projection is a rebuildable SQLite UTXO set derived from
  * EV_UTXO_ADD / EV_UTXO_SPEND events. The reducer path owns UTXO authorship;
@@ -130,8 +130,8 @@ bool utxo_projection_setinfo(utxo_projection_t *p, int64_t *num_txs,
 /* SHA3-256 over every (txid|vout_le|value_le|script_len_le|script|
  * height_le|is_coinbase) UTXO in ORDER BY txid, vout. Matches the
  * canonical serialisation in `lib/coins/src/utxo_commitment.c` so audits can
- * compare the projection commitment to the legacy coins.db commitment
- * byte-for-byte. Returns 0 on success. */
+ * compare the projection commitment to the legacy coins.db commitment.
+ * Returns 0 on success. */
 int utxo_projection_commitment(utxo_projection_t *p, uint8_t out[32]);
 
 /* Process-global accessor for the projection handle published by the

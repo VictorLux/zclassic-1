@@ -512,9 +512,10 @@ static int delta_branch_hash_at(sqlite3 *db, int height, struct uint256 *out)
 /* Emit the inverse events for one persisted delta row, in disconnect
  * order: SPEND every created output FIRST, then ADD back every spent
  * coin (mirrors disconnect_block's per-tx reverse walk so even the
- * intermediate projection state matches legacy byte-for-byte). The
- * projection is a set, so final state is order-independent, but legacy
- * order is kept for auditability. Returns false on a malformed blob. */
+ * intermediate projection state follows the same audit order). The
+ * projection is a set, so final state is order-independent, but the
+ * disconnect order is kept for auditability. Returns false on a
+ * malformed blob. */
 static bool emit_inverse_delta(sqlite3 *db, int height)
 {
     sqlite3_stmt *st = NULL;

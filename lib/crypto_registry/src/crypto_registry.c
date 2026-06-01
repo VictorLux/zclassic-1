@@ -7,8 +7,8 @@
  * to register an id wins; later constructors with the same id return
  * false. Lookup is lock-free atomic_load.
  *
- * The registry sits idle in Phase 5a-1 — no consensus call site goes
- * through it yet. See docs/work/wt-phase5a1-crypto-registry-skeleton.md.
+ * Consensus and key-verification callers use this table for registered
+ * verifier implementations, while diagnostics expose it through zcl_state.
  */
 
 #include "crypto_registry/crypto_registry.h"

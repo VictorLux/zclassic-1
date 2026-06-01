@@ -60,7 +60,7 @@ bool rpc_dumpprivkey(const struct json_value *params, bool help,
 
 /* Verify that wallet_sqlite_write_key_r actually persisted the given key.
  * Returns true if the row was found and the stored privkey matches the
- * supplied one byte-for-byte. Returns false on any deviation. */
+ * supplied one exactly. Returns false on any deviation. */
 static bool wallet_readback_key(struct wallet_sqlite *ws,
                                  const struct pubkey *pk,
                                  const struct privkey *want)

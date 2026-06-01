@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Unit tests for the Phase 6c chaos scenario parser skeleton.
+ * Unit tests for the deterministic chaos scenario runner.
  */
 
 #include "test/test_helpers.h"

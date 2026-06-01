@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Small compatibility helpers for the Phase 1 platform.clock rewire.
- * Prefer clock_now_* directly in new code; these helpers keep existing
- * time_t/timespec call sites mechanical while routing through platform.clock.
+ * Small platform time helpers for time_t/timespec call sites.
+ * Prefer clock_now_* directly in new code; these wrappers keep C library
+ * time shapes routed through platform.clock.
  */
 
 #ifndef ZCL_PLATFORM_TIME_COMPAT_H

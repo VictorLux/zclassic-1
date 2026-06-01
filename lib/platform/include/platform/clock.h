@@ -1,25 +1,21 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Injectable clock interface (Wave F-5a).
+ * Injectable clock interface.
  *
  * Why:
  *   Half the bugs in a node like this hide behind "real time". The
  *   watchdog stall window, the IBD lag SLO, retry backoffs, fee-rate
- *   smoothing — all read `clock_gettime` directly. Once a test or the
- *   deterministic simulator (Wave T) wants to fast-forward, every one
- *   of those call sites has to be touched.
+ *   smoothing — all read `clock_gettime` directly unless they use this
+ *   platform boundary. Tests and the deterministic simulator can
+ *   fast-forward through the same API that production uses for real time.
  *
  *   This header offers a one-pointer abstraction: production resolves
  *   to a static vtable that wraps `clock_gettime` (the same syscalls
  *   today's call sites use), and tests/simulator can install a virtual
  *   clock with `clock_set_default(...)`.
  *
- * Scope of Wave F-5a:
- *   - Add the abstraction alongside today's direct `clock_gettime`
- *     callers. Do NOT rewire existing call sites; rewiring is a later
- *     campaign (Wave T).
- *   - The simulator wires its own `clock_iface_t` whose `now_*` cell
- *     reads from a virtual clock advanced by the scheduler.
+ * The simulator wires its own `clock_iface_t` whose `now_*` cell reads from a
+ * virtual clock advanced by the scheduler.
  *
  * Thread safety:
  *   `clock_set_default` / `clock_reset_default` are atomic pointer
@@ -69,7 +65,7 @@ void clock_set_default(const clock_iface_t *iface);
 /* Restore the real-syscall default. Safe to call any number of times. */
 void clock_reset_default(void);
 
-/* ── Phase 6a: install-hook API for the seed tape / simulator ───────
+/* Install-hook API for the seed tape / simulator.
  *
  * The install-hook is a thinner, faster path than `clock_set_default`:
  * it intercepts the two convenience readers (`clock_now_monotonic_ns`,

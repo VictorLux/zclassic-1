@@ -105,7 +105,7 @@ static const rng_iface_t g_real_iface = {
 
 static _Atomic(const rng_iface_t *) g_default = &g_real_iface;
 
-/* Phase 6a install-hook source. NULL in production (zero-overhead
+/* Installed simulator/tape source. NULL in production (zero-overhead
  * fast path: one atomic_load + predictable branch). Set non-NULL by
  * `platform_rng_set_source` (e.g. by `seed_tape_install`). */
 static _Atomic(struct platform_rng_source *) g_rng_source = NULL;

@@ -110,8 +110,7 @@ bool coins_view_select_connect_backing_ex(struct coins_view *out,
                  "select: NULL arg (out=%p legacy=%p)",
                  (const void *)out, (const void *)legacy);
 
-    /* Default + the dormant LEGACY path: hand back the legacy view
-     * verbatim. Byte-identical to the path that ships today. */
+    /* Default + LEGACY author: hand back the caller-supplied legacy view. */
     if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE) {
         *out = *legacy;
         return true;

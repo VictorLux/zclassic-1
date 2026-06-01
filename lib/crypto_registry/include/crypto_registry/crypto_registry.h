@@ -1,11 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Crypto scheme registry — Phase 5a-1 (skeleton).
+ * Crypto scheme registry — singleton catalog for cryptographic verifier
+ * implementations.
  *
- * One level of indirection between consensus-critical call sites and
- * the concrete crypto implementations they invoke. The registry sits
- * idle in this PR — no consensus path is rewired yet. Phase 5a-2 will
- * rewire ONE call site (header PoW) through it to prove zero-cost.
+ * One level of indirection between consensus-critical call sites and the
+ * concrete crypto implementations they invoke. Consensus paths use this for
+ * ECDSA public-key verification and Equihash proof verification; diagnostics
+ * expose the registered scheme table for operator inspection.
  *
  * Scheme ids are PERMANENT — once allocated, never reused. New schemes
  * append to the end. Removal is also permanent (slot stays reserved

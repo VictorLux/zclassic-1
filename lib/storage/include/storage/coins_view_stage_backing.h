@@ -9,9 +9,8 @@
  * single-writer authority flag (`utxo_projection_get_author()`):
  *
  *   author == UTXO_AUTHOR_LEGACY            →  the legacy view.
- *       The selector hands back the exact `struct coins_view` it was
- *       given (a copy of the coins_tip cache view). Byte-for-byte the
- *       same fallback path that ships today.
+ *       The selector hands back the `struct coins_view` supplied by the
+ *       caller (a copy of the coins_tip cache view).
  *
  *   author == UTXO_AUTHOR_STAGE              →  a COMPOSITE view:
  *       - get_coins / have_coins resolve through the UTXO **projection**
@@ -19,14 +18,14 @@
  *         FRAMEWORK.md §0 Prime Directive).
  *       - get_best_block / batch_write delegate to the underlying legacy
  *         coins_tip view. batch_write here is NOT a second projection
- *         writer: the stage authors EV_UTXO_ADD/SPEND (B3), and this
- *         flush only keeps the legacy coins.db mirror warm + carries the
- *         in-RAM cache deltas up to coins_tip exactly as today. best_block
- *         delegation preserves the connect_block view/prevblock invariant.
+ *         writer: the stage authors EV_UTXO_ADD/SPEND, and this flush only
+ *         keeps the legacy coins.db mirror warm + carries the in-RAM cache
+ *         deltas up to coins_tip. best_block delegation preserves the
+ *         connect_block view/prevblock invariant.
  *
  * The RAM read-cache layer (`coins_view_cache`) is untouched and sits in
  * front of whichever backing is chosen, so the cache speedup is preserved
- * for free in both modes. connect_block call sites are byte-identical. */
+ * for both modes and connect_block does not own backing-selection details. */
 
 #ifndef ZCL_STORAGE_COINS_VIEW_STAGE_BACKING_H
 #define ZCL_STORAGE_COINS_VIEW_STAGE_BACKING_H
@@ -52,7 +51,7 @@ struct coins_view_stage_backing {
      * batch_write commits the per-block delta DURABLY to coins.db itself
      * (the stage-owned authoritative write) instead of relying on the
      * legacy coins_tip flush. NULL (the default + the 4-arg selector)
-     * leaves the legacy write path byte-identical. Borrowed; not owned. */
+     * keeps writes delegated to the supplied legacy view. Borrowed; not owned. */
     struct coins_view_sqlite *coins_db;
 };
 
@@ -71,8 +70,8 @@ struct coins_view_stage_backing {
  *              and author == STAGE, batch_write commits the per-block
  *              delta DURABLY to coins.db itself (the stage-owned
  *              authoritative write) AND keeps the legacy coins_tip mirror
- *              warm. NULL (and the LEGACY author) leaves the legacy write
- *              path byte-identical to what ships today. Borrowed; not owned.
+ *              warm. NULL (and the LEGACY author) keeps writes delegated to
+ *              the supplied legacy view. Borrowed; not owned.
  *              May be NULL.
  *
  * Behavior:
@@ -92,7 +91,7 @@ bool coins_view_select_connect_backing_ex(struct coins_view *out,
                                            utxo_projection_t *proj,
                                            struct coins_view_sqlite *coins_db);
 
-/* Back-compat 4-arg form: identical to the _ex form with coins_db == NULL
+/* Four-arg selector: identical to the _ex form with coins_db == NULL
  * (the legacy coins_tip flush remains the coins.db writer). Used by the
  * parity test; callers that own the authoritative coins.db handle should
  * call the _ex form so the STAGE path can own the durable commit. */
