@@ -534,6 +534,12 @@ static void boot_gap_fill_stop(void *ctx)
     gap_fill_stop();
 }
 
+static void boot_gap_fill_kick(void *ctx)
+{
+    (void)ctx;
+    gap_fill_kick();
+}
+
 static bool boot_zclassicd_oracle_start(void *ctx)
 {
     (void)ctx;
@@ -2664,6 +2670,7 @@ bool app_init_services(struct app_context *ctx,
     svc->runtime.mempool = svc->mempool;
     svc->runtime.wallet = svc->wallet;
     app_runtime_set_current(&svc->runtime);
+    process_block_set_gap_fill_kick(boot_gap_fill_kick, svc);
 
     /* Projection storage fan-out. Opens the append-only event log and the
      * reducer read-model projections used by runtime services. */
@@ -3709,6 +3716,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     alarm(90);
 
     atomic_store(svc->running, false);
+    process_block_set_gap_fill_kick(NULL, NULL);
     g_shutdown_requested = 1;
     thread_registry_request_shutdown();
     event_emitf(EV_NODE_SHUTDOWN, 0, "graceful");

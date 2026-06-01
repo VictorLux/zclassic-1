@@ -69,6 +69,12 @@ void process_block_set_node_db(struct node_db *ndb);
  * wal_checkpoint(PASSIVE) and bound rewind cost on SIGKILL. */
 struct node_db *process_block_get_node_db(void);
 
+/* Optional app-owned wakeup hook for the background body gap filler.
+ * Validation owns chain selection; boot owns the service implementation. */
+typedef void (*process_block_gap_fill_kick_fn)(void *ctx);
+void process_block_set_gap_fill_kick(process_block_gap_fill_kick_fn fn,
+                                     void *ctx);
+
 /* Configure the coins flush policy (short-term → long-term layer bridge).
  * block_interval=0 disables block-based flushing (default).
  * During IBD, set block_interval=1000 for aggressive batching. */

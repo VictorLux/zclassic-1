@@ -14,6 +14,7 @@
 #include "platform/time_compat.h"
 #include <assert.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
@@ -30,7 +31,6 @@
 #include "validation/check_block.h"
 #include "validation/connect_block.h"
 #include "validation/mirror_consensus.h"
-#include "controllers/blockchain_controller.h"
 #include "coins/utxo_commitment.h"
 #include "net/download.h"
 #include "validation/validationinterface.h"
@@ -47,28 +47,62 @@
 #include "wallet/wallet.h"
 #include "validation/txmempool.h"
 #include "core/utiltime.h"
-#include "controllers/sync_controller.h"
 #include "event/event.h"
-#include "models/database.h"
 #include "config/runtime.h"
 #include "util/log_macros.h"
-#include "services/snapshot_sync_service.h"
-#include "services/chain_activation_controller.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_state_repository.h"
-#include "services/gap_fill_service.h"
-#include "services/chain_tip.h"
 #include "validation/checkpoint.h"
-#include "models/tx_index.h"
 #include "chain/mmr.h"
 #include "chain/mmb.h"
 #include "util/trace.h"
 #include "validation/main_constants.h"
 #include "validation/process_block_internals.h"
 #include "storage/coins_view_sqlite.h"
+#include "util/result.h"
 #include "util/safe_alloc.h"
 
 #include "process_block_internal.h"
+
+#ifdef ZCL_TESTING
+/* Test-harness CSR fallback only. Keep this local so the validation lib does
+ * not include the app chain-tip service in production code. */
+enum tip_source {
+    TIP_FROM_CONNECT = 1,
+    TIP_FROM_DISCONNECT = 2,
+};
+struct zcl_result chain_set_active_tip(struct main_state *ms,
+                                       struct block_index *new_tip,
+                                       enum tip_source src,
+                                       const char *reason);
+#endif
+
+static pthread_mutex_t g_gap_fill_kick_lock = PTHREAD_MUTEX_INITIALIZER;
+static process_block_gap_fill_kick_fn g_gap_fill_kick;
+static void *g_gap_fill_kick_ctx;
+
+void process_block_set_gap_fill_kick(process_block_gap_fill_kick_fn fn,
+                                     void *ctx)
+{
+    pthread_mutex_lock(&g_gap_fill_kick_lock);
+    g_gap_fill_kick = fn;
+    g_gap_fill_kick_ctx = ctx;
+    pthread_mutex_unlock(&g_gap_fill_kick_lock);
+}
+
+static void process_block_kick_gap_fill(void)
+{
+    process_block_gap_fill_kick_fn fn;
+    void *ctx;
+
+    pthread_mutex_lock(&g_gap_fill_kick_lock);
+    fn = g_gap_fill_kick;
+    ctx = g_gap_fill_kick_ctx;
+    pthread_mutex_unlock(&g_gap_fill_kick_lock);
+
+    if (fn)
+        fn(ctx);
+}
 
 /* ── File-local state owned by the disk write path ───────────── */
 static int g_last_block_file = -1;
@@ -404,7 +438,7 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             int header_h = ms->pindex_best_header
                          ? ms->pindex_best_header->nHeight : 0;
             if (header_h > tip->nHeight + 1) {
-                gap_fill_kick();
+                process_block_kick_gap_fill();
             }
             if (header_h > tip->nHeight + 100) {
                 static time_t g_last_stuck_log = 0;

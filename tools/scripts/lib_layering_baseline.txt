@@ -17,13 +17,5 @@
 # Format: <file>:<exact #include directive>
 # Order: alphabetical by file path (regenerate via the script if needed).
 lib/net/src/msgprocessor_snapshot.c:#include "services/snapshot_sync_service.h"
-lib/validation/src/process_block_core.c:#include "controllers/blockchain_controller.h"
-lib/validation/src/process_block_core.c:#include "controllers/sync_controller.h"
-lib/validation/src/process_block_core.c:#include "models/database.h"
-lib/validation/src/process_block_core.c:#include "models/tx_index.h"
-lib/validation/src/process_block_core.c:#include "services/chain_activation_controller.h"
 lib/validation/src/process_block_core.c:#include "services/chain_evidence_controller.h"
 lib/validation/src/process_block_core.c:#include "services/chain_state_repository.h"
-lib/validation/src/process_block_core.c:#include "services/chain_tip.h"
-lib/validation/src/process_block_core.c:#include "services/gap_fill_service.h"
-lib/validation/src/process_block_core.c:#include "services/snapshot_sync_service.h"

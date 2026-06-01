@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 11 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 3 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -288,6 +288,12 @@ node soak.
   `msg_processor_recommit_snapshot_anchor()` and no longer includes the
   chain-state repository. The lib-to-app include baseline is down from 12 to
   11.
+- Stale `process_block_core.c` app includes for deleted legacy engine surfaces
+  were removed. Gap-fill wakeups are now boot-injected through a
+  mutex-protected `process_block_set_gap_fill_kick()` hook, so validation no
+  longer includes the gap-fill service or chain-tip service and keeps only the
+  real chain-evidence/chain-state-repository app edges. The lib-to-app include
+  baseline is down from 11 to 3.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -392,7 +398,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 11 grandfathered lib-to-app includes.
+  with 3 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -413,33 +419,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
-- `make -j$(nproc)`: pass after callback-injecting header-chain best-tip and
-  snapshot-anchor recommit through the message processor (`make` reported
-  nothing left to rebuild for the default targets).
+- `make -j$(nproc)`: pass after removing stale `process_block_core.c` app
+  includes and boot-injecting the mutex-protected gap-fill wakeup hook.
 - `make -j$(nproc) test_parallel`: pass after rebuilding the parallel runner
-  for the new header chain-state hook lint-gate assertions.
+  for the new process-block layering lint-gate assertions.
 - `git diff --check`: pass.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
-- `tools/scripts/check_lib_layering.sh`: pass with 11 grandfathered
+- `tools/scripts/check_lib_layering.sh`: pass with 3 grandfathered
   lib-to-app includes and no new violations.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations; only existing `boot_services.c`
   `coins_view_cache_flush()` baseline line numbers shifted after adding the
-  boot-owned callbacks.
+  boot-owned gap-fill callback.
 - Focused filtered tests passed:
-  `./test_parallel --only=chain_state_repo --timeout=120 --verbose`,
   `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`, and
-  `./test_parallel --only=net --timeout=120 --verbose`.
-- `make lint`: pass after the header chain-state callback injection; E1, E2,
+  `./test_parallel --only=validation --timeout=120 --verbose`,
+  `./test_parallel --only=chain_state_repo --timeout=120 --verbose`,
+  `./test_parallel --only=process_block --timeout=120 --verbose`, and
+  `./test_parallel --only=chain --timeout=120 --verbose`.
+- `make lint`: pass after the process-block layering cleanup; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
-  surfaces, and lib-layering is 11 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the header chain-state callback
-  injection, `0/279` groups failed in 56.0s.
-- Quick live sample attempt at 2026-06-01 10:02:57 UTC after the header
-  chain-state callback injection did not prove live-node health: no
+  surfaces, and lib-layering is 3 grandfathered includes.
+- `./test_parallel --timeout=180`: pass after the process-block layering
+  cleanup, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 10:21:38 UTC after the
+  process-block layering cleanup did not prove live-node health: no
   `zclassic23` process was running, `zcl-rpc` exited 7 for both
   `getblockcount` and `gettxoutsetinfo`, `ss` showed no `8023`, `8033`, or
   `18232` listener, the previous 20 minutes of `zclassic23.service` journal

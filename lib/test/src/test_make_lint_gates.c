@@ -1660,6 +1660,22 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         free(buf);
         buf = NULL;
 
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_core.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "process_block_kick_gap_fill") != NULL);
+        ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
+        ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
+        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        free(buf);
+        buf = NULL;
+
         ASSERT(repo_path(path, sizeof(path), "config/src/runtime.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "app_runtime_node_db_handle_open") != NULL);
@@ -1673,6 +1689,15 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "node_db_state_set") != NULL);
         ASSERT(strstr(buf, "node_db_sync_flush") != NULL);
         ASSERT(strstr(buf, "ndb->open") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "gap_fill_kick") != NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(boot_gap_fill_kick, svc)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
         PASS();
     } _test_next:;
     free(buf);

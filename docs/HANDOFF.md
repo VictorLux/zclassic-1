@@ -70,7 +70,7 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 11 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 3 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
   into `lib/util`, moving UTXO script classification into `lib/script`,
@@ -150,6 +150,11 @@ If the node is not running, record that explicitly before claiming live proof.
   activation controller or block-index integrity service. Header best-tip
   promotion and snapshot-anchor recommit are also boot-owned chain-state
   callbacks, so `msg_headers.c` no longer includes the chain-state repository.
+  Stale `process_block_core.c` app includes for deleted legacy engine surfaces
+  are gone, and background gap-fill wakeups now route through
+  a mutex-protected `process_block_set_gap_fill_kick()` hook from boot; only
+  the real chain-evidence and chain-state repository app dependencies remain
+  in that file.
   Keep shrinking it; do not add new entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
