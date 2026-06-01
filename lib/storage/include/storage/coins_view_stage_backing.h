@@ -1,12 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * coins_view_stage_backing — B4-wiring: the authority-gated backing
- * selection for connect_block's input lookups.
+ * coins_view_stage_backing — authority-gated backing selection for
+ * connect_block's input lookups.
  *
- * connect_tip builds a per-block `coins_view_cache` over a `struct
- * coins_view backing` that wraps the global coins.db-backed `coins_tip`
- * cache. This module supplies that backing, gated on the single-writer
- * authority flag (`utxo_projection_get_author()`):
+ * The reducer's per-block validator builds a `coins_view_cache` over a
+ * `struct coins_view backing` that wraps the global coins.db-backed
+ * `coins_tip` cache. This module supplies that backing, gated on the
+ * single-writer authority flag (`utxo_projection_get_author()`):
  *
  *   author == UTXO_AUTHOR_LEGACY            →  the legacy view.
  *       The selector hands back the exact `struct coins_view` it was
@@ -26,9 +26,7 @@
  *
  * The RAM read-cache layer (`coins_view_cache`) is untouched and sits in
  * front of whichever backing is chosen, so the cache speedup is preserved
- * for free in both modes. connect_block call sites are byte-identical.
- *
- * Dormant until B7 flips the author to STAGE. */
+ * for free in both modes. connect_block call sites are byte-identical. */
 
 #ifndef ZCL_STORAGE_COINS_VIEW_STAGE_BACKING_H
 #define ZCL_STORAGE_COINS_VIEW_STAGE_BACKING_H

@@ -422,10 +422,10 @@ void *backfill_addresses_thread(void *arg)
  * nTx, mark BLOCK_HAVE_DATA, and propagate nChainTx so
  * find_most_work_chain can find the best tip.
  *
- * This is the critical bridge between file_service (downloads
- * block files) and activate_best_chain (needs BLOCK_HAVE_DATA +
- * nChainTx > 0 to connect blocks). Without this, downloaded
- * blocks sit unused on disk while P2P re-downloads them. */
+ * This is the critical bridge between file_service (downloads block files)
+ * and reducer activation (needs BLOCK_HAVE_DATA + nChainTx > 0 to connect
+ * blocks). Without this, downloaded blocks sit unused on disk while P2P
+ * re-downloads them. */
 
     /* Helper: create a block_index entry directly from a parsed header.
      * Skips PoW/equihash validation here; local disk blocks are checked

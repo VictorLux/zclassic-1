@@ -347,10 +347,10 @@ struct zcl_result snapsync_build_request_pow(const uint8_t peer_ip[16],
  * Use this to suppress block/header processing during snapshot sync. */
 bool snapsync_is_active(void);
 
-/* True if this node has blocks on disk but no UTXO set and is waiting for
- * a P2P snapshot to arrive.  When true, activate_best_chain MUST NOT run
- * because the UTXO set is empty — connecting blocks from genesis would
- * permanently mark valid blocks as BLOCK_FAILED.
+/* True if this node has blocks on disk but no UTXO set and is waiting for a
+ * P2P snapshot to arrive. When true, reducer activation MUST NOT run because
+ * the UTXO set is empty — connecting blocks from genesis would permanently
+ * mark valid blocks as BLOCK_FAILED.
  *
  * Becomes false once a snapshot is received (SNAPSYNC_COMPLETE) or if
  * coins_best_block is set at a meaningful height. */

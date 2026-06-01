@@ -78,20 +78,20 @@ void process_block_log_live_stage(int height,
 {
     if (!process_block_live_height(height))
         return;
-    fprintf(stderr, "connect_tip: h=%d stage=%s elapsed_ms=%lld\n", // obs-ok:pre-existing-diagnostic
+    fprintf(stderr, "process_block.stage: h=%d stage=%s elapsed_ms=%lld\n", // obs-ok:pre-existing-diagnostic
             height, stage, (long long)(elapsed_us / 1000));
     fflush(stderr);
 }
 
 /* ── body-pull signal (public via process_block.h) ───────────── */
 /* See process_block.h. Set by fast-sync ingesters before their loops;
- * cleared after. Each connect_tip call reads atomically. */
+ * cleared after. Each per-block validation pass reads atomically. */
 _Atomic int g_body_pull_active = 0;
 
 /* ── active-tip "more pending" signal ─────────────────────────── */
-/* set when activate_best_chain returns early due to
- * tip_child_connect_limit. Read by chain_activation_controller drain
- * loop so we don't wait for the next P2P block to make progress. */
+/* Set when a staged activation drain reaches tip_child_connect_limit. Read by
+ * chain_activation_controller so we don't wait for the next P2P block to make
+ * progress. */
 static _Atomic bool s_active_tip_more_pending = false;
 
 void process_block_set_active_tip_more_pending(bool v)
@@ -122,7 +122,7 @@ int active_tip_child_connect_limit(void)
     return (int)limit;
 }
 
-/* ── wallet / mempool accessors (used by core.connect_tip) ───── */
+/* ── wallet / mempool accessors used by validation helpers ───── */
 struct wallet *process_block_wallet(void)
 {
     return app_runtime_wallet();

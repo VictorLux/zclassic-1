@@ -128,6 +128,14 @@ static bool has_c_suffix(const char *path)
     return len >= 2 && strcmp(path + len - 2, ".c") == 0;
 }
 
+static bool has_ch_suffix(const char *path)
+{
+    size_t len = strlen(path);
+    return len >= 2 &&
+           (strcmp(path + len - 2, ".c") == 0 ||
+            strcmp(path + len - 2, ".h") == 0);
+}
+
 static bool raw_sqlite_line_allowed(const char *line)
 {
     return strstr(line, "// raw-sql-ok") ||
@@ -346,6 +354,83 @@ static int walk_c_files(const char *dirpath,
     return 0;
 }
 
+static int walk_ch_files(const char *dirpath,
+                         int (*check_file)(const char *path))
+{
+    DIR *dir = opendir(dirpath);
+    if (!dir) return -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name) >=
+            (int)sizeof(path)) {
+            closedir(dir);
+            return -1;
+        }
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            closedir(dir);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            int rc = walk_ch_files(path, check_file);
+            if (rc != 0) {
+                closedir(dir);
+                return rc;
+            }
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !has_ch_suffix(path))
+            continue;
+
+        int rc = check_file(path);
+        if (rc != 0) {
+            closedir(dir);
+            return rc;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
+static int check_deleted_engine_names_file(const char *path)
+{
+    if (strstr(path, "/lib/test/") || strstr(path, "/app/views/"))
+        return 0;
+
+    char *buf = NULL;
+    if (read_entire_file(path, &buf) != 0)
+        return -1;
+
+    const char *stale[] = {
+        "connect_tip",
+        "disconnect_tip",
+        "activate_best_chain",
+        "process_new_block",
+        "accept_block()",
+    };
+    for (size_t i = 0; i < sizeof(stale) / sizeof(stale[0]); i++) {
+        if (strstr(buf, stale[i])) {
+            fprintf(stderr,
+                    "deleted engine name %s still present in %s\n",
+                    stale[i], path);
+            free(buf);
+            return 1;
+        }
+    }
+
+    free(buf);
+    return 0;
+}
+
 static int run_check_raw_sqlite(void)
 {
     char app_dir[PATH_MAX];
@@ -374,6 +459,20 @@ static int run_check_service_tip_mutation_gate(void)
     if (repo_path(services_dir, sizeof(services_dir), "app/services/src") != 0)
         return -1;
     return walk_c_files(services_dir, check_active_chain_set_tip_file);
+}
+
+static int run_check_deleted_engine_names(void)
+{
+    const char *roots[] = {"app", "lib", "config", "tools"};
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        char dir[PATH_MAX];
+        if (repo_path(dir, sizeof(dir), roots[i]) != 0)
+            return -1;
+        int rc = walk_ch_files(dir, check_deleted_engine_names_file);
+        if (rc != 0)
+            return rc;
+    }
+    return 0;
 }
 
 static int t_observability_fixture_trips_gate(void)
@@ -2071,6 +2170,59 @@ static int t_block_index_flat_atomic_save_contract(void)
     return failures;
 }
 
+static int t_process_block_split_uses_reducer_language(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("process-block split comments name reducer, not deleted engines") {
+        const char *files[] = {
+            "lib/storage/include/storage/coins_view_stage_backing.h",
+            "lib/storage/src/coins_view_stage_backing.c",
+            "lib/validation/include/validation/process_block.h",
+            "lib/validation/include/validation/process_block_internals.h",
+            "lib/validation/include/validation/process_block_invalidate.h",
+            "lib/validation/src/process_block.c",
+            "lib/validation/src/process_block_core.c",
+            "lib/validation/src/process_block_crash_hooks.c",
+            "lib/validation/src/process_block_failed_child.c",
+            "lib/validation/src/process_block_internal.h",
+            "lib/validation/src/process_block_revalidate.c",
+            "lib/validation/src/process_block_tip_child.c",
+            "lib/validation/src/process_block_tip_publish.c",
+        };
+        const char *stale[] = {
+            "connect_tip",
+            "disconnect_tip",
+            "activate_best_chain",
+            "process_new_block",
+            "accept_block()",
+        };
+
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+            char path[PATH_MAX];
+            ASSERT(repo_path(path, sizeof(path), files[i]) == 0);
+            ASSERT(read_entire_file(path, &buf) == 0);
+            for (size_t j = 0; j < sizeof(stale) / sizeof(stale[0]); j++)
+                ASSERT(strstr(buf, stale[j]) == NULL);
+            free(buf);
+            buf = NULL;
+        }
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
+static int t_deleted_engine_names_absent_from_production_sources(void)
+{
+    int failures = 0;
+    TEST("deleted engine names are absent from production C/H sources") {
+        ASSERT(run_check_deleted_engine_names() == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_projection_deferral_is_not_block_rejected_contract(void)
 {
     int failures = 0;
@@ -2158,6 +2310,8 @@ int test_make_lint_gates(void)
     failures += t_net_sync_planners_are_lib_owned();
     failures += t_header_peer_votes_are_callback_injected();
     failures += t_process_block_node_db_access_is_runtime_owned();
+    failures += t_process_block_split_uses_reducer_language();
+    failures += t_deleted_engine_names_absent_from_production_sources();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_sha3_window_tool_check_contract();

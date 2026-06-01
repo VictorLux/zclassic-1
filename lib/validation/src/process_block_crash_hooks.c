@@ -1,11 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Test-only crash-injection hooks for connect_tip's ordering protocol.
+ * Test-only crash-injection hooks for the tip-publication ordering protocol.
  *
  * The atomicity test (test_chain_advance_atomicity.c) forks a child,
  * arms a crash stage with `process_block_test_set_crash_stage(...)`,
- * runs one block through connect_tip, and the child `_exit(137)`s at
- * the named protocol point. Production never sets a stage; the
+ * runs one block through the reducer/tip publication path, and the child
+ * `_exit(137)`s at the named protocol point. Production never sets a stage; the
  * atomic_load + branch per check site is the only cost (negligible).
  *
  * Split out of process_block.c — pure code motion from the original
@@ -36,4 +36,3 @@ const char *process_block_crash_stage_name(enum process_block_crash_stage s)
     default:                           return "unknown";
     }
 }
-

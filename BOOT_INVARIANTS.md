@@ -38,7 +38,7 @@ Stages are strictly **monotonic**. The advance API enforces:
 | `DB_OPEN` | `node.db` opened. Schema migrations applied. DB worker thread started (or fallback to direct SQLite). |
 | `WALLET_LOADED` | `wallet_keys` read (STATE C invariant). Canary self-test OK. STATE D/E/F abort paths not triggered. (Not yet wired — to be filled in.) |
 | `BLOCK_INDEX_LOADED` | `block_index` loaded from LevelDB. `g_state.chain_active` populated with stored tip. (Not yet wired.) |
-| `CHAIN_TIP_RESOLVED` | `activate_best_chain` complete. CSR consistent. Coins.db tip equals or trails block_index tip per the [coins-before-block-index ordering invariant](#coins-vs-block-index-ordering). (Not yet wired.) |
+| `CHAIN_TIP_RESOLVED` | Reducer activation complete. CSR consistent. Coins.db tip equals or trails block_index tip per the [coins-before-block-index ordering invariant](#coins-vs-block-index-ordering). (Not yet wired.) |
 | `NETWORK_READY` | Connman initialized. Peer manager ready. Listeners not yet bound. (Not yet wired.) |
 | `SERVICES_RUNNING` | Background services started: disk_monitor, ibd_throttle, db_maintenance, wallet_backup, sync_watchdog. (Not yet wired.) |
 | `READY` | HTTPS + RPC + (optional) Tor onion listening. The node accepts external requests. |

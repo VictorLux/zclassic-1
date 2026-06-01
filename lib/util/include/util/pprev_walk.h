@@ -6,8 +6,8 @@
  * in the node. There are 16+ places in the codebase that traverse it,
  * each with its own (or no) protection against the failure mode
  * "pprev forms a ring after a partial chain restore". A 14-minute
- * silent boot stall in activate_best_chain came from exactly this —
- * an unbounded walk over a non-monotonic pprev sequence.
+ * silent boot stall in reducer activation came from exactly this — an
+ * unbounded walk over a non-monotonic pprev sequence.
  *
  * pprev_walk_safe is the single helper everyone should use. It
  * enforces three invariants on every step:
@@ -48,7 +48,7 @@ typedef bool (*pprev_walk_pred)(const struct block_index *bi, void *user);
 /* Walk pprev from `start` while the predicate returns true.
  * `max_steps` is the hard step cap (must be > 0).
  * `call_site` is a short stable string for diagnostic logging
- * (e.g. "activate_best_chain.fork_point"). */
+ * (e.g. "reducer_activation.fork_point"). */
 struct block_index *pprev_walk_safe(struct block_index *start,
                                     pprev_walk_pred keep_going,
                                     void *user,

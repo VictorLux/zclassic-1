@@ -708,7 +708,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     int fork_plus1 = fork + 1;  /* first height to disconnect (== 0 if F<0) */
 
     /* Finality-depth floor: never unwind below tip - ZCL_FINALITY_DEPTH,
-     * exactly as legacy refuses in activate_best_chain. The deepest
+     * exactly as the single-engine path refused. The deepest
      * disconnected block is at fork_plus1, whose fork point is `fork`;
      * the reorg depth is (C-1) - fork. This reorg_is_allowed(C-1, fork)
      * check is the SOLE gate on whether the unwind proceeds.
@@ -724,8 +724,8 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      *
      *   FOLLOWER mode (UTXO_AUTHOR_LEGACY, the default): the unwind only
      *   re-converges the stage's OWN applied range [fork+1, C-1] onto a
-     *   chain[] that legacy already reorged and finality-gated
-     *   (reorg_is_allowed at tip->nHeight in activate_best_chain), so the
+     *   chain[] that the prior path already reorged and finality-gated
+     *   (reorg_is_allowed at tip->nHeight), so the
      *   active chain never presents a reorg deeper than ZCL_FINALITY_DEPTH
      *   for the stage to follow. Measuring from C-1 is a defensive backstop
      *   equivalent to legacy's check; using the global active tip instead

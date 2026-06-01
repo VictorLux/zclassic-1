@@ -35,8 +35,8 @@ struct block_index;
  * the chain. */
 enum tip_source {
     TIP_FROM_UNSPECIFIED  = 0,
-    TIP_FROM_CONNECT,      /* connect_tip in activate_best_chain */
-    TIP_FROM_DISCONNECT,   /* disconnect_tip / reorg rollback */
+    TIP_FROM_CONNECT,      /* reducer forward connect */
+    TIP_FROM_DISCONNECT,   /* reducer reorg rollback */
     TIP_FROM_SNAPSHOT,     /* FlyClient+SHA3 snapshot installation */
     TIP_FROM_RESTORE,      /* boot-time chain-restore */
     TIP_FROM_BOOT_REPAIR,  /* boot.c misc fixups */

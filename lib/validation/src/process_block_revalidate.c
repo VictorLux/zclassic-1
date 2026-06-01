@@ -279,7 +279,7 @@ enum reval_result process_block_revalidate(int target_height,
      * proven safe when there's evidence the canonical chain runs
      * through the cleared blocks. The evidence here is the
      * `evidence_path` set above; descendants will be re-validated by
-     * connect_tip on the next chain advance and re-marked FAILED
+     * the next reducer validation pass and re-marked FAILED
      * individually if any are genuinely invalid. */
     int tip_h = active_chain_height(&ms->chain_active);
     int cleared = 0;

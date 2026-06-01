@@ -31,17 +31,16 @@ bool accept_block_header(const struct block_header *header,
                          const struct chain_params *params,
                          struct block_index **ppindex);
 
-/* accept_block / connect_tip / disconnect_tip / activate_best_chain /
- * process_new_block were the legacy single-engine validation surface. They
- * were DELETED by the one-engine refactor: the reducer (reducer_ingest_block
- * / reducer_kick, see services/chain_activation_controller.h) is now the sole
- * block-connect engine. accept_block_header (below) survives — header admit
- * still uses it. */
+/* The historical single-engine block-connection entry points were deleted by
+ * the one-engine refactor. The reducer (reducer_ingest_block / reducer_kick,
+ * see services/chain_activation_controller.h) is now the sole block-connect
+ * engine. accept_block_header (below) survives because header admit still
+ * uses it. */
 
 /* Fast-sync body-pull / direct-import mode flag.
  *
  * When set to 1 by legacy_body_pull / legacy_direct_import before its
- * ingest loop, `connect_tip` defers per-block durability writes:
+ * ingest loop, the per-block validation path defers durability writes:
  *
  *   - block_tree_db_write_block_index_sync → async (no fsync per block).
  *   - block_tree_db_write_tx_index         → async (LevelDB memtable).
@@ -143,16 +142,18 @@ void set_sapling_checkpoint_datadir(const char *datadir);
  * can verify tip-publisher rejection propagates to the caller.
  * Returns false if the publisher refused the commit; returns true if the
  * tip was advanced (or cleared, when pindex_new == NULL). Do NOT
- * call from production code — go through connect_tip / disconnect_tip. */
+ * call from production code — go through reducer tip-finalization or an
+ * explicit trusted bootstrap/repair API. */
 bool process_block_test_update_tip(struct main_state *ms,
                                     struct block_index *pindex_new);
 
-/* Test-only crash-injection hook for the connect_tip ordering protocol.
+/* Test-only crash-injection hook for the tip-publication ordering protocol.
  *
  * The atomicity test (test_chain_advance_atomicity.c) forks a child,
  * arms a crash stage with `process_block_test_set_crash_stage(...)`,
- * runs one block through connect_tip, and the child `_exit(137)`s at
- * the named protocol point. The parent reboots the datadir, asserts
+ * runs one block through the reducer/tip publication path, and the child
+ * `_exit(137)`s at the named protocol point. The parent reboots the datadir,
+ * asserts
  * tip ≥ pre-kill tip.
  *
  * Stages fire in order:
@@ -256,12 +257,11 @@ void process_block_clear_utxo_activation_pause_range(int scan_start,
  * BLOCKS_DOWNLOAD with no height progress event — invisible. */
 int process_block_get_utxo_activation_paused_height(void);
 
-/* signal that activate_best_chain returned early
- * because the per-pass tip_child_connect_limit (128 blocks by default)
- * was reached — there may be more children ready to connect. The
- * activation controller drain loop should re-call activate_best_chain
- * when this is true even if deferred_pending is 0. Cleared at the
- * start of each activate_best_chain pass. */
+/* Signal that a staged activation drain reached the per-pass
+ * tip_child_connect_limit (128 blocks by default) and may have more children
+ * ready to connect. The activation controller drain loop should schedule
+ * another reducer pass when this is true even if deferred_pending is 0.
+ * Cleared at the start of each drain pass. */
 bool process_block_active_tip_has_pending(void);
 
 #ifdef ZCL_TESTING

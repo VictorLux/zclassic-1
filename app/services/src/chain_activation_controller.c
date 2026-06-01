@@ -343,7 +343,7 @@ void activation_should_connect(struct activation_decision *out,
     if (req->current_state == ACTIVATION_CONNECTING) {
         out->result = ACTIVATION_SKIP_ALREADY_RUNNING;
         snprintf(out->reason, sizeof(out->reason),
-                 "activate_best_chain already running");
+                 "reducer activation already running");
         return;
     }
 
@@ -393,11 +393,10 @@ void activation_request_connect(struct chain_activation_controller *ctl,
         out->result = ACTIVATION_EXEC_SKIPPED;
         snprintf(out->reason, sizeof(out->reason), "%s", dec.reason);
         ctl->skip_count++;
-        /* note the skipped request so the thread currently
-         * holding the mutex reruns activate_best_chain before
-         * transitioning out of CONNECTING. The block is already on
-         * disk via accept_block, so the rerun picks it up without the
-         * caller's pblock hint. */
+        /* note the skipped request so the thread currently holding the mutex
+         * reruns reducer activation before transitioning out of CONNECTING.
+         * The block is already on disk via the admit/persist path, so the
+         * rerun picks it up without the caller's pblock hint. */
         if (dec.result == ACTIVATION_SKIP_ALREADY_RUNNING)
             atomic_fetch_add(&ctl->deferred_pending, 1);
         return;
@@ -436,8 +435,8 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     bool ok = true;
 
     /* A non-NULL pblock can only reach this chokepoint via the historical
-     * process_new_block tail (the live Group-1 ingest callers route to
-     * reducer_ingest_block directly and never call process_new_block). Admit
+     * historical block-intake tail (the live Group-1 ingest callers route to
+     * reducer_ingest_block directly and never call the old path). Admit
      * it to the header inbox so the producer path can build its block_index,
      * then drive the stages; a NULL pblock is a pure cursor-driven kick (the
      * Group-2 path). */
@@ -514,7 +513,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
 /* ── Reducer-as-ingest ──────────────────────────────────────────────
  *
  * The synchronous block-intake wrapper that drives the eight Wave-S Job
- * stages instead of legacy activate_best_chain. */
+ * stages instead of the historical single-engine activation path. */
 
 /* Drain the eight stage step bodies once, in pipeline order — the SAME
  * order and the SAME *_stage_drain functions the per-stage supervisor
@@ -535,7 +534,7 @@ static int reducer_drain_all_stages(int max_steps_per_stage)
 }
 
 /* Loop reducer_drain_all_stages to convergence within a bounded mutex-held
- * latency budget (mirrors the activate_best_chain deferred-drain budget at
+ * latency budget (mirrors the old deferred-drain budget at
  * activation_request_connect). Stops when a full pass advances nothing or
  * the budget/round-cap is hit. Returns the total advances. */
 static int reducer_drain_to_convergence(void)
@@ -628,12 +627,11 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     if (!ctl || !pblock)
         return validation_state_error(out, "reducer-null-arg");
 
-    /* (1) Stateless gate FIRST, inline, BEFORE any log/stage mutation —
-     * exactly as process_new_block:1022. A garbage block is rejected with
-     * the verdict already in `out`; nothing is admitted to the inbox. The
-     * `force`/requested flag does not relax the stateless checks (legacy
-     * check_block is unconditional too); it gates the relay pre-filters
-     * inside the admit producer path, not this gate. */
+    /* (1) Stateless gate FIRST, inline, BEFORE any log/stage mutation. A
+     * garbage block is rejected with the verdict already in `out`; nothing is
+     * admitted to the inbox. The `force`/requested flag does not relax the
+     * stateless checks; it gates the relay pre-filters inside the admit
+     * producer path, not this gate. */
     if (!check_block(pblock, out, ctl->params, true, true, true)) {
         LOG_FAIL("reducer", "check_block failed: %s",
                  out->reject_reason[0] ? out->reject_reason : "unknown");
@@ -662,7 +660,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     }
 
     /* (3) Drain the eight stage step bodies synchronously under the SAME
-     * mutex activate_best_chain serializes on, ahead of the 2s supervisor
+     * mutex reducer activation serializes on, ahead of the 2s supervisor
      * tickers, so a single at-tip block reaches tip_finalize within the
      * call. The reorg disconnect (step 4) is driven from inside utxo_apply
      * when a better fork is selected. */

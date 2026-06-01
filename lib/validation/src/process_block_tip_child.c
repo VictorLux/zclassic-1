@@ -76,7 +76,7 @@ struct block_index *find_best_active_tip_child(struct main_state *ms,
         if (!process_block_verify_active_tip_child_on_disk(
                 candidate, tip, datadir)) {
             fprintf(stderr, // obs-ok:pre-existing-diagnostic
-                    "activate_best_chain: skipping stale active-tip child "
+                    "process_block_tip_child: skipping stale active-tip child "
                     "h=%d file=%d pos=%u; local block bytes do not verify "
                     "against index hash and current tip\n",
                     candidate->nHeight, candidate->nFile,
@@ -209,7 +209,7 @@ struct block_index *find_verified_unlinked_active_tip_child(
 
     if (best) {
         fprintf(stderr, // obs-ok:pre-existing-diagnostic
-            "activate_best_chain: repaired unlinked active-tip child "
+            "process_block_tip_child: repaired unlinked active-tip child "
             "h=%d from disk-verified prev hash\n",
             best->nHeight);
     }

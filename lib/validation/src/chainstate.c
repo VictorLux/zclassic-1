@@ -355,9 +355,8 @@ bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi
 
 /* Extend the VISIBLE chain[] window forward to a most-work CANDIDATE that
  * builds on the current tip, WITHOUT moving the authoritative (finalized)
- * tip. This is the reducer's structural analogue of the legacy
- * activate_best_chain assembling chain[] out to find_most_work_chain's
- * candidate before connect_tip walks it block-by-block.
+ * tip. This is the reducer's structural analogue of assembling chain[] out to
+ * find_most_work_chain's candidate before a block-by-block validation pass.
  *
  * It exists because the reducer's tip_finalize uses a one-block lookahead:
  * it finalizes height H by reading active_chain_at(H+1), then collapses

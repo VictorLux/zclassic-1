@@ -7,8 +7,7 @@
  * Fetches the CANONICAL recent block range from the authoritative local
  * zclassicd (the C++ ZClassic node, RPC 127.0.0.1:8232 — the network
  * authority that already holds every canonical block) and submits each
- * block through the NORMAL validated accept/connect path
- * (process_new_block → accept_block → connect_block). The node reorgs
+ * block through the NORMAL validated reducer/connect path. The node reorgs
  * onto the canonical chain if its local tip sits on a stale fork.
  *
  * This is NOT -reindex-chainstate: it does not wipe the UTXO set, does

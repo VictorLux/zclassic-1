@@ -157,10 +157,9 @@ struct boot_validation_result validate_coins_chain_agreement(
          *
          * If the chain tip is at a reasonable height (e.g. 3M+),
          * the missing hash is likely just a few blocks ahead of our
-         * flat file. Reset coins to the chain tip instead of wiping
-         * the entire UTXO set and reconnecting from genesis.
-         * activate_best_chain will disconnect the few extra blocks
-         * and reconnect. */
+         * flat file. Reset coins to the chain tip instead of wiping the entire
+         * UTXO set and reconnecting from genesis. Reducer activation will
+         * unwind the few extra blocks and reconnect. */
         if (chain_tip && chain_tip->nHeight > 1000 &&
             chain_tip->phashBlock) {
             printf("Coins DB best block not in index — resetting "

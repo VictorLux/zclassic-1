@@ -499,8 +499,8 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     if (ps_assign && ps_assign->is_loopback) {
         /* K2: loopback has no WAN-fairness constraint and effectively
          * unlimited bandwidth. Use the elevated cap; the global limit
-         * (DL_MAX_IN_FLIGHT_TOTAL_IBD=4096) and the consumer-side
-         * connect_tip pipeline are the real backpressure. */
+         * (DL_MAX_IN_FLIGHT_TOTAL_IBD=4096) and the consumer-side reducer
+         * pipeline are the real backpressure. */
         peer_limit = DL_MAX_IN_FLIGHT_PER_LOOPBACK;
     } else if (ps_assign && ps_assign->bandwidth_score > 0) {
         /* Scale: score/128 * MAX, clamped to [16, MAX] */
@@ -666,7 +666,7 @@ size_t dl_drain_for_backpressure(struct download_manager *dm)
     size_t drained = dm->queue_len + dm->num_active;
 
     /* Drop pending hashes outright — peers won't be re-asked until
-     * something else (header sync, activate_best_chain) re-queues. */
+     * something else (header sync, reducer activation) re-queues. */
     dm->queue_len = 0;
 
     /* Mark every in-flight slot inactive WITHOUT zeroing its hash:

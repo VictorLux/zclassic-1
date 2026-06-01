@@ -16,10 +16,10 @@ node soak.
 - The reducer/staged pipeline is the authoritative chain-advance architecture.
 - The public cutover/projection-diff MCP/RPC apparatus has been removed.
 - The old legacy block-connect engine files are gone.
-- The production `app/`, `lib/storage/`, `lib/validation/`, and `tools/mcp/`
-  C/H surfaces no longer describe active reducer read-model paths as
-  shadow/cutover/projection-diff infrastructure; remaining historical wording
-  is test/doc context only.
+- Production C/H surfaces no longer describe active reducer read-model paths as
+  shadow/cutover/projection-diff infrastructure, and they no longer use the
+  deleted single-engine block-connection names for current reducer behavior;
+  remaining historical wording is test/doc context only.
 - E1, E2, E6, supervisor, E7, typed-blocker, controller raw-SQL adoption,
   lib-layering, and raw allocation debt are at zero grandfathered entries.
   Remaining refactor work is now code-shape cleanup, process-block splitting,
@@ -117,9 +117,8 @@ node soak.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
-- Stale lib-layering baseline entries for removed validation files
-  (`activate_best_chain.c`, `connect_tip.c`, `disconnect_tip.c`) were deleted,
-  dropping the lib-to-app include baseline from 101 to 82.
+- Stale lib-layering baseline entries for removed single-engine validation
+  files were deleted, dropping the lib-to-app include baseline from 101 to 82.
 - Stale lib-layering baseline entries for removed
   `msg_version.c` / `msgprocessor_snapshot.c` includes were deleted, and file
   manifest protocol declarations moved into
@@ -316,7 +315,7 @@ node soak.
   `process_block_invalidate.c` and `process_block_revalidate.c` no longer
   duplicate the field-by-field `disk_block_index` copy, and their production
   comments now describe reducer/stage authority instead of deleted
-  `connect_tip` / `disconnect_tip` files.
+  single-engine files.
 - Tip-publication evidence and commit mechanics moved from
   `process_block_core.c` into `process_block_tip_publish.c`. The new file owns
   `process_block_tip_is_best_work()`, `process_block_commit_tip()`,
@@ -475,6 +474,12 @@ node soak.
   production `lib/storage` API. The contacts, onion-announcement, and HODL
   projection parity check now lives in `test_small_projections`, which compares
   the projection SQLite files directly against the legacy fixture database.
+- Production C/H comments and diagnostics in `app/`, `lib/`, `config/`, and
+  `tools/` no longer use the deleted single-engine block-connection names for
+  active behavior. Architecture docs now show block intake as
+  `reducer_ingest_block` plus the eight Wave-S Job stages, and
+  `test_make_lint_gates` has a production-source guard that fails if those
+  names reappear outside tests/views.
 
 ## Active Debt
 
@@ -484,6 +489,9 @@ node soak.
   `app/`, `lib/storage/`, `lib/validation/`, or `tools/mcp/` C/H files outside
   tests/views. Keep this at zero; normalize remaining historical test/doc
   wording only when it obscures current behavior.
+- No production deleted single-engine block-connection names remain in
+  `app/`, `lib/`, `config/`, or `tools/` C/H files outside tests/views. The
+  lint-gate self-test now guards that absence.
 
 ### E1 Oversized App Files
 
@@ -549,14 +557,42 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after normalizing deleted single-engine
+  block-connection names to reducer/stage language across production C/H files
+  and architecture docs.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production deleted-engine terminology search returned no matches across
+  `app/`, `lib/`, `config/`, and `tools/` C/H files outside tests/views.
+- Current reducer docs search returned no matches for deleted engine names in
+  `docs/` or `BOOT_INVARIANTS.md`.
+- Production stale shadow/cutover terminology search remains clean:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`.
+- `make -j$(nproc)`: pass after the production comment/diagnostic cleanup and
+  new lint-gate assertions.
+- `make lint`: pass after the docs update; all architecture/baseline gates
+  report zero grandfathered entries.
+- `make test_parallel`: pass after rebuilding the parallel runner with the new
+  `test_make_lint_gates` assertions.
+- Focused filtered test passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, including
+  the new production-source guard for deleted engine names.
+- `./test_parallel --timeout=180`: pass after the deleted-engine terminology
+  cleanup, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 14:23:39 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after centralizing block-index persistence snapshot
   construction in `process_block_index.c`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Production stale terminology searches returned no matches:
   `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
-  and
-  `rg -n "connect_tip\\.c|disconnect_tip\\.c|activate_best_chain\\.c|legacy connect|legacy disconnect|delete target|legacy setter stays|connect_tip uses|connect_tip path|disconnect_tip path" app lib config tools --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`.
+  and the deleted-engine wording search across production C/H files.
 - All tracked lint baselines/allowlists remain empty:
   `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
   reported 0 non-comment entries for every tracked file.

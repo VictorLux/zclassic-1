@@ -4,8 +4,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Best-work chain-selection helpers that survived deletion of the legacy
- * process_new_block / connect_tip / activate_best_chain engine. */
+ * Best-work chain-selection helpers for the reducer activation path. */
 
 #include "platform/time_compat.h"
 #include <stdio.h>
@@ -101,10 +100,10 @@ struct block_index *find_most_work_chain(struct main_state *ms)
      * The tip is canonical. A "fork tip" at a lower height with higher
      * nChainWork can appear from old import data with incorrect work
      * accounting, but reorging backwards 17 k blocks because of it is
-     * never the right answer — activate_best_chain would hit the
-     * finality guard anyway, log "below_finality_depth" every second,
-     * and the chain would never advance. Treat below-tip best as "no work
-     * pending" and let gap-fill close the headers-vs-bodies window. */
+     * never the right answer — the staged activation path would hit the
+     * finality guard, log "below_finality_depth" every second, and the chain
+     * would never advance. Treat below-tip best as "no work pending" and let
+     * gap-fill close the headers-vs-bodies window. */
     {
         struct block_index *tip = active_chain_tip(&ms->chain_active);
         if (tip && best && best != tip && best->nHeight < tip->nHeight) {
@@ -121,11 +120,10 @@ struct block_index *find_most_work_chain(struct main_state *ms)
         }
     }
 
-    /* Diagnostic: when activate_best_chain will silent-return
-     * (because we picked the current tip as best), emit a
-     * rate-limited log line naming the filter counters. This is how
-     * the canary identifies which shortlisted cause is keeping
-     * production stuck without another investigative round-trip.
+    /* Diagnostic: when chain selection keeps the current tip as best, emit a
+     * rate-limited log line naming the filter counters. This is how the
+     * canary identifies which shortlisted cause is keeping production stuck
+     * without another investigative round-trip.
      *
      * also kick the gap-fill service so it requests the
      * missing bodies for headers above the tip. Without this kick,
@@ -160,15 +158,9 @@ struct block_index *find_most_work_chain(struct main_state *ms)
     return best;
 }
 
-/* accept_block_header()   moved to lib/validation/src/accept_block_header.c
- * accept_block()          DELETED with the legacy validation engine.
- * connect_tip()           DELETED with the legacy validation engine.
- * disconnect_tip()        DELETED with the legacy validation engine.
- * activate_best_chain()   DELETED with the legacy validation engine.
- * process_new_block()     DELETED with the legacy validation engine.
- *
- * The reducer (reducer_ingest_block / reducer_kick, app/services + app/jobs)
- * is the sole block-connect engine; every ingest call site routes through it.
+/* Header acceptance moved to lib/validation/src/accept_block_header.c. The
+ * reducer (reducer_ingest_block / reducer_kick, app/services + app/jobs) is
+ * the sole block-connect engine; every ingest call site routes through it.
  * Selection helpers remain here. Active-tip child disk verification lives in
  * process_block_tip_child.c, tip publication lives in
  * process_block_tip_publish.c, contextual-header skip policy lives in

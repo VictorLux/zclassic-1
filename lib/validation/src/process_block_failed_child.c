@@ -16,7 +16,7 @@
 
 /* BLOCK_FAILED_CHILD propagation with OOM-amplifier guards.
  *
- * History: the original connect_tip inlined a full block_map scan +
+ * History: the original block-connect path inlined a full block_map scan +
  * qsort on every failed connect_block. At a live tip of ~3M entries
  * that is ~24 MB of scratch + O(N log N) work per call. In the
  * 2026-04-19 BIP30 stall, a single stuck block was retried on every

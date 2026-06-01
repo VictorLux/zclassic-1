@@ -218,15 +218,14 @@ bool process_block_commit_tip(struct main_state *ms,
 /* Propagate tip-publisher rejection to caller. Previously this function
  * was void — if process_block_commit_tip returned false (CSR refused
  * the commit for coins_mismatch / tip_not_in_index / stale_index /
- * etc.), the failure was silently discarded. connect_tip kept
+ * etc.), the failure was silently discarded. The old block-connect path kept
  * returning true while the in-memory chain tip stayed at the old
  * height, so every inbound block re-emitted EV_BLOCK_CONNECTED for
  * the same height forever. That is exactly the 2026-04-18 live
  * outage at h=3,081,601 — 43+ `val.block_connected h=3081601`
  * events per second until the download queue buffered the node to
- * 6 GB RSS and SIGABRT. Returning false here lets activate_best_chain
- * surface the failure so the caller stops treating the block as
- * accepted. */
+ * 6 GB RSS and SIGABRT. Returning false here lets the reducer surface the
+ * failure so the caller stops treating the block as accepted. */
 bool update_tip(struct main_state *ms, struct block_index *pindex_new)
 {
     if (pindex_new) {
@@ -287,7 +286,7 @@ bool update_tip(struct main_state *ms, struct block_index *pindex_new)
     return true;
 }
 
-/* External wrapper for chain_advance.c. */
+/* External wrapper for the chain-advance protocol. */
 bool process_block_commit_tip_ext(struct main_state *ms,
                                   struct coins_view_cache *coins_tip,
                                   struct block_index *new_tip,
@@ -300,9 +299,8 @@ bool process_block_commit_tip_ext(struct main_state *ms,
 
 /* Regression surface: exposes the post-refactor update_tip so a
  * unit test can drive a real csr_instance through a rejecting input
- * and assert the caller observes false. Production callers go through
- * connect_tip / disconnect_tip; this wrapper must not grow any new
- * behaviour. */
+ * and assert the caller observes false. Production callers go through the
+ * reducer/tip-finalize path; this wrapper must not grow any new behaviour. */
 bool process_block_test_update_tip(struct main_state *ms,
                                     struct block_index *pindex_new)
 {

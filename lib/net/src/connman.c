@@ -1220,7 +1220,7 @@ static void *thread_socket_handler(void *arg)
                  * the message-cycle loop processes
                  * one peer at a time and shares the thread with chain
                  * activation. While we're doing a multi-block reorg
-                 * recovery or a heavy connect_tip, peer handshakes can
+                 * recovery or a heavy reducer pass, peer handshakes can
                  * wait several seconds. Live evidence: 6 inbound peers
                  * timing out at exactly 30-45s because we hadn't read
                  * their version message yet. Bumping to 90s keeps real
@@ -1606,9 +1606,9 @@ void connman_join(struct connman *cm)
     if (!cm)
         return;
 
-    /* Use 30-second timeout per thread to prevent SIGKILL from systemd.
-     * If a thread is stuck (e.g., message thread in activate_best_chain),
-     * detach it rather than blocking shutdown indefinitely. */
+    /* Use 30-second timeout per thread to prevent SIGKILL from systemd. If a
+     * thread is stuck (e.g., message thread in reducer activation), detach it
+     * rather than blocking shutdown indefinitely. */
     if (cm->started || cm->dns_seed_thread_started || cm->socket_thread_started ||
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {

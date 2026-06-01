@@ -25,10 +25,10 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
 /* Clear BLOCK_FAILED_VALID + BLOCK_FAILED_CHILD on entries strictly
  * above the active tip. After a body-pull / direct-import path writes
  * new blocks past a previously-stuck tip, stale FAILED flags from old
- * IBD attempts prevent find_most_work_chain from selecting through
- * them. Re-validation under evidence-mode is cheap; genuinely-invalid
- * blocks get re-flagged by the next connect_tip attempt. Returns the
- * number of entries cleared. */
+ * IBD attempts prevent find_most_work_chain from selecting through them.
+ * Re-validation under evidence-mode is cheap; genuinely-invalid blocks get
+ * re-flagged by the next reducer validation pass. Returns the number of
+ * entries cleared. */
 int chain_restore_clear_failed_above_tip(struct main_state *ms);
 
 bool chain_restore_block_is_consensus_backed(const struct block_index *tip);

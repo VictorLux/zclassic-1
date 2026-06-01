@@ -3,10 +3,10 @@
  * gap_fill_service — sequential block-gap filler for IBD and catch-up.
  *
  * Problem: when a peer announces a tip far ahead of ours (gap > 512),
- * `activate_best_chain` defers and queues only the one far block via
+ * reducer activation defers and queues only the one far block via
  * `dl_queue_priority`. The 2,500 intermediate blocks `[tip+1, far-1]`
- * are not requested by that path — they depend on the header-reception
- * path in `msg_headers.c` queueing them, which only fires when new
+ * are not requested by that path — they depend on the header-reception path
+ * in `msg_headers.c` queueing them, which only fires when new
  * headers arrive. If headers have already arrived and the chain still
  * has missing block data, the gap never closes.
  *
@@ -70,9 +70,9 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
 void gap_fill_stop(void);
 
 /* Wake the service immediately (instead of waiting for the next tick).
- * Called from `activate_best_chain` when a far-ahead block is deferred
- * and from header-reception when new headers expand pindex_best_header.
- * No-op if service not running. */
+ * Called from reducer activation when a far-ahead block is deferred and from
+ * header-reception when new headers expand pindex_best_header. No-op if
+ * service not running. */
 void gap_fill_kick(void);
 
 /* Snapshot current stats for diagnostics / RPC. Zero-initialises out

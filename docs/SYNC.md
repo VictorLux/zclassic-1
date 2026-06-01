@@ -109,7 +109,7 @@ Two one-liners, both safe on an empty datadir:
 ```bash
 # Preferred: empty-datadir → tip in ~60 s. Hardlinks blk*.dat, bulk-copies
 # block_index LevelDB, bulk-imports chainstate at legacy current tip,
-# skips per-block process_new_block entirely.
+# skips per-block reducer intake entirely.
 ./zclassic23 -cold-import=~/.zclassic
 
 # Alternate: streaming legacy reader. Reads block_index LevelDB + mmaps

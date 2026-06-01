@@ -577,7 +577,7 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
             chain_restore_record_csr_consistency(
                 view.consistent, view.tip_height, view.header_height);
             if (!view.consistent) {
-                LOG_INFO("chain", "[chain-integrity] CSR tip/coins divergence at boot: " "tip_h=%d header_h=%d — first activate_best_chain " "pass should reconcile", view.tip_height, view.header_height);
+                LOG_INFO("chain", "[chain-integrity] CSR tip/coins divergence at boot: " "tip_h=%d header_h=%d — first reducer activation " "pass should reconcile", view.tip_height, view.header_height);
             }
         }
     }

@@ -128,9 +128,9 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    RECEIVE[Block received<br/>from P2P or RPC] --> PROCESS[process_new_block]
+    RECEIVE[Block received<br/>from P2P or RPC] --> INGEST[reducer_ingest_block]
 
-    PROCESS --> CHECK_BLOCK[check_block<br/>structure validation]
+    INGEST --> CHECK_BLOCK[check_block<br/>structure validation]
 
     subgraph Structural["Structure Checks"]
         CHECK_BLOCK --> HEADER_CHECK[Header validation<br/>PoW, timestamp, difficulty]
@@ -138,21 +138,25 @@ flowchart TD
         MERKLE --> TX_BASIC[Transaction structure<br/>version, size, format]
     end
 
-    TX_BASIC -->|EV_BLOCK_CHECK_PASSED| ACCEPT[accept_block<br/>contextual checks]
+    TX_BASIC -->|EV_BLOCK_CHECK_PASSED| HEADER_ADMIT[header_admit stage<br/>candidate fact]
 
-    ACCEPT --> CTX_HEADER[Contextual header check<br/>parent exists, height correct]
-    CTX_HEADER --> STORE[Store block to disk]
-    STORE --> ACTIVATE[activate_best_chain]
+    HEADER_ADMIT --> VALIDATE_HEADERS[validate_headers stage<br/>contextual header checks]
+    VALIDATE_HEADERS --> BODY_FETCH[body_fetch stage<br/>request missing bodies]
+    BODY_FETCH --> BODY_PERSIST[body_persist stage<br/>store block bytes]
+    BODY_PERSIST --> SCRIPT_VALIDATE[script_validate stage<br/>transparent scripts]
+    SCRIPT_VALIDATE --> PROOF_VALIDATE[proof_validate stage<br/>shielded proofs]
+    PROOF_VALIDATE --> UTXO_APPLY[utxo_apply stage<br/>same-txn UTXO delta]
+    UTXO_APPLY --> TIP_FINALIZE[tip_finalize stage<br/>publish reducer tip]
 
-    ACTIVATE --> BEST_CHECK{New block extends<br/>best chain?}
+    TIP_FINALIZE --> BEST_CHECK{New block extends<br/>best chain?}
     BEST_CHECK -->|no, but more work| REORG
     BEST_CHECK -->|no| DONE_SIDE([Stored as<br/>side chain])
     BEST_CHECK -->|yes| CONNECT
 
     subgraph Reorg["Reorganization"]
-        REORG[EV_REORG_START] --> DISCONNECT[Disconnect blocks<br/>back to fork point]
-        DISCONNECT -->|fail| REORG_FAIL([EV_REORG_DISCONNECT_FAILED<br/>manual intervention])
-        DISCONNECT -->|ok| RECONNECT[Connect new chain<br/>from fork point]
+        REORG[EV_REORG_START] --> UNWIND[Reducer unwind<br/>inverse UTXO deltas]
+        UNWIND -->|fail| REORG_FAIL([typed blocker<br/>manual intervention])
+        UNWIND -->|ok| RECONNECT[Apply winning branch<br/>from fork point]
     end
 
     RECONNECT --> CONNECT
@@ -176,7 +180,7 @@ flowchart TD
     FLUSH_CHECK -->|no| TIP_UPDATE
     FLUSH --> TIP_UPDATE
 
-    TIP_UPDATE[Update chain tip<br/>EV_TIP_UPDATED] --> NOTIFY[Notify wallet,<br/>mempool, subscribers]
+    TIP_UPDATE[Publish reducer tip<br/>EV_TIP_UPDATED] --> NOTIFY[Notify wallet,<br/>mempool, subscribers]
     NOTIFY -->|EV_BLOCK_CONNECT_DONE| DONE([Block connected])
 
     CHECK_BLOCK -->|fail| REJECT_BLOCK([EV_BLOCK_REJECTED<br/>dos score assigned])

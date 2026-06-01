@@ -525,11 +525,10 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
         }
 
         /* Clear snapshot anchor once headers extend past the configured
-         * immutable/finality window.
-         * The anchor blocks activate_best_chain. Once the header chain
-         * has enough depth for the snapshot policy that accepted it,
-         * clear it so blocks can be connected. Set chain tip to the
-         * anchor so connect_tip starts from the right UTXO state. */
+         * immutable/finality window. The anchor blocks reducer activation.
+         * Once the header chain has enough depth for the snapshot policy that
+         * accepted it, clear it so blocks can be connected. Set chain tip to
+         * the anchor so the reducer starts from the right UTXO state. */
         {
             struct block_index *anc = msg_processor_snapshot_anchor(mp);
             if (syncsvc_should_release_snapshot_anchor(anc, pindex_last)) {

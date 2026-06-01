@@ -98,32 +98,38 @@ ZClassic uses Equihash(200,9) with solution size 1344 bytes.
 - File: `lib/net/src/fast_sync.c`
 
 **Method 3 — Full P2P Sync (~7 hours):**
-- Headers → blocks → `connect_block` (sequential UTXO build)
+- Headers → blocks → reducer stage pipeline → `connect_block`
+  (sequential UTXO build inside validation stages)
 - Scripts/sigs skipped below deferred proof validation (h=3,054,000)
 - Full validation above deferred proof validation
-- File: `app/services/src/block_sync_service.c`
-- File: `lib/validation/src/process_block.c`
+- File: `app/services/src/chain_activation_controller.c`
+- File: `app/jobs/src/*_stage.c`
+- File: `lib/validation/src/connect_block.c`
 
 ## Self-Healing Mechanisms
 
-**1. `connect_block` failure (missing UTXO):**
+**1. Reducer validation failure (missing UTXO):**
 - Detect missing txid:vout from `validation_state`
 - Look up source block via tx index (LevelDB `'t'+txid` key)
 - Read block from disk, extract output, inject into coins cache
 - Retry `connect_block` (up to 100 retries per block)
-- File: `lib/validation/src/process_block.c` (`connect_tip`)
+- File: `lib/validation/src/process_block_self_heal.c`
+- File: `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`
+- File: `lib/validation/src/process_block_self_heal_chain_scan.c`
+- File: `lib/validation/src/process_block_self_heal_inject.c`
 
-**2. `disconnect_tip` failure (missing undo data):**
-- For each input in the block being disconnected
-- Look up source tx via tx index, read from disk
-- Reconstruct `block_undo` from source outputs
-- Retry `disconnect_block` with reconstructed undo
-- File: `lib/validation/src/process_block.c` (`disconnect_tip`)
+**2. Reducer reorg unwind:**
+- Detect branch divergence from the active-chain cursor and stage logs
+- Emit inverse UTXO deltas for the stale branch
+- Delete stale log/delta rows and rewind stage cursors to the fork boundary
+- File: `app/jobs/src/utxo_apply_delta.c`
+- File: `app/jobs/src/utxo_apply_stage.c`
 
 **3. Wrong block on disk (hash mismatch):**
 - Clear `BLOCK_HAVE_DATA` flag on the `block_index` entry
 - Block gets re-requested from P2P download manager
-- File: `lib/validation/src/process_block.c` (`connect_tip`)
+- File: `lib/validation/src/process_block_tip_child.c`
+- File: `app/conditions/src/have_data_unreadable.c`
 
 **4. Stale `coins_best_block` after OOM kill:**
 - Boot detects chain at genesis but `coins_best_block` non-null

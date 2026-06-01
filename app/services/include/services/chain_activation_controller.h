@@ -2,8 +2,9 @@
  *
  * Chain Activation Controller — single authority for block connection.
  *
- * Problem: activate_best_chain() was called from 5 places across 3 threads
- * with zero coordination. This controller is the SINGLE entry point.
+ * Problem: the old chain-connection engine was called from five places across
+ * three threads with zero coordination. This controller is the SINGLE entry
+ * point.
  *
  * Architecture:
  *   State machine: IDLE → BOOT_PENDING → ANCHOR_ACTIVE → READY → CONNECTING → AT_TIP
@@ -11,7 +12,7 @@
  *   Execution: activation_request_connect() serializes through mutex
  *   Transition table: validates every state change, rejects illegal ones
  *
- * Key invariant: while state is ANCHOR_ACTIVE, activate_best_chain NEVER runs.
+ * Key invariant: while state is ANCHOR_ACTIVE, reducer activation NEVER runs.
  * No exceptions, no bypasses, no scattered boolean overrides. */
 
 #ifndef ZCL_CHAIN_ACTIVATION_CONTROLLER_H
@@ -36,7 +37,7 @@ enum activation_state {
     ACTIVATION_ANCHOR_ACTIVE,     /* snapshot/LDB anchor, connection forbidden */
     ACTIVATION_ANCHOR_CLEARING,   /* headers past anchor, transitioning */
     ACTIVATION_READY,             /* safe to connect blocks */
-    ACTIVATION_CONNECTING,        /* activate_best_chain running (mutex held) */
+    ACTIVATION_CONNECTING,        /* reducer activation running (mutex held) */
     ACTIVATION_AT_TIP,            /* caught up, waiting for new blocks */
     ACTIVATION_FAILED,            /* unrecoverable */
     ACTIVATION_NUM_STATES
@@ -49,7 +50,7 @@ bool activation_transition_valid(enum activation_state from, enum activation_sta
 
 struct chain_activation_controller {
     _Atomic int state;
-    zcl_mutex_t mutex;          /* serializes activate_best_chain execution */
+    zcl_mutex_t mutex;          /* serializes reducer activation execution */
 
     /* Context (set once at init, read-only after) */
     struct main_state *ms;
@@ -64,8 +65,8 @@ struct chain_activation_controller {
     int     skip_count;
 
     /* deferred-activation counter. A request that hits
-     * SKIP_ALREADY_RUNNING (another thread is inside activate_best_chain
-     * under the mutex) increments this atomically instead of dropping
+     * SKIP_ALREADY_RUNNING (another thread is inside reducer activation under
+     * the mutex) increments this atomically instead of dropping
      * the work. The thread currently holding the mutex drains it before
      * releasing so the newly-arrived-but-skipped block gets connected
      * without waiting for the next P2P arrival. */
@@ -153,7 +154,7 @@ struct activation_exec_outcome {
     char reason[128];
 };
 
-/* Single entry point replacing all direct activate_best_chain calls.
+/* Single entry point replacing all direct chain-connection calls.
  * Thread-safe: mutex ensures only one execution at a time. */
 void activation_request_connect(struct chain_activation_controller *ctl,
                                 enum activation_request_source source,
@@ -164,17 +165,17 @@ void activation_request_connect(struct chain_activation_controller *ctl,
  * Returns the number of SKIP_ALREADY_RUNNING requests that arrived
  * while another thread held the activation mutex, since the last
  * drain. Used by the activator (under mutex) to decide whether to
- * rerun activate_best_chain before transitioning out of CONNECTING.
+ * rerun reducer activation before transitioning out of CONNECTING.
  * Also exposed for diagnostics and tests. */
 int activation_drain_deferred(struct chain_activation_controller *ctl);
 
 /* ── Reducer-as-ingest ─────────────────────────────────────────── */
 
 /* Where an incoming block came from. Mirrors the force/requested
- * semantics of the legacy process_new_block callers: P2P/compact arrive
+ * semantics of the historical block-intake callers: P2P/compact arrive
  * unrequested (force=false, relay pre-filters apply); SUBMIT/MINED/REPAIR
- * are locally requested (force=true, relay pre-filters skipped). The
- * source is informational for now — the force flag is the live arg. */
+ * are locally requested (force=true, relay pre-filters skipped). The source
+ * is informational for now — the force flag is the live arg. */
 enum reducer_source {
     REDUCER_SRC_P2P = 0,       /* msg_blocks full block */
     REDUCER_SRC_COMPACT,       /* msg_compact reassembled block */
@@ -184,26 +185,26 @@ enum reducer_source {
 };
 
 /* reducer_is_authoritative — always true after the single-engine cleanup.
- * Live block-intake call sites use the reducer pipeline, not legacy
- * process_new_block. */
+ * Live block-intake call sites use the reducer pipeline, not the historical
+ * single-engine intake path. */
 bool reducer_is_authoritative(void);
 
 /* reducer_ingest_block — the synchronous block-intake entry that drives
- * the eight Wave-S Job stages instead of legacy activate_best_chain.
+ * the eight Wave-S Job stages instead of the historical single-engine
+ * activation path.
  *
- * Contract (mirrors process_new_block's synchronous accept/reject):
+ * Contract (mirrors the historical synchronous accept/reject behavior):
  *   1. check_block (stateless PoW/merkle/structure) runs FIRST, inline,
  *      BEFORE any log/stage mutation. A garbage block is rejected with a
- *      verdict in `out` and the function returns false — exactly as
- *      process_new_block:1022 does, giving the P2P/submit caller its
- *      DoS/ban reason without polluting the stage log.
+ *      verdict in `out` and the function returns false, giving the P2P/submit
+ *      caller its DoS/ban reason without polluting the stage log.
  *   2. The header (+raw bytes) is pushed into the header_admit_inbox so
  *      the reducer's producer path (step 2) can build the block_index.
- *   3. Under ctl->mutex (the same serialization point activate_best_chain
- *      uses), the eight stage step bodies are drained synchronously for
- *      the target height range — including a reorg disconnect when a
- *      better fork is selected (step 4) — ahead of the 2s supervisor
- *      tickers, so a single block reaches AT_TIP within the call.
+ *   3. Under ctl->mutex (the reducer activation serialization point), the
+ *      eight stage step bodies are drained synchronously for the target height
+ *      range — including a reorg disconnect when a better fork is selected
+ *      (step 4) — ahead of the 2s supervisor tickers, so a single block
+ *      reaches AT_TIP within the call.
  *   4. The freshly-written validate_headers_log / tip_finalize_log rows
  *      for the target height are read back and mapped into `out`
  *      (validation_state) so validation_state_is_valid() / the reject

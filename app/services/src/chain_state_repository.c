@@ -292,9 +292,9 @@ static enum csr_result csr_validate_locked(
      * tip cannot be a rollback, regardless of what other blocks the
      * block_index has cached above the active chain. This shape arises
      * legitimately during body-pull →
-     * activate_best_chain: body-pull pre-populates the block_index
+     * reducer activation: body-pull pre-populates the block_index
      * (and SQLite) for hundreds of blocks above the active tip, then
-     * activate_best_chain advances the active tip one block at a
+     * reducer activation advances the active tip one block at a
      * time into that pre-populated range. Before this carve-out
      * every forward step from h=N → h=N+1 was rejected as
      * stale_index because sql_max sat at h=N+1000+. The 2026-04-10

@@ -651,9 +651,9 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         return CEC_REJECTED_PERSIST;
     }
 
-    /* When the new tip is below the current active tip, this
-     * "promotion" is in fact a disconnect — used by disconnect_tip
-     * during sibling-fork reorg recovery. The evidence controller has
+    /* When the new tip is below the current active tip, this "promotion" is in
+     * fact a reducer unwind during sibling-fork reorg recovery. The evidence
+     * controller has
      * already vetted the new tip via chain_evidence_record; pass that
      * authority through to CSR as a rollback authorization so the
      * UTXO-orphan-rows guard (csr step 7) doesn't reject the legitimate

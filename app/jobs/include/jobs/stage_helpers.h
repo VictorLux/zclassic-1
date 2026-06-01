@@ -99,8 +99,8 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * reading active_chain_at(H+1)) and then collapses the visible chain[]
  * window back to the finalized height via active_chain_move_window_tip, then
  * publishes the authority through the reducer's explicit tip publication.
- * Legacy keeps a wider window because activate_best_chain assembles chain[]
- * out to find_most_work_chain's candidate before connect_tip walks it; the
+ * The old single-engine path kept a wider window by assembling chain[] out to
+ * find_most_work_chain's candidate before block-by-block validation; the
  * reducer had no equivalent and wedged after a single block.
  *
  * This helper restores that property: it selects the most-work candidate

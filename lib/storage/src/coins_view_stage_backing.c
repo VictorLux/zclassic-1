@@ -74,7 +74,7 @@ static bool csb_batch_write_impl(void *self, struct coins_map *map_coins,
             LOG_FAIL("coins_view_stage_backing",
                      "batch_write: STAGE-owned coins.db commit failed");
         /* Keep the legacy coins_tip mirror warm so the downstream
-         * connect_tip flush + SHA3 checkpoint see a consistent cache. */
+         * reducer flush + SHA3 checkpoint see a consistent cache. */
     }
 
     return sb->legacy.vtable->batch_write(sb->legacy.impl, map_coins,

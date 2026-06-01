@@ -128,12 +128,12 @@ void block_clear_seen(const struct uint256 *hash);
 bool tx_already_seen(const struct uint256 *hash);
 void tx_mark_seen(const struct uint256 *hash);
 
-/* decide whether a freshly processed block may safely be
- * added to the dedup ring., every received block was
- * marked seen BEFORE process_new_block; if process_new_block
- * SKIP'd (e.g. ACTIVATION_SKIP_ALREADY_RUNNING from controller
- * mutex contention), the block was indexed-but-not-connected AND
- * permanently dedup'd, leaving it stuck in block_index forever.
+/* decide whether a freshly processed block may safely be added to the dedup
+ * ring. Historically, every received block was marked seen BEFORE the
+ * synchronous block-intake path; if intake SKIP'd (e.g.
+ * ACTIVATION_SKIP_ALREADY_RUNNING from controller mutex contention), the block
+ * was indexed-but-not-connected AND permanently dedup'd, leaving it stuck in
+ * block_index forever.
  *
  * Returns true only when the block is in the active chain —
  * i.e. has actually been activated, not just received and

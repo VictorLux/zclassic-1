@@ -355,8 +355,9 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
      * The flat file may have stale values for blocks that were connected
      * via P2P after the LevelDB post-load but before the file was saved.
      * These blocks can have truncated chain_work (only low 32 bits set)
-     * because connect_tip computed them with a pprev that had wrong state.
-     * Recomputing from the sorted array with correct pprev fixes this. */
+     * because an earlier validation pass computed them with a pprev that had
+     * wrong state. Recomputing from the sorted array with correct pprev fixes
+     * this. */
     {
         int fixed_work = 0, fixed_tx = 0;
         for (uint32_t i = 0; i < count; i++) {

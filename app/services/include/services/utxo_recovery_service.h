@@ -74,7 +74,7 @@ bool utxo_recovery_prepare_reimport(struct node_db *ndb);
 struct utxo_import_result {
     struct zcl_result status; /* rich status for service-result discipline */
     bool imported;          /* UTXOs were successfully imported */
-    bool skip_activate;     /* caller should skip activate_best_chain */
+    bool skip_activate;     /* caller should skip reducer activation */
     int height;             /* discovered import height */
     uint64_t utxo_count;    /* number of UTXOs imported */
     char anchor_reason[64]; /* activation anchor reason, if set */
@@ -91,7 +91,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
 struct chain_restore_result {
     struct zcl_result status; /* rich status for service-result discipline */
     bool restored;          /* chain tip was successfully restored */
-    bool skip_activate;     /* caller should skip activate_best_chain */
+    bool skip_activate;     /* caller should skip reducer activation */
     int restored_height;    /* restored tip height, -1 if none */
     struct uint256 restored_hash; /* restored tip hash, null if none */
     char anchor_reason[64]; /* activation anchor reason, if set */
@@ -108,7 +108,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
 
 struct recovery_exec_result {
     struct zcl_result status; /* rich status for recovery execution */
-    bool skip_activate;     /* caller should skip activate_best_chain */
+    bool skip_activate;     /* caller should skip reducer activation */
     bool recovered;         /* a recovery action was taken */
 };
 

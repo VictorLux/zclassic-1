@@ -21,13 +21,13 @@
  * invalidateblock NEVER connects a block. It only:
  *   1. marks the target pindex BLOCK_FAILED_VALID,
  *   2. propagates BLOCK_FAILED_CHILD to its descendants,
- *   3. disconnects the active chain back below the target (if the target
- *      is on the active chain) via the EXISTING validated `disconnect_tip`,
+ *   3. moves the active-chain cursor back below the target (if the target
+ *      is on the active chain) through the reducer stage-unwind path,
  *   4. persists the status flips, and
- *   5. kicks the activation controller so `activate_best_chain` reconnects
- *      the next-best chain — every reconnected block runs the FULL
- *      `connect_block` validator (Equihash + scripts + Sapling). No
- *      consensus rule changes, no validation skipping.
+ *   5. kicks the reducer so the next-best chain drains through the
+ *      stage pipeline — every applied block runs the FULL `connect_block`
+ *      validator (Equihash + scripts + Sapling). No consensus rule changes,
+ *      no validation skipping.
  *
  * reconsiderblock is the inverse: it clears BLOCK_FAILED_VALID/CHILD on
  * the target and its descendants, persists, and kicks activation so the
@@ -95,10 +95,10 @@ void process_block_clear_invalid(struct main_state *ms,
                                  struct block_index *target,
                                  size_t *cleared_out);
 
-/* While the active chain contains `target`, disconnect the active tip
- * (using the EXISTING validated disconnect_tip) until the tip is
- * `target`'s parent. Returns false if a disconnect_tip call fails.
- * Returns true (no-op) when the active chain does not contain target. */
+/* While the active chain contains `target`, move the active-chain cursor to
+ * `target`'s parent and kick the reducer unwind. Returns false if the cursor
+ * move fails. Returns true (no-op) when the active chain does not contain
+ * target. */
 bool process_block_disconnect_to_parent(struct validation_state *state,
                                          struct main_state *ms,
                                          struct coins_view_cache *coins_tip,

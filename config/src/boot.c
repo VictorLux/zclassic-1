@@ -943,8 +943,8 @@ static bool boot_step_init_crypto_and_state(struct app_context *ctx,
     g_state.fTxIndex = ctx->tx_index;
     g_state.fCheckpointsEnabled = ctx->checkpoints_enabled;
 
-    /* Initialize chain activation controller — single authority for
-     * when activate_best_chain can run. Must be before any chain work. */
+    /* Initialize chain activation controller — single authority for when the
+     * reducer activation path can run. Must be before any chain work. */
     activation_controller_init(&g_activation_ctl, &g_state, &g_coins_tip,
                                params, ctx->datadir);
     activation_set_state(&g_activation_ctl, ACTIVATION_BOOT_PENDING,
@@ -2612,7 +2612,7 @@ bool app_init(struct app_context *ctx)
     /* Repair block index from SQLite.
      * After legacy import, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS
      * (they were validated by zclassicd but our index doesn't know that).
-     * Without this, activate_best_chain won't extend the chain past
+     * Without this, reducer activation won't extend the chain past
      * previously-connected blocks because it only follows fully-validated
      * entries. Also fix any stale file positions. */
     if (g_node_db.open && g_state.map_block_index.size > 1000) {
@@ -2762,7 +2762,7 @@ bool app_init(struct app_context *ctx)
 
     /* Scan block files on disk if HAVE_DATA is missing or if entries claim
      * HAVE_DATA but still have placeholder header fields. The latter blocks
-     * activation because connect_tip must reject nBits=0 placeholders.
+     * activation because the validator must reject nBits=0 placeholders.
      * Uses scan_max_have_data_h from the single-pass scan above
      * instead of another partial iteration. */
     {
@@ -2808,7 +2808,7 @@ bool app_init(struct app_context *ctx)
                 /* Restore chain tip to match UTXO snapshot height when
                  * the active chain is far below the coins tip. This happens
                  * after LDB import: the UTXO set is at 3M+ but block files
-                 * only cover up to ~2M, so activate_best_chain sets a low
+                 * only cover up to ~2M, so reducer activation sets a low
                  * tip. Without this fix, the node tries to re-connect
                  * blocks that are already reflected in the UTXO set, causing
                  * bad-txns-inputs-missingorspent failures. */
@@ -3106,15 +3106,15 @@ sapling_tree_boot_check_done:
      * UTXO/chain reconcile span — clear-failed-above-tip, the
      * coins-vs-chain height mismatch repair, clean-above-tip, and the
      * activation anchor cleanup. This stretch sat between the
-     * sapling_tree_load marker and the activate_best_chain boot_phase and
-     * was part of the warm-start unattributed gap. */
+     * sapling_tree_load marker and the reducer activation boot phase and was
+     * part of the warm-start unattributed gap. */
     int64_t t_reconcile_utxochain = boot_clock_ms();
 
     /* Clear BLOCK_FAILED flags above the chain tip on boot.
      * After a UTXO repair or crash recovery, blocks may be marked
      * BLOCK_FAILED_VALID/BLOCK_FAILED_CHILD from a prior session where
      * the UTXO set was incomplete. With the UTXO set now repaired,
-     * these blocks should be re-validated. Without this, activate_best_chain
+     * these blocks should be re-validated. Without this, reducer activation
      * skips them and the node is permanently stuck. */
     chain_restore_clear_failed_above_tip(&g_state);
 
@@ -3294,7 +3294,7 @@ sapling_tree_boot_check_done:
     {
         int restored_h = active_chain_height(&g_state.chain_active);
         if (boot_restored_authority_tip && restored_h > 1000) {
-            printf("[boot] skipping initial activate_best_chain after "
+            printf("[boot] skipping initial reducer activation after "
                    "authority restore h=%d; coordinator will advance after "
                    "RPC/P2P start\n",
                    restored_h);
@@ -3303,7 +3303,7 @@ sapling_tree_boot_check_done:
                         restored_h);
         } else {
             struct boot_phase bp_act;
-            boot_phase_begin(&bp_act, "activate_best_chain");
+            boot_phase_begin(&bp_act, "reducer_activation");
             struct activation_exec_outcome outcome;
             activation_request_connect(&g_activation_ctl, ACTIVATION_SRC_BOOT,
                                        NULL, &outcome);
@@ -3319,7 +3319,7 @@ sapling_tree_boot_check_done:
      * restore limp (nBits==0 entries, chain_active holes below tip); the
      * finalize also covers the block-file-scan + `Post-activation: fixed
      * N pprev heights from anchor` path in msg_headers that runs before
-     * activate_best_chain completes. No-op when the integrity check
+     * reducer activation completes. No-op when the integrity check
      * passes; logs a loud stderr line + fills what it can when it does
      * not. Safe on every boot — O(block_map) + one disk read per nBits
      * gap; the real live-node shape is ≤200 reads.

@@ -107,8 +107,8 @@ bool active_chain_move_window_tip(struct active_chain *c,
                                   struct block_index *bi);
 /* Forward-only widen of the visible chain[] window to a most-work candidate
  * that builds on the current tip, WITHOUT publishing an authoritative tip.
- * The reducer's structural analogue of legacy activate_best_chain assembling
- * chain[] out to find_most_work_chain's candidate. No-op when
+ * The reducer's structural analogue of assembling chain[] out to
+ * find_most_work_chain's candidate. No-op when
  * candidate->nHeight <= c->height. See chainstate.c. */
 bool active_chain_extend_window(struct active_chain *c,
                                 struct block_index *candidate);

@@ -80,7 +80,7 @@ void process_block_log_live_stage(int height, const char *stage,
 int active_tip_child_connect_limit(void);
 struct wallet *process_block_wallet(void);
 struct tx_mempool *process_block_mempool(void);
-/* "more pending" signal set/read by activate_best_chain and the public
+/* "more pending" signal set/read by staged activation drains and the public
  * process_block_active_tip_has_pending API. */
 void process_block_set_active_tip_more_pending(bool v);
 
@@ -112,7 +112,7 @@ static inline void process_block_check_crash_stage(
             &g_test_crash_stage_storage, memory_order_relaxed);
     if (__builtin_expect(armed == here, 0)) {
         fprintf(stderr,
-                "[crash-test] connect_tip: _exit(137) at stage=%s\n",
+                "[crash-test] process_block: _exit(137) at stage=%s\n",
                 process_block_crash_stage_name(here));
         fflush(stderr);
         _exit(137);

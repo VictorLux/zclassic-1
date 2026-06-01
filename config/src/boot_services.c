@@ -2494,8 +2494,8 @@ static void *background_utxo_replay(void *arg)
     /* ── Restore chain state from coins_best_block ──────────────
      * After snapshot import (file or P2P), coins_best_block in SQLite
      * points to the snapshot height, but the in-memory g_coins_tip and
-     * active chain are still at genesis. We must advance both so that
-     * activate_best_chain starts from the snapshot height, not genesis.
+     * active chain are still at genesis. We must advance both so the reducer
+     * activation path starts from the snapshot height, not genesis.
      * Without this, connect_block fails at height 1 with BIP30 because
      * the snapshot's UTXOs include block 1's unspent coinbase. */
     struct node_db *ndb_restore = boot_node_db();
@@ -3131,12 +3131,11 @@ bool app_init_services(struct app_context *ctx,
              * index with BLOCK_HAVE_DATA + nChainTx. Without this,
              * 6 GB of blocks sit unused on disk.
              *
-             * NOTE: blocks cannot be connected (activate_best_chain)
-             * without a UTXO set. The file service only downloads block
-             * files, not chainstate. Blocks are indexed so they don't
-             * need to be re-downloaded via P2P — once headers arrive
-             * and a UTXO snapshot is received, the blocks on disk will
-             * be used automatically. */
+             * NOTE: blocks cannot be connected without a UTXO set. The file
+             * service only downloads block files, not chainstate. Blocks are
+             * indexed so they don't need to be re-downloaded via P2P — once
+             * headers arrive and a UTXO snapshot is received, the blocks on
+             * disk will be used automatically. */
             /* Run scan even on partial downloads — 94% of blocks is
              * still useful. Blocks on disk can serve headers + delta sync. */
             {
@@ -3768,9 +3767,9 @@ static bool shutdown_flush_coins_to_sqlite(struct boot_svc_ctx *svc,
 static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 {
     /* Signal P2P threads to stop, then flush coins while threads wind down.
-     * The message thread checks g_stop each iteration (~100ms). Any
-     * in-flight activate_best_chain sees g_shutdown_requested and returns.
-     * After signal_stop, no new block processing starts. */
+     * The message thread checks g_stop each iteration (~100ms). Any in-flight
+     * reducer activation sees g_shutdown_requested and returns. After
+     * signal_stop, no new block processing starts. */
     printf("[shutdown] stopping network services\n");
     zcl_service_kernel_stop_all(&svc->network_kernel);
     printf("[shutdown] joining replay service\n");
@@ -3778,7 +3777,7 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 
     /* Flush coins to SQLite. The message thread is finishing its current
      * iteration. If it was mid-connect_block, it already flushed via the
-     * g_shutdown_requested handler in activate_best_chain. */
+     * g_shutdown_requested handler in the reducer activation path. */
     printf("Flushing coins cache to SQLite...\n");
     if (shutdown_flush_coins_to_sqlite(svc, "network-quiesce")) {
         printf("Coins cache flushed.\n");

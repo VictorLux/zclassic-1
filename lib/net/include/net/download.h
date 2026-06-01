@@ -131,7 +131,7 @@ size_t dl_queue_blocks(struct download_manager *dm,
                        size_t count);
 
 /* Push a block to the FRONT of the queue (highest priority).
- * Used by activate_best_chain when it needs the next sequential block. */
+ * Used by reducer activation when it needs the next sequential block. */
 void dl_queue_priority(struct download_manager *dm,
                        const struct uint256 *hash, int32_t height);
 

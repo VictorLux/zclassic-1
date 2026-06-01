@@ -75,8 +75,8 @@ static struct workpool *get_script_pool(void)
     return &g_script_pool;
 }
 
-/* Global Sapling tree pointer — set by process_block's connect_tip
- * before calling connect_block. NULL during just_check mode. */
+/* Global Sapling tree pointer — set by the reducer/process-block bridge before
+ * calling connect_block. NULL during just_check mode. */
 static struct incremental_merkle_tree *g_sapling_tree = NULL;
 
 void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree)
@@ -806,11 +806,10 @@ bool disconnect_block(const struct block *block,
     }
 
     if (pindex->pprev && pindex->pprev->phashBlock) {
-        /* Low-level: bypasses csr — `view` is the stack-local scratchpad
-         * built by disconnect_tip (process_block.c:1426). The global tip
-         * commit happens in disconnect_tip → update_tip(pprev) →
-         * process_block_commit_tip() → csr_commit_tip() after the flush
-         * policy propagates this view to coins_tip. */
+        /* Low-level: bypasses csr — `view` is the stack-local rollback
+         * scratchpad. The global tip commit happens after the reducer unwind
+         * path propagates this view to coins_tip and publishes through
+         * process_block_commit_tip() → csr_commit_tip(). */
         coins_view_cache_set_best_block(view, pindex->pprev->phashBlock);
     }
 

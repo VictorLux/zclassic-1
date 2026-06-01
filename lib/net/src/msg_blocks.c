@@ -293,13 +293,12 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
         block_free(&blk);
         return true;
     }
-    /* do NOT mark seen here. We previously called
-     * block_mark_seen() before process_new_block, so a block that
-     * was received + indexed but failed to activate (e.g.
-     * ACTIVATION_SKIP_ALREADY_RUNNING from controller mutex
-     * contention under 6+ peer arrival) got permanently dedup'd and
-     * never retried. mark_seen now happens post-processing, only
-     * when the block actually made it onto the active chain. */
+    /* do NOT mark seen here. We previously called block_mark_seen() before the
+     * synchronous intake path, so a block that was received + indexed but
+     * failed to activate (e.g. ACTIVATION_SKIP_ALREADY_RUNNING from controller
+     * mutex contention under 6+ peer arrival) got permanently dedup'd and
+     * never retried. mark_seen now happens post-processing, only when the block
+     * actually made it onto the active chain. */
 
     struct validation_state state;
     validation_state_init(&state);

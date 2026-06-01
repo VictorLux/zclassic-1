@@ -26,7 +26,7 @@ struct boot_activation_decision {
 };
 
 /* Single function replaces 5 scattered skip_activate mutations.
- * Called once at boot, right before activate_best_chain(). */
+ * Called once at boot, right before reducer activation. */
 void boot_should_activate_chain(struct boot_activation_decision *out,
                                 int chain_tip_height,
                                 int64_t utxo_count,

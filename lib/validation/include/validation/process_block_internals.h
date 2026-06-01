@@ -1,11 +1,10 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Internal helpers exported from lib/validation/src/process_block.c for
- * the chain_advance atomic protocol in app/services/src/chain_advance.c.
+ * the chain-advance atomic protocol.
  *
- * Not for general use. These are the file-static helpers connect_tip
- * used to call directly; chain_advance now composes them in the
- * explicit 9-step protocol described in services/chain_advance.h. */
+ * Not for general use. These are low-level validation persistence and
+ * tip-publication helpers composed by the reducer path. */
 
 #ifndef ZCL_VALIDATION_PROCESS_BLOCK_INTERNALS_H
 #define ZCL_VALIDATION_PROCESS_BLOCK_INTERNALS_H
@@ -23,7 +22,7 @@ struct coins_view_sqlite *process_block_get_coins_sqlite(void);
 struct block_tree_db *process_block_get_block_tree(void);
 
 /* csr_commit_tip wrapper used internally by update_tip + the
- * chain_advance protocol. Returns true on CSR_OK or the test-harness
+ * chain-advance protocol. Returns true on CSR_OK or the test-harness
  * fallback path; false on any real CSR rejection (caller must abort
  * the in-flight chain advance). */
 bool process_block_commit_tip_ext(struct main_state *ms,
