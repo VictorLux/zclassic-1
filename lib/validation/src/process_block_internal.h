@@ -7,6 +7,7 @@
  * process_block_failed_child.c,
  * process_block_self_heal.c, process_block_self_heal_chain_scan.c,
  * process_block_self_heal_hot_loop.c,
+ * process_block_self_heal_inject.c,
  * process_block_self_heal_scan_state.c,
  * process_block_self_heal_sqlite_tx_index.c,
  * process_block_self_heal_legacy_rpc.c,
@@ -117,7 +118,7 @@ static inline void process_block_check_crash_stage(
     }
 }
 
-/* process_block_self_heal.c */
+/* process_block_self_heal_inject.c */
 bool process_block_inject_missing_utxo(
     struct coins_view_cache *coins_tip,
     const struct uint256 *txid,
@@ -127,6 +128,7 @@ bool process_block_inject_missing_utxo(
     const char *source,
     int retry_no);
 
+/* process_block_self_heal_legacy_rpc.c */
 bool process_block_recover_missing_utxo_from_legacy_rpc(
     struct coins_view_cache *coins_tip,
     const struct uint256 *txid,
@@ -154,6 +156,7 @@ bool process_block_recover_missing_utxo_from_chain_scan(
     const char *datadir,
     int retry_no);
 
+/* process_block_self_heal.c */
 bool process_block_is_missing_utxo_failure(
     const struct validation_state *state);
 

@@ -1675,6 +1675,27 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
         ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
         ASSERT(strstr(buf, "last_reimport_attempted") == NULL);
+        ASSERT(strstr(buf, "process_block_inject_missing_utxo(") == NULL);
+        ASSERT(strstr(buf, "coins_from_transaction") == NULL);
+        ASSERT(strstr(buf, "coins_view_cache_modify_new") == NULL);
+        ASSERT(strstr(buf, "COINS_CACHE_DIRTY") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/"
+                         "process_block_self_heal_inject.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_inject_missing_utxo") != NULL);
+        ASSERT(strstr(buf, "coins_from_transaction") != NULL);
+        ASSERT(strstr(buf, "coins_view_cache_modify_new") != NULL);
+        ASSERT(strstr(buf, "COINS_CACHE_DIRTY") != NULL);
+        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
+        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
+        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
+        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
+        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
+        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
         free(buf);
         buf = NULL;
 

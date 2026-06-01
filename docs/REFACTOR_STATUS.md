@@ -359,6 +359,11 @@ node soak.
   The new file owns `needs_reimport` flag writes, recent-reimport detection,
   activation-pause get/clear APIs, test trigger hooks, and shutdown requests.
   `process_block_self_heal.c` is down from 302 to 177 lines.
+- Recovered-UTXO cache injection moved from `process_block_self_heal.c` into
+  `process_block_self_heal_inject.c`. The new file owns verified recovered-tx
+  materialization into the coins cache plus the recovery-source diagnostic,
+  leaving `process_block_self_heal.c` focused on missing-UTXO failure
+  tracking. `process_block_self_heal.c` is down from 177 to 138 lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -516,8 +521,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `lib/validation/src/process_block_core.c` now owns best-work chain
   selection only.
 - `lib/validation/src/process_block_self_heal.c` now owns missing-UTXO
-  failure tracking and the shared recovered-UTXO injection helper only; keep
-  auditing it for stale helper boundaries as adjacent recovery code changes.
+  failure tracking only; keep auditing the process-block split set for stale
+  helper boundaries as adjacent recovery code changes.
 
 ## Next Work Order
 
@@ -535,6 +540,38 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after splitting recovered-UTXO injection out of
+  `process_block_self_heal.c`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production stale terminology search:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
+  returned no matches.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make -j$(nproc)`: pass after adding
+  `lib/validation/src/process_block_self_heal_inject.c`.
+- `make lint`: pass after the recovered-UTXO injection split; E1, E2, E6,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates all report zero grandfathered entries.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  updated process-block split guard.
+- Focused filtered tests passed:
+  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
+  `./test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
+  `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
+  and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the recovered-UTXO injection
+  split, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 13:50:18 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after splitting self-heal scan state and hot-loop
   policy out of `process_block_self_heal.c`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing

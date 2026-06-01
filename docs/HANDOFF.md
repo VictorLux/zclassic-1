@@ -83,9 +83,11 @@ If the node is not running, record that explicitly before claiming live proof.
   recovery plus consensus-backed disk verification.
   `process_block_self_heal_scan_state.c` now owns scan counters/tunables, and
   `process_block_self_heal_hot_loop.c` owns needs-reimport, activation pause,
-  and shutdown policy. Remaining process-block split debt is mostly cleanup
-  around failure tracking / injection boundaries and any stale scaffolding
-  found by the next audit.
+  and shutdown policy.
+  `process_block_self_heal_inject.c` now owns recovered-UTXO cache injection.
+  `process_block_self_heal.c` now owns missing-UTXO failure tracking only.
+  Remaining process-block split debt is mostly cleanup of stale scaffolding or
+  helper boundaries found by the next audit.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to
