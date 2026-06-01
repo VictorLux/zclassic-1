@@ -7,7 +7,7 @@
  */
 
 #include "test/test_helpers.h"
-#include "storage/schema_migration.h"
+#include "models/schema_migration.h"
 #include "models/database.h"
 
 #include <stdio.h>

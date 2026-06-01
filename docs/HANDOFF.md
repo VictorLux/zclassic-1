@@ -67,12 +67,14 @@ If the node is not running, record that explicitly before claiming live proof.
   `active_chain_set_tip()` compatibility wrapper. Current E6 baseline:
   24 write surfaces.
 - Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is down to 75 grandfathered
+  `tools/scripts/lib_layering_baseline.txt` is down to 71 grandfathered
   lib-to-app includes after moving file manifest protocol declarations into
   `lib/net/include/net/file_manifest.h`, moving generic node DB path building
-  into `lib/util`, moving UTXO script classification into `lib/script`, and
-  replacing a net internal service include with a forward declaration. Keep
-  shrinking it; do not add new entries.
+  into `lib/util`, moving UTXO script classification into `lib/script`,
+  replacing a net internal service include with a forward declaration, moving
+  schema migration into the Model shape, and moving file-offer SQLite
+  persistence into the FileOffer model. Keep shrinking it; do not add new
+  entries.
 - Controller raw-SQL debt:
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
   routing wallet scan / legacy import exec helpers,

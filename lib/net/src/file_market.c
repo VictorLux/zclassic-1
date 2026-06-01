@@ -2,16 +2,13 @@
  *
  * ZCL Market: Crypto-incentivized P2P file sharing.
  *
- * In-memory offer cache + SQLite persistence + serialization.
- * Gossip logic: receive offers, decrement TTL, re-broadcast. */
+ * In-memory offer cache + serialization. SQLite persistence lives in the
+ * FileOffer model; gossip logic receives offers, decrements TTL, and
+ * re-broadcasts. */
 
 #include "platform/time_compat.h"
 #include "net/file_market.h"
 #include "core/serialize.h"
-#include "models/activerecord.h"
-#include "models/database.h"
-#include "models/file_offer.h"
-#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include <stdint.h>
 #include <string.h>
@@ -351,136 +348,4 @@ bool file_market_release_peer_chunks(int peer_id)
     }
     pthread_mutex_unlock(&g_market_mutex);
     return found;
-}
-
-/* ── SQLite Persistence ─────────────────────────────────────────── */
-
-bool db_file_offer_save(struct node_db *ndb,
-                        const struct file_offer *offer)
-{
-    if (!ndb || !ndb->open) LOG_FAIL("market", "db_file_offer_save: db not open");
-    if (!offer) LOG_FAIL("market", "db_file_offer_save: offer is NULL");
-
-    struct ar_callbacks *cbs = db_file_offer_callbacks();
-    AR_VALIDATE_RECORD(cbs, "file_offer", offer, db_file_offer_validate);
-    if (!ar_run_before_save(cbs, (void *)offer))
-        return false;
-
-    const char *sql =
-        "INSERT OR REPLACE INTO file_offers"
-        "(root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?)";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) LOG_FAIL("market", "db_file_offer_save: prepare failed: %s", sqlite3_errmsg(ndb->db));
-
-    sqlite3_bind_blob(s, 1, offer->root_hash, 32, SQLITE_STATIC);
-    sqlite3_bind_text(s, 2, offer->filename, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(s, 3, (int64_t)offer->size_bytes);
-    sqlite3_bind_int(s, 4, (int)offer->num_chunks);
-    sqlite3_bind_int64(s, 5, offer->price_per_mb);
-    sqlite3_bind_blob(s, 6, offer->z_addr, 43, SQLITE_STATIC);
-    sqlite3_bind_blob(s, 7, offer->peer_ip, 16, SQLITE_STATIC);
-    sqlite3_bind_int(s, 8, offer->peer_port);
-    sqlite3_bind_int64(s, 9, offer->last_seen ? offer->last_seen : (int64_t)platform_time_wall_time_t());
-    sqlite3_bind_int(s, 10, offer->ttl);
-
-    bool ok = AR_STEP_DONE(s);
-    sqlite3_finalize(s);
-    if (ok) ar_run_after_save(cbs, (void *)offer);
-    return ok;
-}
-
-static void row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
-{
-    memset(out, 0, sizeof(*out));
-    const void *blob = sqlite3_column_blob(s, 0);
-    if (blob) memcpy(out->root_hash, blob, 32);
-
-    const char *name = (const char *)sqlite3_column_text(s, 1);
-    if (name) snprintf(out->filename, sizeof(out->filename), "%s", name);
-
-    out->size_bytes = (uint64_t)sqlite3_column_int64(s, 2);
-    out->num_chunks = (uint32_t)sqlite3_column_int(s, 3);
-    out->price_per_mb = sqlite3_column_int64(s, 4);
-
-    blob = sqlite3_column_blob(s, 5);
-    if (blob) memcpy(out->z_addr, blob, 43);
-
-    blob = sqlite3_column_blob(s, 6);
-    if (blob) memcpy(out->peer_ip, blob, 16);
-
-    out->peer_port = (uint16_t)sqlite3_column_int(s, 7);
-    out->last_seen = sqlite3_column_int64(s, 8);
-    out->ttl = (uint8_t)sqlite3_column_int(s, 9);
-}
-
-int db_file_offer_list(struct node_db *ndb,
-                       struct file_offer *out, size_t max)
-{
-    if (!ndb || !ndb->open) return 0;
-
-    const char *sql =
-        "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl"
-        " FROM file_offers ORDER BY last_seen DESC LIMIT ?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) return 0;
-
-    sqlite3_bind_int(s, 1, (int)max);
-    int count = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && (size_t)count < max) {
-        row_to_file_offer(s, &out[count]);
-        count++;
-    }
-    sqlite3_finalize(s);
-    return count;
-}
-
-bool db_file_offer_find(struct node_db *ndb,
-                        const uint8_t root_hash[32],
-                        struct file_offer *out)
-{
-    if (!ndb || !ndb->open) LOG_FAIL("market", "db_file_offer_find: db not open");
-
-    const char *sql =
-        "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl"
-        " FROM file_offers WHERE root_hash=?";
-
-    sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL);
-    if (rc != SQLITE_OK) LOG_FAIL("market", "db_file_offer_find: prepare failed: %s", sqlite3_errmsg(ndb->db));
-
-    sqlite3_bind_blob(s, 1, root_hash, 32, SQLITE_STATIC);
-    bool found = false;
-    if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
-        row_to_file_offer(s, out);
-        found = true;
-    }
-    sqlite3_finalize(s);
-    return found;
-}
-
-int db_file_offer_prune(struct node_db *ndb, int64_t max_age)
-{
-    if (!ndb || !ndb->open) return 0;
-
-    int64_t cutoff = (int64_t)platform_time_wall_time_t() - max_age;
-    char sql[128];
-    snprintf(sql, sizeof(sql),
-             "DELETE FROM file_offers WHERE last_seen < %lld",
-             (long long)cutoff);
-
-    char *err = NULL;
-    int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        sqlite3_free(err);
-        return 0;
-    }
-    return sqlite3_changes(ndb->db);
 }

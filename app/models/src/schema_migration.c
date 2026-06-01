@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Schema Migration Framework — see header for design rationale.
+ * ar-validate-skip:migration-registry-not-a-row
  *
  * Implementation
  * --------------
@@ -13,7 +14,7 @@
  * threads are spawned, and read-only thereafter. No mutex needed.
  */
 
-#include "storage/schema_migration.h"
+#include "models/schema_migration.h"
 #include "models/database.h"
 #include "util/log_macros.h"
 

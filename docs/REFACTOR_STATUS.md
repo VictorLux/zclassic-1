@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, and controller raw-SQL adoption are at
   zero grandfathered entries; E6 is down to 24 grandfathered write surfaces,
-  lib-layering is down to 75 grandfathered includes, raw allocation debt is at
+  lib-layering is down to 71 grandfathered includes, raw allocation debt is at
   zero active allowlist entries, and other ratchet baselines still grandfather
   real debt.
 
@@ -132,6 +132,10 @@ node soak.
   declaration, and removed the storage-layer model include from
   `coins_view_sqlite.c`, dropping the lib-to-app include baseline from 79 to
   75.
+- Schema migration now lives in the Model shape instead of `lib/storage`, and
+  file-offer SQLite persistence moved from `lib/net/src/file_market.c` into
+  `app/models/src/file_offer.c` behind the FileOffer model lifecycle. The
+  lib-to-app include baseline is down from 75 to 71.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -232,7 +236,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 ### Controller And Layering Debt
 
 - Lib-layering debt remains behind `tools/scripts/lib_layering_baseline.txt`
-  with 75 grandfathered lib-to-app includes.
+  with 71 grandfathered lib-to-app includes.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
 - `lib/validation/src/process_block_core.c` still mixes chain selection,
@@ -253,6 +257,30 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after moving schema migration and file-offer
+  persistence into the Model shape.
+- `make lint`: pass after moving schema migration into `app/models` and
+  file-offer SQLite persistence into the FileOffer model; E1, E2, supervisor,
+  E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
+  remain at zero active debt, E6 is 24 grandfathered write surfaces, and
+  lib-layering is 71 grandfathered includes.
+- `make test_parallel`: pass after rebuilding the suite binary with the moved
+  schema migration and FileOffer model persistence sources.
+- Focused filtered tests passed:
+  `./test_parallel --only=schema_migration --timeout=120 --verbose`,
+  `./test_parallel --only=file_market --timeout=120 --verbose`, and
+  `./test_parallel --only=models --timeout=120 --verbose`.
+- `./test_parallel --timeout=180`: pass after the Model-shape persistence
+  move, `0/279` groups failed in 57.0s.
+- Quick live sample at 2026-06-01 04:04:04 UTC after the Model-shape
+  persistence move: `systemctl --user is-active zclassic23` reported
+  `active`, `getblockcount=3130701`,
+  `gettxoutsetinfo.height=3130701`, `txouts=1353559`, RPC listened on
+  `127.0.0.1:18232`, P2P listened on `0.0.0.0:8023` / `[::]:8023`, and a
+  journal scan since 2026-06-01 03:58:00 UTC found no low-tip regression,
+  integrity failure, OOM, fatal, segfault, assert, panic, or
+  `DB_ERR_TIP_MISMATCH` signal. This is a continuity check, not the final
+  soak.
 - `make -j$(nproc)`: pass after moving `zcl_node_db_path()` into `lib/util`,
   moving UTXO script classification into `lib/script`, removing the
   storage-layer UTXO model include, and replacing the net internal service

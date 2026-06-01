@@ -32,5 +32,13 @@
 struct ar_callbacks *db_file_offer_callbacks(void);
 bool db_file_offer_validate(const struct file_offer *offer,
                             struct ar_errors *errors);
+bool db_file_offer_save(struct node_db *ndb,
+                        const struct file_offer *offer);
+int db_file_offer_list(struct node_db *ndb,
+                       struct file_offer *out, size_t max);
+bool db_file_offer_find(struct node_db *ndb,
+                        const uint8_t root_hash[32],
+                        struct file_offer *out);
+int db_file_offer_prune(struct node_db *ndb, int64_t max_age);
 
 #endif

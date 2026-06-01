@@ -50,8 +50,8 @@
  * Gaps are allowed (e.g., 19, 21, 25).
  */
 
-#ifndef ZCL_STORAGE_SCHEMA_MIGRATION_H
-#define ZCL_STORAGE_SCHEMA_MIGRATION_H
+#ifndef ZCL_MODELS_SCHEMA_MIGRATION_H
+#define ZCL_MODELS_SCHEMA_MIGRATION_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -123,4 +123,4 @@ int schema_migration_latest_version(void);
 /* Check if a specific migration has been applied. */
 bool schema_migration_is_applied(struct node_db *ndb, int version);
 
-#endif /* ZCL_STORAGE_SCHEMA_MIGRATION_H */
+#endif /* ZCL_MODELS_SCHEMA_MIGRATION_H */
