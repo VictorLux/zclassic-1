@@ -3,7 +3,8 @@
  * Internal declarations shared across the process_block_* translation
  * units (process_block.c, process_block_core.c, process_block_index.c,
  * process_block_tip_child.c, process_block_tip_publish.c,
- * process_block_runtime_hooks.c, process_block_failed_child.c,
+ * process_block_contextual_header.c, process_block_runtime_hooks.c,
+ * process_block_failed_child.c,
  * process_block_self_heal.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
  * for use outside this directory; the public surface lives in
@@ -175,9 +176,10 @@ extern unsigned int g_last_block_file_size; /* defined in process_block_index.c 
 bool block_index_hydrate_from_disk(struct block_index *pindex,
                                    const char *datadir);
 
-/* process_block_core.c helpers exposed to sibling .c files in the
- * WS-6 phase 1 split. add_to_block_index used by accept_block_header.c.
- * process_block_should_skip_contextual_header is already declared in
+/* accept_block_header.c helpers. add_to_block_index is used by the
+ * header-admit reducer stage through the public accept_block_header.h
+ * contract. process_block_should_skip_contextual_header lives in
+ * process_block_contextual_header.c and is declared in
  * <validation/process_block.h> (public). */
 struct block_index *add_to_block_index(struct main_state *ms,
                                        const struct block_header *header);

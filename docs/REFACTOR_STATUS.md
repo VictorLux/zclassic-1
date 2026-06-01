@@ -325,6 +325,12 @@ node soak.
   `process_block_core.c` focused on chain selection and contextual-header
   skip logic. Stale monolith includes were also pruned, and
   `process_block_core.c` is down from 486 to 247 lines.
+- Contextual-header skip policy moved from `process_block_core.c` into
+  `process_block_contextual_header.c`. The new file owns
+  `process_block_should_skip_contextual_header()` plus its sparse
+  retarget/MTP-window helper, leaving `process_block_core.c` focused on
+  best-work chain selection. `process_block_core.c` is down from 247 to 177
+  lines.
 - The snapshot-sync router contract now lives in
   `lib/net/include/net/snapshot_sync_contract.h`, with
   `app/services/include/services/snapshot_sync_service.h` kept as a
@@ -479,9 +485,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `tools/scripts/lib_layering_baseline.txt` empty.
 - Controller raw-SQL debt is at zero grandfathered files. Keep
   `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` empty.
-- `lib/validation/src/process_block_core.c` still owns chain selection and
-  contextual-header skip logic; keep splitting remaining responsibilities by
-  purpose if a clearer boundary emerges.
+- `lib/validation/src/process_block_core.c` now owns best-work chain
+  selection only.
+- `lib/validation/src/process_block_self_heal.c` is the next obvious
+  process-block split candidate: it still combines missing-UTXO recovery
+  sources, legacy-RPC parsing, scan counters, and hot-loop pause signaling.
 
 ## Next Work Order
 
@@ -490,7 +498,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
    fixture names only when touched for adjacent work.
 3. Keep import/catchup/legacy-import code below the file-size ceiling while
    moving remaining mixed-purpose code toward the correct framework shape.
-4. Split `process_block_core.c` by responsibility.
+4. Split remaining mixed-purpose process-block files by responsibility
+   (`process_block_self_heal.c` is the next obvious target).
 5. Keep every lint baseline empty while continuing process-block and
    mixed-purpose file cleanup.
 6. Run `make lint`, rebuild `test_parallel`, run the suite, then prove live
@@ -498,6 +507,32 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `git diff --check`: pass after splitting contextual-header skip policy out
+  of `process_block_core.c`.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- Production stale terminology search:
+  `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]' --glob '!lib/test/**' --glob '!app/views/**'`
+  returned no matches.
+- All tracked lint baselines/allowlists remain empty:
+  `find tools -type f \( -name '*baseline*.txt' -o -name '*allowlist*.txt' \)`
+  reported 0 non-comment entries for every tracked file.
+- `make lint`: pass after the contextual-header split; E1, E2, E6,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates all report zero grandfathered entries.
+- `make -j$(nproc)`: pass after adding
+  `lib/validation/src/process_block_contextual_header.c`.
+- `./test_parallel --timeout=180`: pass after the contextual-header split,
+  `0/279` groups failed in 56.0s. This includes the
+  `skip_contextual:*` chain tests and the process-block split guard in
+  `test_make_lint_gates`.
+- Quick live sample attempt at 2026-06-01 13:06:19 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `git diff --check`: pass after emptying the E6 baseline.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.

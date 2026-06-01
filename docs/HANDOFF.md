@@ -73,8 +73,11 @@ If the node is not running, record that explicitly before claiming live proof.
   `lib/validation/src/process_block_core.c` is smaller after moving runtime
   hook dispatch, failed-child propagation, and block-index disk
   placement/hydration, tip-publication evidence/commit mechanics, and
-  active-tip child discovery/disk verification into purpose-named validation
-  files. It now carries chain selection and contextual-header skip logic.
+  active-tip child discovery/disk verification, and contextual-header skip
+  policy into purpose-named validation files. It now carries best-work chain
+  selection only. The next likely process-block split target is
+  `process_block_self_heal.c`, which still combines missing-UTXO recovery
+  sources, legacy-RPC parsing, scan counters, and hot-loop pause signaling.
 - Lib-layering debt:
   `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
   was removed by moving the snapshot-sync router contract to

@@ -4,87 +4,16 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Chain-selection and contextual-header helpers that survived deletion of
- * the legacy process_new_block / connect_tip / activate_best_chain engine. */
+ * Best-work chain-selection helpers that survived deletion of the legacy
+ * process_new_block / connect_tip / activate_best_chain engine. */
 
 #include "platform/time_compat.h"
 #include <stdio.h>
 
 #include "chain/chain.h"
-#include "consensus/params.h"
 #include "core/arith_uint256.h"
 #include "validation/main_state.h"
 #include "process_block_internal.h"
-
-/* returns true iff the pprev chain from pindex_prev can be
- * walked back through the retarget window and the median-time context
- * used at the far edge of that window. Each step must satisfy
- *   cursor->pprev != NULL && cursor->nHeight == cursor->pprev->nHeight + 1
- * Used to detect the post-FlyClient-snapshot tail where block_index
- * entries for the 193-block region between chain-restore backfill end
- * and fast-sync tip exist on disk but have no valid pprev linkage. */
-static bool process_block_pow_window_complete(
-    const struct block_index *pindex_prev,
-    int pow_window)
-{
-    const struct block_index *cursor = pindex_prev;
-    if (!cursor || pow_window <= 0)
-        return true;
-    for (int i = 0; i < pow_window; i++) {
-        if (!cursor->pprev)
-            return false;
-        if (cursor->nTime == 0)
-            return false;
-        if (cursor->nHeight != cursor->pprev->nHeight + 1)
-            return false;
-        cursor = cursor->pprev;
-    }
-
-    /* GetNextWorkRequired() walks `pow_window` entries, then calls
-     * block_index_get_median_time_past() on the cursor left just before
-     * that window. A metadata-only import anchor often has pprev=NULL
-     * and nTime=0; letting the retarget code use that sparse anchor makes
-     * honest headers fail with bad-diffbits. */
-    for (int i = 0; i < MEDIAN_TIME_SPAN; i++) {
-        if (!cursor || cursor->nTime == 0)
-            return false;
-        if (i + 1 < MEDIAN_TIME_SPAN) {
-            if (!cursor->pprev)
-                return false;
-            if (cursor->nHeight != cursor->pprev->nHeight + 1)
-                return false;
-        }
-        cursor = cursor->pprev;
-    }
-    return true;
-}
-
-bool process_block_should_skip_contextual_header(
-    const struct main_state *ms,
-    const struct block_index *pindex_prev,
-    const struct consensus_params *consensus)
-{
-    if (!pindex_prev)
-        return false;
-
-    int tip_h = active_chain_height(&ms->chain_active);
-
-    /* Case (a): pre-existing old-IBD / scrambled-height slack. */
-    if (tip_h > 100000 && pindex_prev->nHeight < tip_h - 1000)
-        return true;
-
-    /* Case (b) — post-FlyClient-snapshot tail. If the PoW
-     * averaging window cannot be walked contiguously, GetNextWorkRequired
-     * would return nProofOfWorkLimit (weakest-allowed) and every honest
-     * peer's real nBits would mismatch. Skip contextual check in that
-     * case; full validation runs later in connect_block(). */
-    int pow_window = consensus ? (int)consensus->nPowAveragingWindow : 17;
-    if (pow_window > 0 &&
-        !process_block_pow_window_complete(pindex_prev, pow_window))
-        return true;
-
-    return false;
-}
 
 /* add_to_block_index() relocated to lib/validation/src/accept_block_header.c
  * (its sole caller) in the single-engine swap so the runtime in-memory
@@ -242,6 +171,7 @@ struct block_index *find_most_work_chain(struct main_state *ms)
  * is the sole block-connect engine; every ingest call site routes through it.
  * Selection helpers remain here. Active-tip child disk verification lives in
  * process_block_tip_child.c, tip publication lives in
- * process_block_tip_publish.c, block-index hydration lives in
+ * process_block_tip_publish.c, contextual-header skip policy lives in
+ * process_block_contextual_header.c, block-index hydration lives in
  * process_block_index.c, and failed-child propagation lives in
  * process_block_failed_child.c. */

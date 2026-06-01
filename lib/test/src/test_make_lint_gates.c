@@ -1689,6 +1689,24 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
                == NULL);
         ASSERT(strstr(buf, "find_best_active_tip_child(") == NULL);
         ASSERT(strstr(buf, "find_verified_unlinked_active_tip_child(") == NULL);
+        ASSERT(strstr(buf, "process_block_should_skip_contextual_header(")
+               == NULL);
+        ASSERT(strstr(buf, "process_block_pow_window_complete(") == NULL);
+        ASSERT(strstr(buf, "consensus/params.h") == NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "lib/validation/src/process_block_contextual_header.c")
+               == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "process_block_should_skip_contextual_header")
+               != NULL);
+        ASSERT(strstr(buf, "process_block_pow_window_complete") != NULL);
+        ASSERT(strstr(buf, "find_most_work_chain") == NULL);
+        ASSERT(strstr(buf, "process_block_kick_gap_fill") == NULL);
+        ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
         free(buf);
         buf = NULL;
 

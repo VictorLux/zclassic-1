@@ -6,10 +6,11 @@
  *
  * process_block.c — top-level wiring for the validation/process_block
  * translation units. Split into:
- *   process_block_core.c        : connect/disconnect/accept/activate
- *   process_block_self_heal.c   : missing-UTXO recovery + hot-loop exit
- *   process_block_flush_policy.c: coins flush + Sapling persistence
- *   process_block_crash_hooks.c : PBCS_* crash-injection hooks
+ *   process_block_core.c             : best-work chain selection
+ *   process_block_contextual_header.c: sparse-header contextual skip policy
+ *   process_block_self_heal.c        : missing-UTXO recovery + hot-loop exit
+ *   process_block_flush_policy.c     : coins flush + Sapling persistence
+ *   process_block_crash_hooks.c      : PBCS_* crash-injection hooks
  *
  * This file keeps the cross-module accessor functions, the node_db
  * wiring, the "more pending" signal, and the misc helpers that don't
