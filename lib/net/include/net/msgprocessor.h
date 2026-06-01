@@ -18,12 +18,16 @@
 #include <stdbool.h>
 
 struct block;
+struct transaction;
 struct validation_state;
 
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
                                             void *ctx);
 typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
+typedef bool (*msg_snapshot_active_fn)(void *ctx);
+typedef void (*msg_wallet_tx_accepted_fn)(const struct transaction *tx,
+                                          void *ctx);
 
 struct msg_processor {
     struct main_state *main_state;
@@ -37,6 +41,10 @@ struct msg_processor {
     void *compact_block_submit_ctx;
     msg_peer_save_fn peer_save;
     void *peer_save_ctx;
+    msg_snapshot_active_fn snapshot_active;
+    void *snapshot_active_ctx;
+    msg_wallet_tx_accepted_fn wallet_tx_accepted;
+    void *wallet_tx_accepted_ctx;
 };
 
 /* ── P2P message dispatch table ──────────────────────────────────
@@ -77,6 +85,13 @@ void msg_processor_set_compact_block_submit(
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx);
+void msg_processor_set_snapshot_active(struct msg_processor *mp,
+                                       msg_snapshot_active_fn active,
+                                       void *ctx);
+void msg_processor_set_wallet_tx_accepted(
+    struct msg_processor *mp,
+    msg_wallet_tx_accepted_fn accepted,
+    void *ctx);
 
 bool msg_process_messages(void *ctx, struct p2p_node *node);
 bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle);

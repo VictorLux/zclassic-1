@@ -736,6 +736,10 @@ void msg_processor_init(struct msg_processor *mp,
     mp->compact_block_submit_ctx = NULL;
     mp->peer_save = NULL;
     mp->peer_save_ctx = NULL;
+    mp->snapshot_active = NULL;
+    mp->snapshot_active_ctx = NULL;
+    mp->wallet_tx_accepted = NULL;
+    mp->wallet_tx_accepted_ctx = NULL;
 
     /* Initialize download manager once (before threads start) */
     msg_get_download_mgr();
@@ -784,6 +788,27 @@ void msg_processor_set_peer_save(struct msg_processor *mp,
         return;
     mp->peer_save = save;
     mp->peer_save_ctx = ctx;
+}
+
+void msg_processor_set_snapshot_active(struct msg_processor *mp,
+                                       msg_snapshot_active_fn active,
+                                       void *ctx)
+{
+    if (!mp)
+        return;
+    mp->snapshot_active = active;
+    mp->snapshot_active_ctx = ctx;
+}
+
+void msg_processor_set_wallet_tx_accepted(
+    struct msg_processor *mp,
+    msg_wallet_tx_accepted_fn accepted,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->wallet_tx_accepted = accepted;
+    mp->wallet_tx_accepted_ctx = ctx;
 }
 
 int msg_get_height(void *ctx)

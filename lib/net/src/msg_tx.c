@@ -12,14 +12,9 @@
 #include "net/peer_scoring.h"
 #include "net/dandelion.h"
 #include "net/download.h"
-#include "services/snapshot_sync_service.h"
-#include "services/header_sync_service.h"
 #include "validation/check_transaction.h"
 #include "consensus/validation.h"
 #include "consensus/upgrades.h"
-#include "controllers/sync_controller.h"
-#include "wallet/wallet.h"
-#include "models/database.h"
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -31,6 +26,12 @@
 /* ── Dandelion++ tx propagation ────────────────────────────────── */
 struct dandelion_state g_dandelion;
 bool g_dandelion_init = false;
+
+static bool msg_tx_snapshot_active(const struct msg_processor *mp)
+{
+    return mp && mp->snapshot_active &&
+           mp->snapshot_active(mp->snapshot_active_ctx);
+}
 
 /* ── incoming `tx` classification + scoring ──────────────
  *
@@ -193,7 +194,7 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
             if (block_already_seen(&inv.hash))
                 continue;
             /* Don't request blocks during snapshot sync */
-            if (snapsync_is_active())
+            if (msg_tx_snapshot_active(mp))
                 continue;
             struct block_index *bi = block_map_find(
                 &mp->main_state->map_block_index, &inv.hash);
@@ -353,17 +354,8 @@ bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
             }
         }
 
-        {
-            struct wallet *wallet = msg_wallet(mp);
-            if (wallet) {
-                wallet_sync_transaction(wallet, &tx, NULL);
-                {
-                    struct node_db *ndb = msg_node_db(mp);
-                    if (ndb)
-                        node_db_sync_wallet_tx(ndb, &tx, wallet, 0);
-                }
-            }
-        }
+        if (mp->wallet_tx_accepted)
+            mp->wallet_tx_accepted(&tx, mp->wallet_tx_accepted_ctx);
     } else {
         event_emit(EV_TX_REJECTED, (uint32_t)node->id,
                    hash.data, 32);

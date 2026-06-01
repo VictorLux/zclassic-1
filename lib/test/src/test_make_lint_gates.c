@@ -1334,6 +1334,37 @@ static int t_handshake_peer_save_is_async(void)
     return failures;
 }
 
+static int t_tx_wallet_sync_is_callback_injected(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("tx wallet persistence and snapshot state are injected into net") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_wallet_tx_accepted") != NULL);
+        ASSERT(strstr(buf, "wallet_sync_transaction") != NULL);
+        ASSERT(strstr(buf, "node_db_sync_wallet_tx") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_snapshot_active") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_wallet_tx_accepted") != NULL);
+        free(buf);
+        buf = NULL;
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_tx.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "mp->wallet_tx_accepted") != NULL);
+        ASSERT(strstr(buf, "mp->snapshot_active") != NULL);
+        ASSERT(strstr(buf, "wallet_sync_transaction") == NULL);
+        ASSERT(strstr(buf, "node_db_sync_wallet_tx") == NULL);
+        ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
+        ASSERT(strstr(buf, "models/database.h") == NULL);
+        ASSERT(strstr(buf, "services/header_sync_service.h") == NULL);
+        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_repaired_index_persistence_contract(void)
 {
     int failures = 0;
@@ -1533,6 +1564,7 @@ int test_make_lint_gates(void)
     failures += t_boot_shutdown_persistence_order_contract();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();
+    failures += t_tx_wallet_sync_is_callback_injected();
     failures += t_boot_repaired_index_persistence_contract();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_sha3_window_tool_check_contract();

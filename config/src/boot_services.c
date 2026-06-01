@@ -727,6 +727,23 @@ static bool boot_submit_compact_block(struct block *block,
                                 REDUCER_SRC_COMPACT, false, state);
 }
 
+static bool boot_snapshot_active(void *ctx)
+{
+    (void)ctx;
+    return snapsync_is_active();
+}
+
+static void boot_wallet_tx_accepted(const struct transaction *tx, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !tx || !svc->wallet)
+        return;
+
+    wallet_sync_transaction(svc->wallet, tx, NULL);
+    if (svc->node_db)
+        (void)node_db_sync_wallet_tx(svc->node_db, tx, svc->wallet, 0);
+}
+
 struct boot_peer_save_ctx {
     struct db_peer peer;
     int64_t peer_id;
@@ -2483,6 +2500,10 @@ bool app_init_services(struct app_context *ctx,
                                            boot_submit_compact_block, svc);
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,
                                 svc);
+    msg_processor_set_snapshot_active(svc->msg_processor,
+                                      boot_snapshot_active, svc);
+    msg_processor_set_wallet_tx_accepted(svc->msg_processor,
+                                         boot_wallet_tx_accepted, svc);
 
     /* Initialize P2P connection manager */
     struct node_signals signals = {
