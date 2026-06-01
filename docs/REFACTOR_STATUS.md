@@ -669,6 +669,17 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- Runtime/status sample at 2026-06-01 18:26 UTC: zclassic23 and zclassicd are
+  separated correctly at the socket layer. zclassic23 is active under user
+  systemd with PID 3091443 on local P2P `8023` and RPC `18232`; zclassicd is a
+  separate process on P2P `8033` and RPC `8232`. zclassic23 RPC returned height
+  3,130,701, four peers in the sample, and `gettxoutsetinfo` reported
+  1,362,095 UTXOs. Caveat: zclassic23 dumped core once at 18:24:39 UTC
+  (`status=11/SEGV`) and systemd restarted it at 18:24:49 UTC. `coredumpctl`
+  is not installed and no core file was visible under
+  `/home/rhett/.zclassic-c23/cores`; treat live-soak proof as still missing.
+  The mirror status was `observing`, with zclassicd height still reported as 0
+  from zclassic23's mirror view.
 - Runtime/status sample at 2026-06-01 18:14 UTC: zclassic23 was active under
   user systemd with PID 3030320, local P2P `8023`, RPC `18232`, and no local
   `8033` listener owned by zclassic23. RPC returned height 3,130,701 and best
