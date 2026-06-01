@@ -1,12 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * event_log — append-only event log primitive (Phase 4 storage unification).
+ * event_log — append-only durable event stream primitive.
  *
- * The event log is the foundation of Phase 4: a single append-only file
- * that becomes the source of truth, with N projections derived from it.
- * This file ships ONLY the primitive; boot/runtime code wires concrete
- * producers and projections. Read
- * `docs/architecture/phase4-storage-unification.md` §"4a" for context.
+ * The event log is the durable source for reducer/projection replay.
+ * This file ships only the primitive; boot/runtime code wires concrete
+ * producers and projections. See `docs/FRAMEWORK.md` for the current
+ * reducer authority model.
  *
  * Wire format (per event)
  * -----------------------
@@ -39,8 +38,8 @@
  * The implementation takes a per-log mutex around append; reads use
  * pread and are safe under concurrent readers + a single appender.
  *
- * Phase 7a may replace pwrite/fsync with io_uring; the wire format is
- * frozen and must remain stable. */
+ * The append backend may change, but the wire format is frozen and must
+ * remain stable. */
 
 #ifndef ZCL_STORAGE_EVENT_LOG_H
 #define ZCL_STORAGE_EVENT_LOG_H
@@ -67,17 +66,17 @@ enum event_log_type {
     EV_WALLET_KEY_ADD       = 9,
     EV_WALLET_TX_SEEN       = 10,
     EV_STAGE_CURSOR_ADVANCE = 11,
-    /* Phase 4d-4 — znam_projection events. */
+    /* ZNAM projection events. */
     EV_ZNAM_REGISTER        = 12,
     EV_ZNAM_UPDATE          = 13,
     EV_ZNAM_TRANSFER        = 14,
     EV_ZNAM_RENEW           = 15,
     EV_ZNAM_EXPIRE          = 16,
-    /* Phase 4d-3 — wallet_view_projection public-only events. */
+    /* Wallet-view projection public-only events. */
     EV_WALLET_ADDR_DERIVED  = 17,
     EV_WALLET_NOTE_DECRYPTED = 18,
     EV_WALLET_UTXO_SEEN     = 19,
-    /* Phase 4d-5 — small-batch projection events. */
+    /* Small-batch projection events. */
     EV_CONTACT_SET          = 20,
     EV_CONTACT_TOUCHED      = 21,
     EV_CONTACT_DELETE       = 22,

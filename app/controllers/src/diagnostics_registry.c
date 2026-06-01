@@ -484,33 +484,33 @@ static const struct dump_entry g_dumpers[] = {
     { "crypto_registry", crypto_registry_dump_state_json,
                      "registered crypto schemes, statuses, implementations, and kind counts" },
     { "mempool_projection", mempool_projection_dump_state_json,
-                     "Phase 4d mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL" },
+                     "mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL" },
     { "peers_projection", peers_projection_dump_state_json,
-                     "Phase 4d peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED" },
+                     "peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED" },
     { "utxo_projection", utxo_projection_dump_state_json,
-                     "Phase 4b utxo_projection: open/path/last_consumed_offset, "
+                     "utxo_projection: open/path/last_consumed_offset, "
                      "utxo_count, events_consumed_total, emit/consume counters, "
                      "REPLACE collisions, last_catch_up_ms. UTXO set derived "
                      "from the event_log." },
     { "znam_projection", znam_projection_dump_state_json,
-                     "Phase 4d-4 znam projection: name_count, addr/text counts, "
+                     "znam projection: name_count, addr/text counts, "
                      "events_consumed_total, per-event-type counters, emit/fail "
                      "counters, last_consumed_offset, last_catch_up_ms." },
     { "wallet_projection", wallet_projection_dump_state_json,
-                     "Phase 4d-3 wallet view projection: public-only "
+                     "wallet view projection: public-only "
                      "address/tx/UTXO/note counts, total value, cursor, "
                      "and emit counters." },
     { "contacts_projection", contacts_projection_dump_state_json,
-                     "Phase 4d-5 contacts projection: count, cursor, "
+                     "contacts projection: count, cursor, "
                      "consume counters, emit counters, catch_up timing." },
     { "onion_announcements_projection", onion_ann_projection_dump_state_json,
-                     "Phase 4d-5 onion announcements projection: count, cursor, "
+                     "onion announcements projection: count, cursor, "
                      "consume counters, emit counters, catch_up timing." },
     { "hodl_history_projection", hodl_history_projection_dump_state_json,
-                     "Phase 4d-5 HODL history projection: count, cursor, "
+                     "HODL history projection: count, cursor, "
                      "consume counters, emit counters, catch_up timing." },
     { "block_index_projection", block_index_projection_dump_state_json,
-                     "Phase 4c block_index_projection: cursor, entry count, "
+                     "block_index_projection: cursor, entry count, "
                      "events consumed, replace collisions, last catch_up_ms" },
 };
 

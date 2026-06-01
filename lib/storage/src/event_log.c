@@ -7,14 +7,13 @@
  *
  * Implementation notes
  * --------------------
- * - Pure pwrite + fsync. Phase 7a may replace this with io_uring; the
- *   on-disk format is frozen and the recovery scan is what makes that
- *   replacement safe.
+ * - Pure pwrite + fsync. The on-disk format is frozen, and the recovery
+ *   scan is what keeps any future append backend safe.
  *
  * - The CRC is Castagnoli (CRC-32C, polynomial 0x1EDC6F41), reflected
  *   form, init 0xFFFFFFFF, final xor 0xFFFFFFFF. The software table is
  *   the reference implementation; x86 hosts with SSE4.2 use hardware
- *   CRC32C after a startup self-check proves byte-identical output.
+ *   CRC32C after a startup self-check matches reference output.
  *
  * - On open() the file is scanned from the tail to detect partial
  *   trailing writes (crash between header-fsync and sentinel-fsync, or
@@ -409,7 +408,7 @@ uint64_t event_log_append(event_log_t *log,
     uint32_t crc = crc32c(payload, payload_len);
     put_u32_le(hdr + 12, crc);
 
-    /* Phase 1: header + payload. */
+    /* Durable body write: header + payload. */
     if (full_pwrite(log->fd, hdr, EVT_HDR_LEN, (off_t)start) < 0) {
         pthread_mutex_unlock(&log->lock);
         fprintf(stderr,  // obs-ok:event-log-append-failure
@@ -436,7 +435,7 @@ uint64_t event_log_append(event_log_t *log,
         return UINT64_MAX;
     }
 
-    /* Phase 2: sentinel. */
+    /* Durable completion marker: sentinel. */
     uint8_t sent[EVT_SENTINEL_LEN];
     put_u64_le(sent + 0, EVENT_LOG_SENTINEL_MAGIC);
     put_u64_le(sent + 8, start);

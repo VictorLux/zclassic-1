@@ -373,7 +373,7 @@ ev_peer_dropped_parse(const void *payload, size_t len,
     return true;
 }
 
-/* ── EV_WALLET_* public-only payloads (Phase 4d-3) ──────────────── */
+/* ── EV_WALLET_* public-only payloads ───────────────────────────── */
 
 static inline size_t
 ev_wallet_key_add_serialized_len(const struct ev_wallet_key_add *ev)
@@ -563,7 +563,7 @@ ev_wallet_utxo_seen_parse(const void *payload, size_t len,
 }
 
 /* ── EV_CONTACT_* / EV_ONION_ANNOUNCEMENT / EV_HODL_SNAPSHOT
- *    (Phase 4d-5 small-batch projections) ──────────────────────── */
+ *    small-batch projection payloads ────────────────────────────── */
 
 static inline size_t
 ev_contact_set_serialized_len(const struct ev_contact_set *ev)
@@ -805,7 +805,7 @@ ev_hodl_snapshot_parse(const void *payload, size_t len,
     return true;
 }
 
-/* ── EV_UTXO_ADD / EV_UTXO_SPEND (Phase 4b — utxo_projection) ──────
+/* ── EV_UTXO_ADD / EV_UTXO_SPEND for utxo_projection ───────────────
  *
  * Frozen wire formats. Extending requires a new event_log_type id, not
  * an in-place change.
@@ -1076,7 +1076,7 @@ bool ev_block_body_parse(const uint8_t *in, size_t in_len,
                          struct ev_block_body *b_out,
                          const uint8_t **body_out);
 
-/* ── ZNAM events (Phase 4d-4 — znam_projection) ───────────────────
+/* ── ZNAM events for znam_projection ───────────────────────────────
  *
  * Frozen wire formats. Variable-length strings carry an explicit u8
  * length prefix so the projection can validate every byte. All names

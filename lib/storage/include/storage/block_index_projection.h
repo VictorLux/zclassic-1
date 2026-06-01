@@ -1,8 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * block_index_projection — SQLite-backed projection over EV_BLOCK_HEADER
- * events from the append-only event_log. Phase 4c of the storage
- * unification. See docs/work/wt-phase4c-block-index-projection.md.
+ * events from the append-only event_log.
  *
  * block_index_db.c emits an EV_BLOCK_HEADER event on every persisted
  * block-index write. The projection consumes those events and materializes

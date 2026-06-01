@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * znam_projection — Phase 4d-4 event-log consumer.
+ * znam_projection — event-log consumer for rebuildable ZNAM state.
  *
  * Consumes EV_ZNAM_REGISTER / EV_ZNAM_UPDATE / EV_ZNAM_TRANSFER /
  * EV_ZNAM_RENEW / EV_ZNAM_EXPIRE into a rebuildable SQLite projection.

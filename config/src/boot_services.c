@@ -160,7 +160,7 @@ static hodl_history_projection_t *g_phase4_hodl_history_projection;
 /* Module-local pointer to boot context (set once by app_init_services) */
 static struct boot_svc_ctx *S;
 
-/* Phase 4c: event_log + block_index_projection lifecycle. Both are
+/* Projection storage lifecycle. Event log and block_index_projection are
  * opened in app_init_services and closed in app_shutdown_svc. Held in
  * module-static pointers so they can be freed regardless of whether
  * the singleton accessors are cleared. */
@@ -1749,17 +1749,16 @@ static void boot_start_projection_storage(const char *datadir)
                 (unsigned long long)off);
     }
 
-    /* Phase 4b: utxo_projection — first PRODUCTION consumer of the event
-     * log. Opened + caught up above by boot_ensure_log_and_utxo_projection
-     * (so the coins_tip read view can bind to it before this runs). */
+    /* utxo_projection is opened and caught up above by
+     * boot_ensure_log_and_utxo_projection so the coins_tip read view can bind
+     * to it before this runs. */
 
-    /* Phase 4b-seed: one-time anchor-seed the projection from the legacy
-     * coins.db so SHA3(projection)==SHA3(coins.db) and counts match (the
-     * UTXO commitment guard). The projection may only hold tail deltas on old
-     * datadirs, so the historical set must be folded in once. Idempotent: the seed
-     * refuses (returns -1) once anchor_seeded is stamped, so this is a
-     * no-op on every boot after the first. Seeding the projection never writes
-     * coins.db. */
+    /* One-time anchor-seed the projection from the legacy coins.db so
+     * SHA3(projection)==SHA3(coins.db) and counts match (the UTXO commitment
+     * guard). The projection may only hold tail deltas on old datadirs, so the
+     * historical set must be folded in once. Idempotent: the seed refuses
+     * (returns -1) once anchor_seeded is stamped, so this is a no-op on every
+     * boot after the first. Seeding the projection never writes coins.db. */
     {
         struct node_db *seed_ndb = boot_node_db();
         if (seed_ndb && seed_ndb->db) {
@@ -1776,16 +1775,15 @@ static void boot_start_projection_storage(const char *datadir)
         }
     }
 
-    /* Phase 4c: block_index_projection. Opened (or reused, if boot.c
-     * already opened it for the -rebuildfromlog boot path) via the hoisted
-     * helper — first opener wins. */
+    /* block_index_projection is opened or reused via the hoisted helper;
+     * first opener wins when boot.c already opened it for -rebuildfromlog. */
     if (!boot_ensure_block_index_projection(datadir)) {
         fprintf(stderr,  // obs-ok:phase4-storage
                 "[phase4] block_index_projection unavailable\n");
         return;
     }
 
-    /* Phase 4d-4: znam_projection */
+    /* ZNAM projection replay. */
     char znam_path[PATH_MAX];
     int n6 = snprintf(znam_path, sizeof(znam_path),
                       "%s/znam_projection.db", datadir);
@@ -1812,9 +1810,8 @@ static void boot_start_projection_storage(const char *datadir)
                 (unsigned long long)zoff);
     }
 
-    /* Phase 4d-3: wallet_view_projection. Set the event-log
-     * emitter only after the initial replay so boot catch-up cannot race
-     * new wallet view events. */
+    /* Wallet-view projection replay. Set the event-log emitter only after
+     * initial replay so boot catch-up cannot race new wallet view events. */
     char wallet_path[PATH_MAX];
     int n7 = snprintf(wallet_path, sizeof(wallet_path),
                       "%s/wallet_projection.db", datadir);
@@ -1841,7 +1838,7 @@ static void boot_start_projection_storage(const char *datadir)
     }
     wallet_projection_set_event_log(g_phase4_event_log);
 
-    /* Phase 4d-5: small-batch projections */
+    /* Small-batch projection replay. */
     char contacts_path[PATH_MAX];
     char onion_ann_path[PATH_MAX];
     char hodl_history_path[PATH_MAX];

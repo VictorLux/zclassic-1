@@ -182,6 +182,11 @@ node soak.
   describe active ownership instead of skeleton, idle-PR, future-wave, phase,
   or byte-parity scaffold history. The scaffold-label guard now covers those
   files and rejects the stale labels in guarded production comments.
+- Event-log, projection payload, block-index projection, projection replay boot
+  wiring, and diagnostics registry comments now describe the current durable
+  reducer/projection replay surface instead of Phase-4/Phase-7 scaffold
+  history. The scaffold-label guard now covers those storage and diagnostics
+  files and rejects `Phase 4` / `Phase 7a` labels there.
 - Production UTXO projection authorship is fixed on the stage/reducer path; the
   old author switch setter is now a `ZCL_TESTING`-only API, removing it from
   the E6 production write-surface baseline.
@@ -644,6 +649,27 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after normalizing projection-storage/event-log
+  comments and rebuilding `zclassic23` / `test_zcl`.
+- `make lint`: pass; all framework, lib-layering, controller raw-SQL,
+  one-write, service-result, supervisor, typed-blocker, raw allocation, file
+  size, and doc gates stayed at zero grandfathered entries.
+- Focused filtered tests passed:
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  (`0/1` failed in 12s),
+  `./test_parallel --only=event_log --timeout=120 --verbose`
+  (`0/1` failed in 37s), and
+  `./test_parallel --only=projection --timeout=120 --verbose`
+  (`0/12` failed in 25s).
+- `./test_parallel --timeout=180`: pass after this projection-storage
+  comment/guard cleanup, `0/279` groups failed in 56.0s.
+- Quick live sample attempt at 2026-06-01 17:36:22 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `8233`, `18232`, or `8232` listener,
+  `systemctl --user status zclassic23` could not connect to the user bus, and
+  read-only journal checks had no entries. The service was not restarted; this
+  slice stayed read-only and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after normalizing active utility/storage comments
   and rebuilding `zclassic23` / `test_zcl`.
 - `make lint`: pass; all framework, lib-layering, controller raw-SQL,

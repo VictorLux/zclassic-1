@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * mempool_projection — Phase 4d-1 event-log consumer.
+ * mempool_projection — event-log consumer for rebuildable mempool state.
  *
  * Consumes EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL into a rebuildable
  * SQLite projection used by diagnostics and replay checks.

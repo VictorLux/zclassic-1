@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * peers_projection — Phase 4d-2 event-log consumer.
+ * peers_projection — event-log consumer for rebuildable peer state.
  *
  * Consumes EV_PEER_OBSERVED / EV_PEER_DROPPED into a rebuildable SQLite
  * projection used by diagnostics and replay checks.
