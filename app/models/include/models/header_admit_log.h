@@ -12,7 +12,7 @@
 
 /* ActiveRecord model: HeaderAdmitLog
  *
- * One row per admitted header in the Wave-S `header_admit` staged-sync
+ * One row per admitted header in the `header_admit` staged-sync reducer
  * stage. The table lives in `progress.kv` (the durable cursor store),
  * NOT node.db — so this model carries its own thin handle wrapper that
  * exposes a `sqlite3 *db` member, the only contract the AR_* macros

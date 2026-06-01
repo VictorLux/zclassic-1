@@ -31,7 +31,7 @@ node soak.
 - `app/` is organized by framework shape: controllers, services, models, jobs,
   supervisors, conditions, events, views.
 - Model lifecycle and validation gates are enforced.
-- Wave-S reducer stages live under `app/jobs/` and use the Job advance/block
+- Staged reducer Jobs live under `app/jobs/` and use the Job advance/block
   contract.
 - Conditions are real `{detect, remedy, witness}` files.
 - Domain extraction is real: 21 pure domain modules with matching domain tests.
@@ -53,12 +53,12 @@ node soak.
   `tip_finalize` cursors cannot replay old rows and republish a low public tip.
 - `tip_finalize` failure rows such as `upstream_failed` advance the stage
   cursor only; they do not move public tip authority.
-- `staged_sync_supervisor` no longer describes the active Wave-S jobs as a
-  shadow pipeline, and its unused `datadir`/conservation-diff API parameter was
-  removed.
-- The S-5..S-8 Job headers/sources/tests no longer use comparison-era wording
-  for the active reducer stages; the health controller comment now frames
-  `log_head` as the reducer log head.
+- `staged_sync_supervisor` no longer describes the active staged reducer Jobs
+  as a shadow pipeline, and its unused `datadir`/conservation-diff API
+  parameter was removed.
+- The body_persist through utxo_apply Job headers/sources/tests no longer use
+  comparison-era wording for the active reducer stages; the health controller
+  comment now frames `log_head` as the reducer log head.
 - Boot-time projection/event-log fan-out is now named
   `boot_start_projection_storage` / `boot_stop_projection_storage`; the
   `config/src/boot*.c` production boot surface no longer describes this active
@@ -553,7 +553,7 @@ node soak.
 - Production C/H comments and diagnostics in `app/`, `lib/`, `config/`, and
   `tools/` no longer use the deleted single-engine block-connection names for
   active behavior. Architecture docs now show block intake as
-  `reducer_ingest_block` plus the eight Wave-S Job stages, and
+  `reducer_ingest_block` plus the eight staged reducer Jobs, and
   `test_make_lint_gates` has a production-source guard that fails if those
   names reappear outside tests/views.
 - The condition-layer PR-number scaffold headers were deleted. Each affected
@@ -573,9 +573,14 @@ node soak.
   needs-reimport sentinel include `storage/utxo_reimport_flag.h` directly,
   while the recovery service header owns only recovery-service contracts.
 - Staged Job/progress/supervisor comments and diagnostics now describe the
-  current reducer stage names instead of Wave-S/S-n scaffold history. The
-  scaffold-label guard covers those stage/progress files and rejects `Wave S`
-  plus `S-2` through `S-9` there.
+  current reducer stage names instead of old wave/stage-number scaffold
+  history. The scaffold-label guard covers those stage/progress files and
+  rejects those retired labels there.
+- Reducer-ingest, header-admit model, invalidate/revalidate, mining/repair,
+  and Job README comments now describe the staged Job pipeline directly
+  instead of the old wave labels. The scaffold-label guard now covers those
+  files too and rejects the hyphenated retired wave label plus the stale
+  chain-selection marker it flushed out.
 
 ## Active Debt
 
@@ -653,8 +658,37 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- Active reducer terminology scan after the reducer-ingest/header-admit
+  cleanup: clean for retired wave labels and the stale chain-selection marker
+  across production C/H files, `app/jobs/README.md`, `docs/FRAMEWORK.md`, and
+  the current status-board sections.
+- `make test_parallel`: pass after rebuilding the parallel runner with the
+  widened scaffold-label guard.
+- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
+  after widening the guard to cover reducer-ingest/header-admit/mining/repair
+  comments; `0/1` groups failed in 12.0s.
+- `make -j$(nproc)`: pass after the reducer-ingest terminology cleanup.
+- `make lint`: pass after the reducer-ingest terminology cleanup; all
+  zero-baseline ratchets remain clean.
+- `./test_parallel --timeout=180`: pass after the reducer-ingest terminology
+  cleanup, `0/279` groups failed in 56.0s.
+- Post-status doc/scans after the reducer-ingest terminology cleanup:
+  `tools/scripts/check_doc_accuracy.sh` passed, `git diff --check` passed, the
+  zero-baseline / allowlist scan found no non-comment entries in the ratcheted
+  baseline files, the production C/H scan under app controllers, services,
+  jobs, conditions, supervisors, models, lib, and MCP found no `shadow`,
+  `cutover`, `projection-diff`, or `projection_diff` terminology, and the
+  active reducer terminology scan remained clean.
+- Live sample attempt at 2026-06-01 18:00:39 UTC after the reducer-ingest
+  terminology cleanup: no continuity proof was available. `systemctl --user
+  status zclassic23` could not connect to the user bus, `./tools/zcl-rpc
+  getblockcount` and `gettxoutsetinfo` exited with code 7, no `zclassic23`
+  process was running, no `8023` or `18232` listener existed, and the last 20
+  minutes of `zclassic23` journal output had no entries. `ss` did show the
+  separate `zclassicd` process listening on `8033` and `8232`; this slice did
+  not touch port wiring or restart services.
 - Staged reducer label scan after the stage/progress/supervisor cleanup:
-  clean for `Wave S` and `S-2` through `S-9` across the guarded staged-sync
+  clean for retired wave/stage-number labels across the guarded staged-sync
   headers, stage sources, progress store, diagnostics registry, boot, and
   staged-sync supervisor files.
 - `git diff --check`: pass after the staged reducer label cleanup.
@@ -685,7 +719,8 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   baseline files, the production C/H scan under app controllers, services,
   jobs, conditions, supervisors, models, lib, and MCP found no `shadow`,
   `cutover`, `projection-diff`, or `projection_diff` terminology, and the
-  staged reducer label scan remained clean for `Wave S` / `S-2` through `S-9`.
+  staged reducer label scan remained clean for retired wave/stage-number
+  labels.
 - `make -j$(nproc)`: pass after normalizing projection-storage/event-log
   comments and rebuilding `zclassic23` / `test_zcl`.
 - `make lint`: pass; all framework, lib-layering, controller raw-SQL,

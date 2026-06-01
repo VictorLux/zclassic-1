@@ -189,8 +189,8 @@ enum reducer_source {
  * path. */
 bool reducer_is_authoritative(void);
 
-/* reducer_ingest_block — the synchronous block-intake entry that drives
- * the eight Wave-S Job stages instead of the historical activation path.
+/* reducer_ingest_block — the synchronous block-intake entry that drives the
+ * staged reducer Job pipeline instead of the historical activation path.
  *
  * Contract (mirrors the historical synchronous accept/reject behavior):
  *   1. check_block (stateless PoW/merkle/structure) runs FIRST, inline,

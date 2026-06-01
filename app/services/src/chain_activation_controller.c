@@ -34,8 +34,8 @@
 #include "util/blocker.h"
 
 /* ── Reducer-as-ingest includes ─────────────────────────────────────
- * The synchronous reducer wrapper drives the eight Wave-S Job stages and
- * the stateless check_block gate, then reads back the verdict from the
+ * The synchronous reducer wrapper drives the staged Job pipeline and the
+ * stateless check_block gate, then reads back the verdict from the
  * freshly-written stage log rows. */
 #include "consensus/validation.h"
 #include "validation/check_block.h"
@@ -423,7 +423,7 @@ void activation_request_connect(struct chain_activation_controller *ctl,
                          source == ACTIVATION_SRC_NEW_BLOCK ? "new_block" :
                          "p2p_trigger");
 
-    /* Execute. The chokepoint drives the eight Wave-S Job stages to
+    /* Execute. The chokepoint drives the staged Job pipeline to
      * convergence — the reducer is the engine. Every Group-2 NULL-block
      * caller (boot, msg_headers all-data, sync_monitor,
      * utxo_activation_paused, repair_controller, invalidate/revalidate
@@ -512,8 +512,8 @@ void activation_request_connect(struct chain_activation_controller *ctl,
 
 /* ── Reducer-as-ingest ──────────────────────────────────────────────
  *
- * The synchronous block-intake wrapper that drives the eight Wave-S Job
- * stages instead of the historical activation path. */
+ * The synchronous block-intake wrapper that drives the staged Job pipeline
+ * instead of the historical activation path. */
 
 /* Drain the eight stage step bodies once, in pipeline order — the SAME
  * order and the SAME *_stage_drain functions the per-stage supervisor

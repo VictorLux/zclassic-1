@@ -176,8 +176,8 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
      * consensus writer.
      *
      * The synchronous reducer_ingest_block(boot_activation_controller(),
-     * &blk, REDUCER_SRC_REPAIR, force=true, &state) drives the eight Wave-S
-     * stages and fills `state`, returning the bool verdict into `ok`, so the
+     * &blk, REDUCER_SRC_REPAIR, force=true, &state) drives the staged Job
+     * pipeline and fills `state`, returning the bool verdict into `ok`, so the
      * rebuild_recent contract (byte-exact UTXO via the validated accept path)
      * is preserved. */
     bool ok = reducer_ingest_block(boot_activation_controller(), &blk,

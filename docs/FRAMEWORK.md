@@ -143,7 +143,7 @@ for high-performance C, not Rails cosplay.
        operator_needed ⟺ a blocker outlived its SLO (and the alert reaches a human).
 ```
 
-The pipeline is the Wave-S stage chain, and it is the reducer:
+The pipeline is the staged Job chain, and it is the reducer:
 
 ```
 header_admit → validate_headers → body_fetch → body_persist
@@ -182,7 +182,7 @@ know the shape.
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
 | 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
 | 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
-| 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — 8 Wave-S stages relocated to `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
+| 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (23 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved app-level shape; durable log/event primitives live in `lib/` today | `lib/storage/event_log.c` |
@@ -230,7 +230,7 @@ The contracts, briefly:
 - **Controller** — parse → authorize → call ONE service → return. No business logic, no storage, no swallowing errors. Dumb glue.
 - **Service** — typed inputs → call models/other services → return `zcl_result`. No input parsing, no direct storage.
 - **Model** — the only reader/writer of persistent state. AR lifecycle: `validate → before_save → write → after_save`. Raw `sqlite3_step` is a *compile error*.
-- **Job** — idempotent, cursor-stamped in `progress.kv`. Returns `ADVANCED` / `BLOCKED(typed)` / `IDLE` / `FATAL`. Re-running at the same cursor is a no-op. The Wave-S stages generalized.
+- **Job** — idempotent, cursor-stamped in `progress.kv`. Returns `ADVANCED` / `BLOCKED(typed)` / `IDLE` / `FATAL`. Re-running at the same cursor is a no-op. The reducer stages are the model case.
 - **Supervisor** — a declared tree of children with restart policy; the deadman that edge-triggers `on_stall`. Recovery is structural, not ad-hoc.
 - **Condition** — `(detect, remedy, witness)` with backoff + max-attempts; pages on exhaustion. Every halt class is one file.
 - **Event** — typed, append-only, totally ordered. Emitting writes the fact log. Subscribers receive asynchronously.
@@ -245,7 +245,7 @@ app/
   controllers/   parse · authorize · delegate            (one service call)
   services/      orchestrate workflows → zcl_result
   models/        entities · AR lifecycle · validations    (only writers of state)
-  jobs/          cursor-stamped stages (the reducer)      ← Wave-S stages belong here
+  jobs/          cursor-stamped stages (the reducer)
   supervisors/   liveness trees, one root per domain
   conditions/    auto-healers, one file per halt class
   events/        typed event definitions + subscribers

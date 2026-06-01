@@ -217,8 +217,8 @@ bool process_block_commit_tip(struct main_state *ms,
                               bool persist_coins_best,
                               const struct process_block_tip_evidence *verified);
 
-/* WS-6.4: chain-selection helpers exposed for activate-best-chain-era
- * keeper tests and active-tip repair paths. */
+/* Chain-selection helpers exposed for keeper tests and active-tip repair
+ * paths. */
 struct block_index *find_most_work_chain(struct main_state *ms);
 
 /* process_block_tip_child.c helpers exposed for active-tip repair paths. */

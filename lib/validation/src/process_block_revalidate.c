@@ -352,8 +352,8 @@ enum reval_result process_block_revalidate(int target_height,
     }
 
     /* Kick the engine to reconnect the now-eligible chain. The reducer
-     * re-walks the best chain by draining the eight Wave-S stages
-     * (reducer_kick) — the stage forward-apply that mirrors connect_block.
+     * re-walks the best chain by draining the staged Job pipeline through
+     * reducer_kick.
      * outcome stays zeroed (the reducer reports its verdict through the tip
      * advance inspected below); the tail diagnostic reads outcome.result. */
     struct activation_exec_outcome outcome;

@@ -285,8 +285,8 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
     }
 
     /* Kick the engine so the next-best fully-valid chain is reconnected.
-     * The reducer re-walks the best chain by draining the eight Wave-S stages
-     * (reducer_kick) — the stage forward-apply that mirrors connect_block. */
+     * The reducer re-walks the best chain by draining the staged Job
+     * pipeline through reducer_kick. */
     if (ctl)
         (void)reducer_kick(ctl);
 

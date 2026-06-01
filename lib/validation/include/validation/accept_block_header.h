@@ -33,7 +33,7 @@ struct block_index;
 /* Create (or return the already-mapped) in-memory block_index entry for
  * `header`: inserts into ms->map_block_index, links pprev, and computes
  * nHeight + nChainWork. This is the sole runtime block_index producer.
- * Declared here so the Wave-S reducer (app/jobs header_admit stage) can
+ * Declared here so the staged reducer (app/jobs header_admit stage) can
  * create the index entry
  * from raw header bytes without routing through the legacy
  * accept_block_header(). Returns NULL on allocation failure. Does NOT touch

@@ -3,7 +3,7 @@
 **Shape:** Job — idempotent, cursor-stamped reducer stage.
 
 Each source file in `src/` owns one bounded stepper or one narrow helper for
-the Wave-S reducer pipeline:
+the staged reducer pipeline:
 
 ```
 header_admit -> validate_headers -> body_fetch -> body_persist

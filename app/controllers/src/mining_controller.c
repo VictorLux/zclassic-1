@@ -197,7 +197,7 @@ static bool rpc_submitblock(const struct json_value *params, bool help,
     validation_state_init(&state);
 
     /* submitblock intake: the synchronous reducer_ingest_block drives the
-     * eight Wave-S stages and fills the validation_state. force=true mirrors
+     * staged Job pipeline and fills the validation_state. force=true mirrors
      * the locally-requested relay-pre-filter-skipping semantics submitblock
      * already had. The verdict in `state` flows into format_state_message
      * below, so the RPC still returns null on accept / the reject reason on

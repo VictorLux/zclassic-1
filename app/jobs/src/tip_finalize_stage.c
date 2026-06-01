@@ -405,7 +405,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
     uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply",
                                                STAGE_NAME);
-    /* B5 ordering invariant: tip_finalize never outruns utxo_apply's
+    /* Reducer ordering invariant: tip_finalize never outruns utxo_apply's
      * durable cursor. On strict-greater, idle until the next rewind tick
      * re-converges; finalizing during a UTXO unwind is a consensus hazard. */
     if ((uint64_t)next_h > uv_cursor) {

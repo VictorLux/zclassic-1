@@ -30,7 +30,7 @@ struct tx_out;
  * input is first consumed). value alone is insufficient: the projection
  * commitment is taken over (txid|vout|value|script|height|is_coinbase),
  * so a restored coin MUST carry its original height/is_coinbase/script
- * or the post-reorg commitment diverges byte-for-byte. Mirrors exactly
+ * or the post-reorg commitment diverges from a direct fold. Mirrors exactly
  * what the former disconnect block path pulls from undo->txout/undo->height
  * (connect_block.c:733-757).
  *
