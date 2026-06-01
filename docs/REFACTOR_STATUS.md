@@ -22,7 +22,7 @@ node soak.
   is test/doc context only.
 - E1, E2, supervisor, E7, typed-blocker, controller raw-SQL adoption,
   lib-layering, and raw allocation debt are at zero grandfathered entries; E6
-  is down to 10 grandfathered write surfaces, and other ratchet baselines still
+  is down to 5 grandfathered write surfaces, and other ratchet baselines still
   grandfather real debt.
 
 ## Completed Architecture Moves
@@ -356,6 +356,13 @@ node soak.
   helper that calls `coins_view_sqlite_batch_write_ex()` and clears the cache
   only after a successful durable write. The E6 one-write-path baseline is
   down from 13 to 10 write surfaces.
+- Runtime `reindexchainstate` no longer owns a second replay writer. The RPC
+  is now an explicit retired-operation compatibility error that directs
+  operators to restart with `-reindex-chainstate`, whose boot path already uses
+  the reducer/boot SQLite writer. `repairutxos` no longer flushes the
+  projection-backed coins cache; repaired UTXOs persist through the UTXO model
+  and the cache remains a process-local read cache. The E6 one-write-path
+  baseline is down from 10 to 5 write surfaces.
 - `wallet_scan.c` and `legacy_import.c` no longer call `sqlite3_exec()`
   directly; their checked exec helpers route through `node_db_exec()`, dropping
   the controller raw-SQL baseline from 14 to 12 controller files.
@@ -437,7 +444,7 @@ their owning files are split or touched for adjacent debt.
 
 From `tools/scripts/one_write_path_baseline.txt`:
 
-- controller/admin/repair `coins_view_cache_flush` call sites
+- the low-level `coins_view_cache_flush` API/implementation
 - the remaining `coins_view_sqlite_batch_write_ex()` SQLite writer entry point
 - process-block flush-policy write paths
 
@@ -480,6 +487,33 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 
 ## Latest Verification
 
+- `make -j$(nproc)`: pass after retiring runtime `reindexchainstate` replay
+  and removing the `repairutxos` coins-cache flushes.
+- `git diff --check`: pass.
+- `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
+  on all 31 lint gates.
+- `tools/scripts/check_lib_layering.sh`: pass with 0 grandfathered
+  lib-to-app includes and no new violations.
+- `tools/scripts/check_one_write_path.sh`: pass with 5 grandfathered write
+  surfaces and no new violations.
+- Focused filtered tests passed:
+  `ZCL_TEST_ONLY=rpc_safety ./test_zcl`,
+  `./test_parallel --only=rpc --timeout=120 --verbose`,
+  `./test_parallel --only=chain --timeout=120 --verbose`, and
+  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `make lint`: pass after the runtime reindex/repair flush shrink; E1, E2,
+  supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
+  lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
+  5 grandfathered write surfaces.
+- `./test_parallel --timeout=180`: pass after the runtime
+  reindex/repair-flush shrink, `0/279` groups failed in 57.0s.
+- Quick live sample attempt at 2026-06-01 12:41:35 UTC after this slice did
+  not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
+  exited 7 for both `getblockcount` and `gettxoutsetinfo`, `ss` showed no
+  `8023`, `8033`, `18232`, or `8232` listener, `systemctl --user status
+  zclassic23` could not connect to the user bus, and recent read-only journal
+  checks had no entries. The service was not restarted; this slice stayed
+  read-only and preserved the `8023` port expectation.
 - `make -j$(nproc)`: pass after routing shutdown UTXO flushes through the
   SQLite coins writer.
 - `git diff --check`: pass.

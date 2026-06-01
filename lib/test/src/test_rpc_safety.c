@@ -4,6 +4,7 @@
  * chain height points at a missing block-index entry. */
 
 #include "test/test_helpers.h"
+#include "controllers/blockchain_controller.h"
 #include "controllers/chain_inspect_controller.h"
 #include "controllers/repair_controller.h"
 #include "controllers/transaction_controller.h"
@@ -62,9 +63,42 @@ static bool result_is_chainstate_guard_error(const struct json_value *result,
            strcmp(json_get_str(got_method), method) == 0;
 }
 
+static bool result_is_retired_reindex_error(const struct json_value *result)
+{
+    return result->type == JSON_STR &&
+           strstr(json_get_str(result), "Runtime reindexchainstate is retired")
+               != NULL &&
+           strstr(json_get_str(result), "-reindex-chainstate") != NULL;
+}
+
 int test_rpc_safety(void)
 {
     int failures = 0;
+
+    printf("rpc_safety: reindexchainstate rejects runtime replay... ");
+    {
+        ensure_rpc_warmup_finished_once();
+
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_blockchain_rpc_commands(&tbl);
+
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+
+        bool ok = !rpc_table_execute(&tbl, "reindexchainstate", &params,
+                                     &result) &&
+                  result_is_retired_reindex_error(&result);
+
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
 
     printf("rpc_safety: chainstate guard rejects unresolved active tip... ");
     {

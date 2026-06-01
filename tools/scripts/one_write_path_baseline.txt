@@ -6,11 +6,6 @@
 # (reducer_ingest_block / reducer_kick) is the sole block-connect engine. The
 # surfaces below are the remaining durable cursor / UTXO-projection writers the
 # reducer/stage path and boot/recovery wrappers go through.
-app/controllers/src/blockchain_controller_admin.c:106: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/blockchain_controller_admin.c:192: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/blockchain_controller_admin.c:203: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/repair_controller_utxo.c:311: coins_view_cache_flush(ctx->coins_tip);
-app/controllers/src/repair_controller_utxo.c:522: coins_view_cache_flush(ctx->coins_tip);
 lib/coins/include/coins/coins_view.h:163:bool coins_view_cache_flush(struct coins_view_cache *c);
 lib/coins/src/coins_view.c:322:bool coins_view_cache_flush(struct coins_view_cache *c)
 lib/storage/include/storage/coins_view_sqlite.h:52:bool coins_view_sqlite_batch_write_ex(struct coins_view_sqlite *cvs,

@@ -115,7 +115,7 @@ bool rpc_auditchain(const struct json_value *params, bool help,
         "auditchain\n"
         "\nFull chain audit: verify block-hash MMR and commitment MMR.\n"
         "Reports the state of both MMRs and what height they cover.\n"
-        "Use reindexchainstate for full block replay + UTXO rebuild.\n"
+        "Restart with -reindex-chainstate for full block replay + UTXO rebuild.\n"
         "Use verifycheckpoint to check UTXO SHA3 at hardcoded height.\n");
 
     json_set_object(result);
@@ -230,4 +230,3 @@ bool rpc_rebuildsaplingtree(const struct json_value *params,
     json_push_kv_bool(result, "roots_match", roots_match);
     return true;
 }
-

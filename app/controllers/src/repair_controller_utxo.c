@@ -307,9 +307,8 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
     int missing_found = 0, repaired_gettxout = 0, repaired_rawtx = 0;
     int repair_failed = 0;
 
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
-
+    /* Repaired UTXOs persist through db_utxo_save(); coins_tip is only the
+     * current-process read cache and must not flush to the projection. */
     if (!node_db_begin(ctx->node_db)) {
         LOG_WARN("repairutxos",
                  "repairutxos: database BEGIN failed");
@@ -517,9 +516,6 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
         /* node_db_commit already logged database context. */
         return false;
     }
-
-    if (ctx->coins_tip)
-        coins_view_cache_flush(ctx->coins_tip);
 
     if (scan_complete && repair_failed == 0 &&
         (repaired_gettxout + repaired_rawtx) > 0)
