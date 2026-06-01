@@ -73,6 +73,22 @@ struct tx_mempool *process_block_mempool(void);
  * process_block_active_tip_has_pending API. */
 void process_block_set_active_tip_more_pending(bool v);
 
+/* process_block_runtime_hooks.c */
+void process_block_kick_gap_fill(void);
+enum process_block_tip_publish_result process_block_publish_tip(
+    struct main_state *ms,
+    struct coins_view_cache *coins_tip,
+    struct block_index *new_tip,
+    const char *reason,
+    bool update_header_tip,
+    bool persist_coins_best,
+    const struct process_block_tip_evidence *verified);
+enum process_block_tip_publish_result process_block_clear_tip(
+    struct main_state *ms,
+    const char *reason);
+const char *process_block_tip_publish_result_name(
+    enum process_block_tip_publish_result result);
+
 /* process_block_crash_hooks.c */
 /* Hot-path stage check. Kept inline so the cost is one atomic load per
  * site; the static inline reads the storage variable owned by
