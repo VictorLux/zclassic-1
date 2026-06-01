@@ -23,7 +23,6 @@
 #include "event/event.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "services/quorum_oracle_service.h"
 #include "coins/coins_view.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
@@ -549,7 +548,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             peer_supports_fast_sync(node->services)) {
             char peer_hash_hex[65];
             uint256_get_hex(pindex_last->phashBlock, peer_hash_hex);
-            quorum_oracle_record_peer_header_vote((uint32_t)node->id,
+            msg_processor_record_peer_header_vote(mp, (uint32_t)node->id,
                                                   pindex_last->nHeight,
                                                   peer_hash_hex);
         }

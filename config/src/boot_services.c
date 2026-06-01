@@ -14,6 +14,7 @@
 #include "services/gap_fill_service.h"
 #include "services/hodl_history_service.h"
 #include "services/rolling_anchor_service.h"
+#include "services/quorum_oracle_service.h"
 #include "services/zclassicd_oracle_service.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
@@ -753,6 +754,15 @@ static void boot_block_connected_observer(int height, void *ctx)
 {
     (void)ctx;
     sync_monitor_on_block_connected(height);
+}
+
+static void boot_record_peer_header_vote(uint32_t peer_id,
+                                         int height,
+                                         const char hash_hex[65],
+                                         void *ctx)
+{
+    (void)ctx;
+    quorum_oracle_record_peer_header_vote(peer_id, height, hash_hex);
 }
 
 static void boot_wallet_tx_accepted(const struct transaction *tx, void *ctx)
@@ -2650,6 +2660,8 @@ bool app_init_services(struct app_context *ctx,
                                          boot_wallet_tx_accepted, svc);
     msg_processor_set_block_connected(svc->msg_processor,
                                       boot_block_connected_observer, svc);
+    msg_processor_set_peer_header_vote(svc->msg_processor,
+                                       boot_record_peer_header_vote, svc);
     msg_processor_set_flyclient_proof_builder(
         svc->msg_processor, boot_build_flyclient_proof, svc);
     msg_processor_set_block_hashes_range(

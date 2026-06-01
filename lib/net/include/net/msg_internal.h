@@ -147,6 +147,10 @@ bool msg_blocks_should_mark_seen(const struct active_chain *chain,
 bool msg_processor_snapshot_active(const struct msg_processor *mp);
 void msg_processor_note_block_connected(const struct msg_processor *mp,
                                         int height);
+void msg_processor_record_peer_header_vote(const struct msg_processor *mp,
+                                           uint32_t peer_id,
+                                           int height,
+                                           const char hash_hex[65]);
 void msg_processor_request_invalid_block_headers(struct msg_processor *mp,
                                                  struct p2p_node *node);
 void msg_processor_plan_valid_block_acceptance(

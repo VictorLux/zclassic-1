@@ -710,6 +710,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->wallet_tx_accepted_ctx = NULL;
     mp->block_connected = NULL;
     mp->block_connected_ctx = NULL;
+    mp->peer_header_vote = NULL;
+    mp->peer_header_vote_ctx = NULL;
     mp->flyclient_proof = NULL;
     mp->flyclient_proof_ctx = NULL;
     mp->block_hashes_range = NULL;
@@ -838,6 +840,17 @@ void msg_processor_set_block_connected(
     mp->block_connected_ctx = ctx;
 }
 
+void msg_processor_set_peer_header_vote(
+    struct msg_processor *mp,
+    msg_peer_header_vote_fn vote,
+    void *ctx)
+{
+    if (!mp)
+        return;
+    mp->peer_header_vote = vote;
+    mp->peer_header_vote_ctx = ctx;
+}
+
 void msg_processor_set_flyclient_proof_builder(
     struct msg_processor *mp,
     msg_flyclient_proof_fn build,
@@ -882,6 +895,16 @@ void msg_processor_note_block_connected(const struct msg_processor *mp,
 {
     if (mp && mp->block_connected)
         mp->block_connected(height, mp->block_connected_ctx);
+}
+
+void msg_processor_record_peer_header_vote(const struct msg_processor *mp,
+                                           uint32_t peer_id,
+                                           int height,
+                                           const char hash_hex[65])
+{
+    if (mp && mp->peer_header_vote)
+        mp->peer_header_vote(peer_id, height, hash_hex,
+                             mp->peer_header_vote_ctx);
 }
 
 void msg_processor_request_invalid_block_headers(struct msg_processor *mp,
