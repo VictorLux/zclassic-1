@@ -38,7 +38,6 @@
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
  * the remaining controller dependency is the cache ownership boundary. */
 #include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
-#include "services/snapshot_sync_service.h"
 #include "services/block_sync_service.h"
 #include "services/header_sync_service.h"
 #include "validation/main_state.h"
@@ -89,31 +88,6 @@ struct node_db *msg_node_db(const struct msg_processor *mp)
     if (!mp || !mp->runtime)
         LOG_NULL("net", "mp or mp->runtime is NULL");
     return db_service_node_db(mp->runtime->db_service);
-}
-
-struct snapshot_sync_service *msg_snapshot_sync(
-    const struct msg_processor *mp)
-{
-    if (mp && mp->runtime && mp->runtime->snapshot_sync)
-        return mp->runtime->snapshot_sync;
-    if (snapsync_global_initialized())
-        return snapsync_global();
-    LOG_NULL("net", "no snapshot sync service available");
-}
-
-struct snapshot_sync_service *msg_snapshot_sync_ensure(
-    const struct msg_processor *mp)
-{
-    struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
-    struct node_db *ndb;
-
-    if (svc)
-        return svc;
-    ndb = msg_node_db(mp);
-    if (!ndb)
-        LOG_NULL("net", "node_db unavailable for snapshot sync init");
-    snapsync_global_ensure_init(ndb);
-    return snapsync_global();
 }
 
 struct wallet *msg_wallet(const struct msg_processor *mp)

@@ -1363,6 +1363,7 @@ static int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(strstr(buf, "db_file_service_save") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/file_service.h") == NULL);
+        ASSERT(strstr(buf, "services/snapshot_sync_service.h") == NULL);
         PASS();
     } _test_next:;
     free(buf);
@@ -1461,6 +1462,8 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
                          "lib/net/src/msgprocessor_snapshot.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mp->flyclient_proof") != NULL);
+        ASSERT(strstr(buf, "msg_snapshot_sync(") != NULL);
+        ASSERT(strstr(buf, "msg_snapshot_sync_ensure") != NULL);
         ASSERT(strstr(buf, "mp->block_hashes_range") != NULL);
         ASSERT(strstr(buf, "mp->utxo_sha3_compute") != NULL);
         ASSERT(strstr(buf, "db_block_hashes_in_range") == NULL);

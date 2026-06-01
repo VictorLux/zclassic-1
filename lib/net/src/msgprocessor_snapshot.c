@@ -77,6 +77,31 @@ static int64_t g_swarm_last_progress_time = 0;
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
 
+struct snapshot_sync_service *msg_snapshot_sync(
+    const struct msg_processor *mp)
+{
+    if (mp && mp->runtime && mp->runtime->snapshot_sync)
+        return mp->runtime->snapshot_sync;
+    if (snapsync_global_initialized())
+        return snapsync_global();
+    LOG_NULL("net", "no snapshot sync service available");
+}
+
+struct snapshot_sync_service *msg_snapshot_sync_ensure(
+    const struct msg_processor *mp)
+{
+    struct snapshot_sync_service *svc = msg_snapshot_sync(mp);
+    struct node_db *ndb;
+
+    if (svc)
+        return svc;
+    ndb = msg_node_db(mp);
+    if (!ndb)
+        LOG_NULL("net", "node_db unavailable for snapshot sync init");
+    snapsync_global_ensure_init(ndb);
+    return snapsync_global();
+}
+
 /* ── Block swarm: parallel block download coordinator ───────── */
 /* Manages BitTorrent-style block piece download across multiple
  * ZCL23 peers. Legacy peers contribute blocks via normal getdata/block
