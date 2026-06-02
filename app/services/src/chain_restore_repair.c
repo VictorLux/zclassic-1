@@ -17,7 +17,10 @@
 #include "chain/pow.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
+#include "jobs/stage_helpers.h"
 #include "net/snapshot_sync_contract.h"
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -559,6 +562,31 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
     struct block_index *tip = active_chain_tip(&ms->chain_active);
     if (tip)
         (void)chain_restore_rebuild_active_chain(ms, tip, datadir);
+
+    /* Boot-only window bridge. chain_restore_rebuild_active_chain above walks
+     * pprev DOWN from the finalized tip, so it never includes the persisted
+     * have-data successors ABOVE the tip — but the staged pipeline applies
+     * bodies past the finalized tip (utxo_apply's cursor can be well above
+     * it). With those successors absent from the window, active_chain_at(tip+1)
+     * is NULL and tip_finalize wedges forever (JOB_IDLE) even though every
+     * successor body is persisted + script-validated + utxo-applied. Bridge the
+     * window UP from the finalized tip along the CONTIGUOUS (pointer-equal
+     * pprev) have-data + VALID_SCRIPTS frontier, capped at the durable
+     * utxo_apply cursor, so tip_finalize's first tick finds its one-block
+     * lookahead. The anchored extender proves descent from the tip and never
+     * overwrites a finalized slot, so — unlike a generic best_header/most-work
+     * fill — it cannot false-reorg. Safe ONLY here: the window is hole-free at
+     * the finalized tip and this runs BEFORE reducer Jobs init + header
+     * ingress, so cached_tip is the finalized tip, never a best_header-inflated
+     * (holed) window top. The cursor read is side-effect-free. */
+    if (tip) {
+        sqlite3 *pdb = progress_store_db();
+        int uv = pdb ? (int)stage_cursor_persisted(pdb, "utxo_apply",
+                                                   "chain_restore") : 0;
+        if (uv > tip->nHeight)
+            (void)active_chain_extend_window_have_data(
+                &ms->chain_active, &ms->map_block_index, uv);
+    }
 
     if (datadir && datadir[0])
         (void)chain_restore_backfill_nbits_from_disk(ms, datadir);
