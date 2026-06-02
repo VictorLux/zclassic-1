@@ -36,9 +36,38 @@ Merged `c78e94451` (green: `make lint` / `test_parallel` **0/283**). Two deliver
   "successor-have-data-but-not-activated" deadlock named in `activation_behind_reason()`.
   This is the pre-existing 2026-06-01 wedge, now localized to the stage.
   NEXT FIX: drive a fresh connect pass over have-data successors so `chain_active`
-  extends and tip_finalize gets its `new_tip` (e.g. a Condition that fires when the
-  active-chain tip < highest have-data successor). DO NOT delete `tip_finalize_log`
+  extends and tip_finalize gets its `new_tip`. DO NOT delete `tip_finalize_log`
   rows or hand-edit cursors (a prior such fix collapsed the tip to ~47279).
+
+  **Building block shipped (branch `finish/window-extender-building-block`,
+  `80cfeefea`, unwired):** `active_chain_extend_window_have_data(c, m, max_height)`
+  in `lib/validation/src/chainstate.c` — forward-extends the window ONLY along the
+  CONTIGUOUS have-data + script-validated frontier above the finalized tip, walking
+  UP and accepting a successor only when its `pprev` is pointer-equal to the prior
+  accepted block (provably continuous → `fill_window` never overwrites a finalized
+  slot → no false-reorg). 6-case unit test green (`test_active_chain_extend`):
+  extends to frontier, caps at max_height, REFUSES fork / missing-body /
+  not-script-validated. Two reverted live/test harms taught the real shape of this
+  wedge — both recorded so they are not repeated:
+    1. (reverted, live-harmful) extending to the generic best_header/most-work
+       candidate inside `step_finalize` cascaded false reorgs (16→113) and rewound
+       the cursor toward floor 200, because `active_chain_fill_window` stamped the
+       candidate's divergent/gapped ancestry into already-finalized slots. Public
+       tip held; caught + reverted before corruption.
+    2. (reverted, broke tests) wiring the anchored extender in place of
+       `reducer_extend_window_to_candidate` at `step_once` L454 fails the existing
+       `reorg`/`precondition` tip_finalize tests: capping the window at the have-data
+       frontier means a fork / incomplete block is never exposed at `next_h+1`, so
+       those branches become unreachable — and those branches guard LEGITIMATE
+       reorgs (the node must be able to switch to a higher-work chain). So a naive
+       replace risks reorg safety.
+  REMAINING DESIGN WORK (do as an isolated task, validate on `tools/repro_on_copy.sh`
+  — fails loud on any tip drop — BEFORE the live node): (a) reconcile the anchored
+  contiguous-catch-up extend with the generic reorg-exposure extend so genuine
+  reorgs still work; (b) handle the window-hole case (`c->height` high with NULL
+  slots from a best_header pprev gap — the no-op gate `max_height <= c->height` is
+  wrong then); (c) confirm the successors' `BLOCK_VALID_SCRIPTS` + `pprev` linkage
+  survive a cold restart (re-emitted via the EV_BLOCK_HEADER projection).
 
 ## 2026-06-02 — Self-healing service merged; live soak: boots+observes, NOT yet at-tip
 
