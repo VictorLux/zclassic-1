@@ -2,6 +2,7 @@
 
 #include "util/service_state.h"
 
+#include "json/json.h"
 #include "util/log_macros.h"
 
 #include <pthread.h>
@@ -62,4 +63,17 @@ void service_state_advance(enum service_state next, const char *reason)
         LOG_INFO("service_state", "[service_state] %s -> %s (%s)",
                  service_state_name(prev), service_state_name(next),
                  reason && reason[0] ? reason : "-");
+}
+
+bool service_state_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    enum service_state cur = service_state_current();
+    json_set_object(out);
+    json_push_kv_str(out, "state", service_state_name(cur));
+    json_push_kv_int(out, "state_id", (int)cur);
+    json_push_kv_str(out, "reason", service_state_reason());
+    return true;
 }

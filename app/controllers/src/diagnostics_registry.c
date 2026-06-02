@@ -66,6 +66,7 @@
 #include "net/peer_lifecycle.h"
 #include "util/log_macros.h"
 #include "util/long_op.h"
+#include "util/service_state.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 
@@ -431,6 +432,10 @@ static const struct dump_entry g_dumpers[] = {
                      "native chain evidence controller: tips, snapshot anchor, evidence, contradiction reason" },
     { "boot",        chain_restore_dump_state_json,
                      "last boot's integrity check + nbits-backfill counters" },
+    { "service_state", service_state_dump_state_json,
+                     "canonical runtime operational mode "
+                     "(boot/restore/reconcile/degraded_serving/syncing/"
+                     "healthy/repairing) + last transition reason" },
     { "block_index", block_index_dump_state_json,
                      "block_index entry by height or hash (in `key`)" },
     { "health",      health_dump_state_json,

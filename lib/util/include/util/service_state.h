@@ -51,4 +51,9 @@ const char *service_state_name(enum service_state s);
  * A racy read of a fixed buffer — adequate for diagnostics. */
 const char *service_state_reason(void);
 
+/* `zcl_state subsystem=service_state` dumper. `out` is initialized by the
+ * caller; `key` is unused. Reentrant-safe. */
+struct json_value;
+bool service_state_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_UTIL_SERVICE_STATE_H */
