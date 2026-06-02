@@ -371,11 +371,18 @@ job_result_t utxo_apply_stage_step_once(void)
      * forward apply (and before tip_finalize, which the supervisor drains
      * after us, reads our cursor). Self-contained txn; on failure the
      * cursor is untouched so the next tick retries. */
-    if (!utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
-                                           &g_reorg_unwound_total,
-                                           &g_last_blocked_unix))
+    progress_store_tx_lock();
+    bool unwind_ok =
+        utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
+                                          &g_reorg_unwound_total,
+                                          &g_last_blocked_unix);
+    if (!unwind_ok) {
+        progress_store_tx_unlock();
         return JOB_FATAL;
-    return stage_run_once(g_stage, db);
+    }
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(utxo_apply)

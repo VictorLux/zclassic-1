@@ -9,6 +9,7 @@
 #include "rpc/client.h"
 #include "net/file_service.h"
 #include "util/thread_registry.h"
+#include "util/util.h"
 #include <sqlite3.h>
 #include "json/json.h"
 #include "views/wallet_gui.h"
@@ -946,6 +947,8 @@ static int gen_utxo_snapshot_mode(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    ParseParameters(argc, (const char *const *)argv);
+
     for (int i = 1; i < argc; ++i) {
         if (strncmp(argv[i], "-bench", 6) == 0)
             return bench_mode_main(argc, argv);

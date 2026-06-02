@@ -13,8 +13,10 @@
 #include "services/chain_activation_controller.h"
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/chain_restore_executor.h"
+#include "services/chain_restore_integrity.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_repository.h"
+#include "util/service_state.h"
 #include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
@@ -33,6 +35,7 @@
 #include "util/sync.h"
 #include "util/safe_alloc.h"
 #include "util/boot_phase.h"
+#include "util/util.h"
 #include "net/msgprocessor.h"
 #include "chain/chainparams.h"
 #include "keys/key.h"
@@ -576,6 +579,7 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
 
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
+    SetDataDir(ctx->datadir);
 
     /* Auto-create datadir if it doesn't exist */
     struct stat st;
@@ -3375,6 +3379,8 @@ sapling_tree_boot_check_done:
     {
         struct boot_phase bp_fin;
         boot_phase_begin(&bp_fin, "chain_restore_finalize");
+        service_state_advance(SERVICE_STATE_RECONCILE,
+                              "post-restore finalize gate");
         struct zcl_result finalize_r =
             chain_restore_finalize(&g_state, ctx->datadir);
         bool finalize_ok = finalize_r.ok;
@@ -3384,22 +3390,75 @@ sapling_tree_boot_check_done:
                     finalize_r.code, finalize_r.message);
         boot_phase_end(&bp_fin);
         int  tip_h = active_chain_height(&g_state.chain_active);
-        bool fatal = !finalize_ok && tip_h > 1000;
-        if (fatal && !ctx->allow_degraded) {
-            fprintf(stderr,
-                "[boot] FATAL: post-restore integrity check failed at "
-                "tip_h=%d. Re-run with -allow-degraded to ignore, or "
-                "-reindex-chainstate to rebuild from disk.\n", tip_h);
-            event_emitf(EV_BOOT_ACTIVATE, 0,
-                        "FATAL post_restore_integrity_failed tip=%d",
-                        tip_h);
-            return false;
-        }
-        if (fatal) {
-            fprintf(stderr,
-                "[boot] WARNING: post-restore integrity check failed at "
-                "tip_h=%d; continuing because -allow-degraded was set.\n",
-                tip_h);
+
+        /* Classify the post-restore integrity result on its structured
+         * breakdown — the finalize bool discards it. A RECONCILABLE
+         * divergence (active_chain window holes, with no zero-nbits and
+         * no height/pprev mismatch) is normal coins-application lag:
+         * headers/bodies are ahead of the applied tip, NOT corruption.
+         * It is NEVER fatal — the node enters DEGRADED_SERVING and the
+         * condition engine reconciles it forward, so the process always
+         * boots into an observable state instead of crash-looping. Only
+         * true structural corruption (zero nbits in the tip window, or
+         * active_chain height/pprev mismatches) stays fatal, and then
+         * LOUD + observable, never a silent loop.
+         *
+         * This does NOT weaken any consensus gate: the integrity check
+         * only counts NULL active_chain[] slots. The consensus gates
+         * (connect_block prevhash, CSR rejection, find_most_work_chain
+         * validity/HAVE_DATA filters, PoW/sig/proof verification) are
+         * untouched and still reject bad blocks. */
+        struct chain_integrity_result integ;
+        chain_integrity_check_post_restore(&integ, &g_state);
+        enum chain_integrity_class cls = chain_integrity_classify(&integ);
+
+        if (!finalize_ok && tip_h > 1000) {
+            if (cls == CHAIN_INTEGRITY_UNRECOVERABLE && !ctx->allow_degraded) {
+                fprintf(stderr,
+                    "[boot] FATAL: post-restore integrity found structural "
+                    "corruption at tip_h=%d (zero_nbits=%d mismatches=%d "
+                    "first_mismatch_h=%d). Re-run with -allow-degraded to "
+                    "serve anyway, or -reindex-chainstate to rebuild.\n",
+                    tip_h, integ.zero_nbits_count,
+                    integ.active_chain_mismatches,
+                    integ.first_mismatch_height);
+                event_emitf(EV_BOOT_ACTIVATE, 0,
+                    "FATAL post_restore_integrity_corrupt tip=%d "
+                    "zero_nbits=%d mismatches=%d",
+                    tip_h, integ.zero_nbits_count,
+                    integ.active_chain_mismatches);
+                return false;
+            }
+            if (cls == CHAIN_INTEGRITY_UNRECOVERABLE) {
+                fprintf(stderr,
+                    "[boot] WARNING: post-restore structural corruption at "
+                    "tip_h=%d; serving DEGRADED because -allow-degraded was "
+                    "set.\n", tip_h);
+                event_emitf(EV_BOOT_ACTIVATE, 0,
+                    "degraded_serving allow_degraded_corruption tip=%d",
+                    tip_h);
+                service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                    "allow-degraded over structural corruption");
+            } else {
+                /* RECONCILABLE: coins-application lag. Self-heal; never
+                 * exit. The node serves at the contiguous applied tip
+                 * while the condition engine reconciles forward. */
+                fprintf(stderr,
+                    "[boot] post-restore integrity: reconcilable divergence "
+                    "at tip_h=%d (tip_window_holes=%d first_hole_h=%d) — "
+                    "entering DEGRADED_SERVING; condition engine reconciles "
+                    "forward. Not fatal.\n",
+                    tip_h, integ.tip_window_holes,
+                    integ.first_tip_window_hole);
+                event_emitf(EV_BOOT_ACTIVATE, 0,
+                    "degraded_serving reconcilable_integrity tip=%d holes=%d",
+                    tip_h, integ.tip_window_holes);
+                service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                    "reconcilable post-restore divergence");
+            }
+        } else {
+            service_state_advance(SERVICE_STATE_SYNCING,
+                                  "post-restore integrity clean");
         }
     }
 

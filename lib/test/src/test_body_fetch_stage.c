@@ -158,6 +158,20 @@ static bool vh_log_force_ok(sqlite3 *db, int height, int ok)
     return rc == SQLITE_DONE;
 }
 
+static bool vh_log_force_failure(sqlite3 *db, int height, const char *reason)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE validate_headers_log SET ok = 0, fail_reason = ? "
+        "WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, reason, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, height);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
 /* Set up the full saga prefix (progress + admit + validate + body_fetch).
  * Returns 0 on success. The caller is responsible for tearing down. */
 static int bf_setup(const char *tag, int n,
@@ -303,6 +317,32 @@ int test_body_fetch_stage(void)
 
         log_row_at(db, 1, &ok, src, sizeof(src));
         BF_CHECK("skip: h=1 row source='disk'", strcmp(src, "disk") == 0);
+
+        bf_teardown(dir, &ms, &sc);
+    }
+
+    /* ── solution missing: prerequisite blocker, not invalid skip ──── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_bf sc;
+        BF_CHECK("solutionless: setup",
+                 bf_setup("solutionless", 5, dir, sizeof(dir), &ms, &sc) == 0);
+
+        header_admit_stage_drain(100);
+        validate_headers_stage_drain(100);
+        sqlite3 *db = progress_store_db();
+        BF_CHECK("solutionless: mark vh row h=2 prerequisite-missing",
+                 vh_log_force_failure(db, 2,
+                    "no-header-solution-backfill-required"));
+
+        int adv = body_fetch_stage_drain(100);
+        BF_CHECK("solutionless: advances only before blocker", adv == 2);
+        BF_CHECK("solutionless: cursor halts at 2",
+                 body_fetch_stage_cursor() == 2);
+        int ok = -1; char src[32] = {0};
+        BF_CHECK("solutionless: no skipped row written",
+                 !log_row_at(db, 2, &ok, src, sizeof(src)));
+        BF_CHECK("solutionless: direct step is BLOCKED",
+                 body_fetch_stage_step_once() == JOB_BLOCKED);
 
         bf_teardown(dir, &ms, &sc);
     }

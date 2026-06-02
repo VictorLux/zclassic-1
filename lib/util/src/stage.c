@@ -23,6 +23,7 @@
 #include "platform/time_compat.h"
 #include "util/stage.h"
 
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -210,6 +211,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
     }
 
     pthread_mutex_lock(&s->lock);
+    progress_store_tx_lock();
 
     /* Load the persisted cursor before invoking the step. We don't
      * trust the cached `s->cursor` because a sibling process (cold
@@ -217,6 +219,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
      * the freshest value visible to this connection. */
     uint64_t cur = 0;
     if (!cursor_read(db, s->name, &cur)) {
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         atomic_fetch_add(&s->error_count, 1u);
         return JOB_FATAL;
@@ -240,6 +243,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
         fprintf(stderr, "[stage] BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         atomic_fetch_add(&s->error_count, 1u);
         return JOB_FATAL;
@@ -257,12 +261,14 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
                 (unsigned long long)ctx.cursor_out,
                 (unsigned long long)cur);
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
             return JOB_FATAL;
         }
         if (!cursor_write_locked(db, s->name, ctx.cursor_out)) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
             return JOB_FATAL;
@@ -272,12 +278,14 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
                     err ? err : "(no message)");
             if (err) sqlite3_free(err);
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
             atomic_fetch_add(&s->error_count, 1u);
             return JOB_FATAL;
         }
         s->cursor = ctx.cursor_out;
         atomic_fetch_add(&s->advanced_count, 1u);
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return JOB_ADVANCED;
     }
@@ -285,6 +293,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
     /* Non-advancing outcomes: roll back the txn (the step may have
      * touched scratch state) and surface the result. */
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    progress_store_tx_unlock();
     pthread_mutex_unlock(&s->lock);
 
     if (r == JOB_BLOCKED) {
@@ -327,16 +336,19 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
 {
     if (!s || !db) LOG_FAIL("stage", "set_cursor: null arg");
     pthread_mutex_lock(&s->lock);
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return false;
     }
     if (!cursor_write_locked(db, s->name, value)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return false;
     }
@@ -345,10 +357,12 @@ bool stage_set_cursor(stage_t *s, sqlite3 *db, uint64_t value)
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
         return false;
     }
     s->cursor = value;
+    progress_store_tx_unlock();
     pthread_mutex_unlock(&s->lock);
     return true;
 }
@@ -363,26 +377,31 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
     if (!stage_table_ensure(db))
         return false;
 
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[stage] set_named_cursor BEGIN: %s\n",  // obs-ok:stage-begin-failure
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return false;
     }
 
     uint64_t current = 0;
     if (!cursor_read(db, name, &current)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         return false;
     }
     if (current >= value) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         return true;
     }
 
     if (!cursor_write_locked(db, name, value)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         return false;
     }
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
@@ -390,7 +409,9 @@ bool stage_set_named_cursor_if_behind(sqlite3 *db, const char *name,
                 err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         return false;
     }
+    progress_store_tx_unlock();
     return true;
 }

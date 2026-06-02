@@ -143,8 +143,21 @@ bool utxo_recovery_repair_stale_cursor_from_sync_projection(
     bool have_utxos = false;
     int64_t max_utxo_h = -1;
     if (!urs_utxo_height_summary(ndb, &have_utxos, &max_utxo_h) ||
-        !have_utxos || max_utxo_h < sync_h)
+        !have_utxos)
         return false;
+
+    if (max_utxo_h + UTXO_CHECKPOINT_NEAR_WINDOW < sync_h) {
+        LOG_WARN("chain", "stale cursor repair refused: coins_h=%lld "
+                 "sync_h=%lld max_utxo_h=%lld below sync window=%d",
+                 (long long)coins_h, (long long)sync_h,
+                 (long long)max_utxo_h, UTXO_CHECKPOINT_NEAR_WINDOW);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+            "stale_cursor_repair_refused coins_h=%lld sync_h=%lld "
+            "max_utxo_h=%lld below_window=%d",
+            (long long)coins_h, (long long)sync_h,
+            (long long)max_utxo_h, UTXO_CHECKPOINT_NEAR_WINDOW);
+        return false;
+    }
 
     if (max_utxo_h > sync_h + 1) {
         LOG_WARN("chain", "stale cursor repair refused: coins_h=%lld "

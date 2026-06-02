@@ -29,9 +29,20 @@
 #define PROGRESS_STORE_PATH_MAX  1024
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_tx_lock;
+static pthread_once_t g_tx_lock_once = PTHREAD_ONCE_INIT;
 static _Atomic(sqlite3 *) g_db = NULL;
 static char g_path[PROGRESS_STORE_PATH_MAX];
 static int64_t g_opened_at;
+
+static void progress_store_tx_lock_init(void)
+{
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_tx_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
 
 static int64_t wall_now_s(void)
 {
@@ -90,7 +101,8 @@ bool progress_store_open(const char *datadir)
 
     sqlite3 *db = NULL;
     int rc = sqlite3_open_v2(path, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+        NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr,  // obs-ok:progress-store-open-failure
                 "[progress_store] sqlite3_open_v2(%s) failed: %s\n",
@@ -123,12 +135,25 @@ sqlite3 *progress_store_db(void)
     return atomic_load_explicit(&g_db, memory_order_acquire);
 }
 
+void progress_store_tx_lock(void)
+{
+    pthread_once(&g_tx_lock_once, progress_store_tx_lock_init);
+    pthread_mutex_lock(&g_tx_lock);
+}
+
+void progress_store_tx_unlock(void)
+{
+    pthread_mutex_unlock(&g_tx_lock);
+}
+
 void progress_store_close(void)
 {
     pthread_mutex_lock(&g_lock);
+    progress_store_tx_lock();
     sqlite3 *db = atomic_exchange_explicit(&g_db, NULL,
                                             memory_order_acq_rel);
     if (!db) {
+        progress_store_tx_unlock();
         pthread_mutex_unlock(&g_lock);
         return;
     }
@@ -156,6 +181,7 @@ void progress_store_close(void)
 
     g_path[0] = '\0';
     g_opened_at = 0;
+    progress_store_tx_unlock();
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -232,34 +258,42 @@ bool progress_meta_set(sqlite3 *db, const char *key,
                        const void *value, size_t value_len)
 {
     if (!db) return false;
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return false;
     }
     bool ok = progress_meta_set_stmt(db, key, value, value_len);
     const char *fini = ok ? "COMMIT" : "ROLLBACK";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return false;
     }
+    progress_store_tx_unlock();
     return ok;
 }
 
 bool progress_meta_delete(sqlite3 *db, const char *key)
 {
     if (!db) return false;
+    progress_store_tx_lock();
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return false;
     }
     bool ok = progress_meta_delete_stmt(db, key);
     const char *fini = ok ? "COMMIT" : "ROLLBACK";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return false;
     }
+    progress_store_tx_unlock();
     return ok;
 }
 
@@ -271,11 +305,15 @@ bool progress_meta_get(sqlite3 *db, const char *key,
     if (out_len) *out_len = 0;
     if (!db || !key || !key[0]) return false;
 
+    progress_store_tx_lock();
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT value FROM progress_meta WHERE key = ?",
         -1, &stmt, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) {
+        progress_store_tx_unlock();
+        return false;
+    }
     sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
@@ -293,6 +331,7 @@ bool progress_meta_get(sqlite3 *db, const char *key,
         ok = false;
     }
     sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
     return ok;
 }
 
@@ -322,8 +361,10 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "opened_at", g_opened_at);
 
     if (db) {
+        progress_store_tx_lock();
         json_push_kv_int(out, "stage_cursor_rows",
                          stage_cursor_count(db));
+        progress_store_tx_unlock();
     } else {
         json_push_kv_int(out, "stage_cursor_rows", 0);
     }

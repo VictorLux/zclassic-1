@@ -460,6 +460,20 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "body_fetch_missing_have_data_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=body_fetch_missing_have_data_condition — running only\n");
+        failures += test_body_fetch_missing_have_data_condition();
+        printf("\n=== body_fetch_missing_have_data_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "stale_validate_headers_repair_condition") == 0) {
+        printf("[test] ZCL_TEST_ONLY=stale_validate_headers_repair_condition — running only\n");
+        failures += test_stale_validate_headers_repair_condition();
+        printf("\n=== stale_validate_headers_repair_condition subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "zclassicd_oracle") == 0) {
         printf("[test] ZCL_TEST_ONLY=zclassicd_oracle — running oracle subset\n");
         failures += test_zclassicd_oracle();
@@ -783,6 +797,8 @@ int main(void)
     failures += test_snapshot_failed_reset_condition();
     failures += test_snapshot_complete_resume_condition();
     failures += test_chain_integrity_failed_condition();
+    failures += test_body_fetch_missing_have_data_condition();
+    failures += test_stale_validate_headers_repair_condition();
     failures += test_orphan_utxo_above_tip();
     failures += test_tip_fork_stale();
     failures += test_rebuild_recent();
@@ -790,6 +806,7 @@ int main(void)
     failures += test_have_data_unreadable();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
+    failures += test_service_state();
     failures += test_clock();
     failures += test_rng();
     failures += test_seed_tape();

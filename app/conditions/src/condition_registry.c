@@ -20,9 +20,11 @@ void register_snapshot_offer_ready(void);
 void register_snapshot_negotiation_stalled(void);
 void register_snapshot_failed_reset(void);
 void register_snapshot_complete_resume(void);
+void register_body_fetch_missing_have_data(void);
 void register_have_data_unreadable(void);
 void register_orphan_utxo_above_tip(void);
 void register_tip_fork_stale(void);
+void register_stale_validate_headers_repair(void);
 
 void condition_registry_register_all(void)
 {
@@ -44,7 +46,9 @@ void condition_registry_register_all(void)
     register_snapshot_negotiation_stalled();
     register_snapshot_failed_reset();
     register_snapshot_complete_resume();
+    register_body_fetch_missing_have_data();
     register_have_data_unreadable();
     register_orphan_utxo_above_tip();
     register_tip_fork_stale();
+    register_stale_validate_headers_repair();
 }

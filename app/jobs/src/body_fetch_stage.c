@@ -76,12 +76,16 @@ static bool ensure_log_schema(sqlite3 *db)
  * See stage_cursor_persisted() in jobs/stage_helpers.h. */
 
 /* Returns 1 if found and ok-flag retrieved, 0 if no row, -1 on error. */
-static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok)
+static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
+                        char *out_reason, size_t reason_size)
 {
     *out_ok = -1;
+    if (out_reason && reason_size)
+        out_reason[0] = 0;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
-        "SELECT ok FROM validate_headers_log WHERE height = ?",
+        "SELECT ok, COALESCE(fail_reason,'') "
+        "FROM validate_headers_log WHERE height = ?",
         -1, &st, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("body_fetch", "[body_fetch] vh log prepare failed: %s", sqlite3_errmsg(db));
@@ -92,7 +96,16 @@ static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok)
     rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
     if (rc == SQLITE_ROW) {
         *out_ok = sqlite3_column_int(st, 0);
+        const unsigned char *txt = sqlite3_column_text(st, 1);
+        if (txt && out_reason && reason_size)
+            snprintf(out_reason, reason_size, "%s", (const char *)txt);
         found = 1;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("body_fetch",
+                 "[body_fetch] vh log step failed height=%d rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;
     }
     sqlite3_finalize(st);
     return found;
@@ -165,7 +178,9 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     /* Read the validate_headers_log row to learn pass/fail. Floor
      * guarantees the row exists; defend against torn writes anyway. */
     int vh_ok = -1;
-    int found = vh_log_ok_at(db, next_h, &vh_ok);
+    char vh_reason[96];
+    int found = vh_log_ok_at(db, next_h, &vh_ok,
+                             vh_reason, sizeof(vh_reason));
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         /* Row missing despite floor — surface as IDLE (will retry). */
@@ -185,6 +200,17 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     }
 
     if (vh_ok == 0) {
+        if (strcmp(vh_reason,
+                   "no-header-solution-backfill-required") == 0) {
+            blocker_init(&c->blocker,
+                         "body_fetch.header_solution_missing",
+                         STAGE_NAME,
+                         BLOCKER_TRANSIENT,
+                         "validate_headers is waiting for a real "
+                         "Equihash solution, not rejecting consensus");
+            atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+            return JOB_BLOCKED;
+        }
         /* Header failed PoW/Equihash earlier — record skip + advance. */
         if (!log_insert(db, next_h, bi->phashBlock,
                          "skipped_invalid", 0, false,
@@ -261,7 +287,11 @@ job_result_t body_fetch_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    return stage_run_once(g_stage, db);
+    reducer_extend_window_to_candidate(g_ms, true);
+    progress_store_tx_lock();
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(body_fetch)

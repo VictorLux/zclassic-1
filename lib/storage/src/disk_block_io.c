@@ -36,6 +36,43 @@ static bool ensure_directory(const char *path)
     return mkdir(path, 0755) == 0;
 }
 
+static bool choose_append_block_pos(struct disk_block_pos *pos,
+                                    uint32_t block_size,
+                                    const char *datadir)
+{
+    if (!pos || !datadir)
+        return false;
+
+    char blocks_dir[512];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
+    if (!ensure_directory(blocks_dir))
+        return false;
+
+    int last_file = 0;
+    unsigned int last_size = 0;
+    for (int i = 0; i <= 9999; i++) {
+        char path[512];
+        struct disk_block_pos probe = { .nFile = i, .nPos = 0 };
+        get_block_pos_filename(path, sizeof(path), datadir, &probe, "blk");
+        struct stat st;
+        if (stat(path, &st) != 0)
+            break;
+        last_file = i;
+        last_size = (unsigned int)st.st_size;
+    }
+
+    if (last_size + block_size + 8u > 0x8000000u) {
+        last_file++;
+        last_size = 0;
+    }
+    if (last_file > 9999)
+        return false;
+
+    pos->nFile = last_file;
+    pos->nPos = last_size;
+    return true;
+}
+
 /* ── Read-only file handle cache ──────────────────────────────────
  * During sequential IBD, consecutive blocks are almost always in the
  * same blk*.dat file. Keeping the last-opened read-only FILE* avoids
@@ -177,6 +214,13 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
      * read_block_from_disk from seeing partial writes or getting a
      * stale cached FILE* handle. */
     pthread_mutex_lock(&g_file_cache_mutex);
+    if (pos->nFile < 0 &&
+        !choose_append_block_pos(pos, nSize, datadir)) {
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        LOG_FAIL("disk_block_io", "write_block: append position allocation failed");
+    }
+
     FILE *file = open_block_file(datadir, pos, false);
     if (!file) {
         pthread_mutex_unlock(&g_file_cache_mutex);
@@ -391,12 +435,13 @@ bool read_block_from_disk_index_pread(struct block *b,
 {
     if (!pindex)
         LOG_FAIL("disk_block_io", "read_block_from_disk_index_pread: pindex is NULL");
+    if (!(pindex->nStatus & BLOCK_HAVE_DATA) || pindex->nFile < 0)
+        return false;
+
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
-    if (pindex->nStatus & BLOCK_HAVE_DATA) {
-        pos.nFile = pindex->nFile;
-        pos.nPos = pindex->nDataPos;
-    }
+    pos.nFile = pindex->nFile;
+    pos.nPos = pindex->nDataPos;
 
     if (!read_block_from_disk_pread(b, &pos, datadir)) {
         fprintf(stderr, "read_block_pread_fail: h=%d file=%d pos=%u\n",
