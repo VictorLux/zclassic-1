@@ -263,8 +263,11 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && cursor_for(db, "body_fetch") == 2;
         ok = ok && validate_ok_row_exists(db, 2);
         ok = ok && !row_exists(db, "body_fetch_log", 2);
-        ok = ok && !row_exists(db, "tip_finalize_log", 2);
-        SVHR_CHECK("stale downstream poison rewinds downstream only", ok);
+        /* tip_finalize_log rows MUST survive a downstream rewind — doctrine
+         * forbids deleting them. The cursor is rewound; the (ok=0) row stays. */
+        ok = ok && row_exists(db, "tip_finalize_log", 2);
+        SVHR_CHECK("stale downstream poison rewinds downstream, preserves "
+                   "tip_finalize_log", ok);
         teardown_condition_case(dir, &ms);
     }
 
@@ -314,7 +317,11 @@ int test_stale_validate_headers_repair_condition(void)
         ok = ok && cursor_for(db, "body_fetch") == 2;
         ok = ok && !row_exists(db, "validate_headers_log", 2);
         ok = ok && !row_exists(db, "body_fetch_log", 2);
-        SVHR_CHECK("solutionless validate poison rewinds validate frontier", ok);
+        /* The validate-frontier rewind also must NOT delete tip_finalize_log
+         * rows; the seeded (ok=0) row survives the repair. */
+        ok = ok && row_exists(db, "tip_finalize_log", 2);
+        SVHR_CHECK("solutionless validate poison rewinds validate frontier, "
+                   "preserves tip_finalize_log", ok);
         teardown_condition_case(dir, &ms);
     }
 

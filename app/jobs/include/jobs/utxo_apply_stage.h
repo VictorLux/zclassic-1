@@ -78,6 +78,16 @@ job_result_t utxo_apply_stage_step_once(void);
 int utxo_apply_stage_drain(int max_steps);
 
 uint64_t utxo_apply_stage_cursor(void);
+
+/* True iff utxo_apply durably recorded a successful (ok=1) application at
+ * `height`. utxo_apply is downstream of script_validate + proof_validate, so
+ * an ok=1 row here implies both of those passed at `height`. The reducer
+ * front door uses this to accept a freshly-ingested tip block that cleared
+ * all stateful validation but cannot be tip_finalized yet — tip_finalize
+ * needs the successor block (H+1) as lookahead, so the live tip is never
+ * finalized within the same ingest call. Returns false if no row or ok!=1. */
+bool utxo_apply_stage_succeeded_at(int height);
+
 uint64_t utxo_apply_stage_verified_total(void);
 uint64_t utxo_apply_stage_spend_unknown_total(void);
 uint64_t utxo_apply_stage_utxo_collision_total(void);

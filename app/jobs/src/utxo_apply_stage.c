@@ -447,6 +447,28 @@ uint64_t utxo_apply_stage_cursor(void)
     return g_stage ? stage_cursor(g_stage) : 0;
 }
 
+bool utxo_apply_stage_succeeded_at(int height)
+{
+    if (height < 0)
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    bool ok = false;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok FROM utxo_apply_log WHERE height = ?",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, height);
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+            ok = sqlite3_column_int(st, 0) == 1;
+        sqlite3_finalize(st);
+    }
+    progress_store_tx_unlock();
+    return ok;
+}
+
 uint64_t utxo_apply_stage_verified_total(void)
 {
     return atomic_load(&g_verified_total);

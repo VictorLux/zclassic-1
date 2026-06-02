@@ -628,6 +628,14 @@ static bool reducer_pending_body_is_accepted(
     if (reducer_header_rejected_at(bi->nHeight, out))
         return false;
 
+    /* Consensus gate: accept an un-finalizable live tip ONLY if it cleared all
+     * stateful validation through utxo_apply (see utxo_apply_stage_succeeded_at).
+     * HAVE_DATA && !FAILED is NOT a validity witness — script/proof/utxo failures
+     * record ok=0 without setting BLOCK_FAILED_MASK. `out` keeps read_back's
+     * reject reason on miss. */
+    if (!utxo_apply_stage_succeeded_at(bi->nHeight))
+        return false;
+
     validation_state_init(out);
     return true;
 }

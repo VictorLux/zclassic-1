@@ -552,6 +552,13 @@ bool stage_repair_header_solution_poison_rewind(
     if (!stage_table_ensure(db))
         return false;
 
+    /* tip_finalize_log is DELIBERATELY ABSENT here: doctrine forbids deleting
+     * tip_finalize_log rows (a prior deletion collapsed the public tip to
+     * ~47279). The frontier rewind below rewinds the tip_finalize *cursor*
+     * (downstream_stages) so the surviving rows are re-finalized forward; the
+     * ok=1 guard (success_checked_logs, which DOES include tip_finalize_log)
+     * already refuses the whole repair if any finalized row exists at/above
+     * the frontier, so the Tier-2 public-tip floor is never disturbed. */
     static const char *const downstream_logs[] = {
         "body_fetch_log",
         "body_persist_log",
@@ -559,7 +566,6 @@ bool stage_repair_header_solution_poison_rewind(
         "proof_validate_log",
         "utxo_apply_log",
         "utxo_apply_delta",
-        "tip_finalize_log",
     };
     static const char *const downstream_stages[] = {
         "body_fetch",

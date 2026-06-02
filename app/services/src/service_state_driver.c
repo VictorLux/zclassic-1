@@ -27,6 +27,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
+#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -82,17 +83,38 @@ bool service_state_persist_to_progress_store(void)
     char reason[160] = {0};
     service_state_reason_copy(reason, sizeof(reason));
 
+    /* (state, reason) MUST persist atomically: a torn write (state set, reason
+     * stale) on the very state machine that drives restart recovery is exactly
+     * what blocker review flagged. One BEGIN IMMEDIATE wraps both meta writes
+     * (the tx lock is recursive, so progress_meta_set_in_tx nests safely). */
     progress_store_tx_lock();
-    bool ok1 = progress_meta_set(db, "service_state", &id, sizeof(id));
-    bool ok2 = progress_meta_set(db, "service_state_reason",
-                                 reason, strlen(reason));
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("service_state", "[service_state] persist BEGIN failed: %s",
+                 err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+    bool ok = progress_meta_set_in_tx(db, "service_state", &id, sizeof(id)) &&
+              progress_meta_set_in_tx(db, "service_state_reason",
+                                      reason, strlen(reason));
+    const char *fini = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("service_state", "[service_state] persist %s failed: %s",
+                 fini, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
     progress_store_tx_unlock();
 
-    if (!ok1 || !ok2)
+    if (!ok)
         LOG_WARN("service_state",
-                 "[service_state] persist failed (id=%d ok1=%d ok2=%d)",
-                 (int)id, (int)ok1, (int)ok2);
-    return ok1 && ok2;
+                 "[service_state] persist failed (id=%d) — rolled back",
+                 (int)id);
+    return ok;
 }
 
 bool service_state_restore_from_progress_store(void)
@@ -134,7 +156,7 @@ bool service_state_restore_from_progress_store(void)
     service_state_advance((enum service_state)id, reason);
     if ((enum service_state)id >= SERVICE_STATE_DEGRADED_SERVING &&
         (enum service_state)id != SERVICE_STATE_REPAIRING)
-        atomic_store(&g_prior_state, id);
+        atomic_store(&g_prior_state, (int)id);
     return true;
 }
 
