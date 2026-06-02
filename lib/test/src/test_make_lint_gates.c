@@ -1872,23 +1872,6 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
 
         ASSERT(repo_path(path, sizeof(path),
                          "lib/validation/src/"
-                         "process_block_self_heal_inject.c") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "process_block_inject_missing_utxo") != NULL);
-        ASSERT(strstr(buf, "coins_from_transaction") != NULL);
-        ASSERT(strstr(buf, "coins_view_cache_modify_new") != NULL);
-        ASSERT(strstr(buf, "COINS_CACHE_DIRTY") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
-        ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
-        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
-        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
-        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
-        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "lib/validation/src/"
                          "process_block_self_heal_hot_loop.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "process_block_maybe_write_needs_reimport_flag")
@@ -1924,56 +1907,6 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "read_block_from_disk_index") == NULL);
         ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
         ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "lib/validation/src/"
-                         "process_block_self_heal_sqlite_tx_index.c") == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf,
-                      "process_block_recover_missing_utxo_from_sqlite_tx_index")
-               != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") != NULL);
-        ASSERT(strstr(buf, "chain_restore_block_is_consensus_backed_on_disk")
-               != NULL);
-        ASSERT(strstr(buf, "read_block_from_disk_index") != NULL);
-        ASSERT(strstr(buf, "db_tx_find_native_or_reversed") == NULL);
-        ASSERT(strstr(buf, "sqlite3_prepare_v2") == NULL);
-        ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "models/tx_index.h") == NULL);
-        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
-        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
-        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "lib/validation/src/process_block_self_heal_chain_scan.c")
-               == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_chain_scan")
-               != NULL);
-        ASSERT(strstr(buf, "block_tree_db_write_tx_index") != NULL);
-        ASSERT(strstr(buf, "EV_SELF_HEAL_SCAN_EXHAUSTED") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
-        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
-        ASSERT(strstr(buf, "FATAL_HOT_LOOP") == NULL);
-        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") == NULL);
-        free(buf);
-        buf = NULL;
-
-        ASSERT(repo_path(path, sizeof(path),
-                         "lib/validation/src/process_block_self_heal_legacy_rpc.c")
-               == 0);
-        ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "process_block_recover_missing_utxo_from_legacy_rpc")
-               != NULL);
-        ASSERT(strstr(buf, "process_block_legacy_rpc_body") != NULL);
-        ASSERT(strstr(buf, "rpc/legacy_rpc_client.h") != NULL);
-        ASSERT(strstr(buf, "app_runtime_node_db_tx_index_find") == NULL);
-        ASSERT(strstr(buf, "block_tree_db_write_tx_index") == NULL);
-        ASSERT(strstr(buf, "utxo_reimport_flag_set") == NULL);
         free(buf);
         buf = NULL;
 
@@ -2265,8 +2198,6 @@ static int t_process_block_split_uses_reducer_language(void)
     char *buf = NULL;
     TEST("process-block split comments name reducer, not deleted engines") {
         const char *files[] = {
-            "lib/storage/include/storage/coins_view_stage_backing.h",
-            "lib/storage/src/coins_view_stage_backing.c",
             "lib/validation/include/validation/process_block.h",
             "lib/validation/include/validation/process_block_internals.h",
             "lib/validation/include/validation/process_block_invalidate.h",
@@ -2464,8 +2395,6 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "lib/platform/include/platform/time_compat.h",
             "lib/platform/src/clock.c",
             "lib/platform/src/rng.c",
-            "lib/storage/include/storage/coins_view_stage_backing.h",
-            "lib/storage/src/coins_view_stage_backing.c",
             "lib/storage/include/storage/projection_util.h",
             "lib/storage/include/storage/event_log.h",
             "lib/storage/include/storage/event_log_payloads.h",

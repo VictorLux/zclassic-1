@@ -250,11 +250,16 @@ void process_block_clear_utxo_activation_pause_range(int scan_start,
  * detect when activation has been silently paused after an unrecovered
  * UTXO mismatch. Returns -1 when activation is not paused.
  *
- * The pause state is set by process_block_note_utxo_failure() →
- * maybe_trigger_hot_loop_exit() at lib/validation/src/process_block.c
- * when a reimport attempt has already been made and failed to heal the
- * chain. Without watchdog coverage the sync state stays in
- * BLOCKS_DOWNLOAD with no height progress event — invisible. */
+ * The pause state is set inside
+ * process_block_maybe_trigger_hot_loop_exit() at
+ * lib/validation/src/process_block_self_heal_hot_loop.c — specifically
+ * the branch that fires when a reimport attempt was already made
+ * recently (last_reimport_attempted marker) and still failed to heal the
+ * chain, so the hot-loop exit refuses to auto-restart and pauses instead.
+ * That helper is reached through the self-heal failure coordinator
+ * (process_block_note_utxo_failure() in process_block_self_heal.c), not
+ * from process_block.c directly. Without watchdog coverage the sync state
+ * stays in BLOCKS_DOWNLOAD with no height progress event — invisible. */
 int process_block_get_utxo_activation_paused_height(void);
 
 /* Signal that a staged activation drain reached the per-pass

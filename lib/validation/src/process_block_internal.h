@@ -5,12 +5,9 @@
  * process_block_tip_child.c, process_block_tip_publish.c,
  * process_block_contextual_header.c, process_block_runtime_hooks.c,
  * process_block_failed_child.c,
- * process_block_self_heal.c, process_block_self_heal_chain_scan.c,
+ * process_block_self_heal.c,
  * process_block_self_heal_hot_loop.c,
- * process_block_self_heal_inject.c,
  * process_block_self_heal_scan_state.c,
- * process_block_self_heal_sqlite_tx_index.c,
- * process_block_self_heal_legacy_rpc.c,
  * process_block_flush_policy.c, process_block_crash_hooks.c). Not intended
  * for use outside this directory; the public surface lives in
  * <validation/process_block.h>. */
@@ -118,44 +115,6 @@ static inline void process_block_check_crash_stage(
         _exit(137);
     }
 }
-
-/* process_block_self_heal_inject.c */
-bool process_block_inject_missing_utxo(
-    struct coins_view_cache *coins_tip,
-    const struct uint256 *txid,
-    uint32_t missing_vout,
-    const struct transaction *tx,
-    int height,
-    const char *source,
-    int retry_no);
-
-/* process_block_self_heal_legacy_rpc.c */
-bool process_block_recover_missing_utxo_from_legacy_rpc(
-    struct coins_view_cache *coins_tip,
-    const struct uint256 *txid,
-    uint32_t missing_vout,
-    int retry_no);
-
-/* process_block_self_heal_sqlite_tx_index.c */
-bool process_block_recover_missing_utxo_from_sqlite_tx_index(
-    struct main_state *ms,
-    struct coins_view_cache *coins_tip,
-    const struct uint256 *txid,
-    uint32_t missing_vout,
-    const char *datadir,
-    int retry_no);
-
-/* Bounded backward chain scan: walk the active chain from tip down a
- * bounded depth searching each on-disk block for `txid`, inject its
- * outputs into the coins cache, and backfill the LevelDB tx_index.
- * Accounts hits/exhaustion to the g_self_heal_scan_* counters. */
-bool process_block_recover_missing_utxo_from_chain_scan(
-    struct main_state *ms,
-    struct coins_view_cache *coins_tip,
-    const struct uint256 *txid,
-    uint32_t vout,
-    const char *datadir,
-    int retry_no);
 
 /* process_block_self_heal.c */
 bool process_block_is_missing_utxo_failure(

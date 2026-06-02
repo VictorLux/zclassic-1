@@ -27,9 +27,18 @@
  * Caller contract
  * ----------------
  * Call projection_open(path) → projection_t *.
- * Issue queries with projection_query_int64 (only typed query exposed
- * in v1; we'll grow more typed queries as call sites land).
+ * Issue queries with projection_query_int64.
  * Call projection_close to release the read transaction + connection.
+ *
+ * Wiring status
+ * --------------
+ * This generic API is WIRED in production: projection_open,
+ * projection_query_int64, and projection_close back the chain
+ * projection reads in app/controllers/src/chain_projection.c. The
+ * three additional accessors — projection_query_text,
+ * projection_query_double, and projection_is_open — exist for the
+ * test suite only and have no production callers yet; they will gain
+ * production callers as richer-shaped projection reads land.
  *
  * The path-based open is intentional: a projection always opens its
  * OWN sqlite connection so it cannot be tangled with a writer's
@@ -68,9 +77,10 @@ bool projection_is_open(const projection_t *p);
  *   - more than one row (truncated; still returns -1)
  *   - column type not INTEGER
  *
- * Sufficient for v1 use cases — single counters, tip height, current
- * cursor values. Typed queries for richer shapes will land alongside
- * the first staged-sync stage that needs them. */
+ * This is the production query accessor — single counters, tip
+ * height, current cursor values (see chain_projection.c). Typed
+ * queries for richer shapes will land alongside the call sites that
+ * need them. */
 int projection_query_int64(projection_t *p, const char *sql, int64_t *out);
 
 /* Run a parameter-free SELECT that returns one TEXT column from one row.
