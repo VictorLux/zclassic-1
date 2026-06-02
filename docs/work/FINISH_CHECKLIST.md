@@ -28,6 +28,14 @@
   §2.1 fixed a latent defect (the resolver was unwired; any transparent-spend block would wedge it).
   Live forward-progress proof pairs with §3.1.
 - **Also:** CLAUDE.md accuracy (static→dynamic, tool-count) committed separately.
+- **2026-06-02 · §8.1 (commit `e89ffc228`):** registered 2 silently-skipped condition tests in
+  test_parallel (0/285→0/287); recorded the 15-test parallel-skip finding for a triage pass.
+- **2026-06-02 · Wave 2 (commit `1cef5fe01`) — subtraction + hardening, −968 LOC net.** §4.2
+  (delete coins_view_stage_backing), §4.3 (delete 4 orphaned self-heal recovery sources;
+  prove-before-delete KEPT process_block_self_heal.c — it is load-bearing), §6.1, §6.2, §9.2
+  (unsigned release now hard-fails), §9.5 (BUILDINFO records flags). build/lint/test_parallel 0/287.
+  **§4 remaining:** §4.1 (UTXO author dead branch — touches connect_block consensus), §4.4/§4.5
+  (process_block.h surface, g_live_check), §4.3-tail (self_heal.c stays, by design).
 
 ## 1. Loud failures & silent-halt elimination
 
@@ -61,8 +69,8 @@
 ## 4. Legacy engine deletion (single-engine purge)
 
 - [ ] **P1** (M) Delete dead dual-write UTXO authorship branch (`utxo_projection_set_author` has zero prod callers) — `remove` — files: `lib/storage/src/utxo_projection.c`, `lib/storage/include/storage/utxo_projection.h`, `lib/validation/src/update_coins.c`, `lib/validation/include/validation/update_coins.h` — author is permanently STAGE; the `_emit_utxo_add/_spend_projection` helpers early-return always; delete helpers + 4 call sites (connect_block.c:752/799, update_coins.c:145/187), collapse the enum, remove `UTXO_AUTHOR_LEGACY`.
-- [ ] **P1** (M) Delete `coins_view_stage_backing.c` — entirely test-only dual-read/dual-write residue — `remove` — files: `lib/storage/src/coins_view_stage_backing.c`, `lib/storage/include/storage/coins_view_stage_backing.h` — no production caller; removing it also unblocks the `UTXO_AUTHOR_LEGACY` deletion; rewrite/delete the two coupled tests.
-- [ ] **P2** (M) Delete orphaned missing-UTXO self-heal recovery island (471 LOC, dispatcher removed in c0fc39749) — `remove` — files: `lib/validation/src/process_block_self_heal_chain_scan.c`, `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`, `lib/validation/src/process_block_self_heal_legacy_rpc.c`, `lib/validation/src/process_block_self_heal_inject.c`, `lib/validation/src/process_block_self_heal.c` — the 3 recovery sources + injector + note/is-failure trackers have zero non-test callers; strip matching content asserts in `lib/test/src/test_make_lint_gates.c`. KEEP `process_block_self_heal_hot_loop.c` and `_scan_state.c` (live).
+- [x] **P1** (M) Delete `coins_view_stage_backing.c` — entirely test-only dual-read/dual-write residue — `remove` — files: `lib/storage/src/coins_view_stage_backing.c`, `lib/storage/include/storage/coins_view_stage_backing.h` — no production caller; removing it also unblocks the `UTXO_AUTHOR_LEGACY` deletion; rewrite/delete the two coupled tests.
+- [x] **P2** (M) Delete orphaned missing-UTXO self-heal recovery island (471 LOC, dispatcher removed in c0fc39749) — `remove` — files: `lib/validation/src/process_block_self_heal_chain_scan.c`, `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`, `lib/validation/src/process_block_self_heal_legacy_rpc.c`, `lib/validation/src/process_block_self_heal_inject.c`, `lib/validation/src/process_block_self_heal.c` — the 3 recovery sources + injector + note/is-failure trackers have zero non-test callers; strip matching content asserts in `lib/test/src/test_make_lint_gates.c`. KEEP `process_block_self_heal_hot_loop.c` and `_scan_state.c` (live).
 - [ ] **P2** (M) Audit/narrow process_block.h legacy-shaped surface (`g_body_pull_active` etc.) — `investigate` — files: `lib/validation/include/validation/process_block.h`, `lib/validation/src/process_block.c`, `app/jobs/src/tip_finalize_post_step.c` — header half-states "engine deleted" yet still exports a 3229-LOC `process_block_*` surface; trace each export's live caller to confirm reducer-reached vs orphaned, then narrow.
 - [ ] **P2** (M) Decide fate of `g_live_check` projection-vs-coins.db parity hook (cutover scaffold or permanent guard) — `investigate` — files: `app/jobs/src/utxo_apply_stage.c` — find the production setter (if any) of `utxo_apply_stage_set_live_checker`; keep+rename off "live_check" if a permanent invariant, else delete the `delta_diverged` scaffold.
 - [ ] **P3** (S) Fix stale comments claiming `UTXO_AUTHOR_LEGACY` is "the default" — `change` — files: `app/jobs/src/utxo_apply_delta.c`, `lib/storage/include/storage/utxo_projection.h` — real default is STAGE; fix together with the dead-branch removal.
@@ -80,8 +88,8 @@
 
 ## 6. Dead code & unwired seams
 
-- [ ] **P3** (S) Fix stale process_block.h doc claiming a dead self-heal producer chain is live — `change` — files: `lib/validation/include/validation/process_block.h` — line 253 asserts `note_utxo_failure()->maybe_trigger_hot_loop_exit()` sets the pause, but neither is called in process_block.c; rewrite to the actual (hot_loop) producer.
-- [ ] **P3** (S) Correct stale note: generic `lib/util/projection.c` API is wired, not an "unwired WIP seam" — `change` — files: `lib/util/src/projection.c`, `lib/util/include/util/projection.h` — `projection_open/close/query_int64` have ~12 prod callers; only `query_text/double`/`is_open` are test-only; update the doctrine note so agents don't hunt a phantom seam.
+- [x] **P3** (S) Fix stale process_block.h doc claiming a dead self-heal producer chain is live — `change` — files: `lib/validation/include/validation/process_block.h` — line 253 asserts `note_utxo_failure()->maybe_trigger_hot_loop_exit()` sets the pause, but neither is called in process_block.c; rewrite to the actual (hot_loop) producer.
+- [x] **P3** (S) Correct stale note: generic `lib/util/projection.c` API is wired, not an "unwired WIP seam" — `change` — files: `lib/util/src/projection.c`, `lib/util/include/util/projection.h` — `projection_open/close/query_int64` have ~12 prod callers; only `query_text/double`/`is_open` are test-only; update the doctrine note so agents don't hunt a phantom seam.
 - [ ] **P3** (S) Audit `stage_anchor_upstream_cursors_to` test coverage (recent churn in 392f7256d) — `investigate` — files: `app/jobs/src/stage_anchor.c`, `app/jobs/src/tip_finalize_stage.c` — zero test files name it; verify test_tip_finalize_stage drives multi-cursor state, else add a focused atomic-advance/never-rewind test.
 
 ## 7. Lint baselines & defensive gates → zero
@@ -100,10 +108,10 @@
 ## 9. Docs / build / release
 
 - [ ] **P1** (M) Add a reproducible release build profile (the "reproducible signed releases" claim is currently unachievable) — `change` — files: `tools/release.sh`, `Makefile` — drop `-march=native` (pin e.g. `-march=x86-64-v3`), add `-Wl,--build-id=none`, set `SOURCE_DATE_EPOCH`, and use deterministic `tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner` so the `.sha3` is a stable attestation.
-- [ ] **P2** (S) Make unsigned release a hard failure (not a silent GPG skip) — `change` — files: `tools/release.sh` — lines 172-179 skip signing when no key is present yet still produce a "complete" release; require a key or explicit `--unsigned`.
+- [x] **P2** (S) Make unsigned release a hard failure (not a silent GPG skip) — `change` — files: `tools/release.sh` — lines 172-179 skip signing when no key is present yet still produce a "complete" release; require a key or explicit `--unsigned`.
 - [ ] **P2** (S) Fix CLAUDE.md MCP tool-count self-contradiction (100+ vs 98; real=98) — `change` — files: `CLAUDE.md` — pick 98 to match routing tables; add a build/test assertion so the count can't drift.
 - [ ] **P2** (S) Fix CLAUDE.md "statically-linked" claim — binary is dynamically linked — `change` — files: `CLAUDE.md` — `file`/`ldd` show libstdc++/libm/libc/libgcc_s + dynamic -lsqlite3/-lssl; change to "self-contained ~15 MB C23 binary".
-- [ ] **P3** (S) BUILDINFO comment claims it records "flags" but it does not — `change` — files: `tools/release.sh` — record `$(CFLAGS)/$(LDFLAGS)` into BUILDINFO or fix the comment.
+- [x] **P3** (S) BUILDINFO comment claims it records "flags" but it does not — `change` — files: `tools/release.sh` — record `$(CFLAGS)/$(LDFLAGS)` into BUILDINFO or fix the comment.
 - [ ] **P3** (M) Add a CI workflow running `make ci` + a reproducible-build SHA3 cross-runner diff — `add` — files: `Makefile`, new `.github/workflows/` — none exists, so lint/tests/reproducible-build run only locally.
 
 ## 10. Other (critic gaps)
