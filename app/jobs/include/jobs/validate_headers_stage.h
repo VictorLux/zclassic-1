@@ -54,8 +54,8 @@
  * spins up the worker pool. `step_once` runs one batched step.
  * `shutdown` joins the workers, disposes the stage, and resets per-init
  * observability counters (the persisted cursor + log rows are not
- * touched). On each process start, the stage makes one bounded sweep
- * over persisted failed rows below the header-admit cursor so upgraded
+ * touched). When frontier validation is idle, the stage makes one bounded
+ * sweep over persisted failed rows below the validate cursor so upgraded
  * validation logic can clear stale failure rows without cursor rewinds.
  * The supervisor wiring lives in
  * `config/src/boot_services.c` — `staged.validate_headers` is

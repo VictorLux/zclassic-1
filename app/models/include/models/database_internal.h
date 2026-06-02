@@ -21,6 +21,11 @@
  * database.c; used by migrations and performance-mode helpers.) */
 int db_exec_checked(sqlite3 *db, const char *sql, const char *where);
 
+/* Apply the idempotent baseline schema DDL (SCHEMA[]). Defined in
+ * database_schema.c; called once from node_db_open(). Returns false on a
+ * real schema regression (boot must halt). */
+bool create_schema(struct node_db *ndb);
+
 /* Like db_exec_checked but tolerates a known-benign error substring
  * (e.g. "duplicate column name" when re-applying idempotent ALTERs).
  * (Defined in database.c; used by the migration runner.) */

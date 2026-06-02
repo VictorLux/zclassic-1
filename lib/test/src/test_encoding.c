@@ -424,6 +424,53 @@ int test_encoding(void)
         }
     }
 
+    printf("GetDataDir cache invalidates on ParseParameters... ");
+    {
+        char before[1024];
+        char after[1024];
+        const char *empty_argv[] = { "test" };
+        const char *datadir_argv[] = {
+            "test",
+            "-datadir=/tmp/zclassic23-test-datadir-cache"
+        };
+
+        ParseParameters(1, empty_argv);
+        GetDataDir(false, before, sizeof(before));
+        ParseParameters(2, datadir_argv);
+        GetDataDir(false, after, sizeof(after));
+
+        if (strcmp(after, "/tmp/zclassic23-test-datadir-cache") == 0 &&
+            strcmp(before, after) != 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: before=%s after=%s\n", before, after);
+            failures++;
+        }
+    }
+
+    printf("SetDataDir overrides cached default... ");
+    {
+        char before[1024];
+        char after[1024];
+        const char *empty_argv[] = { "test" };
+
+        ParseParameters(1, empty_argv);
+        GetDataDir(false, before, sizeof(before));
+        SetDataDir("/tmp/zclassic23-test-selected-datadir");
+        GetDataDir(false, after, sizeof(after));
+
+        if (strcmp(after, "/tmp/zclassic23-test-selected-datadir") == 0 &&
+            strcmp(before, after) != 0)
+            printf("OK\n");
+        else {
+            printf("FAIL: before=%s after=%s\n", before, after);
+            failures++;
+        }
+
+        ParseParameters(1, empty_argv);
+        ClearDataDirCache();
+    }
+
     printf("GetNumCores... ");
     {
         int n = GetNumCores();

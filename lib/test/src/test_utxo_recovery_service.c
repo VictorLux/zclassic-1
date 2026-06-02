@@ -712,6 +712,75 @@ int test_utxo_recovery_service(void)
         unlink(db_path);
     }
 
+    /* ── 15. Stale cursor repair tolerates live UTXO height lag ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_stale_cursor_lag.db", getpid());
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        if (node_db_open(&ndb, db_path)) {
+            node_db_begin(&ndb);
+            node_db_exec(&ndb,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "file_num,data_pos,num_tx) VALUES("
+                "X'" URS_HEX32(21) "',100,X'" URS_HEX32(00) "',4,"
+                "X'" URS_HEX32(22) "',1000,0,X'',X'',X'',13,0,1,1)");
+            node_db_exec(&ndb,
+                "INSERT INTO blocks(hash,height,prev_hash,version,"
+                "merkle_root,time,bits,nonce,solution,chain_work,status,"
+                "file_num,data_pos,num_tx) VALUES("
+                "X'" URS_HEX32(43) "',105,X'" URS_HEX32(21) "',4,"
+                "X'" URS_HEX32(44) "',2000,0,X'',X'',X'',13,0,2,1)");
+            node_db_exec(&ndb,
+                "INSERT INTO utxos(txid,vout,height,value,script,"
+                "is_coinbase) VALUES(X'" URS_HEX32(DD) "',0,102,"
+                "100000,X'51',1)");
+            node_db_exec(&ndb,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('utxo_commitment', X'" URS_HEX32(EE) "')");
+            node_db_commit(&ndb);
+
+            uint8_t coins_hash[32];
+            memset(coins_hash, 0x21, sizeof(coins_hash));
+            uint8_t sync_hash[32];
+            memset(sync_hash, 0x43, sizeof(sync_hash));
+            node_db_state_set(&ndb, "coins_best_block",
+                              coins_hash, sizeof(coins_hash));
+            node_db_state_set(&ndb, "sync_projection_tip_hash",
+                              sync_hash, sizeof(sync_hash));
+            node_db_state_set_int(&ndb, "sync_projection_tip_height", 105);
+
+            bool repaired =
+                utxo_recovery_repair_stale_cursor_from_sync_projection(&ndb);
+            uint8_t got[32];
+            size_t got_len = 0;
+            bool got_best = node_db_state_get(&ndb, "coins_best_block",
+                                              got, sizeof(got), &got_len);
+            int64_t commitment = urs_count_sql(&ndb,
+                "SELECT COUNT(*) FROM node_state WHERE key='utxo_commitment'");
+
+            struct coins_view_sqlite cvs;
+            bool opens = coins_view_sqlite_open(&cvs, ndb.db);
+            if (opens)
+                coins_view_sqlite_close(&cvs);
+
+            URS_CHECK("urs: stale cursor repair allows UTXO height lag",
+                      repaired && got_best && got_len == 32 &&
+                      memcmp(got, sync_hash, sizeof(sync_hash)) == 0 &&
+                      commitment == 0 && opens);
+
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: stale cursor lag repair (db open failed)",
+                      false);
+        }
+        unlink(db_path);
+    }
+
     printf("--- utxo_recovery_service: %d failure(s) ---\n", failures);
     return failures;
 }

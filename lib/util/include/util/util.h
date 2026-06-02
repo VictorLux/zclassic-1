@@ -33,6 +33,8 @@ int LogPrintStr(const char *str);
 
 void GetDefaultDataDir(char *out, size_t out_size);
 void GetDataDir(bool fNetSpecific, char *out, size_t out_size);
+void ClearDataDirCache(void);
+void SetDataDir(const char *datadir);
 
 void FileCommit(FILE *fileout);
 

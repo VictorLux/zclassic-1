@@ -113,6 +113,7 @@
 #include "validation/mirror_consensus.h"
 #include "validation/process_block.h"
 #include "event/event.h"
+#include "util/service_state.h"
 #include "sync/sync_state.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
@@ -3548,10 +3549,23 @@ bool app_init_services(struct app_context *ctx,
 
     /* frontend kernel start includes onion_tor bootstrap (Tor) — the
      * span the profile flagged as the likely bulk of the ~11s. */
+    /* De-fatal: a frontend-service start failure (rpc_http/explorer/Tor) is NOT
+     * data-unrecoverable — the node can still serve P2P + advance the chain. Per
+     * the mandate ("never silently dies unless the data is truly unrecoverable")
+     * we enter DEGRADED_SERVING and continue instead of crash-looping. It is
+     * LOUD: stderr + a structured event. (When rpc_http itself is down, zcl_state
+     * is unreachable whether we crash or degrade — so degrading strictly gains a
+     * live node + no crash-loop. rpc_http start only fails on a NULL-ctx
+     * programming invariant, so this path is effectively unreachable in prod.) */
     if (!boot_register_frontend_services(svc) ||
         !zcl_service_kernel_start_all(&svc->frontend_kernel)) {
-        fprintf(stderr, "FATAL: failed to start frontend services\n");
-        return false;
+        fprintf(stderr,
+            "WARNING: frontend services failed to start; serving DEGRADED "
+            "(RPC/explorer/Tor may be unavailable)\n");
+        event_emitf(EV_BOOT_ACTIVATE, 0,
+                    "degraded_serving frontend_services_unavailable");
+        service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                              "frontend_services_unavailable");
     }
 
     printf("[boot]   %-28s %lldms\n", "svc.frontend_tor_start",
@@ -3669,10 +3683,24 @@ bool app_init_services(struct app_context *ctx,
     self_heal_register(svc->state);
     staged_sync_supervisor_register(svc->state);
 
+    /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,
+     * oracle, rolling_anchor, ...) are ZCL_SERVICE_OPTIONAL, and the
+     * reducer/coordinator drives the authoritative chain-advance independently,
+     * so a runtime-start failure does not stall consensus. Serve DEGRADED and
+     * continue rather than crash-loop; LOUD via stderr + structured event. The
+     * sync-monitor self-heal loop re-raises to SYNCING/HEALTHY once services
+     * recover. Refresh-only if already DEGRADED (don't clobber a frontend
+     * reason with a less-specific one beyond the same state). */
     if (!boot_register_runtime_services(svc) ||
         !zcl_service_kernel_start_all(&svc->runtime_kernel)) {
-        fprintf(stderr, "FATAL: failed to start runtime services\n");
-        return false;
+        fprintf(stderr,
+            "WARNING: runtime services failed to start; serving DEGRADED "
+            "(bg-validation/gap-fill/legacy-mirror may be unavailable)\n");
+        event_emitf(EV_BOOT_ACTIVATE, 0,
+                    "degraded_serving runtime_services_unavailable");
+        if (service_state_current() != SERVICE_STATE_DEGRADED_SERVING)
+            service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                                  "runtime_services_unavailable");
     }
 
     {

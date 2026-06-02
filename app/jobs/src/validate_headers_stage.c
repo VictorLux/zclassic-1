@@ -10,6 +10,8 @@
 
 #include "platform/time_compat.h"
 #include "jobs/validate_headers_stage.h"
+#include "jobs/stage_helpers.h"
+#include "jobs/stage_repair.h"
 #include "validate_headers_internal.h"
 #include "jobs/header_admit_stage.h"
 
@@ -44,9 +46,12 @@
 /* ── Job + pool state ─────────────────────────────────────────────── */
 
 struct vh_job {
-    const struct block_index *bi;     /* in: block_index ptr */
-    int                       height; /* in: convenience for logging */
-    bool                      ok;     /* out */
+    const struct block_index *bi;       /* in: validation input */
+    struct block_index       *mark_bi;  /* in: real index to mark on pass */
+    struct block_index        snapshot; /* in: optional repaired-header copy */
+    unsigned char             solution[MAX_SOLUTION_SIZE];
+    int                       height;   /* in: convenience for logging */
+    bool                      ok;       /* out */
     char                      reason[VH_MAX_REASON];
 };
 
@@ -249,19 +254,48 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
 
 static bool mark_valid_header(struct block_index *bi);
 
+static void vh_job_bind_block(sqlite3 *db, struct vh_job *job,
+                              struct block_index *bi, int height)
+{
+    job->bi = bi;
+    job->mark_bi = bi;
+    job->height = height;
+
+    if (!db || !bi || !bi->phashBlock)
+        return;
+
+    struct block_header repaired;
+    if (!stage_repair_header_solution_load(db, height, bi->phashBlock,
+                                           &repaired))
+        return;
+
+    job->snapshot = *bi;
+    job->snapshot.nVersion = repaired.nVersion;
+    job->snapshot.hashMerkleRoot = repaired.hashMerkleRoot;
+    job->snapshot.hashFinalSaplingRoot = repaired.hashFinalSaplingRoot;
+    job->snapshot.nTime = repaired.nTime;
+    job->snapshot.nBits = repaired.nBits;
+    job->snapshot.nNonce = repaired.nNonce;
+    memcpy(job->solution, repaired.nSolution, repaired.nSolutionSize);
+    job->snapshot.nSolution = job->solution;
+    job->snapshot.nSolutionSize = repaired.nSolutionSize;
+    job->bi = &job->snapshot;
+}
+
 static job_result_t recheck_failed_rows(struct main_state *ms,
                                           sqlite3 *db,
-                                          uint64_t ha_cursor)
+                                          uint64_t validated_cursor)
 {
-    if (!ms || !db || ha_cursor == 0)
+    if (!ms || !db || validated_cursor == 0)
         return JOB_IDLE;
 
     int64_t start = atomic_load(&g_failure_recheck_cursor);
     if (start < 0)
         start = 0;
-    if ((uint64_t)start >= ha_cursor)
+    if ((uint64_t)start >= validated_cursor)
         return JOB_IDLE;
 
+    progress_store_tx_lock();
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT height FROM validate_headers_log"
@@ -269,12 +303,13 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         " ORDER BY height ASC LIMIT ?",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        progress_store_tx_unlock();
         LOG_ERR("validate_headers",
                 "failed-row recheck query prepare failed");
         return JOB_FATAL;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)start);
-    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)ha_cursor);
+    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)validated_cursor);
     sqlite3_bind_int(stmt, 3, VH_BATCH_SIZE);
 
     struct vh_job jobs[VH_BATCH_SIZE];
@@ -287,6 +322,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         last_seen = h64;
         if (h64 < 0 || h64 > INT32_MAX) {
             sqlite3_finalize(stmt);
+            progress_store_tx_unlock();
             LOG_ERR("validate_headers",
                     "failed-row recheck height out of range");
             return JOB_FATAL;
@@ -294,41 +330,47 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         struct block_index *bi = active_chain_at(&ms->chain_active, (int)h64);
         if (!bi || !bi->phashBlock) {
             sqlite3_finalize(stmt);
+            progress_store_tx_unlock();
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }
-        jobs[n].bi = bi;
-        jobs[n].height = (int)h64;
+        vh_job_bind_block(db, &jobs[n], bi, (int)h64);
         n++;
     }
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         sqlite3_finalize(stmt);
+        progress_store_tx_unlock();
         LOG_ERR("validate_headers", "failed-row recheck query failed");
         return JOB_FATAL;
     }
     sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
 
     if (n == 0) {
-        atomic_store(&g_failure_recheck_cursor, (int64_t)ha_cursor);
+        atomic_store(&g_failure_recheck_cursor, (int64_t)validated_cursor);
         return JOB_IDLE;
     }
 
     pool_run_batch(jobs, n);
     char *err = NULL;
+    progress_store_tx_lock();
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
         return JOB_FATAL;
     }
     for (int i = 0; i < n; i++) {
         if (jobs[i].ok &&
-            !mark_valid_header((struct block_index *)jobs[i].bi)) {
+            !mark_valid_header(jobs[i].mark_bi)) {
             LOG_WARN("validate_headers", "[validate_headers] recheck mark failed height=%d", jobs[i].height);
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
             return JOB_FATAL;
         }
         if (!log_insert(db, &jobs[i])) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
             return JOB_FATAL;
         }
         if (jobs[i].ok)
@@ -340,8 +382,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         LOG_WARN("validate_headers", "[validate_headers] failed-row recheck COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
         return JOB_FATAL;
     }
+    progress_store_tx_unlock();
     atomic_store(&g_failure_recheck_cursor, last_seen + 1);
     return JOB_ADVANCED;
 }
@@ -364,6 +408,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
+    reducer_extend_window_to_candidate(ms, true);
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
 
@@ -373,7 +418,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* Floor: never get ahead of header_admit. The header_admit cursor
      * is "next height to admit" — so heights [0, ha_cursor-1] are
      * admitted. We can validate up to ha_cursor-1. */
-    uint64_t ha_cursor = header_admit_stage_cursor();
+    uint64_t ha_cursor = stage_cursor_persisted(db, "header_admit",
+                                                STAGE_NAME);
     if ((uint64_t)next_h >= ha_cursor) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;  /* not BLOCKED — header_admit will catch up */
@@ -398,8 +444,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }
-        jobs[i].bi     = bi;
-        jobs[i].height = h;
+        vh_job_bind_block(db, &jobs[i], bi, h);
     }
 
     /* Dispatch + await. Pool stays inside this step. */
@@ -408,7 +453,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* Write rows + bump cursor, all under the F-2 BEGIN IMMEDIATE txn. */
     for (int i = 0; i < batch_n; i++) {
         if (jobs[i].ok &&
-            !mark_valid_header((struct block_index *)jobs[i].bi)) {
+            !mark_valid_header(jobs[i].mark_bi)) {
             LOG_WARN("validate_headers", "[validate_headers] authoritative mark failed height=%d", jobs[i].height);
             return JOB_FATAL;
         }
@@ -418,6 +463,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     c->cursor_out = c->cursor_in + (uint64_t)batch_n;
+    int64_t recheck_floor = atomic_load(&g_failure_recheck_cursor);
+    if (recheck_floor < (int64_t)c->cursor_out)
+        atomic_store(&g_failure_recheck_cursor, (int64_t)c->cursor_out);
     return JOB_ADVANCED;
 }
 
@@ -468,6 +516,14 @@ bool validate_headers_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("validate_headers", "init: stage_create failed");
     }
+    uint64_t persisted_cursor = stage_cursor_persisted(db, STAGE_NAME,
+                                                       STAGE_NAME);
+    if (!stage_set_cursor(s, db, persisted_cursor)) {
+        stage_destroy(s);
+        pool_stop();
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
 
     g_ms    = ms;
     g_stage = s;
@@ -492,11 +548,20 @@ job_result_t validate_headers_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    job_result_t recheck =
-        recheck_failed_rows(g_ms, db, header_admit_stage_cursor());
-    if (recheck != JOB_IDLE)
-        return recheck;
-    return stage_run_once(g_stage, db);
+
+    progress_store_tx_lock();
+
+    job_result_t r = stage_run_once(g_stage, db);
+    if (r != JOB_IDLE) {
+        progress_store_tx_unlock();
+        return r;
+    }
+
+    uint64_t validated_cursor = stage_cursor_persisted(db, STAGE_NAME,
+                                                       STAGE_NAME);
+    job_result_t recheck = recheck_failed_rows(g_ms, db, validated_cursor);
+    progress_store_tx_unlock();
+    return recheck;
 }
 
 STAGE_DRAIN_IMPL(validate_headers)
@@ -526,20 +591,7 @@ uint64_t validate_headers_stage_cursor(void)
 {
     if (!g_stage)
         return 0;
-    uint64_t cached = stage_cursor(g_stage);
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return cached;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT cursor FROM stage_cursor WHERE name=?",
-            -1, &st, NULL) != SQLITE_OK)
-        return cached;
-    sqlite3_bind_text(st, 1, STAGE_NAME, -1, SQLITE_STATIC);
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        cached = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return cached;
+    return stage_cursor(g_stage);
 }
 
 uint64_t validate_headers_stage_passed_total(void)
@@ -558,11 +610,15 @@ bool validate_headers_stage_has_pass_record(int32_t height,
     sqlite3 *db = progress_store_db();
     if (!db || !hash || height < 0) return false;
 
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT ok FROM validate_headers_log WHERE height=? AND hash=?",
         -1, &st, NULL);
-    if (rc != SQLITE_OK) return false;
+    if (rc != SQLITE_OK) {
+        progress_store_tx_unlock();
+        return false;
+    }
     sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
     sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
 
@@ -570,6 +626,7 @@ bool validate_headers_stage_has_pass_record(int32_t height,
     if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
         found = sqlite3_column_int(st, 0) == 1;
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
     return found;
 }
 

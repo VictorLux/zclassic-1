@@ -51,4 +51,29 @@ struct chain_integrity_result {
 void chain_integrity_check_post_restore(struct chain_integrity_result *out,
                                         const struct main_state *ms);
 
+/* Classification of a post-restore integrity result for the boot
+ * finalize gate.
+ *
+ *   CLEAN         — nothing wrong.
+ *   RECONCILABLE  — active_chain window holes only (no zero-nbits, no
+ *                   height/pprev mismatch). Normal coins-application
+ *                   lag: headers/bodies are ahead of the applied tip.
+ *                   NEVER fatal — the node serves DEGRADED and the
+ *                   condition engine reconciles it forward.
+ *   UNRECOVERABLE — zero nbits in the tip window, or active_chain
+ *                   height/pprev mismatches. True structural
+ *                   corruption: stays fatal (LOUD) unless -allow-degraded.
+ *
+ * Pure function of the result struct so the boot gate and its unit
+ * test share one predicate. A NULL result is UNRECOVERABLE (fail
+ * closed). */
+enum chain_integrity_class {
+    CHAIN_INTEGRITY_CLEAN = 0,
+    CHAIN_INTEGRITY_RECONCILABLE,
+    CHAIN_INTEGRITY_UNRECOVERABLE,
+};
+
+enum chain_integrity_class
+chain_integrity_classify(const struct chain_integrity_result *r);
+
 #endif

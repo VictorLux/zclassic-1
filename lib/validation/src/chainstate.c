@@ -455,15 +455,19 @@ int active_chain_height(const struct active_chain *c)
 
     sqlite3 *db = progress_store_db();
     if (!db) return c->height;
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM tip_finalize_log WHERE ok = 1", -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM tip_finalize_log WHERE ok = 1", -1, &st, NULL) != SQLITE_OK) {
+        progress_store_tx_unlock();
         return c->height;
+    }
     int h = -1;
     int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
     if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
         h = sqlite3_column_int(st, 0);
     }
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
     if (h > c->height) return h;
     return c->height;
 }

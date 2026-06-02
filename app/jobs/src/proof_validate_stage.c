@@ -514,7 +514,11 @@ job_result_t proof_validate_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    return stage_run_once(g_stage, db);
+    reducer_extend_window_to_candidate(g_ms, true);
+    progress_store_tx_lock();
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(proof_validate)

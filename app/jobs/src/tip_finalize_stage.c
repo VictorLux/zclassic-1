@@ -1,15 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- *
- * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h.
- * Consumes utxo_apply_log and records the live tip-finalize event. Trusted
- * bootstrap anchors also align upstream stage cursors so a restored tip cannot
- * deadlock behind historical reducer cursors. */
+ * tip_finalize_stage — implementation. See jobs/tip_finalize_stage.h. */
 
 #include "platform/time_compat.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_anchor.h"
 #include "jobs/stage_helpers.h"
 #include "tip_finalize_post_step.h"
+#include "tip_finalize_log_store.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -30,18 +27,6 @@
 
 #define STAGE_NAME "tip_finalize"
 
-struct utxo_apply_row {
-    int ok;
-    int64_t spent_count;
-    int64_t added_count;
-};
-
-struct finalized_tip_row {
-    bool found;
-    bool ok;
-    bool has_tip_hash;
-    struct uint256 tip_hash;
-};
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -80,164 +65,6 @@ static bool get_last_advance(int64_t *height, uint8_t hash[32])
     return true;
 }
 
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
-        "  height           INTEGER PRIMARY KEY,"
-        "  status           TEXT    NOT NULL,"
-        "  ok               INTEGER NOT NULL,"
-        "  work_delta_high  INTEGER NOT NULL,"
-        "  work_delta_low   INTEGER NOT NULL,"
-        "  utxo_size_after  INTEGER NOT NULL,"
-        "  reorg_depth      INTEGER NOT NULL,"
-        "  finalized_at     INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    if (sqlite3_exec(db,
-        "ALTER TABLE tip_finalize_log ADD COLUMN tip_hash BLOB",
-        NULL, NULL, &err) != SQLITE_OK) {
-        if (!err || strstr(err, "duplicate column name") == NULL) {
-            LOG_WARN("tip_finalize", "[tip_finalize] schema alter failed: %s", err ? err : "(no message)");
-            if (err) sqlite3_free(err);
-            return false;
-        }
-        sqlite3_free(err);
-    }
-    return true;
-}
-
-static int utxo_apply_log_at(sqlite3 *db, int height,
-                             struct utxo_apply_row *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->ok = -1;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT ok, spent_count, added_count "
-        "FROM utxo_apply_log WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] utxo_apply_log prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
-    sqlite3_bind_int(st, 1, height);
-    int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
-    if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
-        out->spent_count = sqlite3_column_int64(st, 1);
-        out->added_count = sqlite3_column_int64(st, 2);
-        found = 1;
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-static bool utxo_apply_sums_through(sqlite3 *db, int height,
-                                    int64_t *spent_out,
-                                    int64_t *added_out)
-{
-    *spent_out = 0;
-    *added_out = 0;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT COALESCE(SUM(spent_count),0), "
-        "       COALESCE(SUM(added_count),0) "
-        "FROM utxo_apply_log WHERE height <= ? AND ok = 1",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] utxo_apply_log sum prepare failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int(st, 1, height);
-    bool ok = false;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
-        *spent_out = sqlite3_column_int64(st, 0);
-        *added_out = sqlite3_column_int64(st, 1);
-        ok = true;
-    }
-    sqlite3_finalize(st);
-    return ok;
-}
-
-static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
-                       const struct arith_uint256 *work_delta,
-                       int64_t utxo_size_after, int reorg_depth,
-                       const struct uint256 *tip_hash)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO tip_finalize_log "
-        "(height, status, ok, work_delta_high, work_delta_low, "
-        " utxo_size_after, reorg_depth, finalized_at, tip_hash) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-
-    uint64_t hi = 0, lo = 0;
-    if (work_delta) {
-        lo = arith_uint256_get_low64(work_delta);
-        hi = ((uint64_t)work_delta->pn[3] << 32) | work_delta->pn[2];
-    }
-
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_text (stmt, 2, status, -1, SQLITE_STATIC);
-    sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)hi);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)lo);
-    sqlite3_bind_int64(stmt, 6, (sqlite3_int64)utxo_size_after);
-    sqlite3_bind_int  (stmt, 7, reorg_depth);
-    sqlite3_bind_int64(stmt, 8, (sqlite3_int64)platform_time_wall_unix());
-    if (tip_hash)
-        sqlite3_bind_blob(stmt, 9, tip_hash->data, 32, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 9);
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("tip_finalize", "[tip_finalize] insert height=%d rc=%d", height, rc);
-        return false;
-    }
-    return true;
-}
-
-static bool finalized_tip_row_at(sqlite3 *db, int height,
-                                 struct finalized_tip_row *out)
-{
-    memset(out, 0, sizeof(*out));
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT ok, tip_hash FROM tip_finalize_log WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("tip_finalize", "[tip_finalize] finalized row prepare failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
-    if (rc == SQLITE_ROW) {
-        out->found = true;
-        out->ok = sqlite3_column_int(st, 0) != 0;
-        const void *blob = sqlite3_column_blob(st, 1);
-        int n = sqlite3_column_bytes(st, 1);
-        if (blob && n == 32) {
-            memcpy(out->tip_hash.data, blob, 32);
-            out->has_tip_hash = true;
-        }
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("tip_finalize", "[tip_finalize] finalized row step failed rc=%d: %s", rc, sqlite3_errmsg(db));
-        sqlite3_finalize(st);
-        return false;
-    }
-    sqlite3_finalize(st);
-    return true;
-}
 
 static bool ensure_authority_anchor_row(sqlite3 *db, int height,
                                         const uint8_t hash[32])
@@ -409,13 +236,9 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
 
     uint64_t uv_cursor = stage_cursor_persisted(db, "utxo_apply",
                                                STAGE_NAME);
-    /* Reducer ordering invariant: tip_finalize never outruns utxo_apply's
-     * durable cursor. On strict-greater, idle until the next rewind tick
-     * re-converges; finalizing during a UTXO unwind is a consensus hazard. */
     if ((uint64_t)next_h > uv_cursor) {
         LOG_WARN("tip_finalize",
-            "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu "
-            "(reorg unwind in flight) — idling until follower rewind",
+            "[tip_finalize] cursor_in=%d exceeds utxo_apply cursor=%llu",
             next_h, (unsigned long long)uv_cursor);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -580,6 +403,13 @@ bool tip_finalize_stage_init(struct main_state *ms)
     active_chain_register_block_map(&ms->map_block_index);
 
     if (g_stage != NULL) {
+        if (existing_tip && existing_tip->phashBlock &&
+            !anchor_cursor_to_authority(
+                db, existing_tip->nHeight, existing_tip->phashBlock->data,
+                false, "init_existing_tip_reanchor")) {
+            pthread_mutex_unlock(&g_lock);
+            return false;
+        }
         pthread_mutex_unlock(&g_lock);
         return true;
     }
@@ -622,9 +452,15 @@ job_result_t tip_finalize_stage_step_once(void)
      * one-block lookahead finds next_h+1 — its own set_tip collapses the
      * window each step. stage_helpers.h */
     reducer_extend_window_to_candidate(g_ms, true);
-    if (!rewind_cursor_if_active_chain_reorged(db))
+    progress_store_tx_lock();
+    bool rewind_ok = rewind_cursor_if_active_chain_reorged(db);
+    if (!rewind_ok) {
+        progress_store_tx_unlock();
         return JOB_FATAL;
-    return stage_run_once(g_stage, db);
+    }
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(tip_finalize)
@@ -658,9 +494,12 @@ void tip_finalize_stage_set_authoritative_tip(int height,
 {
     update_last_advance(height, hash);
     sqlite3 *db = progress_store_db();
-    if (db && g_stage)
+    if (db && g_stage) {
+        progress_store_tx_lock();
         (void)anchor_cursor_to_authority(db, height, hash, false,
                                          "trusted_tip");
+        progress_store_tx_unlock();
+    }
 }
 
 bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
@@ -668,12 +507,18 @@ bool tip_finalize_stage_finalized_tip_at(sqlite3 *db, int height,
 {
     if (!db || !out_hash || height < 0)
         return false;
+    progress_store_tx_lock();
     struct finalized_tip_row row;
-    if (!finalized_tip_row_at(db, height, &row))
+    if (!finalized_tip_row_at(db, height, &row)) {
+        progress_store_tx_unlock();
         return false;
-    if (!row.found || !row.ok || !row.has_tip_hash)
+    }
+    if (!row.found || !row.ok || !row.has_tip_hash) {
+        progress_store_tx_unlock();
         return false;
+    }
     memcpy(out_hash, row.tip_hash.data, 32);
+    progress_store_tx_unlock();
     return true;
 }
 
@@ -689,30 +534,39 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32])
          * available. */
         return false;
     }
-    if (!ensure_log_schema(db))
+    progress_store_tx_lock();
+    if (!ensure_log_schema(db)) {
+        progress_store_tx_unlock();
         return false;
+    }
 
     struct uint256 tip_hash;
     memcpy(tip_hash.data, hash, 32);
 
     /* Snapshot/trusted anchors have no per-block work or UTXO delta. */
-    if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash))
+    if (!log_insert(db, height, "anchor", true, NULL, 0, 0, &tip_hash)) {
+        progress_store_tx_unlock();
         return false;
+    }
 
     if (!stage_anchor_upstream_cursors_to(db, (uint64_t)height + 1u,
-                                          STAGE_NAME, "seed_anchor"))
+                                          STAGE_NAME, "seed_anchor")) {
+        progress_store_tx_unlock();
         return false;
+    }
 
     /* Resume after the anchor; rebuild reads cursor-1 == anchor. */
     if (g_stage && !stage_set_cursor(g_stage, db, (uint64_t)height + 1)) {
         LOG_WARN("tip_finalize",
                  "[tip_finalize] anchor seed: cursor stamp to %d failed",
                  height + 1);
+        progress_store_tx_unlock();
         return false;
     }
 
     /* Publish immediately, not only after the next boot. */
     update_last_advance(height, hash);
+    progress_store_tx_unlock();
     return true;
 }
 

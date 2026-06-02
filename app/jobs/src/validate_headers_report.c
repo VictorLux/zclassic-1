@@ -42,6 +42,7 @@ bool validate_headers_stage_window_report(
     if (!db)
         return false;
 
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT COUNT(*),"
@@ -52,6 +53,7 @@ bool validate_headers_stage_window_report(
     if (rc != SQLITE_OK) {
         LOG_ERR("validate_headers",
                 "window report count prepare failed");
+        progress_store_tx_unlock();
         return false;
     }
     sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
@@ -72,6 +74,7 @@ bool validate_headers_stage_window_report(
     if (rc != SQLITE_OK) {
         LOG_ERR("validate_headers",
                 "window report fail prepare failed");
+        progress_store_tx_unlock();
         return false;
     }
     sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
@@ -86,6 +89,7 @@ bool validate_headers_stage_window_report(
 
     out->complete = out->available &&
                     out->checked_count == out->expected_count;
+    progress_store_tx_unlock();
     return out->available;
 }
 
@@ -108,6 +112,7 @@ void validate_headers_failure_summary_load(
     if (!db)
         return;
 
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT COUNT(*) FROM validate_headers_log WHERE ok=0",
@@ -149,4 +154,5 @@ void validate_headers_failure_summary_load(
                  "%s", reason ? (const char *)reason : "");
     }
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
 }

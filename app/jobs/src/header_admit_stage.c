@@ -201,7 +201,10 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
         parent_hash = bi->pprev->phashBlock;
     }
 
-    if (log_insert(db, (int)m->height, bi->phashBlock, parent_hash))
+    progress_store_tx_lock();
+    bool logged = log_insert(db, (int)m->height, bi->phashBlock, parent_hash);
+    progress_store_tx_unlock();
+    if (logged)
         atomic_fetch_add(&g_inbox_logged_total, 1);
 }
 
@@ -364,6 +367,7 @@ static job_result_t step_admit(struct stage_step_ctx *c)
 
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
+    reducer_extend_window_to_candidate(ms, true);
 
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
@@ -458,6 +462,13 @@ bool header_admit_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         LOG_FAIL("header_admit", "init: stage_create failed");
     }
+    uint64_t persisted_cursor = stage_cursor_persisted(db, STAGE_NAME,
+                                                       STAGE_NAME);
+    if (!stage_set_cursor(s, db, persisted_cursor)) {
+        stage_destroy(s);
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
 
     g_ms = ms;
     g_stage = s;
@@ -473,10 +484,16 @@ job_result_t header_admit_stage_step_once(void)
     if (!g_stage) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-    if (!rewind_cursor_if_active_chain_reorged(db))
+    progress_store_tx_lock();
+    bool rewind_ok = rewind_cursor_if_active_chain_reorged(db);
+    if (!rewind_ok) {
+        progress_store_tx_unlock();
         return JOB_FATAL;
+    }
     (void)mailbox_header_admit_drain(handle_header_admit_msg);
-    return stage_run_once(g_stage, db);
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(header_admit)
@@ -515,20 +532,7 @@ uint64_t header_admit_stage_cursor(void)
 {
     if (!g_stage)
         return 0;
-    uint64_t cached = stage_cursor(g_stage);
-    sqlite3 *db = progress_store_db();
-    if (!db)
-        return cached;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT cursor FROM stage_cursor WHERE name=?",
-            -1, &st, NULL) != SQLITE_OK)
-        return cached;
-    sqlite3_bind_text(st, 1, STAGE_NAME, -1, SQLITE_STATIC);
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-        cached = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return cached;
+    return stage_cursor(g_stage);
 }
 
 uint64_t header_admit_stage_admitted_total(void)
@@ -556,12 +560,15 @@ bool header_admit_stage_has_record(int32_t height,
     if (!db)
         return false;
 
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
         "SELECT hash FROM header_admit_log WHERE height=?",
         -1, &st, NULL);
-    if (rc != SQLITE_OK)
+    if (rc != SQLITE_OK) {
+        progress_store_tx_unlock();
         return false;
+    }
 
     sqlite3_bind_int(st, 1, height);
     bool found = false;
@@ -572,6 +579,7 @@ bool header_admit_stage_has_record(int32_t height,
                  memcmp(blob, hash->data, 32) == 0);
     }
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
     return found;
 }
 

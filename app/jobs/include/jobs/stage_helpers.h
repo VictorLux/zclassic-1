@@ -17,6 +17,7 @@
 #define ZCL_JOBS_STAGE_HELPERS_H
 
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -34,12 +35,17 @@
 static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
                                               const char *tag)
 {
+    if (!db || !name || !name[0])
+        return 0;
+
+    progress_store_tx_lock();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "SELECT cursor FROM stage_cursor WHERE name = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN(tag, "[%s] upstream cursor prepare failed: %s",
                  tag, sqlite3_errmsg(db));
+        progress_store_tx_unlock();
         return 0;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
@@ -47,6 +53,7 @@ static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
     if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
         out = (uint64_t)sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
     return out;
 }
 
@@ -75,18 +82,24 @@ static inline bool stage_default_block_reader(struct block *out,
 static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
                                           const char *table)
 {
+    if (!db || !table || !table[0])
+        return -1;
+
+    progress_store_tx_lock();
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", table);
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN(tag, "[%s] log count prepare failed: %s",
                  tag, sqlite3_errmsg(db));
+        progress_store_tx_unlock();
         return -1;
     }
     int64_t n = -1;
     if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
         n = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
+    progress_store_tx_unlock();
     return n;
 }
 
@@ -96,12 +109,17 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * reading active_chain_at(H+1)) and then collapses the visible chain[]
  * window back to the finalized height via active_chain_move_window_tip, then
  * publishes the authority through the reducer's explicit tip publication.
- * This helper selects the most-work candidate
- * (side-effect-free mirror of find_most_work_chain) and forward-extends the
- * visible chain[] window to it WITHOUT moving the authoritative tip. Both
- * utxo_apply (forward-apply + reorg-unwind detection read active_chain_at)
- * and tip_finalize (lookahead) call it at the top of their step_once so the
- * window is always supplied to the height they are about to process.
+ * This helper forward-extends the visible chain[] window to the already
+ * tracked best-header pointer WITHOUT moving the authoritative tip. Stages
+ * that read active_chain_at() call it at the top of step_once so the window is
+ * supplied to the height they are about to process.
+ *
+ * Do not scan the full block map from a stage tick. The live map is millions
+ * of entries; a full most-work sweep inside the supervisor can monopolize the
+ * liveness thread and prevent repaired cursors from resuming. Header ingress
+ * already maintains pindex_best_header as the current best known header, so
+ * the reducer can use that O(delta) chain pointer directly and let the normal
+ * downstream stages classify missing bodies, forks, and precondition failures.
  *
  * STRICTLY a no-op unless the caller owns the active-chain window for the
  * current stage step. */
@@ -110,9 +128,10 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 {
     if (!authoritative || !ms)
         return;
-    struct block_index *cand =
-        active_chain_most_work_candidate(&ms->chain_active,
-                                         &ms->map_block_index);
+    struct block_index *cand = ms->pindex_best_header;
+    if (!cand)
+        cand = active_chain_most_work_candidate(&ms->chain_active,
+                                                &ms->map_block_index);
     if (cand)
         (void)active_chain_extend_window(&ms->chain_active, cand);
 }

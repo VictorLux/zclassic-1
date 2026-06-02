@@ -4,6 +4,7 @@
 #include "util/log_macros.h"
 
 #include "framework/condition.h"
+#include "services/service_state_driver.h"
 #include "supervisors/domains.h"
 #include "util/supervisor.h"
 
@@ -19,6 +20,10 @@ static void self_heal_tick(struct liveness_contract *c)
     (void)c;
     if (!g_ms) return;
     condition_engine_tick();
+    /* Drive the canonical operational mode from real progress (sync gap +
+     * active repair Conditions) right after the conditions run. Pure
+     * observability/state — never touches the chain or a consensus gate. */
+    service_state_driver_tick();
     supervisor_progress(atomic_load(&g_id),
                         (int64_t)condition_engine_get_active_count());
 }

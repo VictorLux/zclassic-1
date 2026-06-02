@@ -35,6 +35,12 @@ int g_nargs = 0;
 static char cachedDataDir[4096] = "";
 static char cachedDataDirNet[4096] = "";
 
+void ClearDataDirCache(void)
+{
+    cachedDataDir[0] = '\0';
+    cachedDataDirNet[0] = '\0';
+}
+
 static int find_arg(const char *key)
 {
     for (int i = 0; i < g_nargs; i++) {
@@ -46,6 +52,7 @@ static int find_arg(const char *key)
 
 void ParseParameters(int argc, const char *const argv[])
 {
+    ClearDataDirCache();
     g_nargs = 0;
     for (int i = 1; i < argc && g_nargs < MAX_ARGS; i++) {
         const char *arg = argv[i];
@@ -131,6 +138,8 @@ bool SoftSetArg(const char *arg, const char *value)
     snprintf(g_args[g_nargs].key, MAX_ARG_LEN, "%s", arg);
     snprintf(g_args[g_nargs].value, MAX_ARG_LEN, "%s", value);
     g_nargs++;
+    if (strcmp(arg, "-datadir") == 0)
+        ClearDataDirCache();
     return true;
 }
 
@@ -175,9 +184,44 @@ void GetDefaultDataDir(char *out, size_t out_size)
 #else
     const char *home = getenv("HOME");
     if (home && home[0])
-        snprintf(out, out_size, "%s/.zclassic", home);
+        snprintf(out, out_size, "%s/.zclassic-c23", home);
     else
-        snprintf(out, out_size, "/.zclassic");
+        snprintf(out, out_size, "/.zclassic-c23");
+#endif
+}
+
+static void AppendNetworkDataDir(char *path, size_t path_size)
+{
+    const struct base_chain_params *bp = BaseParams();
+    if (!bp || !bp->strDataDir[0])
+        return;
+
+    size_t len = strlen(path);
+    if (len + 1 >= path_size)
+        return;
+#ifdef _WIN32
+    snprintf(path + len, path_size - len, "\\%s", bp->strDataDir);
+#else
+    snprintf(path + len, path_size - len, "/%s", bp->strDataDir);
+#endif
+}
+
+void SetDataDir(const char *datadir)
+{
+    ClearDataDirCache();
+    if (!datadir || !datadir[0])
+        return;
+
+    snprintf(cachedDataDir, sizeof(cachedDataDir), "%s", datadir);
+    snprintf(cachedDataDirNet, sizeof(cachedDataDirNet), "%s", datadir);
+    AppendNetworkDataDir(cachedDataDirNet, sizeof(cachedDataDirNet));
+
+#ifdef _WIN32
+    CreateDirectoryA(cachedDataDir, NULL);
+    CreateDirectoryA(cachedDataDirNet, NULL);
+#else
+    mkdir(cachedDataDir, 0700);
+    mkdir(cachedDataDirNet, 0700);
 #endif
 }
 
@@ -197,15 +241,7 @@ void GetDataDir(bool fNetSpecific, char *out, size_t out_size)
     }
 
     if (fNetSpecific) {
-        const struct base_chain_params *bp = BaseParams();
-        if (bp->strDataDir[0]) {
-            size_t len = strlen(out);
-#ifdef _WIN32
-            snprintf(out + len, out_size - len, "\\%s", bp->strDataDir);
-#else
-            snprintf(out + len, out_size - len, "/%s", bp->strDataDir);
-#endif
-        }
+        AppendNetworkDataDir(out, out_size);
     }
 
 #ifdef _WIN32

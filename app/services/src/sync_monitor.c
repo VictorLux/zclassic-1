@@ -1,21 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-// one-result-type-ok:monitor-no-fallible-surface — E2 (one way out): this is
-// a sync-monitor / recovery-stats recorder, not an operation executor. Its
-// functions are void recorders + setters (init/set_context/record_*/get_*),
-// pointer accessors (connman/download_manager/main_state), pure query
-// predicates (bool sync_monitor_active_next_child_exists — an existence
-// check), and counts/ages (int eligible peers, int64_t tip_advance_age with a
-// documented `raw-return-ok:sentinel` -1). None of these is a success/failure
-// result that bare bool would strip a reason from. Stats travel via the
-// struct watchdog_stats / watchdog_local_recovery_stats out-params; the one
-// kick path logs failure context via LOG_WARN with outcome.reason.
+// one-result-type-ok:monitor-frontier-repair-result — E2 (one way out): most
+// of this file is sync-monitor / recovery-stats recording (void setters,
+// pointer accessors, pure predicates, and out-param stats). The one operation
+// executor is sync_monitor_queue_active_frontier_body(), and it returns
+// struct zcl_result so a Condition remedy keeps contextual failure reasons.
 
 #include "services/sync_monitor.h"
 #include "util/log_macros.h"
 
 #include "framework/condition.h"
 #include "net/connman.h"
+#include "net/netaddr.h"
 #include "platform/time_compat.h"
 #include "sync/sync_planner.h"
 #include "services/chain_activation_controller.h"
@@ -181,6 +177,157 @@ void sync_monitor_kick_local_sync(const char *reason)
     }
 }
 
+static struct block_index *find_active_frontier_child(
+    struct main_state *ms,
+    int target_height)
+{
+    if (!ms || target_height < 0)
+        return NULL;
+
+    struct block_index *bi = active_chain_at(&ms->chain_active,
+                                             target_height);
+    struct block_index *prev = target_height > 0
+        ? active_chain_at(&ms->chain_active, target_height - 1)
+        : NULL;
+    if (bi && bi->nHeight == target_height && bi->phashBlock &&
+        !block_has_any_failure(bi) &&
+        (target_height == 0 || !prev || bi->pprev == prev))
+        return bi;
+
+    size_t iter = 0;
+    while (block_map_next(&ms->map_block_index, &iter, NULL, &bi)) {
+        if (bi && bi->nHeight == target_height &&
+            bi->phashBlock && !block_has_any_failure(bi))
+        {
+            if (target_height > 0 && prev && bi->pprev != prev)
+                continue;
+            return bi;
+        }
+    }
+    return NULL;
+}
+
+static void reset_local_addnode_backoff(struct connman *cm)
+{
+    if (!cm)
+        return;
+    for (int i = 0; i < cm->num_addnodes; i++) {
+        if (!net_addr_is_local(&cm->addnodes[i].svc.addr))
+            continue;
+        cm->addnode_backoff_sec[i] = 0;
+        cm->addnode_last_attempt[i] = 0;
+    }
+}
+
+static bool ensure_blocks_download_state(const char *reason)
+{
+    enum sync_state st = sync_get_state();
+    if (st == SYNC_BLOCKS_DOWNLOAD || st == SYNC_CONNECTING_BLOCKS)
+        return true;
+
+    if (st == SYNC_FAILED) {
+        if (!sync_set_state(SYNC_IDLE, reason ? reason :
+                            "frontier body queue reset")) {
+            LOG_WARN("sync_monitor",
+                     "[sync_monitor] block-download wake failed: %s -> idle",
+                     sync_state_name(st));
+            return false;
+        }
+        st = sync_get_state();
+    }
+
+    if (st == SYNC_IDLE || st == SYNC_AT_TIP ||
+        st == SYNC_FINDING_PEERS || st == SYNC_SNAPSHOT_RECEIVE) {
+        if (!sync_set_state(SYNC_HEADERS_DOWNLOAD, reason ? reason :
+                            "frontier body queue headers")) {
+            LOG_WARN("sync_monitor",
+                     "[sync_monitor] block-download wake failed: %s -> "
+                     "headers_download",
+                     sync_state_name(st));
+            return false;
+        }
+        st = sync_get_state();
+    }
+
+    if (st == SYNC_HEADERS_DOWNLOAD || st == SYNC_REORG_RECOVERY) {
+        if (!sync_set_state(SYNC_BLOCKS_DOWNLOAD, reason ? reason :
+                            "frontier body queue")) {
+            LOG_WARN("sync_monitor",
+                     "[sync_monitor] block-download wake failed: %s -> "
+                     "blocks_download",
+                     sync_state_name(st));
+            return false;
+        }
+        return true;
+    }
+
+    return sync_get_state() == SYNC_BLOCKS_DOWNLOAD ||
+           sync_get_state() == SYNC_CONNECTING_BLOCKS;
+}
+
+struct zcl_result sync_monitor_queue_active_frontier_body(
+    int target_height,
+    const char *reason)
+{
+    struct main_state *ms = sync_monitor_main_state();
+    struct download_manager *dm = sync_monitor_download_manager();
+    if (!ms || !dm)
+        return ZCL_ERR(-1, "frontier body queue: missing ms or dm");
+
+    struct uint256 target_hash;
+    memset(&target_hash, 0, sizeof(target_hash));
+    bool already_have_data = false;
+    int local_h = target_height - 1;
+
+    zcl_mutex_lock(&ms->cs_main);
+    if (target_height < 0) {
+        zcl_mutex_unlock(&ms->cs_main);
+        return ZCL_ERR(-2, "frontier body queue: invalid target=%d",
+                       target_height);
+    }
+
+    struct block_index *child =
+        find_active_frontier_child(ms, target_height);
+    if (!child) {
+        zcl_mutex_unlock(&ms->cs_main);
+        return ZCL_ERR(-3,
+                       "frontier body queue: no visible block at h=%d",
+                       target_height);
+    }
+    if (child->nStatus & BLOCK_FAILED_ANY_MASK) {
+        zcl_mutex_unlock(&ms->cs_main);
+        return ZCL_ERR(-4,
+                       "frontier body queue: child failed h=%d status=%u",
+                       target_height, child->nStatus);
+    }
+    already_have_data = (child->nStatus & BLOCK_HAVE_DATA) != 0;
+    target_hash = *child->phashBlock;
+    zcl_mutex_unlock(&ms->cs_main);
+
+    if (!already_have_data)
+        dl_queue_priority(dm, &target_hash, target_height);
+
+    struct connman *cm = sync_monitor_connman();
+    reset_local_addnode_backoff(cm);
+    if (cm)
+        connman_kick_seed_discovery(cm);
+
+    if (!ensure_blocks_download_state(reason ? reason :
+                                      "frontier body queue"))
+        return ZCL_ERR(-5,
+                       "frontier body queue: sync state wake failed from %s",
+                       sync_state_name(sync_get_state()));
+
+    sync_monitor_kick_local_sync(reason ? reason :
+                                 "frontier body queue");
+    sync_monitor_record_recovery(WATCHDOG_BODY_FRONTIER_MISSING,
+                                 local_h, target_height,
+                                 cm ? (int)connman_get_node_count(cm) : 0,
+                                 reason ? reason :
+                                 "frontier body queue");
+    return ZCL_OK;
+}
+
 bool sync_monitor_active_next_child_exists(struct main_state *ms,
                                            struct block_index *tip,
                                            int next_h)
@@ -308,17 +455,18 @@ void sync_monitor_get_stats(struct watchdog_stats *out)
 const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
 {
     switch (type) {
-    case 0: return "NONE";
-    case 1: return "HEADER_STALL";
-    case 2: return "HEADER_LAG";
-    case 3: return "BLOCK_STALL";
-    case 4: return "STATE_STUCK";
-    case 5: return "REPEATED_RESTART";
-    case 6: return "PEER_FLOOR";
-    case 7: return "SYNC_VIOLATION";
-    case 8: return "QUEUE_STARVED";
-    case 9: return "LOCAL_HEADER_REFILL";
-    case 10: return "SNAPSHOT_RESNAPSHOT";
+    case WATCHDOG_NONE: return "NONE";
+    case WATCHDOG_HEADER_STALL: return "HEADER_STALL";
+    case WATCHDOG_HEADER_LAG: return "HEADER_LAG";
+    case WATCHDOG_BLOCK_STALL: return "BLOCK_STALL";
+    case WATCHDOG_STATE_STUCK: return "STATE_STUCK";
+    case WATCHDOG_REPEATED_RESTART: return "REPEATED_RESTART";
+    case WATCHDOG_PEER_FLOOR: return "PEER_FLOOR";
+    case WATCHDOG_SYNC_VIOLATION: return "SYNC_VIOLATION";
+    case WATCHDOG_QUEUE_STARVED: return "QUEUE_STARVED";
+    case WATCHDOG_LOCAL_HEADER_REFILL: return "LOCAL_HEADER_REFILL";
+    case WATCHDOG_BODY_FRONTIER_MISSING: return "BODY_FRONTIER_MISSING";
+    case WATCHDOG_SNAPSHOT_RESNAPSHOT: return "SNAPSHOT_RESNAPSHOT";
     }
     return "UNKNOWN";
 }

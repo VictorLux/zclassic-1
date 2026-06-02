@@ -210,17 +210,14 @@ static void chain_evidence_controller_reconcile_startup(
         chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
                       &active_evidence).ok;
 
-    /* Persisted hash / height mismatches between the in-memory active_tip
-     * and the cec.active_tip_* keys are NOT contradictions during startup
-     * — they reflect transient mid-boot state (coins view loaded before
-     * active chain restored, OR a prior session was killed mid-reorg and
-     * the running boot has rebuilt the chain to a different tip). The
-     * in-memory active_tip is the running source of truth; update the
-     * persisted state to match so future boots don't re-trigger, and
-     * continue without freezing. The auto-clear path above handles legacy
-     * frozen state from older binaries that did freeze here. */
     if (has_persisted_hash &&
         !u256_equal(&persisted_hash, active_tip->phashBlock)) {
+        if (persisted_height > active_tip->nHeight) {
+            LOG_WARN("cec", "[cec] startup tip drift: refusing to rewrite "
+                     "persisted high tip h=%d down to in-memory h=%d",
+                     persisted_height, active_tip->nHeight);
+            return;
+        }
         char old_hex[65], new_hex[65];
         uint256_get_hex(&persisted_hash, old_hex);
         uint256_get_hex(active_tip->phashBlock, new_hex);
@@ -231,6 +228,11 @@ static void chain_evidence_controller_reconcile_startup(
                     active_tip->nHeight);
     }
     if (persisted_height >= 0 && persisted_height != active_tip->nHeight) {
+        if (persisted_height > active_tip->nHeight) {
+            LOG_WARN("cec", "[cec] startup tip drift: refusing lower height h=%d -> h=%d",
+                     persisted_height, active_tip->nHeight);
+            return;
+        }
         LOG_WARN("cec", "[cec] startup tip drift: persisted_height=%d " "in-memory_height=%d — updating persisted", persisted_height, active_tip->nHeight);
         persist_i64(authority, "cec.active_tip_height",
                     active_tip->nHeight);

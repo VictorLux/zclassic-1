@@ -310,9 +310,11 @@ int test_condition_engine(void)
             "snapshot_negotiation_stalled",
             "snapshot_failed_reset",
             "snapshot_complete_resume",
+            "body_fetch_missing_have_data",
             "have_data_unreadable",
             "orphan_utxo_above_tip",
             "tip_fork_stale",
+            "stale_validate_headers_repair",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));
@@ -321,7 +323,11 @@ int test_condition_engine(void)
         for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
             ok = ok && ce_json_conditions_has(conditions, expected[i]);
         ok = ok &&
+             condition_engine_has_registered("body_fetch_missing_have_data");
+        ok = ok &&
              condition_engine_has_registered("have_data_unreadable");
+        ok = ok &&
+             condition_engine_has_registered("stale_validate_headers_repair");
         ok = ok && !condition_engine_has_registered("not_a_condition");
         json_free(&out);
         CE_CHECK("register_all exposes current self-heal set", ok);

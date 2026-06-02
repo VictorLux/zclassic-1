@@ -6,6 +6,7 @@
 #include "net/connman.h"
 #include "net/download.h"
 #include "sync/sync_state.h"
+#include "util/result.h"
 #include "validation/main_state.h"
 
 #include <stdbool.h>
@@ -22,6 +23,7 @@ enum watchdog_recovery_type {
     WATCHDOG_SYNC_VIOLATION,
     WATCHDOG_QUEUE_STARVED,
     WATCHDOG_LOCAL_HEADER_REFILL,
+    WATCHDOG_BODY_FRONTIER_MISSING,
     WATCHDOG_SNAPSHOT_RESNAPSHOT,
 };
 
@@ -62,6 +64,9 @@ struct download_manager *sync_monitor_download_manager(void);
 struct main_state *sync_monitor_main_state(void);
 
 void sync_monitor_kick_local_sync(const char *reason);
+struct zcl_result sync_monitor_queue_active_frontier_body(
+    int target_height,
+    const char *reason);
 int sync_monitor_local_header_refill(struct connman *cm,
                                      int next_h,
                                      const char *reason);

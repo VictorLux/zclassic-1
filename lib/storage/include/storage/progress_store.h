@@ -24,12 +24,10 @@
  *
  * Threading
  * ----------
- * One process-wide handle. The handle itself is safe for concurrent
- * reads (SQLite WAL); writes are serialised by each stage's own per-
- * stage mutex (see `stage_run_once`). The progress_store module does
- * not take any locks on the handle in the hot path — open/close go
- * through a one-shot mutex, but `progress_store_db()` is a plain
- * pointer load. */
+ * One process-wide handle. `progress_store_db()` is only a pointer load;
+ * callers that execute SQL on the handle must hold
+ * progress_store_tx_lock(). The lock is recursive so read helpers remain
+ * usable from inside stage transactions. */
 
 #ifndef ZCL_STORAGE_PROGRESS_STORE_H
 #define ZCL_STORAGE_PROGRESS_STORE_H
@@ -47,6 +45,13 @@ bool progress_store_open(const char *datadir);
 
 /* Singleton handle. NULL if not yet opened or already closed. */
 sqlite3 *progress_store_db(void);
+
+/* Serialize operations on the singleton progress.kv handle. SQLite
+ * connections cannot run more than one statement/transaction safely across
+ * threads unless the caller serializes them. This lock is recursive so a
+ * stage step can call read helpers while its outer transaction is active. */
+void progress_store_tx_lock(void);
+void progress_store_tx_unlock(void);
 
 /* Graceful close: PRAGMA wal_checkpoint(TRUNCATE), sqlite3_close. Safe
  * to call repeatedly and from shutdown paths. */

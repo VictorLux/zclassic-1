@@ -109,7 +109,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
     X(have_data_unreadable) \
-    X(chain_tip_watchdog_bounded_restart) X(blocker) \
+    X(chain_tip_watchdog_bounded_restart) X(blocker) X(service_state) \
+    X(service_state_driver) \
     X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
@@ -121,7 +122,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_stage_fuzz) \
-    X(reducer_ingest_e2e) \
+    X(reducer_ingest_e2e) X(stage_reducer_unwedge) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
     X(domain_consensus_pow) X(domain_consensus_sigops) \
     X(domain_consensus_script_standard) \

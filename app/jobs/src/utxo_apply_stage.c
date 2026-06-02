@@ -371,11 +371,18 @@ job_result_t utxo_apply_stage_step_once(void)
      * forward apply (and before tip_finalize, which the supervisor drains
      * after us, reads our cursor). Self-contained txn; on failure the
      * cursor is untouched so the next tick retries. */
-    if (!utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
-                                           &g_reorg_unwound_total,
-                                           &g_last_blocked_unix))
+    progress_store_tx_lock();
+    bool unwind_ok =
+        utxo_apply_reorg_unwind_if_needed(db, g_stage, g_ms,
+                                          &g_reorg_unwound_total,
+                                          &g_last_blocked_unix);
+    if (!unwind_ok) {
+        progress_store_tx_unlock();
         return JOB_FATAL;
-    return stage_run_once(g_stage, db);
+    }
+    job_result_t r = stage_run_once(g_stage, db);
+    progress_store_tx_unlock();
+    return r;
 }
 
 STAGE_DRAIN_IMPL(utxo_apply)
@@ -438,6 +445,28 @@ void utxo_apply_stage_set_live_checker(utxo_apply_live_check_fn fn, void *user)
 uint64_t utxo_apply_stage_cursor(void)
 {
     return g_stage ? stage_cursor(g_stage) : 0;
+}
+
+bool utxo_apply_stage_succeeded_at(int height)
+{
+    if (height < 0)
+        return false;
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return false;
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    bool ok = false;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok FROM utxo_apply_log WHERE height = ?",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, height);
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+            ok = sqlite3_column_int(st, 0) == 1;
+        sqlite3_finalize(st);
+    }
+    progress_store_tx_unlock();
+    return ok;
 }
 
 uint64_t utxo_apply_stage_verified_total(void)

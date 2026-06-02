@@ -1,7 +1,47 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-06-01. This file is the current debt board for finishing the
+> Updated 2026-06-02. This file is the current debt board for finishing the
 > framework refactor. `docs/FRAMEWORK.md` remains the architecture.
+
+## 2026-06-02 — Self-healing service merged; live soak: boots+observes, NOT yet at-tip
+
+`finish/self-healing-service` merged to `main` (green: `make -j` / `make lint` /
+`test_parallel` 282/282; two adversarial audits — the second returned **GO** with
+no must-fix). What it delivers and what the live soak proved/​disproved:
+
+- **PROVEN live (the headline win):** the binary that crash-looped on
+  2026-06-01 (boot-integrity FATAL) now **boots cleanly and stays up** —
+  `NRestarts=0`, no FATAL — on the same wedged datadir. Boot de-fatal works.
+- **PROVEN live:** the `service_state` machine drives the node correctly:
+  `syncing` → `degraded_serving` as conditions accumulated (1→5), reason strings
+  populated; `dumpstate service_state` reports it. The new conditions
+  `body_fetch_missing_have_data` fire and **clear** (`cleared_count=8`).
+- **PROVEN:** `tools/diagnose_gap.sh` validated against a real running node for
+  the first time (correct `GENUINE-BODY-GAP` verdict).
+- **Consensus path hardened + double-audited:** a pre-merge audit returned NO_GO
+  on the bundled reducer-repair WIP; all 5 blockers fixed (`811320cd7`) — chiefly
+  (1) `stage_repair` no longer deletes `tip_finalize_log` rows, (2) the ingest
+  acceptance gate now requires `utxo_apply` ok=1 AND the block IS the live active
+  tip (`d4da811c7`), not `HAVE_DATA` alone. Re-audit: GO.
+
+- **NOT met — the live "forward progress to tip" bar:** the node holds at public
+  tip **3,132,687** and does not catch up to the network (~3,133,233). Root: a
+  **pre-existing, non-regression** wedge — `block_failed_mask_at_tip` reports
+  `target=3132688 stall_type=no_advance result=height_not_found`; block 3132688's
+  **body never lands** (`have_data=False`; `[gap-fill] queued window
+  [3132688..3133007] tip=3132687` loops forever) while the reducer opportunistically
+  persists *later* bodies (3132716+). Contributing: `legacy_mirror` to local
+  `zclassicd` is **unreachable** (`mirror_reachable:false`, `observing`), only 2
+  external non-zcl23 peers (`peer_floor_violated → no_healthy_source`). NOT caused
+  by this branch: the pre-fix `b6bd5ca42` binary held at the same 3,132,687
+  (`docs/work/import-reset-and-write-ordering-assessment.md`).
+
+**Next forward-progress work item (the real remaining "finish"):** make the node
+fetch the gap block (3132688) and advance — fix `legacy_mirror`↔`zclassicd`
+reachability and/or make `body_fetch`/gap-fill obtain the immediate next body
+from an available source, then let the reducer drain past the gap. Until the
+node demonstrably climbs to the network tip, do **not** mark the refactor
+complete on the live-proof criterion.
 
 ## Objective
 

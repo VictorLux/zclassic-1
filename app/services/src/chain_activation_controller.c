@@ -43,9 +43,11 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "storage/progress_store.h"
+#include "storage/disk_block_io.h"
 #include "services/header_admit_inbox.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
+#include "jobs/block_header_emit.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/body_persist_stage.h"
 #include "jobs/script_validate_stage.h"
@@ -570,20 +572,13 @@ int reducer_kick(struct chain_activation_controller *ctl)
     return advanced;
 }
 
-/* Map the freshly-written stage log rows for `height`/`hash` into `out`.
- * Returns true iff the block landed finalized (ok=1) at `height` with the
- * expected hash. Header-level rejects (validate_headers_log ok=0) and a
- * non-landed block surface as MODE_INVALID with the recorded reason, so
- * validation_state_is_valid()/the reject string flow synchronously to the
- * caller — exactly the contract msg_blocks/submitblock expect today. */
+/* Map freshly-written stage log rows for `height`/`hash` into `out`. */
 static bool reducer_read_back_verdict(int height,
                                       const struct uint256 *hash,
                                       struct validation_state *out)
 {
     sqlite3 *pdb = progress_store_db();
 
-    /* Header-level reject: a validate_headers_log row with ok=0 carries the
-     * PoW/Equihash/version fail reason. Surface it as the verdict. */
     struct validate_headers_window_report rep;
     if (validate_headers_stage_window_report(height, height, &rep) &&
         rep.failed_count > 0) {
@@ -595,8 +590,6 @@ static bool reducer_read_back_verdict(int height,
         return false;
     }
 
-    /* The block landed iff tip_finalize durably recorded a finalized (ok=1)
-     * tip row at `height` whose hash matches the ingested block. */
     uint8_t finalized[32];
     if (pdb &&
         tip_finalize_stage_finalized_tip_at(pdb, height, finalized) &&
@@ -604,12 +597,96 @@ static bool reducer_read_back_verdict(int height,
         return true; /* out left MODE_VALID by the caller's init */
     }
 
-    /* Not finalized at this height: stateful reject (utxo/finalize) or the
-     * stages have not yet converged. Report the most-specific reason the
-     * stages recorded; the absence of a landed row IS the reject witness. */
     validation_state_invalid(out, false, REJECT_INVALID,
                              "block-not-finalized-by-reducer", NULL);
     return false;
+}
+
+static bool reducer_header_rejected_at(int height, struct validation_state *out)
+{
+    struct validate_headers_window_report rep;
+    if (!validate_headers_stage_window_report(height, height, &rep) ||
+        rep.failed_count == 0)
+        return false;
+
+    validation_state_dos(out, 100, false, REJECT_INVALID,
+                         rep.first_fail_reason[0]
+                             ? rep.first_fail_reason
+                             : "header-validation-failed",
+                         false, NULL);
+    return true;
+}
+
+static bool reducer_pending_body_is_accepted(
+        const struct block_index *bi,
+        struct validation_state *out)
+{
+    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA) ||
+        (bi->nStatus & BLOCK_FAILED_MASK))
+        return false;
+
+    if (reducer_header_rejected_at(bi->nHeight, out))
+        return false;
+
+    /* Consensus gate: the live tip is accepted ONLY if it cleared utxo_apply
+     * (HAVE_DATA && !FAILED is no witness — stage fails record ok=0, never
+     * BLOCK_FAILED_MASK). Caller already confirmed bi IS the active tip. */
+    if (!utxo_apply_stage_succeeded_at(bi->nHeight))
+        return false;
+
+    validation_state_init(out);
+    return true;
+}
+
+static bool reducer_persist_ingested_body_locked(
+        struct chain_activation_controller *ctl,
+        const struct uint256 *block_hash,
+        struct block *pblock,
+        struct validation_state *out)
+{
+    if (!ctl || !ctl->ms || !block_hash || !pblock) {
+        LOG_WARN("reducer", "body persist invalid args ctl=%p ms=%p hash=%p block=%p",
+                 (void *)ctl, ctl ? (void *)ctl->ms : NULL,
+                 (const void *)block_hash, (void *)pblock);
+        return validation_state_error(out, "reducer-body-null-arg");
+    }
+
+    struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
+                                            block_hash);
+    if (!bi)
+        return true;
+
+    if (bi->nStatus & BLOCK_HAVE_DATA)
+        return true;
+
+    if (reducer_header_rejected_at(bi->nHeight, out))
+        return false;
+
+    if (!ctl->datadir || !ctl->datadir[0] || !ctl->params) {
+        LOG_WARN("reducer", "body persist missing runtime wiring h=%d datadir=%p params=%p",
+                 bi->nHeight, (const void *)ctl->datadir,
+                 (const void *)ctl->params);
+        return validation_state_error(out, "reducer-body-runtime-unwired");
+    }
+
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    if (!write_block_to_disk(pblock, &pos, ctl->datadir,
+                             ctl->params->pchMessageStart)) {
+        LOG_WARN("reducer", "body persist write failed h=%d", bi->nHeight);
+        return validation_state_error(out, "reducer-body-write-failed");
+    }
+
+    if (!block_index_set_have_data_verified(bi, &pos, ctl->datadir)) {
+        LOG_WARN("reducer", "body persist verify failed h=%d file=%d pos=%u",
+                 bi->nHeight, pos.nFile, pos.nPos);
+        return validation_state_error(out, "reducer-body-verify-failed");
+    }
+
+    block_index_emit_header_event(bi, "reducer_ingest", NULL, NULL);
+    LOG_INFO("reducer", "persisted ingested block body h=%d file=%d pos=%u",
+             bi->nHeight, pos.nFile, pos.nPos);
+    return true;
 }
 
 bool reducer_ingest_block(struct chain_activation_controller *ctl,
@@ -666,17 +743,39 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * when a better fork is selected. */
     zcl_mutex_lock(&ctl->mutex);
     (void)force; /* relay pre-filter gating lives in the admit producer */
+    struct block_index *anchor_tip = active_chain_tip(&ctl->ms->chain_active);
+    if (anchor_tip && anchor_tip->phashBlock &&
+        tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight + 1u)
+        (void)tip_finalize_stage_seed_anchor(anchor_tip->nHeight,
+                                             anchor_tip->phashBlock->data);
+    (void)reducer_drain_to_convergence();
+    if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out)) {
+        zcl_mutex_unlock(&ctl->mutex);
+        return false;
+    }
     (void)reducer_drain_to_convergence();
 
-    /* Determine the height the just-ingested block should occupy: the
-     * active tip after the drain. If the block did not land, this is the
-     * prior tip and the read-back's hash compare fails → reject verdict. */
+    struct block_index *ingested =
+        block_map_find(&ctl->ms->map_block_index, &block_hash);
+
+    /* Prefer the just-ingested height for the read-back. The active tip may
+     * still be one block behind while tip_finalize waits for lookahead, but
+     * header/stateful rejects are recorded at the ingested height. */
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
-    int target_h = tip ? tip->nHeight : 0;
+    int target_h = ingested ? ingested->nHeight : (tip ? tip->nHeight : 0);
     zcl_mutex_unlock(&ctl->mutex);
 
     /* (4) Read back the verdict from the freshly-written log rows. */
-    return reducer_read_back_verdict(target_h, &block_hash, out);
+    if (reducer_read_back_verdict(target_h, &block_hash, out))
+        return true;
+
+    /* Pending fallback: accept ONLY the live active tip (ingested == tip,
+     * snapshotted under the lock) — a fork can't borrow another block's row. */
+    if (ingested && ingested == tip &&
+        reducer_pending_body_is_accepted(ingested, out))
+        return true;
+
+    return false;
 }
 
 /* ── UTXO Wipe Protection ──────────────────────────────────────── */

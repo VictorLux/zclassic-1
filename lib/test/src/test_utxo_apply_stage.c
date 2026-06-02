@@ -343,6 +343,11 @@ static void run_fail_case(int *failures_out, enum uv_fail_kind kind,
     UV_CHECK("failure: h=1 ok=0", ok == 0);
     UV_CHECK("failure: h=1 status",
              strcmp(status, expected_status) == 0);
+    /* A block that FAILED utxo_apply must never report success: this is what
+     * keeps reducer_pending_body_is_accepted from accepting a stateful-invalid
+     * block whose stages recorded ok=0 without setting BLOCK_FAILED_MASK. */
+    UV_CHECK("failure: succeeded_at(1) false (ok=0)",
+             !utxo_apply_stage_succeeded_at(1));
     uv_teardown(dir, &ms, &sc);
     *failures_out += failures;
 }
@@ -377,6 +382,17 @@ int test_utxo_apply_stage(void)
                      strcmp(status, "verified") == 0);
             UV_CHECK("happy: failure kind null", kind[0] == 0);
         }
+        /* The reducer front door (reducer_pending_body_is_accepted) gates
+         * acceptance of an un-finalizable tip on this accessor: an applied
+         * (ok=1) height reports success; an un-applied height and a negative
+         * height report failure. This is the consensus gate added to close the
+         * accept-on-HAVE_DATA hole. */
+        UV_CHECK("happy: succeeded_at(2) true",
+                 utxo_apply_stage_succeeded_at(2));
+        UV_CHECK("happy: succeeded_at(99) false (no row)",
+                 !utxo_apply_stage_succeeded_at(99));
+        UV_CHECK("happy: succeeded_at(-1) false",
+                 !utxo_apply_stage_succeeded_at(-1));
         UV_CHECK("happy: next step IDLE",
                  utxo_apply_stage_step_once() == JOB_IDLE);
         uv_teardown(dir, &ms, &sc);

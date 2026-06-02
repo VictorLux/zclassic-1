@@ -21,6 +21,7 @@
 #include "models/database.h"
 #include "primitives/block.h"
 #include "jobs/header_admit_stage.h"
+#include "jobs/stage_repair.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/block_index_db.h"
 #include "storage/progress_store.h"
@@ -189,6 +190,35 @@ static bool log_row_at(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return found;
+}
+
+static bool seed_repair_header_for_block(sqlite3 *db, struct block_index *bi,
+                                         struct uint256 *hash_slot)
+{
+    if (!db || !bi || !bi->phashBlock || !hash_slot)
+        return false;
+
+    struct block_header h;
+    block_header_init(&h);
+    h.nVersion = 4;
+    if (bi->pprev && bi->pprev->phashBlock)
+        h.hashPrevBlock = *bi->pprev->phashBlock;
+    h.hashMerkleRoot.data[0] = (uint8_t)bi->nHeight;
+    h.hashMerkleRoot.data[1] = 0x55;
+    h.hashFinalSaplingRoot.data[0] = (uint8_t)bi->nHeight;
+    h.hashFinalSaplingRoot.data[1] = 0x66;
+    h.nTime = 1700000000u + (uint32_t)bi->nHeight;
+    h.nBits = 0x1f07ffff;
+    h.nNonce.data[0] = (uint8_t)bi->nHeight;
+    h.nNonce.data[1] = 0x77;
+    h.nSolutionSize = 32;
+    for (size_t i = 0; i < h.nSolutionSize; i++)
+        h.nSolution[i] = (uint8_t)(0x80 + i + (size_t)bi->nHeight);
+
+    struct uint256 hash;
+    block_header_get_hash(&h, &hash);
+    *hash_slot = hash;
+    return stage_repair_header_solution_save(db, bi->nHeight, &hash, &h);
 }
 
 /* Build {progress_store + ms + synth_chain + S-2 init + S-3 init w/
@@ -388,6 +418,61 @@ int test_validate_headers_stage(void)
         VH_CHECK("fail: window report carries reason",
                  strcmp(rep.first_fail_reason,
                         "stub-injected-failure") == 0);
+
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── stale failures never starve the live frontier ─────────────── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 0;
+        VH_CHECK("frontier: setup",
+                 vh_setup("frontier_priority", 4, stub_fail_at, &ctx,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        VH_CHECK("frontier: admit first header",
+                 header_admit_stage_step_once() == JOB_ADVANCED);
+        VH_CHECK("frontier: validate first header fails/advances",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+        VH_CHECK("frontier: cursor at 1 after failed first header",
+                 validate_headers_stage_cursor() == 1);
+
+        validate_headers_stage_set_validator(stub_pass, NULL);
+        for (int i = 0; i < 3; i++)
+            header_admit_stage_step_once();
+        VH_CHECK("frontier: admit cursor reaches 4",
+                 header_admit_stage_cursor() == 4);
+
+        VH_CHECK("frontier: forward validation wins over recheck",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+        VH_CHECK("frontier: cursor reaches live frontier",
+                 validate_headers_stage_cursor() == 4);
+
+        int ok = -1;
+        VH_CHECK("frontier: h=1 row exists",
+                 log_row_at(progress_store_db(), 1, &ok, NULL, 0));
+        VH_CHECK("frontier: h=1 passed before h=0 recheck",
+                 ok == 1);
+
+        ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("frontier: old failed h=0 still pending",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)) &&
+                 ok == 0 &&
+                 strcmp(reason, "stub-injected-failure") == 0);
+
+        VH_CHECK("frontier: idle step leaves same-run failure alone",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        ok = -1;
+        reason[0] = 0;
+        VH_CHECK("frontier: old same-run failure remains failed",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)) &&
+                 ok == 0 &&
+                 strcmp(reason, "stub-injected-failure") == 0);
 
         vh_teardown(dir, &ms, &sc);
     }
@@ -656,6 +741,41 @@ int test_validate_headers_stage(void)
                  ok == 0 &&
                  strcmp(reason,
                         "no-header-solution-backfill-required") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+    }
+
+    /* ── repair-header row feeds validation before node.db fallback ───── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("repair-header: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        VH_CHECK("repair-header: setup default validator",
+                 vh_setup("repair_header_loads", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_validator_set_node_db(&ndb);
+        VH_CHECK("repair-header: seed repair header",
+                 seed_repair_header_for_block(progress_store_db(),
+                                              &sc.blocks[0],
+                                              &sc.hashes[0]));
+
+        header_admit_stage_drain(10);
+        VH_CHECK("repair-header: validate one row",
+                 validate_headers_stage_drain(10) == 1);
+        int ok = -1;
+        char reason[64] = {0};
+        VH_CHECK("repair-header: row exists",
+                 log_row_at(progress_store_db(), 0, &ok,
+                            reason, sizeof(reason)));
+        VH_CHECK("repair-header: supplied bytes reached validation",
+                 ok == 0 &&
+                 strcmp(reason, "no-header-solution") != 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") != 0);
 
         validate_headers_validator_set_node_db(NULL);
         vh_teardown(dir, &ms, &sc);

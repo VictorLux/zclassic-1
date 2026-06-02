@@ -16,6 +16,7 @@
 
 #include "platform/clock.h"
 #include "services/header_admit_inbox.h"
+#include "jobs/stage_repair.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
@@ -27,11 +28,13 @@
 #include "json/json.h"
 #include "rpc/legacy_header_client.h"
 #include "rpc/legacy_rpc_client.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/result.h"
 #include "util/safe_alloc.h"
 
 #include <pthread.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,7 +75,8 @@ static struct {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
 
-static void hp_publish_header_admit(const struct block_index *pindex)
+static void hp_publish_header_admit(const struct block_index *pindex,
+                                    const struct block_header *header)
 {
     if (!pindex || !pindex->phashBlock)
         return;
@@ -83,8 +87,33 @@ static void hp_publish_header_admit(const struct block_index *pindex)
         .peer_id = 0,
         .observed_unix = clock_now_wall_ms() / 1000,
     };
+    if (header) {
+        struct uint256 header_hash;
+        block_header_get_hash(header, &header_hash);
+        if (uint256_eq(&header_hash, &msg.hash)) {
+            msg.has_header = true;
+            msg.header = *header;
+        }
+    }
     if (!mailbox_header_admit_push(&msg)) {
         LOG_INFO("header_probe", "[header_probe] header_admit inbox full; drop height=%d", pindex->nHeight);
+    }
+}
+
+static void hp_save_repair_header(const struct block_index *pindex,
+                                  const struct block_header *header)
+{
+    if (!pindex || !pindex->phashBlock || !header ||
+        header->nSolutionSize == 0)
+        return;
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return;
+    if (!stage_repair_header_solution_save(db, pindex->nHeight,
+                                           pindex->phashBlock, header)) {
+        LOG_WARN("header_probe",
+                 "[header_probe] repair-header save failed height=%d",
+                 pindex->nHeight);
     }
 }
 
@@ -182,7 +211,8 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
             if (accept_block_header(&hdr, &vs, ms, params, &pindex)) {
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
-                hp_publish_header_admit(pindex);
+                hp_save_repair_header(pindex, &hdr);
+                hp_publish_header_admit(pindex, &hdr);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);
@@ -201,7 +231,8 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
             if (accept_block_header(&hbuf[i], &vs, ms, params, &pindex)) {
                 atomic_fetch_add(&g_hp.headers_added, 1);
                 added++;
-                hp_publish_header_admit(pindex);
+                hp_save_repair_header(pindex, &hbuf[i]);
+                hp_publish_header_admit(pindex, &hbuf[i]);
                 if (pindex && pindex->nHeight > 0)
                     atomic_store(&g_hp.last_local_height,
                                  pindex->nHeight);

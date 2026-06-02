@@ -134,3 +134,15 @@ void chain_integrity_check_post_restore(struct chain_integrity_result *out,
     /* Cache the result for `dumpstate subsystem=boot` / `zcl_state`. */
     chain_restore_record_integrity_result(out);
 }
+
+enum chain_integrity_class
+chain_integrity_classify(const struct chain_integrity_result *r)
+{
+    if (!r)
+        return CHAIN_INTEGRITY_UNRECOVERABLE;   /* fail closed */
+    if (r->zero_nbits_count > 0 || r->active_chain_mismatches > 0)
+        return CHAIN_INTEGRITY_UNRECOVERABLE;
+    if (r->tip_window_holes > 0)
+        return CHAIN_INTEGRITY_RECONCILABLE;
+    return CHAIN_INTEGRITY_CLEAN;
+}
