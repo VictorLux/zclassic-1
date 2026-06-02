@@ -44,7 +44,7 @@ static int local_chain_height(void)
     if (!ms)
         ms = condition_engine_main_state();
     if (!ms)
-        return -1;
+        return -1; // raw-return-ok:engine-not-ready
     return active_chain_height(&ms->chain_active);
 }
 

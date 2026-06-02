@@ -68,6 +68,31 @@ leaving `find_most_work_chain` stuck.
 | `blocks_index_legacy_reader.c` | **Active** | Reads `zclassicd`'s block_index LevelDB into our schema. Used by `-cold-import` and `-fastimport`. |
 | `chainstate_legacy_reader.c` | **Active** | Reads `zclassicd`'s chainstate LevelDB (compressed UTXOs) into our `coins_db`. Used by `-cold-import`. |
 
+### Self-heal recovery (`lib/validation/src/`)
+
+The missing-UTXO / stuck-tip self-heal coordinator lives here. Its
+*recovery island* — the four files that performed an out-of-band
+chain-scan / legacy-RPC / direct-inject repair — was **deleted in Wave 2**
+(commit `1cef5fe01`) because authoritative recovery now routes through the
+reducer (cursor move + `reducer_kick`), the same app-layer controller reach
+`process_block_revalidate.c` / `process_block_invalidate.c` take. There is
+**no longer** any block-disconnect-engine or legacy-RPC repair path.
+
+| File | Status | Role |
+|------|--------|------|
+| `process_block_self_heal.c` | **KEPT — load-bearing** | Failure-tracking state (`s_utxo_*`), `process_block_is_missing_utxo_failure`, `process_block_note_utxo_failure`, `ZCL_TESTING` hooks. Recovery retry routes through the reducer. **Do not delete** in any "purge legacy" sweep — it is the surviving coordinator, not island residue. |
+| `process_block_self_heal_hot_loop.c` | **KEPT — load-bearing** | Hot-loop retry helper for the coordinator above. |
+| `process_block_self_heal_scan_state.c` | **KEPT — load-bearing** | Scan-state bookkeeping for the coordinator above. |
+| `process_block_self_heal_chain_scan.c` | **DELETED** (Wave 2, `1cef5fe01`) | Out-of-band chain-scan repair island. Gone — recovery is reducer-driven now. |
+| `process_block_self_heal_sqlite_tx_index.c` | **DELETED** (Wave 2, `1cef5fe01`) | SQLite tx-index island. Gone. |
+| `process_block_self_heal_legacy_rpc.c` | **DELETED** (Wave 2, `1cef5fe01`) | Legacy-RPC repair island. Gone. |
+| `process_block_self_heal_inject.c` | **DELETED** (Wave 2, `1cef5fe01`) | Direct-inject repair island. Gone. |
+
+A future "delete legacy" grep that matches `process_block_self_heal` must
+therefore treat the three KEPT files as load-bearing and only confirm the
+four island files stay absent — this row exists so that distinction is
+unambiguous.
+
 ---
 
 ## Removal candidates

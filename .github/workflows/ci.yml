@@ -1,0 +1,118 @@
+# ZClassic23 CI — see CLAUDE.md ("make ci runs lint then tests") and
+# tools/release.sh ("Reproducible signed releases").
+#
+# Two independent concerns:
+#   1. `ci`     — gate every push / PR on `make ci` (lint, then the test suite).
+#   2. `repro`  — prove the release artifact is byte-reproducible by building it
+#                 on two distinct runner images and asserting the two SHA3-256
+#                 attestations are identical. Built --unsigned so CI needs no
+#                 GPG secret; the signing step in release.sh is skipped via that
+#                 same escape, so no key material is ever required here.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: lint + tests. `make ci` already chains lint -> build -> test suite.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: lint + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release.sh / BUILD_COMMIT want real git history, not a shallow clone.
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          # gcc-13 ships C23 support; openssl provides the sha3 dgst used by
+          # the release/verify path; pkg-config lets the optional GTK/WebKit
+          # probes resolve (they degrade gracefully when absent).
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      - name: make ci (lint then tests)
+        run: make ci
+
+  # ---------------------------------------------------------------------------
+  # Job 2 (matrix): build the reproducible release artifact on two distinct
+  # runner images and publish each .sha3 attestation as an artifact.
+  # ---------------------------------------------------------------------------
+  repro-build:
+    name: reproducible release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      - name: Build unsigned reproducible release
+        # --unsigned waives the GPG hard-fail so no key is needed in CI; the
+        # arch is pinned to x86-64-v3 and the build-id dropped inside the
+        # script, so the resulting .sha3 must not depend on the runner image.
+        run: ./tools/release.sh --unsigned ci-repro
+      - name: Extract bare SHA3 hash
+        # The .sha3 file is "<hash>  <name>.tar.gz"; keep only the hash so the
+        # cross-runner compare is independent of any path/name differences.
+        run: |
+          set -euo pipefail
+          sha3_file=$(ls release/*.sha3)
+          awk '{print $1}' "$sha3_file" | tr -d '[:space:]' > sha3-hash.txt
+          echo "SHA3 for ${{ matrix.os }}: $(cat sha3-hash.txt)"
+      - name: Upload SHA3 attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha3-${{ matrix.os }}
+          path: sha3-hash.txt
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Job 3: download both attestations and assert they are byte-identical.
+  # A mismatch means the build is NOT reproducible — fail the run loudly.
+  # ---------------------------------------------------------------------------
+  repro-verify:
+    name: cross-runner reproducibility diff
+    runs-on: ubuntu-24.04
+    needs: repro-build
+    steps:
+      - name: Download all SHA3 attestations
+        uses: actions/download-artifact@v4
+        with:
+          path: attestations
+      - name: Assert SHA3 attestations match across runners
+        run: |
+          set -euo pipefail
+          a=$(cat attestations/sha3-ubuntu-22.04/sha3-hash.txt)
+          b=$(cat attestations/sha3-ubuntu-24.04/sha3-hash.txt)
+          echo "ubuntu-22.04: $a"
+          echo "ubuntu-24.04: $b"
+          if [ -z "$a" ] || [ -z "$b" ]; then
+            echo "ERROR: a release SHA3 attestation was empty" >&2
+            exit 1
+          fi
+          if [ "$a" != "$b" ]; then
+            echo "ERROR: release build is NOT reproducible across runners" >&2
+            echo "  ubuntu-22.04 = $a" >&2
+            echo "  ubuntu-24.04 = $b" >&2
+            exit 1
+          fi
+          echo "OK: reproducible — both runners produced SHA3 $a"

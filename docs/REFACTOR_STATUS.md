@@ -156,6 +156,17 @@ node soak.
   lib-layering, and raw allocation debt are at zero grandfathered entries.
   Remaining refactor work is now code-shape cleanup, process-block splitting,
   doc honesty, and live-node proof rather than baseline burn-down.
+- **Single-engine completion.** The single-engine plan/design docs
+  (`docs/work/single-engine-newcode-plan.md` / `-design.json`) were deleted
+  once the log→projection→Job reducer became the only engine; there is no
+  runtime "flip" flag. The step/wave labels those docs used — `B3`, `B7`,
+  `B8`, `DRIVER-FOLLOWER` — are therefore obsolete. They no longer name any
+  live behavior; where they survive it is as stale comment text. Residual
+  in-code label hits (production source + the `one_write_path_baseline.txt`
+  header) are pending a single central scrub; the canonical author-default is
+  `UTXO_AUTHOR_STAGE` (`UTXO_AUTHOR_LEGACY` is the test-only emitter path),
+  and the comments in `app/jobs/src/utxo_apply_delta.c` and
+  `lib/storage/include/storage/utxo_projection.h` now say so.
 
 ## Completed Architecture Moves
 

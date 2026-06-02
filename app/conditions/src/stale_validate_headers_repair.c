@@ -21,7 +21,7 @@ static int repair_target_height(void)
 {
     struct main_state *ms = condition_engine_main_state();
     if (!ms)
-        return -1;
+        return -1; // raw-return-ok:engine-not-ready
     int tip = active_chain_height(&ms->chain_active);
     return tip >= 0 ? tip + 1 : -1;
 }

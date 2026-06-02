@@ -119,7 +119,32 @@ static int check_file(const char *path)
     return bad;
 }
 
-static int run_list_command(const char *cmd, int *checked)
+/* De-dup set so a file that appears in several git diff lists (e.g. both
+ * the merge-base diff and the unstaged working-tree diff) is checked only
+ * once. Paths are short and the change set is small, so a flat array with a
+ * linear membership test is adequate and keeps the program dependency-free. */
+#define MAX_SEEN 1024
+struct seen_set {
+    char paths[MAX_SEEN][LINE_LEN];
+    size_t count;
+};
+
+static bool seen_contains(const struct seen_set *set, const char *path)
+{
+    for (size_t i = 0; i < set->count; i++)
+        if (strcmp(set->paths[i], path) == 0)
+            return true;
+    return false;
+}
+
+static void seen_add(struct seen_set *set, const char *path)
+{
+    if (set->count >= MAX_SEEN) return;
+    snprintf(set->paths[set->count], LINE_LEN, "%s", path);
+    set->count++;
+}
+
+static int run_list_command(const char *cmd, int *checked, struct seen_set *seen)
 {
     FILE *pipe = popen(cmd, "r");
     if (!pipe) {
@@ -133,6 +158,9 @@ static int run_list_command(const char *cmd, int *checked)
         path[strcspn(path, "\n")] = '\0';
         if (!has_c_suffix(path) || is_test_path(path))
             continue;
+        if (seen && seen_contains(seen, path))
+            continue;
+        if (seen) seen_add(seen, path);
         (*checked)++;
         int file_rc = check_file(path);
         if (file_rc < 0) rc = -1;
@@ -154,14 +182,32 @@ static int read_first_line(const char *cmd, char *out, size_t outsz)
     return close_rc == 0 && out[0] != '\0' ? 0 : -1;
 }
 
+/* Fold a command's rc into the running scan rc: any read/exec failure
+ * (rc < 0) is sticky-fatal; any unpaired-diagnostic finding (rc > 0) wins
+ * over a clean scan. */
+static int fold_rc(int acc, int next)
+{
+    if (next < 0) return -1;
+    if (next > 0 && acc == 0) return 1;
+    return acc;
+}
+
 static int run_default_scan(int *checked)
 {
     const char *scan_all = getenv("ZCL_OBS_SCAN_ALL");
     if (scan_all && strcmp(scan_all, "1") == 0) {
         return run_list_command("find app lib -type f -name '*.c' "
                                 "! -path 'lib/test/*' | sort",
-                                checked);
+                                checked, NULL);
     }
+
+    /* Scan committed-since-merge-base AND the in-flight tree (unstaged +
+     * staged) so a freshly modified app/lib .c file is checked before it
+     * is committed. A shared seen-set de-dups files that appear in more
+     * than one list. */
+    static struct seen_set seen;
+    seen.count = 0;
+    int rc = 0;
 
     char base[128];
     if (read_first_line("git merge-base HEAD origin/main 2>/dev/null",
@@ -170,11 +216,24 @@ static int run_default_scan(int *checked)
         snprintf(cmd, sizeof(cmd),
                  "git diff --name-only --diff-filter=ACMR %s -- app lib",
                  base);
-        return run_list_command(cmd, checked);
+        rc = fold_rc(rc, run_list_command(cmd, checked, &seen));
+    } else {
+        rc = fold_rc(rc, run_list_command(
+            "git diff --name-only --diff-filter=ACMR -- app lib",
+            checked, &seen));
     }
 
-    return run_list_command("git diff --name-only --diff-filter=ACMR -- app lib",
-                            checked);
+    /* Unstaged working-tree changes (git diff). */
+    rc = fold_rc(rc, run_list_command(
+        "git diff --name-only --diff-filter=ACMR -- app lib",
+        checked, &seen));
+
+    /* Staged-but-uncommitted changes (git diff --cached). */
+    rc = fold_rc(rc, run_list_command(
+        "git diff --cached --name-only --diff-filter=ACMR -- app lib",
+        checked, &seen));
+
+    return rc;
 }
 
 int main(int argc, char **argv)

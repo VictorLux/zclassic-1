@@ -115,7 +115,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(have_data_unreadable) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(service_state) \
     X(service_state_driver) \
-    X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(rng) X(seed_tape) X(postmortem) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
@@ -127,7 +127,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(body_persist_stage) X(created_outputs_index) \
     X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_stage_fuzz) \
-    X(reducer_ingest_e2e) X(stage_reducer_unwedge) \
+    X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
     X(domain_consensus_pow) X(domain_consensus_sigops) \
     X(domain_consensus_script_standard) \
@@ -156,7 +156,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(failed_child_cap) X(header_probe) \
     X(power_node_contract_spec) X(process_block_revalidate) \
     X(rpc_safety) X(service_kernel) X(sync_state_fsm) \
-    X(unclean_shutdown_advance) X(utxo_audit) X(zclassicd_oracle)
+    X(unclean_shutdown_advance) X(utxo_audit) X(zclassicd_oracle) X(oracle_policy)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

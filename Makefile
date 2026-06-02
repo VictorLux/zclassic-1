@@ -757,21 +757,21 @@ docs-mcp-check: zclassic23
 #   make ci SKIP_COV=1      # skip coverage (faster)
 check-malloc:
 	@echo "══ LINT: bare malloc/calloc/realloc in app/tools code ══"
-	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' \
+	@HITS=$$(grep -rn '[^_]malloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
 	    | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*malloc\|LOG_\|fprintf'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
 	    echo "FAIL: bare malloc in app/tools code (use zcl_malloc or mark // raw-alloc-ok)"; \
 	    exit 1; \
 	fi
-	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' \
+	@HITS=$$(grep -rn '[^_]calloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
 	    | grep -v 'zcl_calloc\|raw-alloc-ok\|safe_alloc\|".*calloc\|LOG_\|fprintf'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
 	    echo "FAIL: bare calloc in app/tools code (use zcl_calloc or mark // raw-alloc-ok)"; \
 	    exit 1; \
 	fi
-	@HITS=$$(grep -rn '[^_]realloc\s*(' app/ tools/ --include='*.c' \
+	@HITS=$$(grep -rn '[^_]realloc\s*(' app/ tools/ --include='*.c' --include='*.h' \
 	    | grep -v 'zcl_realloc\|raw-alloc-ok\|safe_alloc\|".*realloc\|LOG_\|fprintf'); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
@@ -815,18 +815,18 @@ check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
 	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
 	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
 	    | while read -r line; do \
 	        file=$$(echo "$$line" | cut -d: -f1); \
 	        lnum=$$(echo "$$line" | cut -d: -f2); \
 	        prev=$$((lnum - 1)); \
 	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'fprintf|LOG_ERR|LOG_FAIL|log_json|printf' || echo "$$line"; \
+	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
 	    done); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
-	    echo "FAIL: silent error returns found in services"; \
+	    echo "FAIL: silent error returns found in services (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
 	    exit 1; \
 	fi
 	@echo "  OK: all service error returns logged"
@@ -835,14 +835,14 @@ check-silent-errors-controllers:
 	@echo "══ LINT: silent error returns in controllers ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/controllers/src/ --include='*.c' \
 	    | grep 'return -1;' \
-	    | grep -v 'LOG_ERR\|LOG_FAIL\|log_json\|fprintf\|printf' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
 	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
 	    | while read -r line; do \
 	        file=$$(echo "$$line" | cut -d: -f1); \
 	        lnum=$$(echo "$$line" | cut -d: -f2); \
 	        prev=$$((lnum - 1)); \
 	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
-	        echo "$$prev_line" | grep -qE 'fprintf|LOG_ERR|LOG_FAIL|log_json|printf' || echo "$$line"; \
+	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
 	    done); \
 	if [ -n "$$HITS" ]; then \
 	    echo "$$HITS"; \
@@ -850,6 +850,46 @@ check-silent-errors-controllers:
 	    exit 1; \
 	fi
 	@echo "  OK: all controller error returns logged"
+
+check-silent-errors-jobs:
+	@echo "══ LINT: silent error returns in jobs ══"
+	@HITS=$$(grep -rn -B1 'return -1;' app/jobs/src/ --include='*.c' \
+	    | grep 'return -1;' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
+	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
+	    | while read -r line; do \
+	        file=$$(echo "$$line" | cut -d: -f1); \
+	        lnum=$$(echo "$$line" | cut -d: -f2); \
+	        prev=$$((lnum - 1)); \
+	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
+	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
+	    done); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: silent error returns found in jobs (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
+	    exit 1; \
+	fi
+	@echo "  OK: all job error returns logged"
+
+check-silent-errors-conditions:
+	@echo "══ LINT: silent error returns in conditions ══"
+	@HITS=$$(grep -rn -B1 'return -1;' app/conditions/src/ --include='*.c' \
+	    | grep 'return -1;' \
+	    | grep -v 'LOG_ERR\|LOG_FAIL\|LOG_RETURN\|log_json' \
+	    | grep -vE '(//|/\*) raw-return-ok:[A-Za-z][A-Za-z0-9_-]+' \
+	    | while read -r line; do \
+	        file=$$(echo "$$line" | cut -d: -f1); \
+	        lnum=$$(echo "$$line" | cut -d: -f2); \
+	        prev=$$((lnum - 1)); \
+	        prev_line=$$(sed -n "$${prev}p" "$$file"); \
+	        echo "$$prev_line" | grep -qE 'LOG_ERR|LOG_FAIL|LOG_RETURN|log_json.*error' || echo "$$line"; \
+	    done); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: silent error returns found in conditions (use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>)"; \
+	    exit 1; \
+	fi
+	@echo "  OK: all condition error returns logged"
 
 check-before-save-hooks:
 	@echo "══ LINT: critical models wire before_save hooks ══"
@@ -1056,7 +1096,7 @@ check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

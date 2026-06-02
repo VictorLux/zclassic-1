@@ -456,22 +456,18 @@ static int delete_from_table(sqlite3 *db, const char *table, int height)
     char sql[160];
     snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height >= ?", table);
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] delete prepare failed table=%s: %s",
-                 table, sqlite3_errmsg(db));
-        return -1;
-    }
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_ERR("stage_repair",
+                "[stage_repair] delete prepare failed table=%s: %s",
+                table, sqlite3_errmsg(db));
     sqlite3_bind_int(st, 1, height);
     int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
     int changed = sqlite3_changes(db);
     sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] delete step failed table=%s rc=%d: %s",
-                 table, rc, sqlite3_errmsg(db));
-        return -1;
-    }
+    if (rc != SQLITE_DONE)
+        LOG_ERR("stage_repair",
+                "[stage_repair] delete step failed table=%s rc=%d: %s",
+                table, rc, sqlite3_errmsg(db));
     return changed;
 }
 

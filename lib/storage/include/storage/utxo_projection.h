@@ -27,13 +27,14 @@
 
 typedef struct utxo_projection utxo_projection_t;
 
-/* B3 single-writer authority over the UTXO projection.
+/* Single-writer authority over the UTXO projection.
  *
- *   UTXO_AUTHOR_LEGACY — `update_coins()` authors EV_UTXO_*
- *       events in tests that exercise the old emitter path.
- *   UTXO_AUTHOR_STAGE (default) — `utxo_apply_stage` authors the events from its
- *       own validated delta and the legacy emitters become no-ops, so
- *       there is exactly one writer to the projection.
+ *   UTXO_AUTHOR_STAGE (the production default) — `utxo_apply_stage` authors
+ *       the events from its own validated delta and the legacy emitters
+ *       become no-ops, so there is exactly one writer to the projection.
+ *   UTXO_AUTHOR_LEGACY — `update_coins()` authors EV_UTXO_* events. This is
+ *       the test-only emitter path; tests flip the author here to prove the
+ *       legacy emitters stay silent under stage authority.
  *
  * Both emit paths read this flag atomically and only the matching author
  * writes. */

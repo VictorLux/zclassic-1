@@ -55,7 +55,7 @@ static int64_t current_tip_height(void)
 {
     struct main_state *ms = condition_engine_main_state();
     if (!ms)
-        return -1;
+        return -1; // raw-return-ok:engine-not-ready
     return (int64_t)active_chain_height(&ms->chain_active);
 }
 

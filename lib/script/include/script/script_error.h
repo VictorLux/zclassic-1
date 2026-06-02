@@ -48,6 +48,13 @@ typedef enum {
 
 #define SCRIPT_ERR_LAST SCRIPT_ERR_ERROR_COUNT
 
+/* Map a ScriptError code to a stable, human-readable description. Pure,
+ * allocation-free and reentrant — returns a pointer to static storage that
+ * the caller must NOT free or mutate. Unknown/out-of-range values map to a
+ * generic "unknown error" string (never NULL). Implemented in
+ * lib/script/src/script_error.c. */
+const char *ScriptErrorString(ScriptError serror);
+
 static inline bool set_script_success(ScriptError *ret)
 {
     if (ret) *ret = SCRIPT_ERR_OK;

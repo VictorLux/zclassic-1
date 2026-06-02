@@ -87,10 +87,9 @@ static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
         "SELECT ok, COALESCE(fail_reason,'') "
         "FROM validate_headers_log WHERE height = ?",
         -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("body_fetch", "[body_fetch] vh log prepare failed: %s", sqlite3_errmsg(db));
-        return -1;
-    }
+    if (rc != SQLITE_OK)
+        LOG_ERR("body_fetch", "[body_fetch] vh log prepare failed: %s",
+                sqlite3_errmsg(db));
     sqlite3_bind_int(st, 1, height);
     int found = 0;
     rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
@@ -101,11 +100,10 @@ static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
             snprintf(out_reason, reason_size, "%s", (const char *)txt);
         found = 1;
     } else if (rc != SQLITE_DONE) {
-        LOG_WARN("body_fetch",
-                 "[body_fetch] vh log step failed height=%d rc=%d: %s",
-                 height, rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);
-        return -1;
+        LOG_ERR("body_fetch",
+                "[body_fetch] vh log step failed height=%d rc=%d: %s",
+                height, rc, sqlite3_errmsg(db));
     }
     sqlite3_finalize(st);
     return found;

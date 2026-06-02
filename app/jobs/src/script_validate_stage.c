@@ -18,6 +18,7 @@
 #include "json/json.h"
 #include "primitives/block.h"
 #include "script/interpreter.h"
+#include "script/script_error.h"
 #include "script/script_flags.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
@@ -63,12 +64,15 @@ struct validate_summary {
     size_t input_count;
     struct uint256 first_failure_txid;
     int first_failure_vin;
-    /* Typed reason for the verdict. For a clean verify this stays "". For a
-     * failure it is the specific, persisted status token, e.g.
-     * "block_decode_failed" or "prevout_unresolved tx=<hex> vin=<n>". This is
-     * what is written into the script_validate_log.status column so zcl_state
-     * can answer "why is the pipeline stuck" without conflating distinct
-     * causes under a single "internal_error" bucket. */
+    /* ScriptError from verify_script on a genuine script-invalid verdict
+     * (SCRIPT_ERR_OK otherwise). Persisted so a bad-signature reject is
+     * distinguishable from bad-pubkey / non-canonical-DER. */
+    ScriptError first_failure_serror;
+    /* Typed reason for the verdict ("" on a clean verify): the specific
+     * status token, e.g. "block_decode_failed" or
+     * "prevout_unresolved tx=<hex> vin=<n>". Drives the persisted status so
+     * zcl_state answers "why is the pipeline stuck" without conflating
+     * distinct causes under one "internal_error" bucket. */
     char reason[128];
 };
 
@@ -202,6 +206,7 @@ static bool ensure_log_schema(sqlite3 *db)
         "  input_count        INTEGER NOT NULL,"
         "  first_failure_txid BLOB,"
         "  first_failure_vin  INTEGER,"
+        "  first_failure_serror INTEGER,"
         "  validated_at       INTEGER NOT NULL"
         ")";
     char *err = NULL;
@@ -209,6 +214,17 @@ static bool ensure_log_schema(sqlite3 *db)
         LOG_WARN("script_validate", "[script_validate] schema ensure failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
+    }
+    /* Idempotent migration for datadirs predating the ScriptError column. */
+    if (sqlite3_exec(db,
+        "ALTER TABLE script_validate_log ADD COLUMN first_failure_serror INTEGER",
+        NULL, NULL, &err) != SQLITE_OK) {
+        if (!err || strstr(err, "duplicate column name") == NULL) {
+            LOG_WARN("script_validate", "[script_validate] schema alter failed: %s", err ? err : "(no message)");
+            if (err) sqlite3_free(err);
+            return false;
+        }
+        sqlite3_free(err);
     }
     return true;
 }
@@ -243,13 +259,15 @@ static int body_persist_log_at(sqlite3 *db, int height,
 static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
                        size_t tx_count, size_t input_count,
                        const struct uint256 *first_failure_txid,
-                       int first_failure_vin)
+                       int first_failure_vin,
+                       ScriptError first_failure_serror)
 {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO script_validate_log "
         "(height, status, ok, tx_count, input_count, first_failure_txid, "
-        " first_failure_vin, validated_at) VALUES (?,?,?,?,?,?,?,?)",
+        " first_failure_vin, first_failure_serror, validated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("script_validate", "[script_validate] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -269,7 +287,12 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         sqlite3_bind_int(stmt, 7, first_failure_vin);
     else
         sqlite3_bind_null(stmt, 7);
-    sqlite3_bind_int64(stmt, 8, (sqlite3_int64)platform_time_wall_unix());
+    /* SCRIPT_ERR_OK persists as NULL so the column is never misread. */
+    if (first_failure_serror != SCRIPT_ERR_OK)
+        sqlite3_bind_int(stmt, 8, (int)first_failure_serror);
+    else
+        sqlite3_bind_null(stmt, 8);
+    sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
     rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
@@ -284,6 +307,7 @@ static void validate_summary_init(struct validate_summary *s)
     memset(s, 0, sizeof(*s));
     s->ok = 1;
     s->first_failure_vin = -1;
+    s->first_failure_serror = SCRIPT_ERR_OK;
     s->reason[0] = '\0';
     uint256_set_null(&s->first_failure_txid);
 }
@@ -358,26 +382,27 @@ static void validate_block_scripts(const struct block *blk, int height,
                 if (out->first_failure_vin < 0) {
                     out->first_failure_txid = tx->hash;
                     out->first_failure_vin = (int)vi;
+                    out->first_failure_serror = serror;
                 }
-                /* Genuine script-verification failure — kept distinct from the
-                 * internal/decode/prevout causes above. Reason carries the
-                 * ScriptError so dump_state surfaces it; status stays the
-                 * stable "script_invalid" token written by the caller. */
+                /* Genuine script-verification failure — distinct from the
+                 * internal/decode/prevout causes. Reason carries the
+                 * ScriptError code AND its mapped string; status stays the
+                 * stable "script_invalid" token. */
                 char txhex[65];
                 uint256_get_hex(&tx->hash, txhex);
+                const char *estr = ScriptErrorString(serror);
                 snprintf(out->reason, sizeof(out->reason),
-                         "script_invalid tx=%s vin=%d err=%d",
-                         txhex, (int)vi, (int)serror);
+                         "script_invalid tx=%s vin=%d err=%d (%s)",
+                         txhex, (int)vi, (int)serror, estr);
                 LOG_WARN("script_validate",
                          "[script_validate] script_invalid height=%d tx=%s "
-                         "vin=%d serror=%d", height, txhex, (int)vi,
-                         (int)serror);
+                         "vin=%d serror=%d (%s)", height, txhex, (int)vi,
+                         (int)serror, estr);
                 return;
             }
         }
     }
 }
-
 
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
@@ -408,7 +433,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 
     if (upstream.ok == 0) {
         if (!log_insert(db, next_h, "upstream_failed", false, 0, 0,
-                        NULL, -1))
+                        NULL, -1, SCRIPT_ERR_OK))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -440,13 +465,12 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     bool ok = true;
     const struct uint256 *fail_txid = NULL;
     int fail_vin = -1;
+    ScriptError fail_serror = SCRIPT_ERR_OK;
     if (!summary.ok && summary.internal_error) {
-        /* Persist the TYPED cause token (no longer the generic
-         * "internal_error"): "block_decode_failed" or "prevout_unresolved".
-         * The offending txid/vin ride along in the first_failure_* columns
-         * (already populated by validate_block_scripts); dump_state composes
-         * them back into the full reason. g_internal_error_total stays the
-         * umbrella counter over both causes. */
+        /* Persist the TYPED cause token ("block_decode_failed" or
+         * "prevout_unresolved"), not the generic "internal_error". The
+         * txid/vin ride in the first_failure_* columns; dump_state composes
+         * them back. g_internal_error_total is the umbrella counter. */
         status = (summary.reason[0] != '\0' &&
                   strncmp(summary.reason, "block_decode_failed", 19) == 0)
                      ? "block_decode_failed"
@@ -464,10 +488,17 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         ok = false;
         fail_txid = &summary.first_failure_txid;
         fail_vin = summary.first_failure_vin;
+        fail_serror = summary.first_failure_serror;
         atomic_fetch_add(&g_script_invalid_total, 1);
+        /* Carry ScriptError code + mapped string + txid + vin into the reject
+         * event so a bad-signature block is distinguishable downstream. */
+        char ev_txhex[65];
+        uint256_get_hex(fail_txid, ev_txhex);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "script_validate script_invalid height=%d vin=%d reason=%s",
-                    next_h, fail_vin,
+                    "script_validate script_invalid height=%d tx=%s vin=%d "
+                    "err=%d (%s) reason=%s",
+                    next_h, ev_txhex, fail_vin, (int)fail_serror,
+                    ScriptErrorString(fail_serror),
                     summary.reason[0] ? summary.reason : "script_invalid");
     } else {
         atomic_fetch_add(&g_verified_total, 1);
@@ -484,7 +515,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     if (!log_insert(db, next_h, status, ok, summary.tx_count,
-                    summary.input_count, fail_txid, fail_vin))
+                    summary.input_count, fail_txid, fail_vin, fail_serror))
         return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -645,7 +676,8 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
     }
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT height, status, first_failure_txid, first_failure_vin "
+        "SELECT height, status, first_failure_txid, first_failure_vin, "
+        "       first_failure_serror "
         "FROM script_validate_log WHERE ok = 0 "
         "ORDER BY height ASC LIMIT 1",
         -1, &st, NULL) != SQLITE_OK) {
@@ -679,9 +711,20 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
     int vin = sqlite3_column_type(st, 3) == SQLITE_NULL
                   ? -1 : sqlite3_column_int(st, 3);
 
+    /* ScriptError is persisted only for a script-invalid verdict (NULL on
+     * decode/prevout/upstream rows). Map it back to its stable string. */
+    bool have_serror = sqlite3_column_type(st, 4) != SQLITE_NULL;
+    int serror_code = have_serror ? sqlite3_column_int(st, 4)
+                                  : (int)SCRIPT_ERR_OK;
+    const char *serror_str =
+        have_serror ? ScriptErrorString((ScriptError)serror_code) : "";
+
     /* Compose the full typed reason from the persisted token + columns. */
-    char reason[160];
-    if (have_txid && vin >= 0)
+    char reason[224];
+    if (have_txid && vin >= 0 && have_serror)
+        snprintf(reason, sizeof(reason), "%s tx=%s vin=%d err=%d (%s)",
+                 status, txhex, vin, serror_code, serror_str);
+    else if (have_txid && vin >= 0)
         snprintf(reason, sizeof(reason), "%s tx=%s vin=%d",
                  status, txhex, vin);
     else if (have_txid)
@@ -694,6 +737,8 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
     json_push_kv_str(out, "blocking_reason", reason);
     json_push_kv_str(out, "blocking_txid", have_txid ? txhex : "");
     json_push_kv_int(out, "blocking_vin", vin);
+    json_push_kv_int(out, "blocking_serror", have_serror ? serror_code : -1);
+    json_push_kv_str(out, "blocking_serror_string", serror_str);
     sqlite3_finalize(st);
 }
 

@@ -261,8 +261,7 @@ check-silent-errors:
 **Problem:** silent `return -1;` in MCP handlers leaves the caller with
 no diagnostic info.
 
-**Status: enforced by lint.** `make lint` runs three controller-tier
-gates:
+**Status: enforced by lint.** `make lint` runs five shape-tier gates:
 
 - `check-silent-errors` — every bare `return -1;` in
   `tools/mcp/controllers/*.c` must either be preceded by a logging
@@ -271,6 +270,15 @@ gates:
 - `check-silent-errors-services` — same rule for `app/services/src/`.
 - `check-silent-errors-controllers` — same rule for
   `app/controllers/src/`.
+- `check-silent-errors-jobs` — same rule for `app/jobs/src/`.
+- `check-silent-errors-conditions` — same rule for
+  `app/conditions/src/`.
+
+The service/controller/job/condition gates accept only an *error-level*
+preceding log (`LOG_ERR`, `LOG_FAIL`, `LOG_RETURN`, or `log_json` with an
+error level) — a bare `printf`/`LOG_WARN` no longer satisfies the
+pairing, so a silent failure can never masquerade as handled by a
+warn-level breadcrumb.
 
 A future `mcp_fail(res, code, fmt, ...)` helper could enforce that
 `res->body` is populated on every error path by return-type discipline,
@@ -305,7 +313,8 @@ Add to `Makefile`:
 lint: check-malloc check-silent-errors check-raw-sqlite \
       check-raw-malloc check-coins-lookup-nullcheck \
       check-observability-pairing check-silent-errors-services \
-      check-silent-errors-controllers check-before-save-hooks \
+      check-silent-errors-controllers check-silent-errors-jobs \
+      check-silent-errors-conditions check-before-save-hooks \
       check-pthread-create check-model-validation \
       check-long-functions check-rpc-registrar \
       check-lag-slo-observable check-lib-layering \
@@ -681,7 +690,9 @@ edit it whenever you add/remove a gate.
 - `check-raw-sqlite`
 - `check-rpc-registrar`
 - `check-silent-errors`
+- `check-silent-errors-conditions`
 - `check-silent-errors-controllers`
+- `check-silent-errors-jobs`
 - `check-shape-includes-header`
 - `check-silent-errors-services`
 - `check-stage-advances-or-blocks`

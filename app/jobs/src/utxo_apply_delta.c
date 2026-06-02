@@ -666,15 +666,15 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     }
     int C = (int)cursor;  /* next height to apply; [0, C) already applied */
 
-    /* DRIVER vs FOLLOWER. Under UTXO_AUTHOR_STAGE the stage is itself the
-     * tip authority (tip_finalize sets the in-mem chain[] — design step 1),
-     * so the active chain at C-1 reflects the stage's OWN tip, not a tip the
-     * old engine already swapped ahead of us. Under the default
-     * UTXO_AUTHOR_LEGACY the stage is a FOLLOWER: it re-converges onto a
-     * chain[] that an external authority drove, and must WAIT (no-op) until
-     * that authority has populated C-1. The driver flag selects which
-     * discipline applies; the divergence detection + fork walk below are
-     * identical in both. */
+    /* DRIVER vs FOLLOWER. Under UTXO_AUTHOR_STAGE (the production default)
+     * the stage is itself the tip authority (tip_finalize sets the in-mem
+     * chain[]), so the active chain at C-1 reflects the stage's OWN tip, not
+     * a tip the old engine already swapped ahead of us. Under
+     * UTXO_AUTHOR_LEGACY (the test-only emitter path) the stage is a
+     * FOLLOWER: it re-converges onto a chain[] that an external authority
+     * drove, and must WAIT (no-op) until that authority has populated C-1.
+     * The author flag selects which discipline applies; the divergence
+     * detection + fork walk below are identical in both. */
 
     /* Compare the OLD branch hash recorded for the highest applied height
      * (C-1) against the block now occupying that height on the active
@@ -722,14 +722,14 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
      *
      * Why (C-1), the stage cursor, is the correct depth reference:
      *
-     *   DRIVER mode (UTXO_AUTHOR_STAGE): the stage drives the tip, so C-1
-     *   IS the authoritative tip height and reorg_is_allowed(C-1, fork) is
-     *   the exact finality check — the same one legacy applies at
-     *   tip->nHeight. The unwind is gated purely on this; there is no
-     *   "wait for legacy to reach C-1" precondition (the stage cannot wait
-     *   on an engine it has replaced).
+     *   DRIVER mode (UTXO_AUTHOR_STAGE, the production default): the stage
+     *   drives the tip, so C-1 IS the authoritative tip height and
+     *   reorg_is_allowed(C-1, fork) is the exact finality check — the same
+     *   one legacy applies at tip->nHeight. The unwind is gated purely on
+     *   this; there is no "wait for legacy to reach C-1" precondition (the
+     *   stage cannot wait on an engine it has replaced).
      *
-     *   FOLLOWER mode (UTXO_AUTHOR_LEGACY, the default): the unwind only
+     *   FOLLOWER mode (UTXO_AUTHOR_LEGACY, the test-only path): the unwind only
      *   re-converges the stage's OWN applied range [fork+1, C-1] onto a
      *   chain[] that the prior path already reorged and finality-gated
      *   (reorg_is_allowed at tip->nHeight), so the

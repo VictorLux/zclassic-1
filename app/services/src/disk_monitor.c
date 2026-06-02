@@ -75,7 +75,7 @@ int64_t disk_monitor_free_bytes(const char *path)
 {
     if (!path || !*path) {
         fprintf(stderr, "[disk] %s: path is NULL or empty\n", __func__);
-        return -1;
+        return -1; // raw-return-ok:logged-above
     }
     struct statvfs st;
     if (statvfs(path, &st) != 0) {

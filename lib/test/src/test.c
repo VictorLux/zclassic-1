@@ -685,6 +685,7 @@ int main(void)
     failures += test_chain_evidence_controller();
     failures += test_long_op();
     failures += test_recovery_policy();
+    failures += test_oracle_policy();
     failures += test_db_txn();
     failures += test_sync_service();
     failures += test_sync_state_fsm();
@@ -816,6 +817,7 @@ int main(void)
     failures += test_postmortem();
     failures += test_chaos_harness();
     failures += test_stage();
+    failures += test_stage_anchor();
     failures += test_mailbox();
     failures += test_mailbox_adoption();
     failures += test_projection();
@@ -837,6 +839,7 @@ int main(void)
     failures += test_body_fetch_stage();
     failures += test_body_persist_stage();
     failures += test_created_outputs_index();
+    failures += test_stage_repair();
     failures += test_script_validate_stage();
     failures += test_proof_validate_stage();
     failures += test_utxo_apply_stage();
