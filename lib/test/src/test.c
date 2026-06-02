@@ -839,6 +839,7 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_reducer_stage_fuzz();
     failures += test_reducer_ingest_e2e();
+    failures += test_stage_reducer_unwedge();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
     failures += test_domain_consensus_subsidy();

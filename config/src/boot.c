@@ -21,6 +21,7 @@
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
 #include "storage/progress_store.h"
+#include "jobs/stage_repair.h"
 #include "storage/utxo_reimport_flag.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
@@ -3294,6 +3295,34 @@ sapling_tree_boot_check_done:
     }
     printf("[boot] %-30s %lldms\n", "utxo_chain_reconcile",
            (long long)(boot_clock_ms() - t_reconcile_utxochain));
+
+    /* Reducer cursor/coins desync reconcile — runs AFTER coins_best is durable
+     * (utxo_chain_reconcile above) and BEFORE the staged reducer Jobs init in
+     * app_init_services, so the stages load a corrected cursor. If an unclean
+     * restart left the tip_finalize cursor AHEAD of the applied coins tip,
+     * tip_finalize idles and the connect gate rejects every block as
+     * "block-not-finalized-by-reducer", wedging the chain. Clamp tip_finalize
+     * down to coins_best+1 so it re-finalizes forward. Reset-safe: deletes no
+     * log rows, so the public tip can never drop below coins_best (proven in
+     * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
+    {
+        int64_t coins_best = -1;
+        if (node_db_state_get_int(&g_node_db, "cec.coins_best_block_height",
+                                  &coins_best) && coins_best >= 0) {
+            struct sqlite3 *pdb = progress_store_db();
+            struct stage_reconcile_result rr;
+            if (pdb &&
+                stage_reconcile_clamp_tip_finalize_to_floor(
+                    pdb, (int)coins_best, &rr) && rr.clamped) {
+                printf("[boot] reducer reconcile: clamped tip_finalize cursor "
+                       "to coins_best+1=%d — re-finalizing forward (was wedged "
+                       "ahead of coins_best=%lld)\n",
+                       rr.floor, (long long)coins_best);
+                service_state_advance(SERVICE_STATE_RECONCILE,
+                                      "reducer cursor/coins desync reconcile");
+            }
+        }
+    }
 
     {
         int restored_h = active_chain_height(&g_state.chain_active);
