@@ -314,6 +314,7 @@ int test_condition_engine(void)
             "have_data_unreadable",
             "orphan_utxo_above_tip",
             "tip_fork_stale",
+            "tip_stall_oracle_rebuild",
             "stale_validate_headers_repair",
         };
         const int expected_count =
