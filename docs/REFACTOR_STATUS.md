@@ -3,6 +3,43 @@
 > Updated 2026-06-02. This file is the current debt board for finishing the
 > framework refactor. `docs/FRAMEWORK.md` remains the architecture.
 
+## 2026-06-02 (later) — Oracle-rebuild self-healer shipped; blocker localized to tip_finalize
+
+Merged `c78e94451` (green: `make lint` / `test_parallel` **0/283**). Two deliverables:
+
+- **`tip_stall_oracle_rebuild` Condition** (`app/conditions/src/`) — the non-fork twin
+  of `tip_fork_stale`: when the tip is stalled ≥120s, the best-header chain is ahead by
+  ≥2, it is NOT a stale fork (defers those to `tip_fork_stale`), and the local zclassicd
+  oracle is reachable+ahead, it calls `rebuild_recent_repair` to pull canonical bodies
+  through the validated accept path. Self-limiting; stays quiet with no oracle.
+- **`rebuild_recent` lookahead bug FIX** (`repair_controller_rebuild.c`) — it halted on
+  the very first block forever, because the `tip_finalize` one-block lookahead makes
+  `reducer_ingest_block(H)` report `block-not-finalized-by-reducer` until H+1 is also
+  present. Now that verdict is treated as connected-but-pending → CONTINUE (witness=tip
+  advanced still gates real success); already-present blocks are skipped. This had
+  broken every catch-up caller incl `tip_fork_stale`.
+
+- **PROVEN live — body delivery now works:** the oracle rebuild delivered the missing
+  bodies and advanced the whole staged pipeline. `dumpstate` stage cursors:
+  `validate_headers=3133343`, `body_fetch/body_persist/script_validate/proof_validate/`
+  **`utxo_apply=3132889`**. The earlier "P2P getdata returns no blocks" angle is moot
+  for forward progress — the oracle path feeds the pipeline fine.
+
+- **REMAINING BLOCKER — `tip_finalize` (the precise next task):** public tip still
+  **3,132,687**; `tip_finalize` cursor pinned at **3132688**, `finalized_total=0`,
+  `reorg_detected_total=16`. In `app/jobs/src/tip_finalize_stage.c:step_finalize`
+  (~L271) it returns `JOB_IDLE` because `active_chain_at(&ms->chain_active, 3132689)`
+  is **NULL** — the persisted, utxo-applied successors (3132689..3132889) are NOT on
+  the active-chain WINDOW. The window extends only via the activation/connect path
+  (`process_block`/`find_most_work_chain`/`active_chain_move_window_tip`), which is not
+  connecting the have-data successors above 3132688 — the
+  "successor-have-data-but-not-activated" deadlock named in `activation_behind_reason()`.
+  This is the pre-existing 2026-06-01 wedge, now localized to the stage.
+  NEXT FIX: drive a fresh connect pass over have-data successors so `chain_active`
+  extends and tip_finalize gets its `new_tip` (e.g. a Condition that fires when the
+  active-chain tip < highest have-data successor). DO NOT delete `tip_finalize_log`
+  rows or hand-edit cursors (a prior such fix collapsed the tip to ~47279).
+
 ## 2026-06-02 — Self-healing service merged; live soak: boots+observes, NOT yet at-tip
 
 `finish/self-healing-service` merged to `main` (green: `make -j` / `make lint` /
