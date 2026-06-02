@@ -836,6 +836,7 @@ int main(void)
     failures += test_validate_headers_stage();
     failures += test_body_fetch_stage();
     failures += test_body_persist_stage();
+    failures += test_created_outputs_index();
     failures += test_script_validate_stage();
     failures += test_proof_validate_stage();
     failures += test_utxo_apply_stage();

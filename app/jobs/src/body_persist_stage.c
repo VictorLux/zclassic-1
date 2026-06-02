@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/body_persist_stage.h"
+#include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"
 
 #include "bloom/merkle.h"
@@ -316,6 +317,16 @@ static job_result_t step_persist(struct stage_step_ctx *c)
      * the append-only log before freeing. */
     emit_block_body_event(&blk, &disk_hash, next_h);
 
+    /* Index every output this block creates so script_validate (stage 5) can
+     * resolve transparent prevouts without -txindex. body_persist (stage 4) is
+     * strictly upstream, so the index is complete at/below the script_validate
+     * frontier before it is needed (P0 §2.1). Load-bearing for validation:
+     * a write failure is fatal, not silently skipped. */
+    if (!created_outputs_index_put_block(db, &blk, next_h)) {
+        block_free(&blk);
+        return JOB_FATAL;
+    }
+
     /* The body has landed on disk and round-tripped (hash + merkle verified),
      * so mark BLOCK_HAVE_DATA on the in-memory block_index entry. Then re-emit
      * EV_BLOCK_HEADER with updated nStatus so the projection persists the
@@ -351,6 +362,12 @@ bool body_persist_stage_init(struct main_state *ms)
     }
 
     if (!ensure_log_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    /* The forward creation index this stage maintains for script_validate. */
+    if (!created_outputs_index_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

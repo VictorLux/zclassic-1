@@ -24,7 +24,10 @@
 #include "storage/event_log_payloads.h"
 #include "storage/event_log_singleton.h"
 #include "jobs/block_header_emit.h"
+#include "jobs/created_outputs_index.h"
+#include "script/script.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "storage/txdb.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -142,6 +145,50 @@ static bool default_prevout(const struct outpoint *prevout,
     }
     transaction_free(&tx);
     return ok;
+}
+
+/* Production prevout resolver (P0 §2.1) — resolves an outpoint to its spent
+ * output WITHOUT requiring -txindex, correct at the script_validate frontier
+ * (which runs ahead of utxo_apply). Two layers, in order:
+ *   (1) the forward creation index body_persist maintains — covers every coin
+ *       created in a block this node has persisted (body_persist.cursor is
+ *       strictly > script_validate.cursor, so the row is present before needed);
+ *   (2) the snapshot-seeded utxo_projection — covers pre-anchor coins on a
+ *       fast-synced node, which are immutable at snapshot time.
+ * A genuine miss returns false; the caller then FAILS LOUD with the exact
+ * outpoint (never silently passes). The verifier (verify_script) is unchanged. */
+static bool created_index_prevout(const struct outpoint *prevout,
+                                  struct tx_out *out, void *user)
+{
+    (void)user;
+    if (!prevout || !out)
+        return false;
+
+    int64_t value = 0;
+    unsigned char script[MAX_SCRIPT_SIZE];
+    size_t slen = 0;
+
+    sqlite3 *db = progress_store_db();
+    if (db && created_outputs_index_get(db, prevout->hash.data, prevout->n,
+                                        &value, script, sizeof(script), &slen)) {
+        if (slen > MAX_SCRIPT_SIZE)
+            return false;  /* never silently truncate a scriptPubKey */
+        out->value = value;
+        script_set(&out->script_pub_key, script, slen);
+        return true;
+    }
+
+    utxo_projection_t *p = utxo_projection_get_global();
+    if (p && utxo_projection_get(p, prevout->hash.data, prevout->n,
+                                 &value, script, sizeof(script), &slen)) {
+        if (slen > MAX_SCRIPT_SIZE)
+            return false;
+        out->value = value;
+        script_set(&out->script_pub_key, script, slen);
+        return true;
+    }
+
+    return false;
 }
 
 static bool ensure_log_schema(sqlite3 *db)
@@ -478,6 +525,11 @@ bool script_validate_stage_init(struct main_state *ms)
 
     g_ms = ms;
     g_stage = s;
+    /* Wire the production prevout resolver (P0 §2.1) unless a caller (e.g. a
+     * test) already installed one. Without this the resolver falls back to the
+     * -txindex-only default_prevout and every transparent spend fails. */
+    if (!g_prevout)
+        g_prevout = created_index_prevout;
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("script_validate", "[script_validate] stage initialised");
