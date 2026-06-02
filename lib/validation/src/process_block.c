@@ -44,9 +44,10 @@ void process_block_set_node_db(struct node_db *ndb)
     g_process_block_node_db = ndb;
 }
 
-/* Both an internal helper (used inside the process-block helpers) and the
- * public accessor have the same body. The public one is kept for
- * external callers (services include process_block.h directly). */
+/* Internal accessor used by the process-block helpers (self-heal,
+ * flush-policy). Declared in process_block_internal.h. The former public
+ * wrapper (process_block_get_node_db) was removed once its only external
+ * caller, the fast-sync legacy_body_pull ingester, was deleted. */
 struct node_db *process_block_node_db_internal(void)
 {
     struct node_db *ndb = app_runtime_node_db();
@@ -55,11 +56,6 @@ struct node_db *process_block_node_db_internal(void)
     return app_runtime_node_db_handle_open(g_process_block_node_db)
          ? g_process_block_node_db
          : NULL;
-}
-
-struct node_db *process_block_get_node_db(void)
-{
-    return process_block_node_db_internal();
 }
 
 /* ── live-height stage logger ────────────────────────────────── */

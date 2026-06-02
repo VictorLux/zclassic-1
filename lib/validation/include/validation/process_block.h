@@ -62,11 +62,6 @@ bool process_block_self_heal_scan_enabled(void);
 
 struct node_db;
 void process_block_set_node_db(struct node_db *ndb);
-/* Return the wired node_db (may be NULL if not yet set or if the DB
- * is closed). Callers in bulk-ingest paths (legacy body-pull, cold
- * import, snapshot apply) use this to trigger periodic
- * wal_checkpoint(PASSIVE) and bound rewind cost on SIGKILL. */
-struct node_db *process_block_get_node_db(void);
 
 /* Optional app-owned wakeup hook for the background body gap filler.
  * Validation owns chain selection; boot owns the service implementation. */

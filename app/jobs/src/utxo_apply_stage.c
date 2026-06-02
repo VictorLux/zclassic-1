@@ -51,14 +51,11 @@ static utxo_apply_reader_fn g_reader = NULL;
 static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
-static utxo_apply_live_check_fn g_live_check = NULL;
-static void *g_live_check_user = NULL;
 
 static _Atomic uint64_t g_verified_total = 0;
 static _Atomic uint64_t g_spend_unknown_total = 0;
 static _Atomic uint64_t g_utxo_collision_total = 0;
 static _Atomic uint64_t g_value_overflow_total = 0;
-static _Atomic uint64_t g_delta_diverged_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_internal_error_total = 0;
 static _Atomic uint64_t g_reorg_unwound_total = 0;
@@ -239,18 +236,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
 
-    if (summary.ok && g_live_check) {
-        const char *detail = NULL;
-        if (!g_live_check(next_h, summary.spent_count, summary.added_count,
-                          summary.total_value_delta, &detail,
-                          g_live_check_user)) {
-            summary.ok = false;
-            summary.status = "delta_diverged";
-            summary.failure_kind = detail ? detail : "live_delta";
-            memset(summary.failure_detail, 0, sizeof(summary.failure_detail));
-        }
-    }
-
     /* Author the UTXO projection from this validated delta when the
      * stage holds projection authority. Scripts in `summary.added` alias
      * into `blk`, so emit before block_free. */
@@ -292,10 +277,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         atomic_fetch_add(&g_value_overflow_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "utxo_apply value_overflow height=%d", next_h);
-    } else if (strcmp(summary.status, "delta_diverged") == 0) {
-        atomic_fetch_add(&g_delta_diverged_total, 1);
-        event_emitf(EV_BLOCK_REJECTED, 0,
-                    "utxo_apply delta_diverged height=%d", next_h);
     } else {
         atomic_fetch_add(&g_internal_error_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
@@ -400,13 +381,10 @@ void utxo_apply_stage_shutdown(void)
     g_reader_user = NULL;
     g_lookup = NULL;
     g_lookup_user = NULL;
-    g_live_check = NULL;
-    g_live_check_user = NULL;
     atomic_store(&g_verified_total, (uint64_t)0);
     atomic_store(&g_spend_unknown_total, (uint64_t)0);
     atomic_store(&g_utxo_collision_total, (uint64_t)0);
     atomic_store(&g_value_overflow_total, (uint64_t)0);
-    atomic_store(&g_delta_diverged_total, (uint64_t)0);
     atomic_store(&g_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_internal_error_total, (uint64_t)0);
     atomic_store(&g_reorg_unwound_total, (uint64_t)0);
@@ -431,14 +409,6 @@ void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user)
     pthread_mutex_lock(&g_lock);
     g_lookup = fn;
     g_lookup_user = user;
-    pthread_mutex_unlock(&g_lock);
-}
-
-void utxo_apply_stage_set_live_checker(utxo_apply_live_check_fn fn, void *user)
-{
-    pthread_mutex_lock(&g_lock);
-    g_live_check = fn;
-    g_live_check_user = user;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -487,11 +457,6 @@ uint64_t utxo_apply_stage_utxo_collision_total(void)
 uint64_t utxo_apply_stage_value_overflow_total(void)
 {
     return atomic_load(&g_value_overflow_total);
-}
-
-uint64_t utxo_apply_stage_delta_diverged_total(void)
-{
-    return atomic_load(&g_delta_diverged_total);
 }
 
 uint64_t utxo_apply_stage_upstream_failed_total(void)
@@ -584,8 +549,6 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_utxo_collision_total));
     json_push_kv_int (out, "value_overflow_total",
                       (int64_t)atomic_load(&g_value_overflow_total));
-    json_push_kv_int (out, "delta_diverged_total",
-                      (int64_t)atomic_load(&g_delta_diverged_total));
     json_push_kv_int (out, "upstream_failed_total",
                       (int64_t)atomic_load(&g_upstream_failed_total));
     json_push_kv_int (out, "internal_error_total",

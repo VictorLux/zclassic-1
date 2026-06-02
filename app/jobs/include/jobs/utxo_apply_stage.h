@@ -64,13 +64,6 @@ typedef bool (*utxo_apply_lookup_fn)(const struct uint256 *txid,
                                      struct utxo_apply_lookup *out,
                                      void *user);
 
-typedef bool (*utxo_apply_live_check_fn)(int height,
-                                         size_t spent_count,
-                                         size_t added_count,
-                                         int64_t total_value_delta,
-                                         const char **out_detail,
-                                         void *user);
-
 bool utxo_apply_stage_init(struct main_state *ms);
 void utxo_apply_stage_shutdown(void);
 
@@ -92,7 +85,6 @@ uint64_t utxo_apply_stage_verified_total(void);
 uint64_t utxo_apply_stage_spend_unknown_total(void);
 uint64_t utxo_apply_stage_utxo_collision_total(void);
 uint64_t utxo_apply_stage_value_overflow_total(void);
-uint64_t utxo_apply_stage_delta_diverged_total(void);
 uint64_t utxo_apply_stage_upstream_failed_total(void);
 uint64_t utxo_apply_stage_internal_error_total(void);
 uint64_t utxo_apply_stage_reorg_unwound_total(void);
@@ -101,7 +93,6 @@ uint64_t utxo_apply_stage_outputs_spent_total(void);
 
 void utxo_apply_stage_set_reader(utxo_apply_reader_fn fn, void *user);
 void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user);
-void utxo_apply_stage_set_live_checker(utxo_apply_live_check_fn fn, void *user);
 
 bool utxo_apply_dump_state_json(struct json_value *out, const char *key);
 

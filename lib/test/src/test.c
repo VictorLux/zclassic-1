@@ -98,6 +98,9 @@ int main(void)
     }
     if (only && strcmp(only, "parity_diff") == 0) {
         printf("[test] ZCL_TEST_ONLY=parity_diff — running parity-diff gate only\n");
+        failures += test_reorg_parity();
+        failures += test_reorg_projection_parity();
+        failures += test_projection_replay_invariant();
         printf("\n=== parity_diff subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;

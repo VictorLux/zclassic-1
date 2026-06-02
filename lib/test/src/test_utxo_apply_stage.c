@@ -35,7 +35,6 @@ enum uv_fail_kind {
     UV_FAIL_UNKNOWN,
     UV_FAIL_COLLISION,
     UV_FAIL_OVERFLOW,
-    UV_FAIL_DIVERGED,
 };
 
 struct external_utxo {
@@ -191,19 +190,6 @@ static bool fake_lookup(const struct uint256 *txid, uint32_t vout,
     return true;
 }
 
-static bool fake_live_check(int height, size_t spent_count,
-                            size_t added_count, int64_t total_value_delta,
-                            const char **out_detail, void *user)
-{
-    (void)spent_count; (void)added_count; (void)total_value_delta;
-    struct synth_chain_uv *sc = user;
-    if (sc && sc->fail_kind == UV_FAIL_DIVERGED && height == 1) {
-        if (out_detail) *out_detail = "test_delta";
-        return false;
-    }
-    return true;
-}
-
 static bool exec_sql(sqlite3 *db, const char *sql)
 {
     char *err = NULL;
@@ -312,7 +298,6 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     if (!utxo_apply_stage_init(ms)) return 4;
     utxo_apply_stage_set_reader(fake_reader, sc);
     utxo_apply_stage_set_lookup(fake_lookup, sc);
-    utxo_apply_stage_set_live_checker(fake_live_check, sc);
     return 0;
 }
 
@@ -404,8 +389,6 @@ int test_utxo_apply_stage(void)
                   utxo_apply_stage_utxo_collision_total);
     run_fail_case(&failures, UV_FAIL_OVERFLOW, "value_overflow",
                   utxo_apply_stage_value_overflow_total);
-    run_fail_case(&failures, UV_FAIL_DIVERGED, "delta_diverged",
-                  utxo_apply_stage_delta_diverged_total);
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_uv sc;
