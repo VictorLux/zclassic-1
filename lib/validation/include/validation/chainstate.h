@@ -112,6 +112,16 @@ bool active_chain_move_window_tip(struct active_chain *c,
  * candidate->nHeight <= c->height. See chainstate.c. */
 bool active_chain_extend_window(struct active_chain *c,
                                 struct block_index *candidate);
+/* Forward-extend the window along the CONTIGUOUS have-data, script-validated
+ * frontier above the finalized tip, bounded by max_height (caller passes the
+ * utxo_apply cursor). Safe for tip_finalize's lookahead: it accepts a successor
+ * only when its pprev is pointer-equal to the prior accepted block, so it never
+ * exposes header-only/forked blocks and never overwrites a finalized slot (so
+ * it cannot trigger the finalized-row false-reorg cascade a generic candidate
+ * caused). No-op (no map scan) when max_height <= the window height.
+ * See chainstate.c. */
+bool active_chain_extend_window_have_data(struct active_chain *c,
+                                          struct block_map *m, int max_height);
 /* Side-effect-free most-work candidate selector over the block map, mirroring
  * find_most_work_chain's eligibility (failure-free, >= VALID_TREE, has data,
  * clean ancestry, refuses below-tip). Returns the current tip when no heavier

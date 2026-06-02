@@ -107,6 +107,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(orphan_utxo_above_tip) \
     X(tip_fork_stale) \
     X(tip_stall_oracle_rebuild_condition) \
+    X(active_chain_extend) \
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
     X(have_data_unreadable) \

@@ -388,6 +388,100 @@ bool active_chain_extend_window(struct active_chain *c,
     return active_chain_fill_window(c, candidate);
 }
 
+/* Upper bound on how far a single anchored extend reaches above the window —
+ * keeps the bounded map scan and the contiguity walk cheap. ~a few days of
+ * blocks; the lookahead lead is normally a handful. */
+#define ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP 8192
+
+/* Forward-extend the visible window ONLY along the CONTIGUOUS have-data,
+ * script-validated frontier above the finalized tip, bounded by max_height
+ * (the caller passes utxo_apply's cursor so the scan never looks past the
+ * durable have-data floor and the window never exposes header-only or
+ * not-yet-validated successors).
+ *
+ * Unlike active_chain_extend_window(best_header / most-work candidate), this
+ * CANNOT trigger the false-reorg cascade that wedged the chain when a generic
+ * candidate was used: it walks UP from the window tip and accepts a successor
+ * only when that successor's pprev is pointer-equal to the previously accepted
+ * block. The candidate it finally fills to is therefore provably continuous
+ * with the finalized chain, so active_chain_fill_window walks the SAME pprev
+ * path back down and breaks exactly at c->height (where c->chain[c->height]
+ * already equals the tip) — never overwriting a finalized slot with a divergent
+ * fork. With finalized slots intact, finalized_row_active_match cannot
+ * false-fire and rewind_cursor_if_active_chain_reorged stays quiet.
+ *
+ * No-op (and NO map scan) when there is no gap (max_height <= c->height).
+ * Returns true (incl. no-op / OOM-skip); false only on a fill realloc failure
+ * (which LOG_FAILs upstream). */
+bool active_chain_extend_window_have_data(struct active_chain *c,
+                                          struct block_map *m,
+                                          int max_height)
+{
+    if (!c || !m || c->height < 0)
+        return true;
+    if (max_height <= c->height)
+        return true; /* nothing persisted above the window — cheap no-op */
+
+    struct block_index *tip = active_chain_cached_tip(c);
+    if (!tip)
+        return true;
+
+    int lo = c->height + 1;
+    int hi = max_height;
+    if ((int64_t)hi - (int64_t)lo + 1 > ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP)
+        hi = lo + ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP - 1;
+
+    /* One bounded scan: collect eligible (have-data, script-validated,
+     * failure-free) block_index entries in (c->height, hi]. */
+    int span = hi - lo + 1;
+    struct block_index **elig =
+        zcl_malloc((size_t)span * sizeof(*elig), "achd_elig");
+    if (!elig)
+        return true; /* OOM -> no extension (safe; never a partial window) */
+    int n = 0;
+    size_t iter = 0;
+    struct block_index *p = NULL;
+    while (block_map_next(m, &iter, NULL, &p)) {
+        if (!p)
+            continue;
+        int h = p->nHeight;
+        if (h < lo || h > hi)
+            continue;
+        if (block_has_any_failure(p))
+            continue;
+        if (!(p->nStatus & BLOCK_HAVE_DATA))
+            continue;
+        if (!block_index_is_valid(p, BLOCK_VALID_SCRIPTS))
+            continue;
+        elig[n++] = p;
+    }
+
+    /* Walk UP from the finalized tip, accepting the eligible child whose pprev
+     * is pointer-equal to the last accepted block. Contiguity is proven by
+     * construction; this also naturally skips forks (a fork at height h whose
+     * pprev != the canonical parent is simply never selected). */
+    struct block_index *cand = tip;
+    bool advanced = true;
+    while (advanced) {
+        advanced = false;
+        for (int i = 0; i < n; i++) {
+            struct block_index *ch = elig[i];
+            if (ch && ch->pprev == cand &&
+                ch->nHeight == cand->nHeight + 1) {
+                cand = ch;
+                advanced = true;
+                break;
+            }
+        }
+    }
+    free(elig);
+
+    if (cand == tip || cand->nHeight <= c->height)
+        return true; /* no contiguous have-data successor — leave window as-is */
+
+    return active_chain_fill_window(c, cand);
+}
+
 struct block_index *active_chain_most_work_candidate(struct active_chain *c,
                                                       struct block_map *m)
 {

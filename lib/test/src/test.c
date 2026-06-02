@@ -802,6 +802,7 @@ int main(void)
     failures += test_orphan_utxo_above_tip();
     failures += test_tip_fork_stale();
     failures += test_tip_stall_oracle_rebuild_condition();
+    failures += test_active_chain_extend();
     failures += test_rebuild_recent();
     failures += test_torn_index_blocks_tip();
     failures += test_have_data_unreadable();
