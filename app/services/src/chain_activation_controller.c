@@ -628,11 +628,9 @@ static bool reducer_pending_body_is_accepted(
     if (reducer_header_rejected_at(bi->nHeight, out))
         return false;
 
-    /* Consensus gate: accept an un-finalizable live tip ONLY if it cleared all
-     * stateful validation through utxo_apply (see utxo_apply_stage_succeeded_at).
-     * HAVE_DATA && !FAILED is NOT a validity witness — script/proof/utxo failures
-     * record ok=0 without setting BLOCK_FAILED_MASK. `out` keeps read_back's
-     * reject reason on miss. */
+    /* Consensus gate: the live tip is accepted ONLY if it cleared utxo_apply
+     * (HAVE_DATA && !FAILED is no witness — stage fails record ok=0, never
+     * BLOCK_FAILED_MASK). Caller already confirmed bi IS the active tip. */
     if (!utxo_apply_stage_succeeded_at(bi->nHeight))
         return false;
 
@@ -771,7 +769,10 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     if (reducer_read_back_verdict(target_h, &block_hash, out))
         return true;
 
-    if (reducer_pending_body_is_accepted(ingested, out))
+    /* Pending fallback: accept ONLY the live active tip (ingested == tip,
+     * snapshotted under the lock) — a fork can't borrow another block's row. */
+    if (ingested && ingested == tip &&
+        reducer_pending_body_is_accepted(ingested, out))
         return true;
 
     return false;
