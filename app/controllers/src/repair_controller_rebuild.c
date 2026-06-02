@@ -27,6 +27,9 @@
 #include "encoding/utilstrencodings.h"
 #include "primitives/block.h"
 #include "validation/chainstate.h"
+#include "validation/main_state.h"
+
+#include <string.h>
 
 /* "Recent" by construction: at ~75 s/block this window is ~4 days of
  * blocks. Anything larger is a cold-import / reindex job, not a recent
@@ -124,10 +127,20 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
                                              bool *accepted,
                                              char *err, size_t err_sz)
 {
-    /* ctx retained for call-site symmetry; the reducer resolves the chain
-     * context from boot_activation_controller() internally. */
-    (void)ctx;
     *accepted = false;
+
+    /* Skip blocks already present on the active chain: they connected, and
+     * their finalization just awaits a later body we will still fetch. This
+     * avoids re-fetching + re-ingesting the whole already-present prefix on
+     * every run (the rebuild window starts a margin below the tip), so the
+     * loop jumps straight to the genuinely-missing frontier body. */
+    if (ctx && ctx->main_state) {
+        struct block_index *have =
+            active_chain_at(&ctx->main_state->chain_active, height);
+        if (have && (have->nStatus & BLOCK_HAVE_DATA) &&
+            !block_has_any_failure(have))
+            return true; /* present; advance to the next height */
+    }
 
     if (!legacy_chain_rpc_get_block_hex(height, hex_buf,
                                         REBUILD_RECENT_HEX_CAP)) {
@@ -187,6 +200,25 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
     if (!ok) {
         char msg[256];
         format_state_message(&state, msg, sizeof(msg));
+
+        /* The reducer finalizes height H only once block H+1 is ALSO present
+         * (a one-block tip_finalize lookahead), so reducer_ingest_block(H)
+         * returns the verdict "block-not-finalized-by-reducer" for the
+         * frontier block even though it connected + staged cleanly — its
+         * finalization simply awaits the successor we are about to fetch next.
+         * Treat THAT specific verdict as connected-but-pending and CONTINUE so
+         * the loop reaches the missing body that actually unwedges the tip;
+         * any OTHER verdict (bad block, header reject, failed stage with a
+         * distinct reason) is a genuine rejection and stops the rebuild.
+         * Without this the lookahead made rebuild_recent halt on its very
+         * first block forever. The witness (tip actually advanced) still gates
+         * real success, so a genuinely stuck block surfaces as no-advance,
+         * never a false OK. */
+        if (strstr(msg, "not-finalized-by-reducer")) {
+            *accepted = false; /* connected; finalization pending lookahead */
+            return true;
+        }
+
         snprintf(err, err_sz, "block %d rejected: %s", height,
                  msg[0] ? msg : "validation failed");
         return false;
