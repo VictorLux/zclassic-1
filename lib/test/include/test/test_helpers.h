@@ -392,6 +392,7 @@ int test_stale_validate_headers_repair_condition(void);
 int test_orphan_utxo_above_tip(void);
 int test_tip_fork_stale(void);
 int test_tip_stall_oracle_rebuild_condition(void);
+int test_active_chain_extend(void);
 int test_rebuild_recent(void);
 int test_torn_index_blocks_tip(void);
 int test_have_data_unreadable(void);
