@@ -1313,6 +1313,9 @@ bool app_init(struct app_context *ctx)
                                     : "config/src/boot.c",
             wsql_open_r.source_line,
             (long long)pre_open_key_rows);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "wallet_persistence_open_failed code=%d rows=%lld",
+                    wsql_open_r.code, (long long)pre_open_key_rows);
         exit(1);
     }
 
@@ -1362,6 +1365,9 @@ bool app_init(struct app_context *ctx)
                     " REFUSING to proceed.\n"
                     "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
                     crc, cs.error, (long long)pre_open_key_rows);
+                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                            "wallet_canary_failed code=%d rows=%lld",
+                            crc, (long long)pre_open_key_rows);
                 exit(1);
             }
             fprintf(stderr,
@@ -1384,6 +1390,10 @@ bool app_init(struct app_context *ctx)
                 "       REFUSING to proceed — in-memory and on-disk diverged.\n"
                 "       To recover: see WALLET_PERSISTENCE_RECOVERY.md\n\n",
                 (long long)pre_open_key_rows, g_wallet.keystore.num_keys);
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "wallet_keystore_count_mismatch rows=%lld loaded=%zu",
+                        (long long)pre_open_key_rows,
+                        g_wallet.keystore.num_keys);
             exit(1);
         }
     } else {
@@ -1428,6 +1438,9 @@ bool app_init(struct app_context *ctx)
                             _r.code, _r.message,
                             _r.source_file ? _r.source_file : "?",
                             _r.source_line);
+                        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                                    "wallet_migration_flush_failed code=%d",
+                                    _r.code);
                         exit(1);
                     }
                 }
@@ -1455,6 +1468,8 @@ bool app_init(struct app_context *ctx)
                     _r.code, _r.message,
                     _r.source_file ? _r.source_file : "?",
                     _r.source_line);
+                event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                            "wallet_keypool_flush_failed code=%d", _r.code);
                 exit(1);
             }
         }
@@ -1533,6 +1548,8 @@ bool app_init(struct app_context *ctx)
              * printed the operator-actionable explanation to stderr.
              * Bail before any wallet / chain logic runs so we don't
              * write through a schema we don't understand. */
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "node_db_schema_downgrade_refused rc=%d", migrate_rc);
             exit(1);
         }
         process_block_set_node_db(&g_node_db);

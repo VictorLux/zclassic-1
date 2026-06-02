@@ -162,13 +162,16 @@ t: test_parallel
 	ulimit -s unlimited && ./test_parallel --only=$(ONLY)
 
 # Incremental compile-check of the whole node (no link). Only changed TUs
-# recompile — the fastest "does my change still build" signal.
+# recompile — the fastest "does my change still build" signal. The
+# -Wno-deprecated-declarations matches the real node/test build (zclassic23,
+# test_parallel) so these targets don't false-fail on pre-existing deprecations.
+build-only: CFLAGS += -Wno-deprecated-declarations
 build-only: $(TMPL_GEN) $(ALL_OBJS)
 	@echo "build-only: all node objects compiled"
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(TMPL_GEN)
-	@$(CC) $(CFLAGS) -fsyntax-only $(ALL_SRCS) main.c && echo "syntax-check: OK"
+	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) main.c && echo "syntax-check: OK"
 
 # The highest-signal lint gates for the inner loop. Run full `make lint` at
 # sub-wave boundaries / before commit.

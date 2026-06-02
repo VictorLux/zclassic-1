@@ -69,6 +69,31 @@ int test_service_state(void)
     SSC("advance to healthy",
         service_state_current() == SERVICE_STATE_HEALTHY);
 
+    /* ── boot-exit de-fatal targets (boot_services.c frontend/runtime) ──
+     * Pins the exact (state, reason) the de-fatal uses, so a future rename or
+     * a regression that points the boot path at a dropped state is caught. */
+    SSC("DEGRADED_SERVING in range",
+        (int)SERVICE_STATE_DEGRADED_SERVING >= 0 &&
+        (int)SERVICE_STATE_DEGRADED_SERVING < (int)SERVICE_STATE__COUNT);
+
+    service_state_advance(SERVICE_STATE_SYNCING, "syncing");
+    service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                          "frontend_services_unavailable");
+    SSC("frontend de-fatal -> DEGRADED_SERVING + reason",
+        service_state_current() == SERVICE_STATE_DEGRADED_SERVING &&
+        strcmp(service_state_reason(), "frontend_services_unavailable") == 0);
+    SSC("frontend reason fits g_reason buffer",
+        strlen("frontend_services_unavailable") < 127);
+
+    /* runtime de-fatal after an already-DEGRADED frontend: refresh, no drop */
+    service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                          "runtime_services_unavailable");
+    SSC("runtime de-fatal stays DEGRADED_SERVING (idempotent refresh)",
+        service_state_current() == SERVICE_STATE_DEGRADED_SERVING &&
+        strcmp(service_state_reason(), "runtime_services_unavailable") == 0);
+    SSC("runtime reason fits g_reason buffer",
+        strlen("runtime_services_unavailable") < 127);
+
     /* ── integrity classifier: the boot de-fatal predicate ── */
     struct chain_integrity_result r;
 
