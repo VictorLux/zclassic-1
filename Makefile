@@ -143,6 +143,54 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/te
 test-parallel: test_parallel
 	ulimit -s unlimited && ./test_parallel
 
+# ── Fast inner loop ──────────────────────────────────────────────────────
+# The edit -> check -> test loop runs dozens of times per session. Use these,
+# NOT `make` + `./test_zcl` (8-15 min) and NOT a bare `./test_parallel`.
+#
+# THE REBUILD TRAP: plain `make` does NOT rebuild test_parallel (it is not in
+# the default `all`), so running ./test_parallel directly after editing a test
+# can false-green an old binary or report "matched no groups" for a new test.
+# `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
+.PHONY: t syntax-check build-only lint-fast
+
+# Run ONE test group, always rebuilding the harness first:
+#   make t ONLY=service_state_driver
+t: test_parallel
+	@if [ -z "$(ONLY)" ]; then \
+	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
+	  exit 2; fi
+	ulimit -s unlimited && ./test_parallel --only=$(ONLY)
+
+# Incremental compile-check of the whole node (no link). Only changed TUs
+# recompile — the fastest "does my change still build" signal.
+build-only: $(TMPL_GEN) $(ALL_OBJS)
+	@echo "build-only: all node objects compiled"
+
+# Full no-link syntax check across every TU in one shot (no incremental state).
+syntax-check: $(TMPL_GEN)
+	@$(CC) $(CFLAGS) -fsyntax-only $(ALL_SRCS) main.c && echo "syntax-check: OK"
+
+# The highest-signal lint gates for the inner loop. Run full `make lint` at
+# sub-wave boundaries / before commit.
+lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validation check-one-write-path
+	@echo "lint-fast: OK"
+
+# ── Live-truth diagnosis + safe reproduction ─────────────────────────────
+# diagnose-gap: one-shot three-orthogonal-views dump + root-cause verdict over
+#   the RUNNING node (live or a repro copy). LIVE TRUTH BEFORE DESIGN.
+#     make diagnose-gap SLUG=mystall
+#     ZCL_RPCPORT=18299 ZCL_DATADIR=<copy> make diagnose-gap SLUG=onacopy
+# repro-on-copy: snapshot the live datadir to a throwaway COPY and run the node
+#   against it on an isolated port — validate consensus/recovery fixes BEFORE
+#   they can touch the live chain; FAILS LOUD on a tip regression.
+#     make repro-on-copy SLUG=import-reset ARGS='-nobgvalidation'
+.PHONY: diagnose-gap repro-on-copy
+diagnose-gap:
+	@tools/diagnose_gap.sh $(SLUG)
+
+repro-on-copy:
+	@tools/repro_on_copy.sh $(SLUG) $(if $(ARGS),-- $(ARGS),)
+
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 
@@ -244,7 +292,13 @@ explorer-css: app/views/src/explorer_css.css
 	o.write('#ifndef EXPLORER_CSS_H\n#define EXPLORER_CSS_H\n\n'); \
 	o.write('static const char explorer_css[] =\n'+'\n'.join(lines)+';\n\n#endif\n'); o.close()"
 
-test: test_zcl
+# Default `make test` = the fast fork-based parallel suite (~1min, 282 groups).
+# The slow single-process binary is still available as `make test-full`.
+# Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
+test: test_parallel
+	ulimit -s unlimited && ./test_parallel
+
+test-full: test_zcl
 	ulimit -s unlimited && ./test_zcl
 
 zclassic23-chaos: tools/sim/chaos.c tools/sim/sim_peer.c \
