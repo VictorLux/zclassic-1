@@ -3,6 +3,31 @@
 > Updated 2026-06-02. This file is the current debt board for finishing the
 > framework refactor. `docs/FRAMEWORK.md` remains the architecture.
 
+## 2026-06-02 (latest) — Tip ADVANCED 3132687→3132741 (durable); new blocker = script_validate internal_errors
+
+Net forward progress: the live public tip advanced **3132687 → 3132741 (+54,
+durable, reorg_detected=0, no churn)** — the cumulative session work (oracle
+self-healer + rebuild_recent fix delivered all bodies; the block-index linkage
+they built) lets the normal reducer flow finalize cleanly. tip_finalize now
+runs to the pipeline frontier (cursor 3133822) instead of wedging at 3132688.
+
+- **Boot pre-extend was TRIED then REVERTED (`chain_restore_finalize`):** it
+  advanced the WINDOW (public tip → 3132719) but churned tip_finalize
+  (reorg_detected climbed 1→30, finalized_total=0) — a window artifact, not
+  durable finalization, surfacing a pre-existing finalized_tip_log desync. Live
+  monitoring caught the churn that the copy's tip-drop-only check missed; the
+  revert restored clean finalization. LESSON: validate tip_finalize HEALTH
+  (reorg_detected not climbing, finalized_total climbing), not just "tip didn't
+  drop", on repro_on_copy. The extender utility
+  `active_chain_extend_window_have_data` + test remain on main, UNWIRED.
+- **NEW deeper blocker — `script_validate` internal_errors:** finalization caps
+  at 3132741 because `script_validate` hits ~54 `internal_error`s on blocks
+  above it (block 3132742's body is present, data=1 fail=0, but its script
+  validation errors), which cascade as proof/utxo `upstream_failed=54` and
+  tip_finalize `precondition_failed=1009`. NEXT: root-cause the script_validate
+  internal_error (consensus script verification — a missing input/UTXO, a
+  verifier edge case, or a partial body). This is a fresh, deep consensus task.
+
 ## 2026-06-02 (later) — Oracle-rebuild self-healer shipped; blocker localized to tip_finalize
 
 Merged `c78e94451` (green: `make lint` / `test_parallel` **0/283**). Two deliverables:
