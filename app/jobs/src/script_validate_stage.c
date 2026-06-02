@@ -55,11 +55,18 @@ struct body_persist_row {
 
 struct validate_summary {
     int ok;
-    int internal_error;
+    int internal_error;       /* umbrella: block_decode OR prevout_unresolved */
     size_t tx_count;
     size_t input_count;
     struct uint256 first_failure_txid;
     int first_failure_vin;
+    /* Typed reason for the verdict. For a clean verify this stays "". For a
+     * failure it is the specific, persisted status token, e.g.
+     * "block_decode_failed" or "prevout_unresolved tx=<hex> vin=<n>". This is
+     * what is written into the script_validate_log.status column so zcl_state
+     * can answer "why is the pipeline stuck" without conflating distinct
+     * causes under a single "internal_error" bucket. */
+    char reason[128];
 };
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -230,6 +237,7 @@ static void validate_summary_init(struct validate_summary *s)
     memset(s, 0, sizeof(*s));
     s->ok = 1;
     s->first_failure_vin = -1;
+    s->reason[0] = '\0';
     uint256_set_null(&s->first_failure_txid);
 }
 
@@ -240,6 +248,10 @@ static void validate_block_scripts(const struct block *blk, int height,
     if (!blk) {
         out->ok = 0;
         out->internal_error = 1;
+        snprintf(out->reason, sizeof(out->reason), "block_decode_failed");
+        LOG_WARN("script_validate",
+                 "[script_validate] block_decode_failed height=%d "
+                 "(null/undecodable block body)", height);
         return;
     }
 
@@ -268,6 +280,17 @@ static void validate_block_scripts(const struct block *blk, int height,
                     out->first_failure_txid = tx->hash;
                     out->first_failure_vin = (int)vi;
                 }
+                /* NOTE: this LABELS the prevout-unresolved cause distinctly;
+                 * it does NOT change the accept/reject decision (still ok=0)
+                 * and does NOT wire the prevout resolver — that is a separate
+                 * P0. We only stop conflating it with block_decode_failed. */
+                char txhex[65];
+                uint256_get_hex(&tx->hash, txhex);
+                snprintf(out->reason, sizeof(out->reason),
+                         "prevout_unresolved tx=%s vin=%d", txhex, (int)vi);
+                LOG_WARN("script_validate",
+                         "[script_validate] prevout_unresolved height=%d "
+                         "tx=%s vin=%d", height, txhex, (int)vi);
                 return;
             }
 
@@ -289,6 +312,19 @@ static void validate_block_scripts(const struct block *blk, int height,
                     out->first_failure_txid = tx->hash;
                     out->first_failure_vin = (int)vi;
                 }
+                /* Genuine script-verification failure — kept distinct from the
+                 * internal/decode/prevout causes above. Reason carries the
+                 * ScriptError so dump_state surfaces it; status stays the
+                 * stable "script_invalid" token written by the caller. */
+                char txhex[65];
+                uint256_get_hex(&tx->hash, txhex);
+                snprintf(out->reason, sizeof(out->reason),
+                         "script_invalid tx=%s vin=%d err=%d",
+                         txhex, (int)vi, (int)serror);
+                LOG_WARN("script_validate",
+                         "[script_validate] script_invalid height=%d tx=%s "
+                         "vin=%d serror=%d", height, txhex, (int)vi,
+                         (int)serror);
                 return;
             }
         }
@@ -358,14 +394,24 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     const struct uint256 *fail_txid = NULL;
     int fail_vin = -1;
     if (!summary.ok && summary.internal_error) {
-        status = "internal_error";
+        /* Persist the TYPED cause token (no longer the generic
+         * "internal_error"): "block_decode_failed" or "prevout_unresolved".
+         * The offending txid/vin ride along in the first_failure_* columns
+         * (already populated by validate_block_scripts); dump_state composes
+         * them back into the full reason. g_internal_error_total stays the
+         * umbrella counter over both causes. */
+        status = (summary.reason[0] != '\0' &&
+                  strncmp(summary.reason, "block_decode_failed", 19) == 0)
+                     ? "block_decode_failed"
+                     : "prevout_unresolved";
         ok = false;
         fail_txid = &summary.first_failure_txid;
         fail_vin = summary.first_failure_vin;
         atomic_fetch_add(&g_internal_error_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "script_validate internal_error height=%d source=%s",
-                    next_h, upstream.source);
+                    "script_validate %s height=%d source=%s reason=%s",
+                    status, next_h, upstream.source,
+                    summary.reason[0] ? summary.reason : status);
     } else if (!summary.ok) {
         status = "script_invalid";
         ok = false;
@@ -373,8 +419,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         fail_vin = summary.first_failure_vin;
         atomic_fetch_add(&g_script_invalid_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "script_validate script_invalid height=%d vin=%d",
-                    next_h, fail_vin);
+                    "script_validate script_invalid height=%d vin=%d reason=%s",
+                    next_h, fail_vin,
+                    summary.reason[0] ? summary.reason : "script_invalid");
     } else {
         atomic_fetch_add(&g_verified_total, 1);
         /* Raise the in-memory validity level to BLOCK_VALID_SCRIPTS, which
@@ -531,6 +578,73 @@ uint64_t script_validate_stage_inputs_failed_total(void)
     return atomic_load(&g_inputs_failed_total);
 }
 
+/* Emit {blocking_height, status, reason, txid, vin} for the lowest logged
+ * height with ok=0 — i.e. the first row holding the pipeline back. Reads the
+ * status + first_failure_* columns persisted by step_validate and composes
+ * the full typed reason (e.g. "prevout_unresolved tx=<hex> vin=<n>"), so
+ * zcl_state answers "why is the pipeline stuck" without a separate query.
+ * No-op (emits blocking_height=-1) when nothing is blocking. Mirrors the
+ * sqlite access already used by body_persist_log_at in this file. */
+static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
+{
+    if (!db) {
+        json_push_kv_int(out, "blocking_height", -1);
+        return;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT height, status, first_failure_txid, first_failure_vin "
+        "FROM script_validate_log WHERE ok = 0 "
+        "ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("script_validate",
+                 "[script_validate] dump blocking prepare failed: %s",
+                 sqlite3_errmsg(db));
+        json_push_kv_int(out, "blocking_height", -1);
+        return;
+    }
+    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(st);
+        json_push_kv_int(out, "blocking_height", -1);
+        return;
+    }
+
+    int64_t height = sqlite3_column_int64(st, 0);
+    const unsigned char *status_c = sqlite3_column_text(st, 1);
+    const char *status = status_c ? (const char *)status_c : "(unknown)";
+
+    char txhex[65] = {0};
+    const void *blob = sqlite3_column_blob(st, 2);
+    int blob_len = sqlite3_column_bytes(st, 2);
+    bool have_txid = (blob && blob_len == 32);
+    if (have_txid) {
+        struct uint256 txid;
+        memcpy(txid.data, blob, 32);
+        uint256_get_hex(&txid, txhex);
+    }
+
+    int vin = sqlite3_column_type(st, 3) == SQLITE_NULL
+                  ? -1 : sqlite3_column_int(st, 3);
+
+    /* Compose the full typed reason from the persisted token + columns. */
+    char reason[160];
+    if (have_txid && vin >= 0)
+        snprintf(reason, sizeof(reason), "%s tx=%s vin=%d",
+                 status, txhex, vin);
+    else if (have_txid)
+        snprintf(reason, sizeof(reason), "%s tx=%s", status, txhex);
+    else
+        snprintf(reason, sizeof(reason), "%s", status);
+
+    json_push_kv_int(out, "blocking_height", height);
+    json_push_kv_str(out, "blocking_status", status);
+    json_push_kv_str(out, "blocking_reason", reason);
+    json_push_kv_str(out, "blocking_txid", have_txid ? txhex : "");
+    json_push_kv_int(out, "blocking_vin", vin);
+    sqlite3_finalize(st);
+}
+
 bool script_validate_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -571,6 +685,9 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "script_validate_log") : 0);
+    /* "Why is the pipeline stuck": surface the lowest ok=0 row's typed
+     * reason (status + txid + vin) so zcl_state pinpoints the blocker. */
+    dump_blocking_failure(out, db);
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));

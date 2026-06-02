@@ -52,11 +52,35 @@
 
 #include <sqlite3.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define STAGE_NAME_MAX 64
 
 const char *stage_result_name(job_result_t r);
+
+/* ── FATAL witness (loud + drain-distinguishable) ──────────────────────
+ *
+ * A JOB_FATAL from stage_run_once is a terminal verdict: the runner rolls
+ * back, leaves the cursor unchanged, and returns. On its own that is
+ * indistinguishable from a quiet JOB_IDLE to a drain driver that only
+ * sums advance counts, so a FATAL-looping stage masquerades as a healthy
+ * idle one. stage_run_once now latches every FATAL (process-global,
+ * thread-safe) and emits one throttled loud line to node.log.
+ *
+ * A drain driver reads the generation BEFORE a pass and AFTER it: if it
+ * moved while the pass advanced nothing, a stage went FATAL this pass (not
+ * merely idle), and the driver should escalate (e.g. EV_OPERATOR_NEEDED)
+ * rather than treat the no-advance as convergence. */
+
+/* Monotonically increasing count of FATAL verdicts since process start.
+ * A change across a drain pass means at least one stage went FATAL. */
+uint64_t stage_fatal_generation(void);
+
+/* Snapshot the most recent FATAL's (stage name, reason) into the caller's
+ * buffers. Returns false (buffers untouched) if no FATAL has occurred. */
+bool stage_last_fatal(char *stage_out, size_t stage_cap,
+                      char *reason_out, size_t reason_cap);
 
 /* Context passed to a step function. The step:
  *   - Reads `cursor_in` (the current persisted cursor).

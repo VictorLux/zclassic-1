@@ -519,6 +519,49 @@ uint64_t utxo_apply_stage_outputs_spent_total(void)
     return atomic_load(&g_total_outputs_spent);
 }
 
+/* Surface the lowest ok=0 row (status/reason kind/txid/vout) into `out`,
+ * mirroring the validate_headers_report failure-summary query convention.
+ * The reason kind is utxo_apply's first_failure_kind (e.g. lookup_spend,
+ * spend_unknown_utxo); the txid|vout is decoded from the 36-byte detail
+ * blob. No-op if the db is unavailable or there is no failing row. Takes
+ * its own tx lock since dump_state runs outside any stage txn. */
+static void dump_first_failure(struct json_value *out, sqlite3 *db)
+{
+    if (!db) return;
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT height, COALESCE(status,''), "
+        "       COALESCE(first_failure_kind,''), first_failure_detail "
+        "  FROM utxo_apply_log WHERE ok=0 "
+        " ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        json_push_kv_int(out, "first_failure_height",
+                         sqlite3_column_int64(st, 0));
+        const unsigned char *status = sqlite3_column_text(st, 1);
+        const unsigned char *kind = sqlite3_column_text(st, 2);
+        json_push_kv_str(out, "first_failure_status",
+                         status ? (const char *)status : "");
+        json_push_kv_str(out, "first_failure_kind",
+                         kind ? (const char *)kind : "");
+        const uint8_t *d = sqlite3_column_blob(st, 3);
+        char hex[65] = {0};
+        int64_t vout = -1;
+        if (d && sqlite3_column_bytes(st, 3) == 36) {
+            struct uint256 t;
+            memcpy(t.data, d, 32);
+            uint256_get_hex(&t, hex);
+            vout = (int64_t)d[32] | ((int64_t)d[33] << 8) |
+                   ((int64_t)d[34] << 16) | ((int64_t)d[35] << 24);
+        }
+        json_push_kv_str(out, "first_failure_txid", hex);
+        json_push_kv_int(out, "first_failure_vout", vout);
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+}
+
 bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -563,6 +606,7 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
+    dump_first_failure(out, db);
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));

@@ -366,7 +366,7 @@ int test_script_validate_stage(void)
                    &vin);
         SV_CHECK("internal_error: h=1 ok=0", ok == 0);
         SV_CHECK("internal_error: h=1 status",
-                 strcmp(status, "internal_error") == 0);
+                 strcmp(status, "prevout_unresolved") == 0);
         sv_teardown(dir, &ms, &sc);
     }
 

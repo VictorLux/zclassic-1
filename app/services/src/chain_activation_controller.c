@@ -4,7 +4,6 @@
  * See chain_activation_controller.h for architecture overview. */
 
 // one-result-type-ok:decision-out-structs
-//
 // Activation is a state machine + decision planner. Every fallible decision
 // is reported through a domain OUT-STRUCT that carries a reason[]:
 //   - activation_should_connect()      -> activation_decision   (result enum + reason)
@@ -17,7 +16,7 @@
 //     LOG_WARN + emit EV_ACTIVATION_STATE_CHANGE.
 //   - activation_transition_valid() — pure transition-table lookup.
 // activation_state_name() is an enum->name table; activation_drain_deferred()
-// returns a count. No bare-bool strips a failure reason. Behavior bit-for-bit.
+// returns a count. No bare-bool strips a failure reason. Behavior unchanged.
 
 #include "services/chain_activation_controller.h"
 #include "validation/main_state.h"
@@ -66,11 +65,9 @@ static int reducer_drain_to_convergence(void);
  * quiet READY. Going READY/AT_TIP is only legal when genuinely caught up;
  * that transition clears this blocker. The escape action is "drive a fresh
  * connect pass over have-data successors" — the always-on local authority,
- * not a P2P quorum a personal stack can't form.
- *
- * See FRAMEWORK.md Prime Directive + REFACTOR_STATUS.md FOCUS NOW: the
- * reducer must advance-the-tip OR name-a-typed-blocker every tick.
- * ACTIVATION_BEHIND_BLOCKER_ID is defined in the header (shared with tests). */
+ * not a P2P quorum a personal stack can't form. The reducer must
+ * advance-the-tip OR name-a-typed-blocker every tick (FRAMEWORK.md Prime
+ * Directive). ACTIVATION_BEHIND_BLOCKER_ID is in the header (shared w/ tests). */
 
 /* Name the most-precise reason this tick could not advance. */
 static const char *
@@ -512,15 +509,10 @@ void activation_request_connect(struct chain_activation_controller *ctl,
     zcl_mutex_unlock(&ctl->mutex);
 }
 
-/* ── Reducer-as-ingest ──────────────────────────────────────────────
- *
- * The synchronous block-intake wrapper that drives the staged Job pipeline
- * instead of the historical activation path. */
-
-/* Drain the eight stage step bodies once, in pipeline order — the SAME
- * order and the SAME *_stage_drain functions the per-stage supervisor
- * children tick (staged_sync_supervisor.c). Returns total advances across
- * all eight. A single pass; the caller loops to convergence. */
+/* ── Reducer-as-ingest: synchronous wrapper driving the staged Job pipeline.
+ * Drain the eight stage step bodies once, in pipeline order — the SAME
+ * *_stage_drain functions the per-stage supervisor children tick
+ * (staged_sync_supervisor.c). One pass; caller loops to convergence. */
 static int reducer_drain_all_stages(int max_steps_per_stage)
 {
     int advanced = 0;
@@ -535,22 +527,30 @@ static int reducer_drain_all_stages(int max_steps_per_stage)
     return advanced;
 }
 
-/* Loop reducer_drain_all_stages to convergence within a bounded mutex-held
- * latency budget (mirrors the old deferred-drain budget at
- * activation_request_connect). Stops when a full pass advances nothing or
- * the budget/round-cap is hit. Returns the total advances. */
+/* Loop reducer_drain_all_stages to convergence within a bounded latency
+ * budget. A no-advance pass is convergence UNLESS a stage went FATAL this
+ * pass (fatal_generation moved) — a wedged stage masquerading as idle, so
+ * we page EV_OPERATOR_NEEDED before breaking. */
 static int reducer_drain_to_convergence(void)
 {
     const int64_t drain_budget_us = 2000 * 1000; /* 2s, same as legacy */
     const int     drain_hard_cap  = 4096;
     const int     per_stage_batch = 100;
     int64_t       start_us        = GetTimeMicros();
+    uint64_t      fatal_gen0      = stage_fatal_generation();
     int           total           = 0;
     for (int round = 0; round < drain_hard_cap; round++) {
         int adv = reducer_drain_all_stages(per_stage_batch);
         total += adv;
-        if (adv == 0)
+        if (adv == 0) {
+            char st[STAGE_NAME_MAX] = {0}, why[128] = {0};
+            if (stage_fatal_generation() != fatal_gen0 &&
+                stage_last_fatal(st, sizeof(st), why, sizeof(why)))
+                event_emitf(EV_OPERATOR_NEEDED, 0,
+                            "condition=reducer_stage_fatal stage=%s reason=%s",
+                            st, why);
             break;
+        }
         if (GetTimeMicros() - start_us > drain_budget_us)
             break;
     }

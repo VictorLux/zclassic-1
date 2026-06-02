@@ -47,6 +47,14 @@ static _Atomic int64_t  g_last_advance_height = -1;
 static uint8_t         g_last_advance_hash[32];
 static zcl_mutex_t     g_last_advance_hash_mu;
 
+/* Last specific precondition that blocked tip_finalize. The persisted
+ * tip_finalize_log status column stays the generic "precondition_failed"
+ * token (downstream + tests match on it); this names WHICH check failed so
+ * a script-validation stall is not masked. Guarded by g_block_reason_mu. */
+static _Atomic int64_t  g_last_precondition_height = -1;
+static char             g_last_precondition_reason[40] = "";
+static zcl_mutex_t      g_block_reason_mu;
+
 static void update_last_advance(int height, const uint8_t hash[32])
 {
     atomic_store(&g_last_advance_height, (int64_t)height);
@@ -133,15 +141,34 @@ static int reorg_depth_from(struct block_index *old_tip,
     return depth > 0 ? depth : 1;
 }
 
-static bool preconditions_ok(const struct block_index *bi)
+/* Returns the specific precondition that fails, or NULL if all pass.
+ * Check order is identical to the prior preconditions_ok() it replaces, so
+ * the derived bool (reason == NULL) is bit-for-bit the same verdict. Set:
+ *   block_missing       — no candidate block_index for this height
+ *   have_data_missing   — body not on disk (BLOCK_HAVE_DATA clear)
+ *   not_script_valid    — validity below BLOCK_VALID_SCRIPTS (script stall)
+ *   not_header_valid    — validity below BLOCK_VALID_HEADER */
+static const char *precondition_block_reason(const struct block_index *bi)
 {
-    if (!bi) return false;
-    if (!(bi->nStatus & BLOCK_HAVE_DATA)) return false;
+    if (!bi) return "block_missing";
+    if (!(bi->nStatus & BLOCK_HAVE_DATA)) return "have_data_missing";
     if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_SCRIPTS)
-        return false;
+        return "not_script_valid";
     if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_HEADER)
-        return false;
-    return true;
+        return "not_header_valid";
+    return NULL;
+}
+
+static void record_precondition_block(int height, const char *reason)
+{
+    atomic_store(&g_last_precondition_height, (int64_t)height);
+    zcl_mutex_lock(&g_block_reason_mu);
+    snprintf(g_last_precondition_reason, sizeof g_last_precondition_reason,
+             "%s", reason ? reason : "");
+    zcl_mutex_unlock(&g_block_reason_mu);
+    LOG_WARN("tip_finalize",
+             "[tip_finalize] precondition_failed height=%d reason=%s",
+             height, reason ? reason : "");
 }
 
 static bool finalized_row_active_match(sqlite3 *db, int row_height,
@@ -295,15 +322,25 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    if (!preconditions_ok(new_tip) ||
+    /* Name WHICH precondition blocks before collapsing to the bool, so the
+     * stall reason (e.g. not_script_valid) is not masked. Evaluated in the
+     * same order: the block-status checks first, then the chainwork compare,
+     * exactly matching the prior (!preconditions_ok || chainwork<=0)
+     * verdict — the branch is taken iff precond_reason != NULL, identical. */
+    const char *precond_reason = precondition_block_reason(new_tip);
+    if (precond_reason == NULL &&
         arith_uint256_compare(&new_tip->nChainWork,
-                              &old_tip->nChainWork) <= 0) {
+                              &old_tip->nChainWork) <= 0)
+        precond_reason = "chainwork_not_greater";
+    if (precond_reason != NULL) {
         if (!log_insert(db, next_h, "precondition_failed", false,
                         &work_delta, -1, 0, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_precondition_failed_total, 1);
+        record_precondition_block(next_h, precond_reason);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "tip_finalize precondition_failed height=%d", next_h);
+                    "tip_finalize precondition_failed height=%d reason=%s",
+                    next_h, precond_reason);
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
@@ -385,6 +422,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     pthread_mutex_lock(&g_lock);
     zcl_mutex_init(&g_last_advance_hash_mu);
+    zcl_mutex_init(&g_block_reason_mu);
     g_ms = ms;
 
     struct block_index *existing_tip =
@@ -485,7 +523,12 @@ void tip_finalize_stage_shutdown(void)
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    atomic_store(&g_last_precondition_height, (int64_t)-1);
+    zcl_mutex_lock(&g_block_reason_mu);
+    g_last_precondition_reason[0] = '\0';
+    zcl_mutex_unlock(&g_block_reason_mu);
     zcl_mutex_destroy(&g_last_advance_hash_mu);
+    zcl_mutex_destroy(&g_block_reason_mu);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -613,6 +656,20 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_utxo_count_diverged_total));
     json_push_kv_int (out, "precondition_failed_total",
                       (int64_t)atomic_load(&g_precondition_failed_total));
+    json_push_kv_int (out, "last_precondition_height",
+                      atomic_load(&g_last_precondition_height));
+    {
+        /* g_block_reason_mu is only live while the stage is (init..shutdown);
+         * guard the read so a dump before init / after shutdown is safe. */
+        char reason_buf[40] = "";
+        if (g_stage) {
+            zcl_mutex_lock(&g_block_reason_mu);
+            snprintf(reason_buf, sizeof reason_buf, "%s",
+                     g_last_precondition_reason);
+            zcl_mutex_unlock(&g_block_reason_mu);
+        }
+        json_push_kv_str(out, "last_precondition_reason", reason_buf);
+    }
     json_push_kv_int (out, "total_work_added_high",
                       (int64_t)atomic_load(&g_total_work_added_high));
     json_push_kv_int (out, "total_work_added_low",

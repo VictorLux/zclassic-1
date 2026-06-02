@@ -488,7 +488,8 @@ job_result_t header_admit_stage_step_once(void)
     bool rewind_ok = rewind_cursor_if_active_chain_reorged(db);
     if (!rewind_ok) {
         progress_store_tx_unlock();
-        return JOB_FATAL;
+        LOG_RETURN(JOB_FATAL, "header_admit",
+                   "FATAL: active-chain reorg rewind failed");
     }
     (void)mailbox_header_admit_drain(handle_header_admit_msg);
     job_result_t r = stage_run_once(g_stage, db);

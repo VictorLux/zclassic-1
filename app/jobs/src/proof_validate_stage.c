@@ -439,24 +439,26 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     bool ok = true;
     const struct uint256 *fail_txid = NULL;
     const char *fail_type = NULL;
+    char fail_txid_hex[65] = {0};
+    if (!summary.ok) {
+        uint256_get_hex(&summary.first_failure_txid, fail_txid_hex);
+        fail_txid = &summary.first_failure_txid;
+        fail_type = summary.first_failure_proof_type;
+    }
     if (!summary.ok && summary.internal_error) {
         status = "internal_error";
         ok = false;
-        fail_txid = &summary.first_failure_txid;
-        fail_type = summary.first_failure_proof_type;
         atomic_fetch_add(&g_internal_error_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "proof_validate internal_error height=%d type=%s",
-                    next_h, fail_type ? fail_type : "unknown");
+                    "proof_validate internal_error height=%d type=%s txid=%s",
+                    next_h, fail_type ? fail_type : "unknown", fail_txid_hex);
     } else if (!summary.ok) {
         status = "proof_invalid";
         ok = false;
-        fail_txid = &summary.first_failure_txid;
-        fail_type = summary.first_failure_proof_type;
         atomic_fetch_add(&g_proof_invalid_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
-                    "proof_validate proof_invalid height=%d type=%s",
-                    next_h, fail_type ? fail_type : "unknown");
+                    "proof_validate proof_invalid height=%d type=%s txid=%s",
+                    next_h, fail_type ? fail_type : "unknown", fail_txid_hex);
     } else {
         atomic_fetch_add(&g_verified_total, 1);
     }
@@ -648,6 +650,43 @@ uint64_t proof_validate_stage_binding_sig_failed_total(void)
     return atomic_load(&g_binding_sig_failed_total);
 }
 
+/* Surface the lowest ok=0 row (status/proof_type/txid) into `out`, mirroring
+ * the validate_headers_report failure-summary query convention. No-op if the
+ * db is unavailable or there is no failing row. Takes its own tx lock since
+ * dump_state runs outside any stage txn. */
+static void dump_first_failure(struct json_value *out, sqlite3 *db)
+{
+    if (!db) return;
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT height, COALESCE(status,''), "
+        "       COALESCE(first_failure_proof_type,''), first_failure_txid "
+        "  FROM proof_validate_log WHERE ok=0 "
+        " ORDER BY height ASC LIMIT 1",
+        -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        json_push_kv_int(out, "first_failure_height",
+                         sqlite3_column_int64(st, 0));
+        const unsigned char *status = sqlite3_column_text(st, 1);
+        const unsigned char *ptype = sqlite3_column_text(st, 2);
+        json_push_kv_str(out, "first_failure_status",
+                         status ? (const char *)status : "");
+        json_push_kv_str(out, "first_failure_proof_type",
+                         ptype ? (const char *)ptype : "");
+        const void *blob = sqlite3_column_blob(st, 3);
+        char hex[65] = {0};
+        if (blob && sqlite3_column_bytes(st, 3) == 32) {
+            struct uint256 t;
+            memcpy(t.data, blob, 32);
+            uint256_get_hex(&t, hex);
+        }
+        json_push_kv_str(out, "first_failure_txid", hex);
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+}
+
 bool proof_validate_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -700,6 +739,7 @@ bool proof_validate_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "proof_validate_log") : 0);
+    dump_first_failure(out, db);
     if (g_stage) {
         json_push_kv_int(out, "advanced_count",
                          (int64_t)stage_advanced_count(g_stage));

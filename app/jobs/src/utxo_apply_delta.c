@@ -100,6 +100,19 @@ static void delta_fail(struct delta_summary *s, const char *status,
     failure_detail_set(s->failure_detail, txid, vout);
 }
 
+/* Loudly record a lookup failure (was the quietest error: no log). `kind`
+ * ("lookup_spend"/"lookup_output") tags the log + failure_kind; detail kept. */
+static void lookup_fail(struct delta_summary *s, const char *kind,
+                        uint32_t height, const struct uint256 *txid,
+                        uint32_t vout)
+{
+    char hex[65] = {0};
+    if (txid) uint256_get_hex(txid, hex);
+    LOG_WARN("utxo_apply", "[utxo_apply] %s failed height=%u txid=%s vout=%u",
+             kind, height, hex, vout);
+    s->ok = false; s->status = "internal_error"; s->failure_kind = kind;
+}
+
 void utxo_apply_compute_block_delta(const struct block *blk,
                                     uint32_t block_height,
                                     utxo_apply_lookup_fn lookup,
@@ -172,9 +185,8 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     struct utxo_apply_lookup lk;
                     memset(&lk, 0, sizeof(lk));
                     if (lookup && !lookup(&op->hash, op->n, &lk, lookup_user)) {
-                        out->ok = false;
-                        out->status = "internal_error";
-                        out->failure_kind = "lookup";
+                        lookup_fail(out, "lookup_spend", block_height,
+                                    &op->hash, op->n);
                         free_delta(out);
                         return;
                     }
@@ -263,9 +275,8 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             struct utxo_apply_lookup lk;
             memset(&lk, 0, sizeof(lk));
             if (lookup && !lookup(&tx->hash, (uint32_t)vo, &lk, lookup_user)) {
-                out->ok = false;
-                out->status = "internal_error";
-                out->failure_kind = "lookup";
+                lookup_fail(out, "lookup_output", block_height,
+                            &tx->hash, (uint32_t)vo);
                 free_delta(out);
                 return;
             }
@@ -304,9 +315,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         return;
     }
 
-    /* Success: `out->spent` / `out->added` already own the arrays; the
-     * caller emits the events (if authoritative), persists the delta,
-     * then frees via free_delta(out). */
+    /* Success: out->spent/out->added own the arrays (see header). */
 }
 
 /* ── Schema ────────────────────────────────────────────────────────── */

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ── Address hash table ────────────────────────────────────── */
 
@@ -119,9 +120,18 @@ static inline void scan_uset_init(struct scan_utxo_set *s)
 static inline void scan_uset_add(struct scan_utxo_set *s, const struct scan_mem_utxo *u)
 {
     if (s->count >= s->cap) {
-        s->cap *= 2;
-        s->items = realloc(s->items,
-                           (size_t)s->cap * sizeof(struct scan_mem_utxo));
+        int new_cap = s->cap * 2;
+        struct scan_mem_utxo *grown = zcl_realloc(s->items,
+            (size_t)new_cap * sizeof(struct scan_mem_utxo), "scan utxo set grow");
+        if (!grown) {
+            /* OOM: old s->items is intact (zcl_realloc never frees on fail).
+             * Drop this UTXO rather than crash; loud so the gap is visible. */
+            LOG_WARN("scan_util", "scan_uset_add: realloc to cap=%d failed; "
+                     "dropping utxo (count=%d)", new_cap, s->count);
+            return;
+        }
+        s->items = grown;
+        s->cap = new_cap;
     }
     int i = s->count++;
     s->items[i] = *u;
@@ -181,9 +191,18 @@ static inline void scan_wl_init(struct scan_wtx_list *l)
 static inline void scan_wl_add(struct scan_wtx_list *l, const struct scan_mem_wtx *t)
 {
     if (l->count >= l->cap) {
-        l->cap *= 2;
-        l->items = realloc(l->items,
-                           (size_t)l->cap * sizeof(struct scan_mem_wtx));
+        int new_cap = l->cap * 2;
+        struct scan_mem_wtx *grown = zcl_realloc(l->items,
+            (size_t)new_cap * sizeof(struct scan_mem_wtx), "scan wtx list grow");
+        if (!grown) {
+            /* OOM: old l->items is intact (zcl_realloc never frees on fail).
+             * Drop this wtx rather than crash; loud so the gap is visible. */
+            LOG_WARN("scan_util", "scan_wl_add: realloc to cap=%d failed; "
+                     "dropping wtx (count=%d)", new_cap, l->count);
+            return;
+        }
+        l->items = grown;
+        l->cap = new_cap;
     }
     l->items[l->count++] = *t;
 }

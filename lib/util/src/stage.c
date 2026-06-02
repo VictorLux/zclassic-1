@@ -71,6 +71,81 @@ static int64_t wall_now_s(void)
     return (int64_t)ts.tv_sec;
 }
 
+/* ── FATAL latch (loud-once + drain witness) ───────────────────────────
+ *
+ * A JOB_FATAL from a stage step is a terminal verdict: the runner rolls
+ * back, bumps error_count, and returns. Historically that bump was the
+ * ONLY witness — visible in zcl_state JSON but never in node.log, and
+ * indistinguishable from a healthy JOB_IDLE to a count-only drain driver.
+ *
+ * This latch fixes both: every FATAL return funnels through
+ * stage_note_fatal(), which (a) emits ONE rate-limited LOUD line to
+ * node.log naming the stage + reason, and (b) records a monotonically
+ * increasing fatal generation that a drain driver reads after a pass via
+ * stage_fatal_generation()/stage_last_fatal() to tell FATAL from IDLE.
+ * The snapshot is mutex-guarded because distinct stages run on distinct
+ * threads. The throttle mirrors the "loud once per window" idiom used by
+ * the supervisor: at most one log line per FATAL_LOG_WINDOW_S per stage. */
+#define FATAL_LOG_WINDOW_S 5
+
+static pthread_mutex_t  g_fatal_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_fatal_generation; /* bumped on EVERY fatal */
+static char             g_fatal_stage[STAGE_NAME_MAX];
+static char             g_fatal_reason[128];
+static int64_t          g_fatal_last_log_s; /* throttle: per-stage window */
+static char             g_fatal_last_log_stage[STAGE_NAME_MAX];
+
+uint64_t stage_fatal_generation(void)
+{
+    return atomic_load(&g_fatal_generation);
+}
+
+bool stage_last_fatal(char *stage_out, size_t stage_cap,
+                      char *reason_out, size_t reason_cap)
+{
+    if (atomic_load(&g_fatal_generation) == 0)
+        return false;
+    pthread_mutex_lock(&g_fatal_lock);
+    if (stage_out && stage_cap)
+        snprintf(stage_out, stage_cap, "%s", g_fatal_stage);
+    if (reason_out && reason_cap)
+        snprintf(reason_out, reason_cap, "%s", g_fatal_reason);
+    pthread_mutex_unlock(&g_fatal_lock);
+    return true;
+}
+
+/* Record a FATAL verdict: bump error_count, latch (stage, reason) for the
+ * drain driver, and emit ONE throttled LOUD line. Always returns JOB_FATAL
+ * so call sites read `return stage_note_fatal(s, "...");`. */
+static job_result_t stage_note_fatal(stage_t *s, const char *reason)
+{
+    const char *name = s ? s->name : "(null)";
+    if (s) atomic_fetch_add(&s->error_count, 1u);
+
+    pthread_mutex_lock(&g_fatal_lock);
+    atomic_fetch_add(&g_fatal_generation, 1u);
+    snprintf(g_fatal_stage,  sizeof(g_fatal_stage),  "%s", name);
+    snprintf(g_fatal_reason, sizeof(g_fatal_reason), "%s",
+             reason ? reason : "(no reason)");
+    /* Throttle: log loud at most once per window per stage name. A new
+     * stage name always logs immediately so no FATAL stage is masked. */
+    int64_t now = wall_now_s();
+    bool same_stage = (strcmp(g_fatal_last_log_stage, name) == 0);
+    bool emit = !same_stage || (now - g_fatal_last_log_s >= FATAL_LOG_WINDOW_S);
+    if (emit) {
+        g_fatal_last_log_s = now;
+        snprintf(g_fatal_last_log_stage, sizeof(g_fatal_last_log_stage),
+                 "%s", name);
+    }
+    pthread_mutex_unlock(&g_fatal_lock);
+
+    if (emit)
+        fprintf(stderr,  // obs-ok:stage-fatal-loud
+                "[stage] FATAL %s: %s (cursor unchanged; error verdict)\n",
+                name, reason ? reason : "(no reason)");
+    return JOB_FATAL;
+}
+
 /* ── Schema bootstrap ──────────────────────────────────────────────── */
 
 bool stage_table_ensure(sqlite3 *db)
@@ -206,8 +281,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
     if (!s || !db) {
         fprintf(stderr, "[stage] run_once: null arg s=%p db=%p\n",  // obs-ok:stage-arg-failure
                 (void *)s, (void *)db);
-        if (s) atomic_fetch_add(&s->error_count, 1u);
-        return JOB_FATAL;
+        return stage_note_fatal(s, "run_once: null arg");
     }
 
     pthread_mutex_lock(&s->lock);
@@ -221,8 +295,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
     if (!cursor_read(db, s->name, &cur)) {
         progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
-        atomic_fetch_add(&s->error_count, 1u);
-        return JOB_FATAL;
+        return stage_note_fatal(s, "cursor_read failed (sqlite)");
     }
     s->cursor = cur;
 
@@ -245,8 +318,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
         pthread_mutex_unlock(&s->lock);
-        atomic_fetch_add(&s->error_count, 1u);
-        return JOB_FATAL;
+        return stage_note_fatal(s, "BEGIN IMMEDIATE failed");
     }
 
     job_result_t r = s->step(&ctx);
@@ -263,15 +335,13 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
-            atomic_fetch_add(&s->error_count, 1u);
-            return JOB_FATAL;
+            return stage_note_fatal(s, "ADVANCED but cursor did not move");
         }
         if (!cursor_write_locked(db, s->name, ctx.cursor_out)) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
-            atomic_fetch_add(&s->error_count, 1u);
-            return JOB_FATAL;
+            return stage_note_fatal(s, "cursor_write failed (sqlite)");
         }
         if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
             fprintf(stderr, "[stage] COMMIT: %s\n",  // obs-ok:stage-commit-failure
@@ -280,8 +350,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             progress_store_tx_unlock();
             pthread_mutex_unlock(&s->lock);
-            atomic_fetch_add(&s->error_count, 1u);
-            return JOB_FATAL;
+            return stage_note_fatal(s, "COMMIT failed");
         }
         s->cursor = ctx.cursor_out;
         atomic_fetch_add(&s->advanced_count, 1u);
@@ -301,10 +370,7 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
          * means the step signalled BLOCKED but didn't fill the record
          * — log and treat as ERROR so the caller is not misled. */
         if (ctx.blocker.id[0] == '\0') {
-            fprintf(stderr, "[stage] %s: BLOCKED with empty id\n",  // obs-ok:stage-blocked-empty
-                    s->name);
-            atomic_fetch_add(&s->error_count, 1u);
-            return JOB_FATAL;
+            return stage_note_fatal(s, "BLOCKED with empty blocker id");
         }
         if (ctx.blocker.owner_subsystem[0] == '\0') {
             /* Owner field is bounded; truncate the (longer) stage name
@@ -325,9 +391,10 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
         return JOB_IDLE;
     }
 
-    /* JOB_FATAL or any other value */
-    atomic_fetch_add(&s->error_count, 1u);
-    return JOB_FATAL;
+    /* JOB_FATAL or any other value: the step itself signalled a terminal
+     * error verdict (cursor unchanged). This is the dominant FATAL source —
+     * surface it loudly and latch it for the drain driver. */
+    return stage_note_fatal(s, "step returned FATAL verdict");
 }
 
 /* ── Boot-time restore ─────────────────────────────────────────────── */
