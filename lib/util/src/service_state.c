@@ -7,6 +7,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 static _Atomic int g_service_state = SERVICE_STATE_BOOT;
@@ -38,6 +39,15 @@ enum service_state service_state_current(void)
 const char *service_state_reason(void)
 {
     return g_reason;
+}
+
+void service_state_reason_copy(char *buf, size_t cap)
+{
+    if (!buf || cap == 0)
+        return;
+    pthread_mutex_lock(&g_reason_lock);
+    snprintf(buf, cap, "%s", g_reason);
+    pthread_mutex_unlock(&g_reason_lock);
 }
 
 void service_state_advance(enum service_state next, const char *reason)

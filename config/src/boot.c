@@ -17,6 +17,7 @@
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_repository.h"
 #include "util/service_state.h"
+#include "services/service_state_driver.h"
 #include "services/chain_tip.h"
 #include "services/recovery_policy.h"
 #include "services/utxo_recovery_service.h"
@@ -1564,6 +1565,12 @@ bool app_init(struct app_context *ctx)
         fprintf(stderr,
             "Warning: progress_store unavailable; staged-sync stages will "
             "not be able to persist cursors\n");
+    } else {
+        /* Restore the prior operational mode for observability. Non-fatal;
+         * happens before any reducer stage so there is no race with stage
+         * cursor use. Boot overwrites this with the real post-restore mode
+         * (DEGRADED_SERVING / SYNCING) further down. */
+        (void)service_state_restore_from_progress_store();
     }
 
     /* Snapshot-first (Wave 11A): if a downloaded consensus_snapshot.db
@@ -3320,6 +3327,7 @@ sapling_tree_boot_check_done:
                        rr.floor, (long long)coins_best);
                 service_state_advance(SERVICE_STATE_RECONCILE,
                                       "reducer cursor/coins desync reconcile");
+                service_state_persist_to_progress_store();
             }
         }
     }
@@ -3468,6 +3476,7 @@ sapling_tree_boot_check_done:
                     tip_h);
                 service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
                     "allow-degraded over structural corruption");
+                service_state_persist_to_progress_store();
             } else {
                 /* RECONCILABLE: coins-application lag. Self-heal; never
                  * exit. The node serves at the contiguous applied tip
@@ -3485,9 +3494,11 @@ sapling_tree_boot_check_done:
                 service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
                     "reconcilable post-restore divergence");
             }
+            service_state_persist_to_progress_store();
         } else {
             service_state_advance(SERVICE_STATE_SYNCING,
                                   "post-restore integrity clean");
+            service_state_persist_to_progress_store();
         }
     }
 

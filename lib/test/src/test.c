@@ -807,6 +807,7 @@ int main(void)
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
     failures += test_service_state();
+    failures += test_service_state_driver();
     failures += test_clock();
     failures += test_rng();
     failures += test_seed_tape();

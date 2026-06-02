@@ -24,6 +24,8 @@
 #ifndef ZCL_UTIL_SERVICE_STATE_H
 #define ZCL_UTIL_SERVICE_STATE_H
 
+#include <stddef.h>
+
 enum service_state {
     SERVICE_STATE_BOOT = 0,
     SERVICE_STATE_RESTORE,
@@ -50,6 +52,11 @@ const char *service_state_name(enum service_state s);
 /* The reason string recorded by the most recent advance. Never NULL.
  * A racy read of a fixed buffer — adequate for diagnostics. */
 const char *service_state_reason(void);
+
+/* Copy the current reason into `buf` under the internal lock (non-racy,
+ * always NUL-terminated, truncated to `cap`). Safe for serialization.
+ * No-op if buf is NULL or cap is 0. */
+void service_state_reason_copy(char *buf, size_t cap);
 
 /* `zcl_state subsystem=service_state` dumper. `out` is initialized by the
  * caller; `key` is unused. Reentrant-safe. */
