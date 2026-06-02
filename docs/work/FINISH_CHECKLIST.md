@@ -18,6 +18,17 @@
   **Remaining in §1:** §1.4, §1.5, §1.7, §1.8 (gate work). **Remaining in §2:** §2.1 (P0 prevout
   resolver — the live root cause), §2.3 (ScriptErrorString mapper).
 
+- **2026-06-02 · §2.1 prevout resolver (commit `2e1db80e2`) — the P0 root cause.** Built design (B):
+  a `body_persist`-maintained forward creation index `(txid,vout)→{value,scriptPubKey,height}`,
+  queried by a layered resolver (index → seeded `utxo_projection` fallback), wired as the production
+  default in `script_validate_stage_init`. Correct-by-construction (body_persist.cursor >
+  script_validate.cursor), fail-loud on miss, `verify_script` untouched. New `test_created_outputs_index`
+  (17 checks) + registered in all 3 harness sites → build/lint/`test_parallel` **0/285**. NOTE: live
+  diagnosis shows the *current* live blocker is `tip_finalize` precondition_failed (249×), i.e. §3 —
+  §2.1 fixed a latent defect (the resolver was unwired; any transparent-spend block would wedge it).
+  Live forward-progress proof pairs with §3.1.
+- **Also:** CLAUDE.md accuracy (static→dynamic, tool-count) committed separately.
+
 ## 1. Loud failures & silent-halt elimination
 
 - [x] **P0** (S) Stage runner swallows JOB_FATAL with no LOG_ — `change` — files: `lib/util/src/stage.c` — terminal FATAL only bumps an atomic count and returns; a wedged stage never reaches node.log, only `zcl_state` JSON.
@@ -31,7 +42,7 @@
 
 ## 2. Consensus validation loudness/correctness
 
-- [ ] **P0** (L) ROOT CAUSE: script_validate prevout resolver is never wired → universal `internal_error` — `investigate` — files: `app/jobs/src/script_validate_stage.c`, `app/supervisors/src/staged_sync_supervisor.c`, `config/src/boot.c` — `script_validate_stage_set_prevout_resolver()` has zero callers, so `default_prevout` returns false whenever `!fTxIndex` (default), failing every non-coinbase input above the first spend-bearing block; design a projection/spent-coin-index-backed resolver (ordering vs utxo_apply needs decision). This is the live finalization blocker.
+- [x] **P0** (L) ROOT CAUSE: script_validate prevout resolver is never wired → universal `internal_error` — `investigate` — files: `app/jobs/src/script_validate_stage.c`, `app/supervisors/src/staged_sync_supervisor.c`, `config/src/boot.c` — `script_validate_stage_set_prevout_resolver()` has zero callers, so `default_prevout` returns false whenever `!fTxIndex` (default), failing every non-coinbase input above the first spend-bearing block; design a projection/spent-coin-index-backed resolver (ordering vs utxo_apply needs decision). This is the live finalization blocker.
 - [x] **P0** (M) script_validate `internal_error` is reasonless — conflates null-block, prevout-unresolved, real script-invalid (DEFECT) — `change` — files: `app/jobs/src/script_validate_stage.c` — split into typed reasons (`block_decode_failed` vs `prevout_unresolved tx=<txid> vin=<n>` → BLOCKED/retry), put cause+txid+vin in EV_BLOCK_REJECTED and persist+expose them. (Merges 3 overlapping findings on this file.)
 - [ ] **P1** (M) verify_script ScriptError captured but discarded; no `ScriptErrorString` mapper exists — `change` — files: `app/jobs/src/script_validate_stage.c`, `lib/script/include/script/script_error.h` — add a ScriptError→string mapper in lib/script and carry code+string+txid into the script_invalid event so a bad-sig block is distinguishable from bad-pubkey/non-canonical-DER.
 - [x] **P1** (M) Per-height failure reason columns (`first_failure_*`) are write-only — no dump_state/controller/MCP reader — `add` — files: `app/jobs/src/script_validate_stage.c`, `app/jobs/src/proof_validate_stage.c`, `app/jobs/src/utxo_apply_stage.c` — each `*_dump_state_json` should SELECT the lowest ok=0 height and emit {blocking_height, status, reason, txid, vin/proof_type/kind} so `zcl_state` answers "why is the pipeline stuck".
