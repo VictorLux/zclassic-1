@@ -61,13 +61,27 @@
   Service file tripped the E2 one-result-type gate → added the `one-result-type-ok:reducer-drive-counts`
   marker (reducer entry points return advance-counts/bools; failures surface via the FATAL latch +
   EV_OPERATOR_NEEDED). **37/51 checklist lines done.**
+- **2026-06-02 · Wave 5 (commit `9b04b4438`) — supervisor liveness + dead-author purge, all green
+  (build rc=0, lint 33 gates, test_parallel 0/290).** §1.4/§10.1 (registered disk_monitor /
+  mempool_limits / db_maintenance in the supervisor `op` domain with liveness contracts + atomic
+  progress markers, wired inside each service _start so boot.c is untouched; broadened the
+  registration gate to all app/services/src/*.c with a principled long-running detector that exempts
+  the short-burst fork-join bg_validation_scripts.c by rule), §7.2 (both ratcheting baselines
+  confirmed at zero), §4.1 (deleted the genuinely-dead update_coins emit-helper dual-write branch +
+  counters + 4 no-op call sites; consensus apply path byte-identical). **Prove-first caught a wrong
+  audit premise:** the UTXO_AUTHOR enum + get_author() are LIVE (utxo_apply_stage/_delta read
+  get_author()==STAGE to pick DRIVER vs FOLLOWER reorg-unwind), so the enum/getter were RETAINED —
+  only the truly-dead emit branch went. Dropped the now-dead single-writer gate from
+  test_utxo_apply_authorship.c. **41/51 checklist lines done.** Whether the DRIVER/FOLLOWER duality
+  is itself residue (author is always STAGE) is a deeper consensus-path question logged for the §3
+  live-cluster pass, not done here.
 
 ## 1. Loud failures & silent-halt elimination
 
 - [x] **P0** (S) Stage runner swallows JOB_FATAL with no LOG_ — `change` — files: `lib/util/src/stage.c` — terminal FATAL only bumps an atomic count and returns; a wedged stage never reaches node.log, only `zcl_state` JSON.
 - [x] **P0** (M) Drain/driver cannot distinguish JOB_FATAL from JOB_IDLE — `change` — files: `app/jobs/include/jobs/job.h`, `app/services/src/chain_activation_controller.c` — STAGE_DRAIN_IMPL breaks on any non-ADVANCED int count and `reducer_drain_to_convergence` breaks on adv==0, so a FATAL-looping reducer looks healthy-idle; surface FATAL distinctly or emit EV_OPERATOR_NEEDED.
 - [x] **P1** (S) snapshot_fetch.c "LOG then fall through" → NULL-deref / double-unlock — `change` — files: `app/services/src/snapshot_fetch.c` — four guards log loudly then continue: null chunk_data memcpy crash, double-unlock, deref of zero-init store; add `return <err>;` after each log.
-- [ ] **P1** (M) Supervisor-registration gate globs `*_service.c` only — 3 live unsupervised loops evade it — `change` — files: `tools/scripts/check_supervisor_registration.sh`, `app/services/src/disk_monitor.c`, `app/services/src/db_maintenance.c`, `app/services/src/mempool_limits.c`, `config/src/boot.c` — broaden glob to `*.c` under app/services/src and add a liveness_contract + `supervisor_register_in_domain` to each background thread (started at boot.c:1003/1090, boot_services.c:259) so a hung loop is visible to the liveness tree.
+- [x] **P1** (M) Supervisor-registration gate globs `*_service.c` only — 3 live unsupervised loops evade it — `change` — files: `tools/scripts/check_supervisor_registration.sh`, `app/services/src/disk_monitor.c`, `app/services/src/db_maintenance.c`, `app/services/src/mempool_limits.c`, `config/src/boot.c` — broaden glob to `*.c` under app/services/src and add a liveness_contract + `supervisor_register_in_domain` to each background thread (started at boot.c:1003/1090, boot_services.c:259) so a hung loop is visible to the liveness tree.
 - [x] **P1** (M) Add silent-error lint gates for app/jobs/src and app/conditions/src (newest shapes) — `add` — files: `Makefile`, `app/jobs/src/script_validate_stage.c`, `app/jobs/src/proof_validate_stage.c`, `app/conditions/src/stale_validate_headers_repair.c` — mirror check-silent-errors-services/-controllers for jobs+conditions, wire into `lint:`, bump doc-accuracy gate count; the authoritative reducer lives in app/jobs and is currently unguarded.
 - [x] **P2** (S) scan_util.h: two unchecked `realloc()` leak + NULL-deref on OOM — `change` — files: `app/controllers/include/controllers/scan_util.h`, `app/controllers/src/wallet_scan.c`, `app/controllers/src/legacy_import.c` — `scan_uset_add`/`scan_wl_add` overwrite the pointer with NULL then deref; route through `zcl_realloc` and fail loudly (used by production wallet scan / legacy import).
 - [x] **P2** (S) Alloc lint gates (check-malloc, check-raw-malloc) scan only `*.c` — header inline allocs evade them — `change` — files: `Makefile`, `tools/scripts/check_raw_malloc.sh`, `app/controllers/include/controllers/scan_util.h` — add `--include='*.h'` (the sqlite gate already does), which is precisely how the scan_util.h realloc bug stayed green.
@@ -93,7 +107,7 @@
 
 ## 4. Legacy engine deletion (single-engine purge)
 
-- [ ] **P1** (M) Delete dead dual-write UTXO authorship branch (`utxo_projection_set_author` has zero prod callers) — `remove` — files: `lib/storage/src/utxo_projection.c`, `lib/storage/include/storage/utxo_projection.h`, `lib/validation/src/update_coins.c`, `lib/validation/include/validation/update_coins.h` — author is permanently STAGE; the `_emit_utxo_add/_spend_projection` helpers early-return always; delete helpers + 4 call sites (connect_block.c:752/799, update_coins.c:145/187), collapse the enum, remove `UTXO_AUTHOR_LEGACY`.
+- [x] **P1** (M) Delete dead dual-write UTXO authorship branch (`utxo_projection_set_author` has zero prod callers) — `remove` — files: `lib/storage/src/utxo_projection.c`, `lib/storage/include/storage/utxo_projection.h`, `lib/validation/src/update_coins.c`, `lib/validation/include/validation/update_coins.h` — author is permanently STAGE; the `_emit_utxo_add/_spend_projection` helpers early-return always; delete helpers + 4 call sites (connect_block.c:752/799, update_coins.c:145/187), collapse the enum, remove `UTXO_AUTHOR_LEGACY`.
 - [x] **P1** (M) Delete `coins_view_stage_backing.c` — entirely test-only dual-read/dual-write residue — `remove` — files: `lib/storage/src/coins_view_stage_backing.c`, `lib/storage/include/storage/coins_view_stage_backing.h` — no production caller; removing it also unblocks the `UTXO_AUTHOR_LEGACY` deletion; rewrite/delete the two coupled tests.
 - [x] **P2** (M) Delete orphaned missing-UTXO self-heal recovery island (471 LOC, dispatcher removed in c0fc39749) — `remove` — files: `lib/validation/src/process_block_self_heal_chain_scan.c`, `lib/validation/src/process_block_self_heal_sqlite_tx_index.c`, `lib/validation/src/process_block_self_heal_legacy_rpc.c`, `lib/validation/src/process_block_self_heal_inject.c`, `lib/validation/src/process_block_self_heal.c` — the 3 recovery sources + injector + note/is-failure trackers have zero non-test callers; strip matching content asserts in `lib/test/src/test_make_lint_gates.c`. KEEP `process_block_self_heal_hot_loop.c` and `_scan_state.c` (live).
 - [x] **P2** (M) Audit/narrow process_block.h legacy-shaped surface (`g_body_pull_active` etc.) — `investigate` — files: `lib/validation/include/validation/process_block.h`, `lib/validation/src/process_block.c`, `app/jobs/src/tip_finalize_post_step.c` — header half-states "engine deleted" yet still exports a 3229-LOC `process_block_*` surface; trace each export's live caller to confirm reducer-reached vs orphaned, then narrow.
@@ -120,7 +134,7 @@
 ## 7. Lint baselines & defensive gates → zero
 
 - [x] **P2** (S) observability-pairing gate scans committed HEAD-vs-merge-base only — working tree unscanned — `change` — files: `tools/check_observability_pairing.c` — add `git diff` (unstaged) + `--cached` to the scan set so in-flight modified app/lib .c files are checked before commit, not skipped.
-- [ ] **P2** (M) Drive the file-size E1 ceiling and supervisor-gate glob baselines to zero — `change` — files: `tools/scripts/check_file_size_ceiling.sh`, `tools/scripts/check_supervisor_registration.sh` — via the splits (§5) and registrations (§1/§10).
+- [x] **P2** (M) Drive the file-size E1 ceiling and supervisor-gate glob baselines to zero — `change` — files: `tools/scripts/check_file_size_ceiling.sh`, `tools/scripts/check_supervisor_registration.sh` — via the splits (§5) and registrations (§1/§10).
 
 ## 8. Test coverage
 
@@ -141,7 +155,7 @@
 
 ## 10. Other (critic gaps)
 
-- [ ] **P2** (M) Register disk_monitor / db_maintenance / mempool_limits in the supervisor liveness tree — `investigate` — files: `config/src/boot.c`, `app/services/src/disk_monitor.c`, `app/services/src/db_maintenance.c`, `app/services/src/mempool_limits.c` — these spawn infinite loops via `thread_registry_spawn_ex` (boot.c:1003/1090) with proper stop specs but zero `supervisor_register`, so a hung loop is invisible to `zcl_state subsystem=supervisor`; add a liveness_contract + progress marker each. (Lands with §1's gate-glob fix.)
+- [x] **P2** (M) Register disk_monitor / db_maintenance / mempool_limits in the supervisor liveness tree — `investigate` — files: `config/src/boot.c`, `app/services/src/disk_monitor.c`, `app/services/src/db_maintenance.c`, `app/services/src/mempool_limits.c` — these spawn infinite loops via `thread_registry_spawn_ex` (boot.c:1003/1090) with proper stop specs but zero `supervisor_register`, so a hung loop is invisible to `zcl_state subsystem=supervisor`; add a liveness_contract + progress marker each. (Lands with §1's gate-glob fix.)
 
 ## Counts
 
