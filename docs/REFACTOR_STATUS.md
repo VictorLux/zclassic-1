@@ -1,7 +1,38 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-06-02. This file is the current debt board for finishing the
+> Updated 2026-06-03. This file is the current debt board for finishing the
 > framework refactor. `docs/FRAMEWORK.md` remains the architecture.
+
+## 2026-06-03 — Architecture conformance board (the "everything has a place" axis)
+
+Full-tree audit (read from the actual tree + Makefile, not prose). The `app/`
+layer is already conformant; the remaining purpose-per-file debt is concentrated
+and named below. This axis is **independent of the §3 live-tip runtime cluster**
+(which is owner-gated, validate-on-copy).
+
+**Verified-clean facts:**
+- 4 layers, dependency direction proven clean: `domain/` #includes `app/`+`lib/` **0×**
+  (pure core); `app/` depends inward on `domain|ports|application` **18×**.
+- All 11 lint baselines = **0 entries** (shape/size/result-type/sqlite/supervisor/
+  blocker/layering gates pass with zero grandfathered exceptions) — but scoped to
+  `app/` only. `app/` largest file = exactly 800 (at the ceiling, tightly held).
+
+**Remaining debt, ranked (tracked as session Waves A–E):**
+
+| Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
+|------|------|--------------|-------------------------------|------|
+| 1 | `config/` boot monolith | boot_services.c **4100**, boot.c **3613**, boot_index.c **1528** — UNGATED (E1 scopes app/ only) | each subsystem startup → a Supervisor declaration + Service `init()`; config/ shrinks to a thin composition root | D |
+| 2 | Storage-adapter seam under-adopted | 15 ports, 13 adapters, but **14/71** services behind ports; **53** app/ files do raw `sqlite3_*`; `adapters/inbound/` absent | storage flows through a port; sqlite lives only in `adapters/` | E |
+| 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
+| 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
+| 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | decide: populate, or retire the empty shape | — |
+| 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
+
+Mapping to FINISH_CHECKLIST: Wave B = §5.3 (line 186, split the 8 files at the
+800 ceiling), Wave C = §5.6 (line 189, rename `*_controller`/`*_repository` →
+`*_service`). Waves A/D/E are deeper REFACTOR_STATUS items not yet enumerated as
+FINISH_CHECKLIST checkboxes. In-flight: `arch-wave-a-investigate` workflow
+(wrapper-collapse verdicts + boot/ports design).
 
 ## 2026-06-02 (latest) — Tip ADVANCED 3132687→3132741 (durable); new blocker = script_validate internal_errors
 
