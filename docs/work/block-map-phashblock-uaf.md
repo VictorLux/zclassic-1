@@ -1,8 +1,15 @@
 # Concurrency UAF: lock-free `phashBlock`/`pprev` walks vs `block_map_grow`
 
-Status: **root-caused + verified by direct code reads (2026-06-03). Fix scoped, NOT
-yet implemented** — it touches the consensus-critical chain core and must be a
-deliberate, boot-validated pass.
+Status: **FIXED (2026-06-03, commit 56656d9d6).** Option A implemented at all 12
+sites; 3/3 adversarial refuters confirmed value-equivalence; build -Werror clean;
+test_parallel 0/291 with a new deterministic regression test
+(`test_block_map_grow_phashblock`) that forces multiple `block_map_grow`
+reallocations and asserts the per-node-storage invariant. Boot-on-copy showed
+zero SIGSEGV signatures (the copy halted earlier at the pre-existing §3
+coins-integrity gate, so the header-sync crash path was unreachable on the
+wedged datadir, but no new crash was introduced and the mechanism is proven
+removed at the unit level). The original root-cause analysis below is retained
+for the record.
 
 Surfaced by a Wave-D boot smoke-test SIGSEGV (signal 11) in `push_getheaders_from`
 on a wedged datadir copy. The crash is **pre-existing**, not the boot refactor.
