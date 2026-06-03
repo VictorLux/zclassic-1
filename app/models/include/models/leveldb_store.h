@@ -38,7 +38,4 @@ bool leveldb_store_validate(struct leveldb_store *store,
 
 bool leveldb_store_save(struct leveldb_store *store);
 
-void leveldb_store_summary(const struct leveldb_store *store,
-                            char *out, size_t len);
-
 #endif

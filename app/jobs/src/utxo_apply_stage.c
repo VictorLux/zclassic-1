@@ -570,15 +570,6 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
     dump_first_failure(out, db);
-    if (g_stage) {
-        json_push_kv_int(out, "advanced_count",
-                         (int64_t)stage_advanced_count(g_stage));
-        json_push_kv_int(out, "blocked_count",
-                         (int64_t)stage_blocked_count(g_stage));
-        json_push_kv_int(out, "idle_count",
-                         (int64_t)stage_idle_count(g_stage));
-        json_push_kv_int(out, "error_count",
-                         (int64_t)stage_error_count(g_stage));
-    }
+    stage_dump_counters(out, g_stage);
     return true;
 }

@@ -367,21 +367,7 @@ struct node_db *db_service_node_db(struct db_service *svc)
     return svc->node_db;
 }
 
-const struct node_db *db_service_const_node_db(const struct db_service *svc)
-{
-    if (!svc || !svc->started)
-        return NULL;
-    return svc->node_db;
-}
-
 sqlite3 *db_service_query_db(struct db_service *svc)
-{
-    if (!svc || !svc->started)
-        return NULL;
-    return svc->query_db;
-}
-
-const sqlite3 *db_service_const_query_db(const struct db_service *svc)
 {
     if (!svc || !svc->started)
         return NULL;

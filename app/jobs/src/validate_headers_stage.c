@@ -663,15 +663,6 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
     json_push_kv_str(out, "first_fail_reason", failures.first_reason);
     json_push_kv_int(out, "last_failed_height", failures.last_height);
     json_push_kv_str(out, "last_fail_reason", failures.last_reason);
-    if (g_stage) {
-        json_push_kv_int(out, "advanced_count",
-                         (int64_t)stage_advanced_count(g_stage));
-        json_push_kv_int(out, "blocked_count",
-                         (int64_t)stage_blocked_count(g_stage));
-        json_push_kv_int(out, "idle_count",
-                         (int64_t)stage_idle_count(g_stage));
-        json_push_kv_int(out, "error_count",
-                         (int64_t)stage_error_count(g_stage));
-    }
+    stage_dump_counters(out, g_stage);
     return true;
 }

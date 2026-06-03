@@ -78,9 +78,7 @@ bool db_service_attach(struct db_service *svc, struct node_db *node_db);
 bool db_service_start(struct db_service *svc);
 void db_service_stop(struct db_service *svc);
 struct node_db *db_service_node_db(struct db_service *svc);
-const struct node_db *db_service_const_node_db(const struct db_service *svc);
 sqlite3 *db_service_query_db(struct db_service *svc);
-const sqlite3 *db_service_const_query_db(const struct db_service *svc);
 bool db_service_is_started(const struct db_service *svc);
 void db_service_get_status(const struct db_service *svc,
                            struct db_service_status *out);

@@ -348,15 +348,6 @@ bool body_fetch_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
-    if (g_stage) {
-        json_push_kv_int(out, "advanced_count",
-                         (int64_t)stage_advanced_count(g_stage));
-        json_push_kv_int(out, "blocked_count",
-                         (int64_t)stage_blocked_count(g_stage));
-        json_push_kv_int(out, "idle_count",
-                         (int64_t)stage_idle_count(g_stage));
-        json_push_kv_int(out, "error_count",
-                         (int64_t)stage_error_count(g_stage));
-    }
+    stage_dump_counters(out, g_stage);
     return true;
 }

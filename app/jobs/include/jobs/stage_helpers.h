@@ -16,9 +16,11 @@
 #ifndef ZCL_JOBS_STAGE_HELPERS_H
 #define ZCL_JOBS_STAGE_HELPERS_H
 
+#include "json/json.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/stage.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -134,6 +136,20 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
                                                 &ms->map_block_index);
     if (cand)
         (void)active_chain_extend_window(&ms->chain_active, cand);
+}
+
+/* Emit the four generic stage-machine counters (advanced/blocked/idle/error)
+ * into a *_dump_state_json object. These come straight off the stage_t and are
+ * identical across every Job stage; the stage's distinctive counters stay
+ * inline at each call site. No-op when s is NULL (stage not yet started). */
+static inline void stage_dump_counters(struct json_value *out, const stage_t *s)
+{
+    if (!s)
+        return;
+    json_push_kv_int(out, "advanced_count", (int64_t)stage_advanced_count(s));
+    json_push_kv_int(out, "blocked_count",  (int64_t)stage_blocked_count(s));
+    json_push_kv_int(out, "idle_count",     (int64_t)stage_idle_count(s));
+    json_push_kv_int(out, "error_count",    (int64_t)stage_error_count(s));
 }
 
 #endif /* ZCL_JOBS_STAGE_HELPERS_H */

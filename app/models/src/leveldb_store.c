@@ -62,13 +62,3 @@ bool leveldb_store_save(struct leveldb_store *store)
     return store->copy_ok;
 }
 
-void leveldb_store_summary(const struct leveldb_store *store,
-                            char *out, size_t len)
-{
-    snprintf(out, len, "sst=%d(%.1fMB) manifest=%s current=%s copy=%s",
-             store->num_sst_files,
-             (double)store->total_bytes / (1024.0 * 1024.0),
-             store->has_manifest ? "yes" : "no",
-             store->has_current ? "yes" : "no",
-             store->copy_ok ? "ok" : "fail");
-}

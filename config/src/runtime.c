@@ -40,11 +40,6 @@ bool app_runtime_node_db_handle_open(const struct node_db *ndb)
     return ndb && ndb->open;
 }
 
-bool app_runtime_node_db_is_open(void)
-{
-    return app_runtime_node_db_handle_open(app_runtime_node_db());
-}
-
 bool app_runtime_node_db_state_set(struct node_db *ndb,
                                    const char *key,
                                    const void *value,

@@ -785,15 +785,6 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
     /* "Why is the pipeline stuck": surface the lowest ok=0 row's typed
      * reason (status + txid + vin) so zcl_state pinpoints the blocker. */
     dump_blocking_failure(out, db);
-    if (g_stage) {
-        json_push_kv_int(out, "advanced_count",
-                         (int64_t)stage_advanced_count(g_stage));
-        json_push_kv_int(out, "blocked_count",
-                         (int64_t)stage_blocked_count(g_stage));
-        json_push_kv_int(out, "idle_count",
-                         (int64_t)stage_idle_count(g_stage));
-        json_push_kv_int(out, "error_count",
-                         (int64_t)stage_error_count(g_stage));
-    }
+    stage_dump_counters(out, g_stage);
     return true;
 }
