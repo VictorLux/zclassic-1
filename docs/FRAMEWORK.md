@@ -185,7 +185,7 @@ know the shape.
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (23 conditions live) | `block_failed_mask_at_tip.c` |
-| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved app-level shape; durable log/event primitives live in `lib/` today | `lib/storage/event_log.c` |
+| 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-and-empty **by design**: the Event concept is wholly owned by `lib/event/` (in-process bus) + `lib/storage/event_log.c` (durable fact log) + `lib/storage/*_projection.c`; app/ code only *produces* events via those primitives (~50 sites) and the one app-level subscriber is correctly a Service (`consensus_reject_index.c`). Keep `app/events/` empty until a file has a typed app-level contract + subscriber surface — see `app/events/README.md`. | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; outbound persistence adapters are real, inbound adapter layer is not currently present | `adapters/outbound/persistence/` |
 
 The honest read: **Model, Condition, Job, and the projection/state-dump registry

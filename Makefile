@@ -5,7 +5,7 @@ CC = cc
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # App layer (MVC)
-APP_DIRS = models controllers views services supervisors conditions jobs
+APP_DIRS = models controllers views services supervisors conditions jobs events
 APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 APP_SRCS = $(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c))
 

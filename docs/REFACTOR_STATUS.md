@@ -25,7 +25,7 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 | 2 | Storage-adapter seam — ~~under-adopted~~ **correct-by-design** (prove-first) | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — confirm gate-clean; optional future read-only chain_state port | E (reframed/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
-| 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | decide: populate, or retire the empty shape | — |
+| 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED — keep reserved-and-empty by design** (audit: no misplaced Event code; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). README + FRAMEWORK §3 row 7 document the keep-empty rule; `events` now in Makefile `APP_DIRS` for build/lint symmetry. | — |
 | 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
 
 Mapping to FINISH_CHECKLIST: Wave B = §5.3 (line 186, split the 8 files at the
