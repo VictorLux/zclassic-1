@@ -96,7 +96,19 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(pbkdf2_sha512_rfc_vector)    X(pbkdf2_sha512_multiblock) \
     X(pbkdf2_sha512_high_iterations)    X(pbkdf2_sha512_empty_inputs) \
     X(pbkdf2_sha512_one_byte_output) \
-    X(wallet_backup) \
+    X(sapling_address_hash_fields)    X(sprout_address_hash_fields) \
+    X(sapling_sprout_hash_idempotence_and_distinct)    X(sprout_spending_key_viewing_key) \
+    X(note_encryption_kdf_domain_separation)    X(note_encryption_prf_ock_known_answer) \
+    X(note_encryption_sapling_kdf_arg_order_distinct)    X(note_encryption_sapling_kdf_avalanche) \
+    X(note_encryption_sapling_kdf_known_answer)    X(note_encryption_sprout_kdf_avalanche) \
+    X(note_encryption_sprout_kdf_known_answer)    X(note_encryption_sprout_kdf_nonce_sweep) \
+    X(zip32_default_diversifier_deterministic)    X(zip32_default_diversifier_is_ff1_of_settled_index) \
+    X(zip32_diversifier_advances_index_in_place)    X(zip32_diversifier_distinct_keys_distinct_output) \
+    X(zip32_diversifier_index_boundaries)    X(zip32_diversifier_skips_invalid_indices) \
+    X(zip32_ff1_radix2_deterministic)    X(script_interp_altstack_conditional) \
+    X(script_interp_op2rot_order)    X(script_interp_oppick_bounds) \
+    X(script_interp_oproll_semantics)    X(script_interp_optuck_insert) \
+    X(script_interp_overflow_boundary) \
     X(wallet_backup) \
     X(wallet_canary) X(wallet_persistence_cycle) \
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \

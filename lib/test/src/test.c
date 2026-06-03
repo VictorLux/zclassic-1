@@ -757,6 +757,32 @@ int main(void)
     failures += test_pbkdf2_sha512_high_iterations();
     failures += test_pbkdf2_sha512_empty_inputs();
     failures += test_pbkdf2_sha512_one_byte_output();
+    /* Drive 4 finish-drive: sapling/script/wallet pedantic regression tests. */
+    failures += test_sapling_address_hash_fields();
+    failures += test_sprout_address_hash_fields();
+    failures += test_sapling_sprout_hash_idempotence_and_distinct();
+    failures += test_sprout_spending_key_viewing_key();
+    failures += test_note_encryption_kdf_domain_separation();
+    failures += test_note_encryption_prf_ock_known_answer();
+    failures += test_note_encryption_sapling_kdf_arg_order_distinct();
+    failures += test_note_encryption_sapling_kdf_avalanche();
+    failures += test_note_encryption_sapling_kdf_known_answer();
+    failures += test_note_encryption_sprout_kdf_avalanche();
+    failures += test_note_encryption_sprout_kdf_known_answer();
+    failures += test_note_encryption_sprout_kdf_nonce_sweep();
+    failures += test_zip32_default_diversifier_deterministic();
+    failures += test_zip32_default_diversifier_is_ff1_of_settled_index();
+    failures += test_zip32_diversifier_advances_index_in_place();
+    failures += test_zip32_diversifier_distinct_keys_distinct_output();
+    failures += test_zip32_diversifier_index_boundaries();
+    failures += test_zip32_diversifier_skips_invalid_indices();
+    failures += test_zip32_ff1_radix2_deterministic();
+    failures += test_script_interp_altstack_conditional();
+    failures += test_script_interp_op2rot_order();
+    failures += test_script_interp_oppick_bounds();
+    failures += test_script_interp_oproll_semantics();
+    failures += test_script_interp_optuck_insert();
+    failures += test_script_interp_overflow_boundary();
     failures += test_wallet_backup();
     { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
     { extern int test_wallet_persistence_cycle(void);
