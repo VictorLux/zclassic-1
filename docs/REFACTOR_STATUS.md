@@ -45,6 +45,23 @@ layering, no symbol collision). `lib/keys/*` + `lib/consensus/params.c` remain a
 future scoping item (not duplicated today). Rank 3 now: 2 of 3 collapsed, 1 kept
 by design.
 
+**Wave D / Rank 1 — STEP 2 done (`02d184c6d`).** First increment of the boot
+monolith decomposition. The 5 process_block tip-publication hooks + the gap-fill
+kick were pure adapters (all input by parameter, no shared boot statics) → moved
+verbatim to a new `config/src/boot_tip_hooks.c`, wired via one seam
+`boot_register_process_block_hooks(svc)`; the NULL teardown stays inline.
+`boot_services.c` 4100 → **3926**. Build + test_parallel 0/290 (incl. the
+`test_make_lint_gates` wiring self-test, updated for the new split) + lint green;
+**boot smoke-test on a datadir copy confirmed behavior-neutral** — the node boots
+past the hook registration, restores chain state to tip 3,132,741, and starts
+runtime services with no crash (the repro INCONCLUSIVE verdict was the pre-existing
+header-sync stall + slow mmb_register boot, not the refactor). STEP 1 (service-kernel
+adapters, ~720 lines) is **deferred**: a read-only analysis found it blocked by
+category-3B shared statics (`boot_profile_has_*`, `svc_clock_ms`) + cross-TU
+static-call seams — it needs a real seam design, not a pure move. Remaining boot
+units (projection storage, background workers, shutdown phases) are queued as
+future increments, each boot-validated on a copy.
+
 ## 2026-06-02 (latest) — Tip ADVANCED 3132687→3132741 (durable); new blocker = script_validate internal_errors
 
 Net forward progress: the live public tip advanced **3132687 → 3132741 (+54,
