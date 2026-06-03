@@ -58,6 +58,7 @@
 #include "storage/small_projections.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
+#include "services/block_index_loader.h"
 #include "models/block.h"
 #include "models/file_offer.h"
 #include "models/file_service.h"
@@ -3682,6 +3683,24 @@ bool app_init_services(struct app_context *ctx,
     alerts_init();
     self_heal_register(svc->state);
     staged_sync_supervisor_register(svc->state);
+
+    /* §3.1: recover the durable finalized frontier that a reboot dropped.
+     * staged_sync_supervisor_register (just above) ran tip_finalize_stage_init,
+     * which registers the chain-height authority and seeds it from the
+     * coins-restore tip — which sits BELOW the durable tip_finalize_log frontier
+     * whenever a prior run finalized past the last coins flush (the "finalized
+     * work dropped on reboot" defect). Adopt that frontier forward-only HERE:
+     * after the authority is registered (so active_chain_height reads the real
+     * coins tip, not genesis) but BEFORE the runtime services / reducer ingest
+     * start (line below) and before the supervisor's first tick — so there is
+     * no race on the active chain. The call is a no-op unless the frontier is a
+     * strictly-higher, contiguous, have-data + script-valid extension landing on
+     * the current tip; it never rewinds, forks, or mutates the cursor/log. */
+    {
+        int seeded = block_index_loader_seed_tip_from_finalized(
+            svc->state, progress_store_db());
+        (void)seeded;  /* logs its own success line; benign no-op otherwise */
+    }
 
     /* De-fatal: all runtime specs (bg_validation, gap_fill, legacy_mirror,
      * oracle, rolling_anchor, ...) are ZCL_SERVICE_OPTIONAL, and the

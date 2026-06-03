@@ -132,13 +132,14 @@ bool load_block_index_from_projection(struct main_state *ms,
  *
  * Returns 1 = seeded forward, 0 = no-op, -1 = error.
  *
- * BUILDING BLOCK — NOT YET WIRED on the normal boot path. A repro-on-copy
- * showed the in-memory active tip is still genesis (height 0) at the boot
- * recovery section (the coins/UTXO authority sets the persisted CSR tip but
- * not the in-memory active_chain there), so the correct call site is AFTER
- * the active tip is established to the coins frontier — to be pinned down by
- * the §3.1 wiring follow-up. Safe to call anywhere: it no-ops unless the
- * finalized frontier is a small, strictly-higher, contiguous extension. */
+ * WIRED at config/src/boot_services.c right after staged_sync_supervisor_register
+ * (which runs tip_finalize_stage_init → registers the chain-height authority and
+ * seeds it from the coins-restore tip). That is the race-free window: the
+ * authority is live (so active_chain_height reads the real coins tip, not the
+ * genesis value seen earlier in boot) but the runtime services / reducer ingest
+ * have not started yet. Safe to call anywhere: it no-ops unless the finalized
+ * frontier is a small, strictly-higher, contiguous have-data + script-valid
+ * extension landing on the current tip. */
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
                                                struct sqlite3 *progress_db);
 
