@@ -77,7 +77,7 @@ becomes a conscious, visible decision.
 writes across `app/models/src/`, `app/controllers/src/`,
 `app/services/src/`, and `lib/wallet/src/wallet_sqlite.c` route through
 the AR lifecycle (one of the three macros above). `make lint` runs
-`check_raw_sqlite.sh` as gate #3 of 17.
+`check_raw_sqlite.sh` (one of the 33 lint gates defined in the Makefile).
 
 ### The one principled exception: the `progress.kv` kernel store
 
@@ -371,13 +371,15 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 31 gates active.** Gates #18 and #20 graduated from WARN to
+**Status: 33 gates active.** Gates #18 and #20 graduated from WARN to
 RATCHET (E10, 2026-05-26) — they fail `make ci` on any *new* off-shape
 file / raw-sqlite controller while tolerating the recorded baseline.
-Gate #19 and #21 are FAIL. The six E-series additions
-(`check-file-size-ceiling`, `check-operator-needed-sink`,
-`check-doc-accuracy`, `check-one-result-type`,
-`check-shape-includes-header`, `check-projections-pure`) are detailed
+Gate #19 and #21 are FAIL. The ten E-series gates (E1–E9 and E11:
+`check-file-size-ceiling`, `check-one-result-type`,
+`check-shape-includes-header`, `check-projections-pure`,
+`check-stage-advances-or-blocks`, `check-one-write-path`,
+`check-no-authoritative-ram-state`, `check-no-silent-ready`,
+`check-operator-needed-sink`, `check-doc-accuracy`) are detailed
 under "Build-checklist gates" below. An agent that pushes code with raw malloc, silent errors,
 bypassed AR validation, unpaired stderr diagnostics, a critical model
 missing its before_save hook, a model file with no `validates_*` call
@@ -507,8 +509,9 @@ backward include typically means the lib/ file is doing something that
 belongs in app/ or relying on a symbol that should live in lib/.
 
 The gate ships with a baseline file at
-`tools/scripts/lib_layering_baseline.txt` listing the 98 violations
-that pre-existed at the time the gate was introduced (round 4). Each
+`tools/scripts/lib_layering_baseline.txt`, now empty — the 98 violations
+that pre-existed when the gate was introduced (round 4) have all been
+remediated. Each
 entry is `<file>:<exact #include directive>`. Any *new* violation not
 in the baseline fails CI. The list is a ratchet: shrinking it is
 permanent progress; **growing it requires an ADR justifying the
@@ -614,8 +617,9 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
     today, so the gate ratchets at FILE granularity: a service file is
     "result-clean" if it references `struct zcl_result` anywhere; every
     other service file is grandfathered.
-  - Baseline: `tools/scripts/one_result_type_baseline.txt` lists the 9
-    grandfathered files (one path per line). A NEW service file not in
+  - Baseline: `tools/scripts/one_result_type_baseline.txt` is now empty —
+    the 9 formerly-grandfathered files have all migrated to
+    `struct zcl_result`. A NEW service file not in
     the baseline that does not use `struct zcl_result` fails. The
     baseline may only shrink — migrate a file to `zcl_result`, delete
     its line, and the gate then enforces it stays migrated.

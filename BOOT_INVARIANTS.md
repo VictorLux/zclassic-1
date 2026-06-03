@@ -9,8 +9,8 @@ results.
 
 This file is the source of truth for the boot ordering and what
 each stage guarantees. The state machine that enforces the
-ordering lives in `lib/util/src/boot_phase.c`
-(`enum boot_stage` + `boot_stage_advance_to()`).
+ordering lives in `lib/util/include/util/boot_phase.h` (`enum boot_stage`)
+and `lib/util/src/boot_phase.c` (`boot_stage_advance_to()`).
 
 Cross-references: `CLAUDE.md` (top-level architecture),
 `DEFENSIVE_CODING.md` (rules that boot steps must follow),
