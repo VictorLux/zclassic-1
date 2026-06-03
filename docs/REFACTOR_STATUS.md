@@ -22,7 +22,7 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
 | 1 | `config/` boot monolith | boot_services.c **4100**, boot.c **3613**, boot_index.c **1528** — UNGATED (E1 scopes app/ only) | each subsystem startup → a Supervisor declaration + Service `init()`; config/ shrinks to a thin composition root | D |
-| 2 | Storage-adapter seam under-adopted | 15 ports, 13 adapters, but **14/71** services behind ports; **53** app/ files do raw `sqlite3_*`; `adapters/inbound/` absent | storage flows through a port; sqlite lives only in `adapters/` | E |
+| 2 | Storage-adapter seam — ~~under-adopted~~ **correct-by-design** (prove-first) | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — confirm gate-clean; optional future read-only chain_state port | E (reframed/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
 | 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | decide: populate, or retire the empty shape | — |
@@ -31,8 +31,19 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 Mapping to FINISH_CHECKLIST: Wave B = §5.3 (line 186, split the 8 files at the
 800 ceiling), Wave C = §5.6 (line 189, rename `*_controller`/`*_repository` →
 `*_service`). Waves A/D/E are deeper REFACTOR_STATUS items not yet enumerated as
-FINISH_CHECKLIST checkboxes. In-flight: `arch-wave-a-investigate` workflow
-(wrapper-collapse verdicts + boot/ports design).
+FINISH_CHECKLIST checkboxes.
+
+**Wave A — DONE (`41174e498`).** base58 + bech32 lib wrappers collapsed into the
+domain core: all callers migrated to `domain_encoding_*`, the 4 wrapper files
+deleted, obsolete wrapper-parity sub-tests dropped from the seal tests. Build +
+test_parallel 0/290 + lint 33 gates green. The 3rd "duplicate" — `upgrades.c` —
+was investigated and **correctly KEPT** (verdict: not a duplicate; `lib/consensus/
+upgrades.c` is the sole definition of the consensus data tables
+NetworkUpgradeInfo/SPROUT_BRANCH_ID/EquihashUpgradeInfo, `domain/consensus/
+upgrades.c` holds the pure activation-height arithmetic that reads them — a correct
+layering, no symbol collision). `lib/keys/*` + `lib/consensus/params.c` remain a
+future scoping item (not duplicated today). Rank 3 now: 2 of 3 collapsed, 1 kept
+by design.
 
 ## 2026-06-02 (latest) — Tip ADVANCED 3132687→3132741 (durable); new blocker = script_validate internal_errors
 
