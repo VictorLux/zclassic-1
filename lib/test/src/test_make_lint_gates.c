@@ -2337,6 +2337,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/controllers/src/wallet_view_sync.c",
             "app/controllers/src/sync_controller_import.c",
             "app/controllers/src/sync_controller_catchup.c",
+            "app/controllers/src/sync_controller_catchup_jobs.c",
             "app/controllers/include/controllers/diagnostics_controller.h",
             "app/controllers/src/api_controller_node.c",
             "app/controllers/src/blockchain_controller_chain.c",
