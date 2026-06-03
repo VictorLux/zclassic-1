@@ -9,7 +9,7 @@
 #include "services/chain_activation_service.h"
 #include "services/block_index_integrity.h"
 #include "services/block_source_policy.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "services/consensus_snapshot_export_service.h"

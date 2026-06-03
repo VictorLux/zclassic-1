@@ -1918,7 +1918,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/tx_index.h") == NULL);
         ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_evidence_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_evidence_authority_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);

@@ -8,7 +8,7 @@
  * snapsync_stage_promote_active_internal. */
 
 #include "net/snapshot_sync_contract.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "models/database.h"
 #include "models/db_txn.h"
 #include "models/mmb_leaf_store.h"

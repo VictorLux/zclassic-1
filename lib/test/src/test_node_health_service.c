@@ -10,7 +10,7 @@
 #include "net/connman.h"
 #include "net/net.h"
 #include "services/block_source_policy.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "services/chain_state_service.h"
 #include "services/sync_monitor.h"

@@ -8,8 +8,8 @@
  * persists the publishable chain-state evidence that explains why.
  */
 
-#ifndef ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H
-#define ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H
+#ifndef ZCL_SERVICES_CHAIN_EVIDENCE_AUTHORITY_SERVICE_H
+#define ZCL_SERVICES_CHAIN_EVIDENCE_AUTHORITY_SERVICE_H
 
 #include "core/uint256.h"
 #include "chain/chain.h"
@@ -179,4 +179,4 @@ bool chain_evidence_record_has_snapshot_required(
 void chain_evidence_controller_test_fail_commit_after_csr(bool fail);
 #endif
 
-#endif /* ZCL_SERVICES_CHAIN_EVIDENCE_CONTROLLER_H */
+#endif /* ZCL_SERVICES_CHAIN_EVIDENCE_AUTHORITY_SERVICE_H */

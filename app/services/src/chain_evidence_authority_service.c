@@ -18,7 +18,7 @@
 // No public fallible operation returns a bare reason-less bool. Behavior
 // bit-for-bit.
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "util/log_macros.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "chain_evidence_reconstruct.h"

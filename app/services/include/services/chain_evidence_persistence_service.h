@@ -3,7 +3,7 @@
 #ifndef ZCL_SERVICES_CHAIN_EVIDENCE_PERSISTENCE_SERVICE_H
 #define ZCL_SERVICES_CHAIN_EVIDENCE_PERSISTENCE_SERVICE_H
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "util/result.h"
 
 #include <stdbool.h>

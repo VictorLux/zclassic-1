@@ -37,7 +37,7 @@
 #include "services/rolling_anchor_service.h"
 #include "services/block_index_integrity.h"
 #include "services/block_pruning_service.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "services/node_health_service.h"

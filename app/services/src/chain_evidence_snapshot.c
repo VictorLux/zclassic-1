@@ -6,7 +6,7 @@
 // per-field load tolerates absence (defaults already set) so there is no
 // failure reason to carry. Single, coherent return type by construction.
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 
 #include "models/database.h"

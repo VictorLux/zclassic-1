@@ -17,7 +17,7 @@
  * later upgrades trust.
  */
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "chain_evidence_reconstruct.h"
 

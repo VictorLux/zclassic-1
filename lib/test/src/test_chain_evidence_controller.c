@@ -2,7 +2,7 @@
 
 #include "test/test_helpers.h"
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "coins/coins_view.h"
 #include "models/database.h"
 

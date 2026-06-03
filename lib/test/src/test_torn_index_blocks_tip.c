@@ -33,7 +33,7 @@
 
 #include "test/test_helpers.h"
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "validation/process_block.h"
 #include "validation/main_state.h"
 #include "chain/chain.h"

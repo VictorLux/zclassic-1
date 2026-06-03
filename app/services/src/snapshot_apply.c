@@ -16,7 +16,7 @@
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "models/database.h"
 #include "chain/chain.h"
 #include "chain/pow.h"

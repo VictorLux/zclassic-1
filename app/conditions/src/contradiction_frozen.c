@@ -4,7 +4,7 @@
 #include "util/log_macros.h"
 
 #include "config/runtime.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
 
 #include <stdio.h>

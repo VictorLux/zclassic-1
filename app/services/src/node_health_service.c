@@ -16,7 +16,7 @@
 #include "services/node_health_service.h"
 #include "jobs/tip_finalize_stage.h"
 #include "services/block_source_policy.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"

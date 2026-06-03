@@ -13,7 +13,7 @@
 
 #include "test/test_helpers.h"
 #include "services/zclassicd_oracle_service.h"
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
 #include "controllers/wallet_helpers.h"

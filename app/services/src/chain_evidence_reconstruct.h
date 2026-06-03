@@ -8,7 +8,7 @@
 #ifndef ZCL_SERVICES_CHAIN_EVIDENCE_RECONSTRUCT_H
 #define ZCL_SERVICES_CHAIN_EVIDENCE_RECONSTRUCT_H
 
-#include "services/chain_evidence_controller.h"
+#include "services/chain_evidence_authority_service.h"
 
 /* Reconstruct publishable LOCAL_IMPORT evidence for a hash-consistent
  * active tip recovered from disk. Recomputes ancestry/chainwork when
