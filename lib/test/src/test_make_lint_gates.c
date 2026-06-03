@@ -2369,7 +2369,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/services/src/bg_validation_proofs.c",
             "app/services/src/bg_validation_internal.h",
             "app/services/src/block_index_loader.c",
-            "app/services/src/chain_evidence_store.c",
+            "app/services/src/chain_evidence_persistence_service.c",
             "app/services/src/consensus_reject_index.c",
             "app/services/include/services/chain_state_validator.h",
             "app/services/src/chain_state_validator.c",

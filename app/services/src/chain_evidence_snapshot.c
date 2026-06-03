@@ -7,7 +7,7 @@
 // failure reason to carry. Single, coherent return type by construction.
 
 #include "services/chain_evidence_controller.h"
-#include "services/chain_evidence_store.h"
+#include "services/chain_evidence_persistence_service.h"
 
 #include "models/database.h"
 

@@ -20,7 +20,7 @@
 
 #include "services/chain_evidence_controller.h"
 #include "util/log_macros.h"
-#include "services/chain_evidence_store.h"
+#include "services/chain_evidence_persistence_service.h"
 #include "chain_evidence_reconstruct.h"
 
 #include "models/database.h"

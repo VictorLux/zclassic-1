@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-#include "services/chain_evidence_store.h"
+#include "services/chain_evidence_persistence_service.h"
 
 #include "models/database.h"
 #include "util/log_macros.h"
