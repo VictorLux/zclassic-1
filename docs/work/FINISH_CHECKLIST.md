@@ -114,6 +114,30 @@
   post-recovery activation/restore that establishes the in-memory active tip to 3132687, place the seed
   call immediately after it, re-run repro-on-copy expecting tip 3132687→3132741 with reorg_detected
   flat. §3 stays the owner-gated carve-out.
+- **2026-06-03 · §3.1 WIRED + DONE + pivotal finding (commit `8b0228643`).** A 3-agent investigation
+  pinned the mechanism (high confidence): `active_chain_height()` (== getblockcount) is a 3-tier
+  resolver; at runtime tip_finalize registers itself as the height authority (`is_authoritative()`
+  returns true unconditionally) so getblockcount == `g_last_advance_height`. The authority is
+  registered by `tip_finalize_stage_init` via `staged_sync_supervisor_register` (boot_services.c:3684),
+  which runs INSIDE `app_init_services` (boot.c:3577) — AFTER the recovery section, which is why the
+  earlier 2790 wiring read genesis. Re-wired the seed at boot_services.c right after
+  staged_sync_supervisor_register (the race-free window: authority live, runtime services + first
+  supervisor tick not yet started) and re-validated on a --light repro-on-copy. **§3.1 is now wired +
+  validated (no collapse, correct forward-only no-op) → DONE.**
+  **PIVOTAL FINDING — the live wedge is NOT §3.1:** a fresh boot of the live datadir reconciles the
+  active tip to coins_best+1 on its own (reducer-reconcile clamps the cursor to coins_best+1=3132742,
+  coins_best=3132741), so the tip reaches **3132741** at boot and the seed sees cur_h already at the
+  frontier → no-op. The real blocker surfaced instead: post-restore integrity reports
+  **tip_window_holes=10001 (first_hole_h=3122741) → DEGRADED_SERVING**. So the live runtime 3132687
+  (vs the 3132741 a fresh boot restores) is a **runtime tip-rewind**: boot reaches 3132741, then
+  tip_finalize's reorg detector false-fires on the 10001 window holes and rewinds — the **§3.2/§3.3
+  window-contiguity / reorg-churn** root cause, NOT §3.1. Also surfaced a **boot-perf bug**:
+  `svc.rpc_mmb_register` took **328s** (why RPC missed the 360s repro window).
+  **REDIRECT for §3.2/§3.3:** the lever is the contiguous have-data window (so H+1 is never a hole)
+  + making `rewind_cursor_if_active_chain_reorged` not false-fire on window holes — validated by a
+  repro-on-copy watching `reorg_detected` stay flat while the tip holds at 3132741. Separately file the
+  mmb-register 328s boot-perf regression. §3.1's seed stays as a correct guard for the genuine
+  dropped-frontier (coins < frontier) case.
 
 ## 1. Loud failures & silent-halt elimination
 
@@ -138,7 +162,7 @@
 
 ## 3. Active-chain window & CSR-consistency architecture
 
-- [ ] **P0** (L) Boot does not seed active tip from the durable finalized cursor → finalized work dropped on reboot — `change` — files: `config/src/boot.c`, `app/services/src/block_index_loader_rebuild.c`, `main.c` — make `rebuild_seed_tip` (read MAX finalized height from tip_finalize_log, `chain_set_active_tip`) UNCONDITIONAL after any loader, not gated behind `-rebuildfromlog`; establishes csr_consistent=true by construction. Prerequisite for the items below.
+- [x] **P0** (L) Boot does not seed active tip from the durable finalized cursor → finalized work dropped on reboot — `change` — files: `config/src/boot.c`, `app/services/src/block_index_loader_rebuild.c`, `main.c` — make `rebuild_seed_tip` (read MAX finalized height from tip_finalize_log, `chain_set_active_tip`) UNCONDITIONAL after any loader, not gated behind `-rebuildfromlog`; establishes csr_consistent=true by construction. Prerequisite for the items below.
 - [ ] **P1** (M) Replace generic best-header window extender with the contiguous have-data/contiguity frontier — `change` — files: `app/jobs/include/jobs/stage_helpers.h`, `lib/validation/src/chainstate.c`, `lib/validation/include/validation/chainstate.h` — route all 8 `reducer_extend_window_to_candidate` stage call sites through `active_chain_extend_window_have_data`, passing utxo_apply's cursor as max_height, so H+1 can never be a fork/header-only successor.
 - [ ] **P1** (M) tip_finalize one-block lookahead reads a mutable H+1 slot a generic extender re-fills — `change` — files: `app/jobs/src/tip_finalize_stage.c`, `app/jobs/include/jobs/stage_helpers.h` — change the lookahead window source to the contiguous finalized frontier so `finalized_row_active_match` can't false-fire and `rewind_cursor_if_active_chain_reorged` becomes assert-only (kills the live reorg_detected churn). Depends on the contiguity extender above.
 - [ ] **P2** (M) Tighten `chain_evidence_controller_reconcile_startup` from "defer to next commit" to fail-loud — `change` — files: `app/services/src/chain_evidence_controller.c`, `app/services/src/chain_restore_repair.c` — after the boot tip is seeded from the finalized cursor (#1), a residual coins/active divergence is genuine corruption → LOG_ERR/EV_OPERATOR_NEEDED, not silent INFO defer.
