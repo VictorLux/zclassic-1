@@ -2,43 +2,62 @@
 
 **Restart command:** type **`continue zclassic23 development`**.
 
-State at handoff: active framework-refactor main worktree. Verify with
-`git status --short --branch` before editing.
+State at handoff: main worktree. Verify with `git status --short --branch`
+before editing.
 
 ---
 
-## Current truth
+## The mission is v1 (not the refactor)
 
-The reducer/staged path is now the authoritative chain-advance architecture.
-The old comparison/cutover RPC surface has been removed from the public tool
-set, and the legacy block-connect engine files are gone. The remaining refactor
-work is cleanup and hardening:
+The v1 bar is **[`docs/MVP.md`](./MVP.md)** — 8 operator acceptance criteria;
+v1 = MRS 8/8. **THE plan is [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md)**
+(MVP-anchored, with the live wedge as priority #1 and the autonomous /
+owner-gated / operational critical path).
 
-1. Keep stale shadow/cutover scaffolding and deleted single-engine block
-   terminology out of production; current production C/H searches are clean.
-   The small-projection legacy table comparison helpers now live only in
-   tests, not the production storage API.
-2. Move every remaining oversized or mixed-purpose app file into one framework
-   shape.
-3. Shrink the ratchet baselines to zero.
-4. Keep docs honest with the reducer-as-authority architecture.
-5. Prove the result with clean build/lint/tests and a live node soak.
+Honest status: **~2/8 met by hand, 0/8 CI-enforced** (every criterion test
+gates on `ZCL_STRESS_TESTS=1`, which `make ci` never sets). Do not trust
+`make test_parallel` green as a v1 proof — it runs zero MVP criteria.
 
-`docs/FRAMEWORK.md` is the architecture. `docs/REFACTOR_STATUS.md` is the live
-debt board. `docs/PROJECT_OVERVIEW.md` is the directory/file-purpose and
-deprecation map for the next developer.
+The framework/architecture refactor is **~90% done and OFF the v1 path.**
+`docs/FRAMEWORK.md` (architecture) and `docs/REFACTOR_STATUS.md` (debt board)
+are reference. **Do not jump the queue into refactor work** while v1 buckets
+are open.
+
+---
+
+## ⛔ #1 priority — the live wedge
+
+The node holds at tip but does **not finalize forward**: `tip_finalize` shows
+`reorg_detected_total` climbing while `finalized_total=0`, and the boot
+self-heal `tip_stall_oracle_rebuild` is exhausted. No v1 criterion that needs
+live forward progress (C3 real cold-sync, C6 soak, C8 parity) can pass until
+this clears.
+
+- Diagnose on a datadir **COPY**, never live: `tools/diagnose_gap.sh`, then
+  follow `docs/work/fast-path.md` (diagnose → design+critique → reset-safe
+  test → repro-on-copy → commit).
+- Leading autonomous fix: wire the safe have-data window extender
+  (`app/jobs/include/jobs/stage_helpers.h` →
+  `active_chain_extend_window_have_data` at `lib/validation/src/chainstate.c`).
+  A prior naïve wiring was reverted (`481c520b9`) for churning `tip_finalize`
+  — validate on a copy before any deploy.
+- Owner-gated companion: the coins-commitment-persist keystone
+  (`docs/work/coins-commitment-persist-plan.md`).
+- Recovery FSM design: `docs/work/service-state-machine.md`.
 
 ---
 
 ## Do Not
 
 1. Do not weaken a lint gate or grow a baseline.
-2. Do not restore deleted cutover/projection-diff/public shadow tooling.
-3. Do not stop `zclassicd-rhett`; manage long-running services through
+2. Do not delete `tip_finalize_log` rows or hand-edit stage cursors.
+3. Do not ship a consensus-adjacent fix without a datadir-copy proof
+   (`tools/repro_on_copy.sh`). The boot self-heal heals only on a `utxo_sha3`
+   commitment match; otherwise it preserves FATAL — never weaken that.
+4. Do not stop `zclassicd-rhett`; manage long-running services through
    `systemctl --user`.
-4. Do not treat green unit tests as a live-node proof. The final bar includes
-   forward progress on the running node.
-5. Do not move the local `zclassic23` P2P listener back to `8033`; the active
+5. Do not restore deleted cutover/projection-diff/public shadow tooling.
+6. Do not move the local `zclassic23` P2P listener back to `8033`; the active
    dev node is on `8023` to avoid a `zcashd` port conflict.
 
 ---
@@ -49,77 +68,25 @@ deprecation map for the next developer.
 git status --short --branch
 make lint
 touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel
-./tools/zcl-rpc getblockcount
+./tools/zcl-rpc getblockcount        # live tip — is it advancing?
 ```
 
-If the node is not running, record that explicitly before claiming live proof.
+If the node is not running, or the tip is not advancing, record that
+explicitly before claiming any live proof. Forward progress on the running
+node is the real bar.
 
 ---
 
-## Current High-Value Targets
+## Where the detail lives
 
-- E1 oversized files:
-  `tools/scripts/file_size_ceiling_baseline.txt` is empty. Keep it empty; do
-  not add new grandfathered oversized app files.
-- E2 service-result files:
-  `tools/scripts/one_result_type_baseline.txt` is empty. Keep it empty; migrate
-  legacy bool compatibility call sites to `struct zcl_result` as adjacent files
-  are split or touched.
-- E6 one-write-path guardrail:
-  `tools/scripts/one_write_path_baseline.txt` is empty. Canonical reducer,
-  boot, shutdown, and SQLite-writer surfaces carry inline
-  `one-write-path-ok:<tag>` markers; any untagged new chain-state writer must
-  fail the ratchet.
-- Process-block split debt:
-  `lib/validation/src/process_block_core.c` is smaller after moving runtime
-  hook dispatch, failed-child propagation, and block-index disk
-  placement/hydration/persistence-snapshot construction, tip-publication
-  evidence/commit mechanics, active-tip child discovery/disk verification,
-  and contextual-header skip policy into purpose-named validation files. It
-  now carries best-work chain selection only.
-  `process_block_self_heal_legacy_rpc.c` now owns the zclassicd RPC recovery
-  source and JSON-lite parsing.
-  `process_block_self_heal_chain_scan.c` now owns bounded active-chain disk
-  scan recovery plus tx-index backfill.
-  `process_block_self_heal_sqlite_tx_index.c` now owns runtime TxIndex lookup
-  recovery plus consensus-backed disk verification.
-  `process_block_self_heal_scan_state.c` now owns scan counters/tunables, and
-  `process_block_self_heal_hot_loop.c` owns needs-reimport, activation pause,
-  and shutdown policy.
-  `process_block_self_heal_inject.c` now owns recovered-UTXO cache injection.
-  `process_block_self_heal.c` now owns missing-UTXO failure tracking only.
-  Remaining process-block split debt is mostly cleanup of stale scaffolding or
-  helper boundaries found by the next audit.
-- Lib-layering debt:
-  `tools/scripts/lib_layering_baseline.txt` is empty. The final baseline entry
-  was removed by moving the snapshot-sync router contract to
-  `lib/net/include/net/snapshot_sync_contract.h`; the old app-layer
-  compatibility include has been deleted. Keep this baseline empty; do not add
-  new upward includes from `lib/` to `app/`.
-- Controller raw-SQL debt:
-  `tools/lint/no_raw_sqlite_in_controllers_baseline.txt` is empty after
-  routing wallet scan / legacy import exec helpers,
-  snapshot controller exec helpers, wallet shielded height fallback, and
-  repair-height UTXO queries through models / `node_db_exec()`, plus moving
-  `repairutxos` transaction control to `node_db_*()` and Sapling tree block
-  writes to the Block model, and moving sync-import UTXO cardinality validation
-  to the UTXO model. Wallet key readback/rollback now routes through
-  `wallet_sqlite`, MMR/MMB state persistence routes through `node_db_state_*`,
-  and consensus snapshot export moved to
-  `consensus_snapshot_export_service`. `importchainstate` derived wallet /
-  address cache rebuilds and imported-value reporting now live on the UTXO /
-  wallet models. The tx-index block-position scan and additive-build PRAGMAs
-  now live on Block / TxIndex model helpers, and the diagnostic SQL primitive
-  prepares statements through `node_db_prepare_readonly_query()`. Keep this
-  baseline empty.
-- Raw allocation debt:
-  `tools/scripts/raw_malloc_allowlist.txt` has no active entries. Keep
-  production allocations on `zcl_malloc` / `zcl_calloc` / `zcl_realloc` unless
-  a local raw-alloc exception is explicitly justified.
-- Supervisor debt:
-  `tools/scripts/supervisor_baseline.txt` is empty; keep it that way.
-- Typed-blocker debt:
-  `tools/scripts/typed_blocker_baseline.txt` is empty; keep it that way.
+| Need | Doc |
+|------|-----|
+| The v1 contract (8 criteria) | [`docs/MVP.md`](./MVP.md) |
+| **THE plan** (critical path) | [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) |
+| How to execute consensus-critical work safely | [`docs/work/fast-path.md`](./work/fast-path.md) |
+| Engineering quality board (41 items) | [`docs/work/FINISH_CHECKLIST.md`](./work/FINISH_CHECKLIST.md) |
+| Architecture (canonical) | [`docs/FRAMEWORK.md`](./FRAMEWORK.md) |
+| Architecture debt board (off v1 path) | [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md) |
+| Directory / file-purpose map | [`docs/PROJECT_OVERVIEW.md`](./PROJECT_OVERVIEW.md) |
 
-Default to subtraction. A file that exists only to preserve the old cutover or
-shadow comparison world should be deleted or moved into tests.
+Default to subtraction. Prove on a copy before touching the live chain.

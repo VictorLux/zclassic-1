@@ -2,6 +2,11 @@
 
 > Updated 2026-06-03. This file is the current debt board for finishing the
 > framework refactor. `docs/FRAMEWORK.md` remains the architecture.
+>
+> ⚠️ **This is the ARCHITECTURE-AXIS board (~90% done). It is NOT the v1 path.**
+> The v1 bar is [`docs/MVP.md`](./MVP.md); THE plan is
+> [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Do not start
+> architecture work until the v1 buckets are clear.
 
 ## 2026-06-03 — Architecture conformance board (the "everything has a place" axis)
 

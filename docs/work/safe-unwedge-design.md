@@ -1,5 +1,3 @@
-I have all the verified facts. Producing the design doc now.
-
 # SAFE Auto-Un-Wedge for the Staged Reducer — Boot-Time Cursor Reconcile
 
 Branch `finish/self-healing-service`, HEAD `fbfec53a0`. All file:line references verified against the tree at that commit.

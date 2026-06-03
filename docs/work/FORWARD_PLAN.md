@@ -1,162 +1,142 @@
-# Forward plan — finishing zclassic23 "the zclassic23 way"
+# zclassic23 — V1 PLAN (MVP-anchored)
 
-Authoritative ordered plan for the remaining work. Supersedes the scattered
-work-notes for *forward planning*; the live debt board stays
-[`docs/REFACTOR_STATUS.md`](../REFACTOR_STATUS.md) and the canonical
-architecture stays [`docs/FRAMEWORK.md`](../FRAMEWORK.md).
-
-## Where we are (measured, current)
-
-- `app/` is 100% shape-conformant: **266 `.c` files** across the 8 shape
-  folders, **0 over the 800-line ceiling**, all lint baselines at 0.
-- **34 lint gates** enforce it; `make lint` ends with "all checks passed".
-  Two gates shipped in this drive: `check-file-size-ceiling` now covers
-  `config/` (boot files frozen), and Gate #22 `check-framework-filename-suffix`
-  locks filenames to their folder shape.
-- The **only** architecture/size debt is 3 `config/` boot files —
-  `boot.c` 3618, `boot_services.c` 3517, `boot_index.c` 1539 — now frozen
-  by the size gate (can only shrink).
-- The **real finish bar** is runtime: a fresh boot FATAL-halts at the §3
-  coins-integrity gate, and the live node holds at ~3.13M without catching
-  the network tip. That work is owner-gated and validated on a datadir COPY
-  only — never in-place.
-
-Every step gates on **build + `make lint` + `make test_parallel` (0/355)**;
-boot moves additionally gate on a datadir-copy boot proof
-(`tools/repro_on_copy.sh`). Architecture work is unblocked and sequenced
-first; the boot decomposition is sequenced AFTER §3 clears (no boot seam can
-be copy-validated while a fresh boot halts).
+> **READ THIS FIRST.** This is THE finishing plan. The v1 bar is the 8
+> acceptance criteria in **[`docs/MVP.md`](../MVP.md)** (v1 = MRS 8/8).
+> Everything below is sequenced to move MRS toward 8/8.
+>
+> The framework/architecture refactor ([`docs/REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
+> [`docs/FRAMEWORK.md`](../FRAMEWORK.md), boot decomposition) is **~90% done and
+> OFF the v1 path. Do NOT jump the queue into it.** It is reference, not the
+> mission.
 
 ---
 
-## Phase 0 — Docs + comment cleanup (unblocked)
+## ⛔ #1 PRIORITY — the live wedge
 
-- [x] **Purge finished work-note:** delete `docs/work/block-map-phashblock-uaf.md`
-      (UAF fixed `56656d9d6`; invariant preserved in the regression test +
-      memory; zero backlinks).
-- [x] **Strip stale cutover/extraction comments** (comment-only, no behavior
-      change): the `B7`/"the flip" narration in `coins_view_projection.{h,c}`
-      reworded present-tense AS-LIVE; the three deleted-tool ledgers in
-      `test_mcp_controllers.c` removed (the `EXPECTED_*` counts kept); the
-      Wave-D/"extracted verbatim" provenance lines dropped from
-      `boot_tip_hooks.c`, `boot_projections.c`, `tip_finalize_log_store.c`,
-      `msgprocessor_snapshot.c`; the bare `post-B7` prefix dropped from
-      `legacy_mirror_sync_service.c` and `chain_supervisor.c` (behavior
-      comments kept).
-- [x] **Kept by design** (adversarially verified — NOT dev-history cruft):
-      `docs/work/safe-unwedge-design.md` (design-of-record for shipped
-      `stage_reconcile_clamp_tip_finalize_to_floor`, cited by `fast-path.md`),
-      `service-state-machine.md`, `FINISH_CHECKLIST.md`. Never strip
-      `// obs-ok:` / `// platform-ok:` / `// suffix-ok:` / `// supervisor-root-ok:`
-      markers or incident-dated safety rationale.
-- [x] **Refresh stale refs (done):** `DEFENSIVE_CODING.md` "33 lint gates" → 34;
-      `docs/SYNC.md` `chain_evidence_store` → `chain_evidence_persistence_service`/
-      `_authority_service`/`_snapshot`; `LEGACY_LIFECYCLE.md` dropped deleted
-      `zcl_diff_with_legacy` + fixed the broken `MEMORY.md` link;
-      `docs/HANDOFF.md` reworded the false "docs/work holds only the protocol".
-- [ ] **Refresh remaining (need live measurement):** `docs/REFACTOR_STATUS.md`
-      Rank-1 boot sizes → current `wc -l`; `docs/PROJECT_OVERVIEW.md` stale
-      tracked-file / boot-LOC counts; `docs/USER_BENCHMARKS.md` /
-      `BENCHMARKS_LOG.md` latest pointers.
-- [ ] **Future label-scrub:** the same `B7`-era label class may linger
-      elsewhere; sweep on the next pass (not a sample-of-60 finding).
+The node **holds at tip but does not finalize forward.** `tip_finalize` shows
+`reorg_detected_total` climbing while `finalized_total=0` (it oscillates,
+never commits a new finalized frontier); the boot self-heal
+`tip_stall_oracle_rebuild` is **exhausted**. **No v1 criterion that needs live
+forward progress — C3 real cold-sync, C6 soak, C8 parity — can pass until the
+tip finalizes again.** This is the single most valuable thing to fix.
 
----
+**Method (never skip):** diagnose on a datadir **COPY**, never live. Run
+`tools/diagnose_gap.sh`, then follow [`fast-path.md`](./fast-path.md)
+(diagnose → design + adversarial critique → reset-safe test → repro-on-copy →
+commit). NEVER delete `tip_finalize_log` rows; NEVER ship a consensus-adjacent
+fix without a copy proof (see [`import-reset-and-write-ordering-assessment.md`](./import-reset-and-write-ordering-assessment.md)
+— the 47279 reset mistake).
 
-## Phase 1 — Architecture-conformance finish (unblocked)
+**Leading fix (autonomous — bucket A):** swap the window extender used by the
+8 reducer stages from the unsafe most-work extender to the bounded have-data
+one:
+- `app/jobs/include/jobs/stage_helpers.h` `reducer_extend_window_to_candidate`
+  → call `active_chain_extend_window_have_data`
+  (`lib/validation/src/chainstate.c:418-485`, already unit-tested, unwired),
+  bounded by `utxo_apply_stage_cursor() - 1`.
+- Add the regression assertion in `lib/test/src/test_active_chain_extend.c`
+  that the wrapper never overwrites a finalized slot with a header-only
+  successor. A prior naïve pre-extend wiring was reverted (`481c520b9`) for
+  churning `tip_finalize` — **this is HIGH risk; copy-prove before any deploy.**
 
-Each rename/move must also update the scaffold-label `files[]` guard + the
-layering ASSERT string refs in `lib/test/src/test_make_lint_gates.c`.
-
-- [~] **A1 — RECLASSIFIED: the wallet-diagnostic family stays in `controllers/`.**
-      The audit proposed moving `wallet_diagnostic_health.c` + `_keys.c` to
-      `app/views/`, but they are 2 of a cohesive 6-file family (ledger, repair,
-      controller, audit, health, keys) that all share the private
-      `wallet_diagnostic_internal.h` and register together — and the family
-      includes the *mutating* `wallet_diagnostic_repair.c`. They are RPC entry
-      points; every other RPC handler in the tree lives in `controllers/`.
-      Moving just the 2 read-only members would fragment a co-registered family,
-      force a cross-shape private-header include, and make those 2 inconsistent
-      with the codebase convention. Correct shape = Controller. No move.
-- [x] **A3 — DONE (`f4277da77`): split `utxo_apply_delta.c` 800→440.** Reorg
-      cluster → `utxo_apply_delta_reorg.c` (394); cut verified clean both ways.
-- [x] **A2 — DONE (`f6e972e7a`): split `sync_controller_catchup.c` 775→571.**
-      Job lifecycle → `sync_controller_catchup_jobs.c` (232); algorithm stays.
-- [ ] _(historical spec retained below for reference)_ **A3 reorg cluster**
-      → `utxo_apply_delta_reorg.c` (move the 6 reorg
-      fns **plus** `blob_get_u32`/`blob_get_i64`/`wall_now_s` + dup
-      `#define STAGE_NAME`, per the verifier's amended move-list).
-- [ ] **A2 — split `app/controllers/src/sync_controller_catchup.c` (775).**
-      Clean: 11 header-declared job fns + the 2 file-local thread statics +
-      `struct catchup_args` + `node_db_sync_catchup_thread` →
-      `sync_controller_catchup_jobs.c`. Has headroom; lower urgency than A3.
-- [ ] **Rejected this wave (re-scope as non-pure-extraction later):** splits
-      of `script_validate_stage`, `wallet_tx`, `chain_evidence_authority_service`,
-      `explorer_pages_view`, `chain_state_service`, `sync_controller_import` —
-      each drags shared statics across the boundary (verifier-confirmed).
+**Companion fix (owner-gated — bucket B):** the coins-commitment-persist
+keystone makes the boot self-heal auto-fire — design-of-record
+[`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md).
+Recovery FSM design: [`service-state-machine.md`](./service-state-machine.md).
 
 ---
 
-## Phase 2 — §3 coins-wedge keystone (OWNER-GATED, validate-on-copy only)
+## Honest MRS scoreboard (supersedes any stale ✅ in MVP.md)
 
-The real finish bar; it gates the boot decomposition. Green unit tests are
-NOT a finish proof — forward progress on the running node is. Plan +
-adversarial vetting: [`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md).
+**Actually met (manual only): ~2 / 8. CI-verified: 0 / 8.** No criterion's
+acceptance test runs under `make ci` — every one gates on `ZCL_STRESS_TESTS=1`,
+which `make ci` (`Makefile:1110`) and `.github/` never set; C1/C6/C8 have no CI
+test at all.
 
-- [ ] Persist height-stamped `utxo_sha3` at a cadence-gated boundary
-      immediately after `coins_view_sqlite_batch_write_ex()` returns true in
-      `flush_coins_if_needed()` (`lib/validation/src/process_block_flush_policy.c`).
-- [ ] Adversary fix 1: never SHA3-scan on the IBD hot path — gate on
-      caught-up-to-tip + Nth-flush + 1800s wall-clock.
-- [ ] Adversary fix 2: resolve-height + `rows_above==0` + SHA3 scan in one
-      read txn holding `cvs->mutex`.
-- [ ] Adversary fix 3: bind to block IDENTITY — store the 32-byte
-      `coins_best_block` hash (extend `utxo_sha3` to 76 bytes, back-compat on
-      len), re-point the anchor to the STORED hash. Test via the
-      `ZCL_TESTING` hook `process_block_test_persist_commitment_once`.
-
----
-
-## Phase 3 — Live tip climb (OWNER-GATED, validate-on-copy only)
-
-The node boots clean but holds at ~3.13M. A cluster, not one fix. Validate
-on `repro_on_copy` checking tip_finalize HEALTH (reorg_detected flat,
-finalized_total climbing) — not merely "tip didn't drop".
-
-- [ ] Wire `active_chain_extend_window_have_data` (`chainstate.c:418`,
-      unit-tested, UNWIRED) into the 8 reducer stages; pass utxo_apply's
-      cursor as `max_height`; tip_finalize reads the contiguous finalized
-      frontier. Reconcile anchored catch-up with legitimate higher-work
-      reorg exposure (two naive in-place attempts were reverted).
-- [ ] Root-cause the ~54 `script_validate` `internal_error`s above block
-      3132742; restore zclassicd / zcl23 peer reachability to clear
-      `peer_floor_violated`.
+| # | Criterion | Honest status | CI? | Note |
+|---|-----------|--------------|-----|------|
+| 1 | Single-binary install (clean Ubuntu) | met-manual | no | no clean-container install + `systemctl` CI job |
+| 2 | Tor onion bootstrap <60s | met-manual | no | onion live, but <60s timing not measured; test SKIPs in CI |
+| 3 | Cold-start sync to tip <10 min | partial | no | FSM-only test; real sync unproven; node wedged |
+| 4 | Receive shielded payment e2e | partial | no | gate exists but opt-in + needs `~/.zcash-params` |
+| 5 | List + sell file via store | partial | no | gate exists, opt-in, not in CI |
+| 6 | 7-day soak, zero intervention | **regressing** | no | no soak harness; node wedged — the opposite of soak |
+| 7 | Recover from kill -9 <2 min | met-manual | no | SQLite-atomicity slice; test SKIPs in CI |
+| 8 | Consensus parity w/ zclassicd | unmet | no | **no continuous diff service exists** — net-new build |
 
 ---
 
-## Phase 4 — Boot decomposition (gated on §3 clearing + datadir-copy proof)
+## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-The only remaining size debt; pure verbatim extraction is EXHAUSTED. Seam
-design: [`boot-decomposition-seams.md`](./boot-decomposition-seams.md).
+Ordering principle: **make the node hold tip → make v1 measurable in CI → prove
+features → soak.** Refactor debt does not block a working sovereign node and
+must not jump the queue.
 
-- [ ] **C1 step 1 — extract `config/src/boot_msg_callbacks.c`** (~25 P2P
-      callbacks, ~380 LOC) via one wiring seam `boot_wire_msg_callbacks(svc)`,
-      EXCLUDING the `g_mmb_leaf_store` cluster. Mechanical blockers: export
-      the 2 statics referenced by stayers, keep the 3 MMB registrations in
-      `boot_services.c`, repoint the boot string assertions in
-      `test_make_lint_gates.c`. Boot-validate on a datadir copy.
-- [ ] **Keystone — redesign the shared `static struct boot_svc_ctx *S`**
-      (`boot_services.c:153`) into a passed-in handle so worker/adapter
-      bodies read `svc->*`. Unblocks service-kernel-adapters,
-      background-workers, shutdown-phases.
+### A. AUTONOMOUS (do now — no live mutation, no owner gate)
+- [ ] **Fix the wedge** — wire the have-data window extender (see #1 above);
+      copy-prove that `reorg_detected_total` stops climbing and the finalized
+      tip advances monotonically past the held height. ~55 LOC, HIGH risk.
+- [ ] **Make criterion tests real CI gates** — add a CI step that runs the
+      stress tests with `ZCL_STRESS_TESTS=1` for #2/#3/#4/#5/#7 (Makefile
+      already has `test-shielded-payment` / `test-store-e2e` targets). Until
+      this lands, MVP.md must not call any criterion CI-enforced.
+- [ ] **Scope + build the consensus-parity-diff service (C8)** — net-new; none
+      exists in `app/` or `lib/` (only in-process `test_reorg_parity.c` /
+      `test_projection_replay_invariant.c`). A standing service that
+      block-by-block diffs `zcl_utxocommitment` against a reference and emits
+      `EV_OPERATOR_NEEDED` on mismatch. Develop/unit-test autonomously; running
+      it needs the oracle up (bucket C). Ports: zcl23 RPC 18232, zclassicd RPC
+      8232 / P2P 127.0.0.1:8034.
+- [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
+      `make lint && make test_parallel`.
+
+### B. OWNER-GATED (consensus-critical; explicit owner go + repro-on-copy)
+- [ ] **Coins-commitment-persist keystone** — write the 76-byte anchored
+      `utxo_sha3` record inside `coins_view_sqlite_batch_write_ex`'s txn
+      (`lib/storage/src/coins_view_sqlite.c`), table-derived height/count,
+      + `_save_anchored`/`_load_anchor` in `lib/coins/src/utxo_commitment.{c,h}`,
+      + re-validating heal in `coins_reconcile_stale_anchor`. Design-of-record
+      [`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md)
+      (adversary-vetted; original verdict DO_NOT_APPLY → corrected design at
+      top). **Do NOT apply live without owner go.**
+- [ ] Persist `utxo_sha3` at finalized-tip so the self-heal has a fresh input.
+- [ ] Deploy the wedge fix (A) live only after a clean copy proof.
+- [ ] After the wedge clears, apply the deferred consensus hazards in
+      [`concurrency-hazards-consensus-gated.md`](./concurrency-hazards-consensus-gated.md)
+      (item 1 = a real bg_validation lock-free `chain_active` UAF, same class
+      as the fixed phashBlock bug).
+- [ ] MVP feature e2e proofs once the tip holds: C4 (receive shielded) + C5
+      (store sell) on a funded test wallet.
+
+### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
+- [ ] **Stand up a second `zcl23` serving node** — C3 cold-sync (FlyClient +
+      SHA3 snapshot) is unprovable end-to-end with 0 `zcl23` peers serving the
+      snapshot protocol. No code fixes this; a second node must exist.
+- [ ] **Restore peer health above the floor of 3** (deliberate policy — do not
+      lower it) — supply working `-addnode=` peers with group diversity.
+- [ ] **Fix the crash-looping `zclassicd-rhett` oracle** (RPC 8232 unreachable
+      → C8 parity has no reference). Investigate its logs; per doctrine do NOT
+      stop `zclassicd`.
+- [ ] **Run the 7-day soak (C6)** once the tip finalizes: live node + synthetic
+      load, RSS plateau, zero manual restarts — measure against
+      [`../USER_BENCHMARKS.md`](../USER_BENCHMARKS.md) /
+      [`../BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md).
+- [ ] **Full-binary kill-9 (C7)** — extend `make chaos`
+      ([`../CHAOS_HARNESS.md`](../CHAOS_HARNESS.md)) from the SQLite-atomicity
+      slice to restart-to-peer-tip. Operator coverage: [`../RUNBOOK.md`](../RUNBOOK.md).
+
+**Gating summary:** A.wedge gates C6/C8 and the feature proofs. A.CI-wiring
+gates honest measurement of everything. C8 needs the parity service built (A) +
+the oracle up (C). C3 needs a second node (C). Boot refactor gates nothing v1.
 
 ---
 
-## Phase 5 — Window-authority cleanup + closeout (P3, after Phase 3)
+## Off the v1 path (reference — do NOT start until v1 buckets clear)
 
-- [ ] Escalate `chain_evidence_controller_reconcile_startup` INFO →
-      `LOG_ERR`/`EV_OPERATOR_NEEDED` once boot tip seeds from the finalized cursor.
-- [ ] Collapse to ONE window authority: confirm the anchored extender's
-      bounded scan (`MAX_GAP=8192`) still exposes legitimate higher-work
-      reorgs on a 3M-entry map, THEN delete the generic
-      `active_chain_extend_window` + `best_header` path.
+Architecture axis (~90% done): [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
+[`../FRAMEWORK.md`](../FRAMEWORK.md). The only remaining size debt is the three
+`config/` boot files (`boot.c` 3618, `boot_services.c` 3517, `boot_index.c`
+1539), frozen shrink-only by the size gate; seam plan in
+[`boot-decomposition-seams.md`](./boot-decomposition-seams.md). Engineering
+quality detail: [`FINISH_CHECKLIST.md`](./FINISH_CHECKLIST.md). Safe-execution
+method for any consensus-critical change: [`fast-path.md`](./fast-path.md).

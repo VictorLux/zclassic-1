@@ -6,12 +6,14 @@ ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic nod
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
-## Current focus — **Framework refactor**
+## Current focus — **Ship v1 (MVP 8/8)**
 
-**Canonical architecture:** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) — read this BEFORE writing or moving any code.
-**Status board:** [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) — current phase, conformance metrics, in-flight worktrees.
+**The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8. Honest status today: ~2/8 met by hand, **0/8 CI-enforced**.
+**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, with the live wedge as priority #1 and the autonomous / owner-gated / operational critical path.
 
-The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagonal ports/adapters + a new **Condition** shape for auto-healing. Every `.c` file under `app/` lives in exactly one of eight folders matching one of eight shapes (Controller, Service, Model, Job, Supervisor, Condition, Event, Storage Adapter). Lint gates ratchet to enforce. The reducer/staged pipeline is now the authoritative chain-advance architecture; the remaining work is deleting stale cutover/shadow residue, moving mixed-purpose files into their proper shapes, and shrinking all baselines to zero.
+**#1 priority — the live wedge:** the node holds at tip without finalizing forward (`tip_finalize` oscillating, boot self-heal exhausted). No v1 criterion that needs live forward progress (cold-sync, 7-day soak, consensus parity) can pass until it clears. Diagnose on a datadir COPY, never live — see [`docs/work/fast-path.md`](./docs/work/fast-path.md).
+
+**The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes); [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) is the architecture debt board. Both are reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 
 **Parallel-worktree workflow:** main repo is the orchestrator; `~/github/zclassic23-2` (wt2) and `~/github/zclassic23-3` (wt3) are workers. See [`docs/work/README.md`](./docs/work/README.md) and [`docs/work/agent-protocol.md`](./docs/work/agent-protocol.md). Worker identity = pwd suffix.
 
@@ -19,7 +21,7 @@ The refactor adopts Rails-style MVC + Phoenix-style supervised actors + hexagona
 
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
-2. `cat docs/HANDOFF.md` FIRST (the current entry point), then `docs/FRAMEWORK.md` and `docs/REFACTOR_STATUS.md`.
+2. `cat docs/HANDOFF.md` FIRST (the current entry point), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan). `docs/FRAMEWORK.md` + `docs/REFACTOR_STATUS.md` are architecture reference, off the v1 path.
 3. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`.
 4. If orchestrator → review in-flight work in status board, merge pushed branches, dispatch next assignments.
 
