@@ -55,3 +55,20 @@ replay worker (`:2090-2111`) — a self-contained mmb-leaf-store cluster.
 - Boot-validate on a copy: `tools/repro_on_copy.sh <tag> --port=18299
   --p2p-port=18933 --deadline=480 -- -nobgvalidation` (deadline ≥480 to clear
   the ~328s `mmb_register` boot cost). Confirm tip restores, no crash.
+  NOTE: while the live datadir is in the §3 coins-wedge (`utxos max_height >
+  tip_height`), a fresh boot FATAL-halts at the coins-integrity gate before
+  P2P starts — so no boot seam (or the UAF header-sync path) can be
+  boot-validated on that datadir until the wedge is resolved (owner-gated).
+
+## Related deferred item — boot_projections.c descriptor table (hardening audit, 2026-06-03)
+
+`config/src/boot_projections.c` repeats a 7× block (set_event_log → open →
+NULL-check → catch_up → `UINT64_MAX` branch → fprintf) for mempool, peers,
+znam, wallet, contacts, onion_ann, hodl_history. A real dedup is a typed
+`{name, open_fn, set_event_log_fn, catch_up_fn}` projection-descriptor table —
+a NEW surface, not an inline helper (each block calls differently-named
+per-type functions with no shared vtable, plus call-site-specific
+`obs-ok:phase4-storage` diagnostics). Because the file was just extracted
+verbatim (Wave D), this behavior-sensitive refactor must be its own
+boot-validated pass on a datadir copy, not churn on the fresh extraction.
+Prove-first defer until the boot path is boot-validatable again.
