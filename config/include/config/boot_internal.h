@@ -136,6 +136,14 @@ void boot_stop_db_service_kernel(void);
  * since it passes NULLs and references no moved symbol. */
 void boot_register_process_block_hooks(struct boot_svc_ctx *svc);
 
+/* Open / close the reducer projection storage — the event_log + per-domain
+ * projections — defined in boot_projections.c. boot_start takes the legacy
+ * anchor-seed node_db by parameter (the boot_services.c-local boot_node_db())
+ * so the projections TU shares no boot state. Called once from
+ * app_init_services / app_shutdown_svc. */
+void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb);
+void boot_stop_projection_storage(void);
+
 /* Idempotent open of the append-only event_log + utxo_projection (the read
  * authority for the UTXO projection path). Called early from app_init so
  * the coins_tip read view can bind to utxo_projection_get_global() before
