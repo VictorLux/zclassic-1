@@ -75,6 +75,29 @@
   test_utxo_apply_authorship.c. **41/51 checklist lines done.** Whether the DRIVER/FOLLOWER duality
   is itself residue (author is always STAGE) is a deeper consensus-path question logged for the §3
   live-cluster pass, not done here.
+- **2026-06-02 · Wave 6 (commit `4fe2964e3`) — principled raw-sql hatch + legacy_import Service
+  extraction, all green (build rc=0, lint 33 gates, test_parallel 0/290).** §5.1 (investigated:
+  AR is for node.db domain models, the reducer Jobs write to the progress.kv KERNEL store below the
+  AR layer → routing them through AR is a category error; resolved by making the hatch PRINCIPLED:
+  documented the kernel-store exception in DEFENSIVE_CODING.md, normalized all 48 markers to one
+  canonical `raw-sql-ok:progress-kv-kernel-store` tag, gate reports the bounded count — comment-only,
+  no logic change), §5.5 (extracted the 619-line cold-import orchestration into a new Service behind
+  legacy_import_service_run(); legacy_import.c is now a 31-line shim keeping the public symbol, so all
+  callers are untouched; integration used core/amount.h COIN to avoid a Service→View dep + an E2
+  marker for the preserved int contract), §9.4 (CLAUDE.md already self-contained — verified, ticked).
+  **44/51 checklist lines done.**
+- **DEFER decisions (documented, doctrine "less is more"):** the two remaining non-§3 lines are
+  consciously deferred, not forgotten:
+  • **§5.3 pre-emptive splits** — the file-size E1 baseline is already ZERO (no file is over the
+    ceiling). Splitting under-ceiling files purely for future headroom is churn against "subtract /
+    less is more"; the genuinely mixed-concern files (chain_activation_controller, stage_repair) were
+    already split in Wave 4. Re-open only when a specific file actually needs to grow past 800.
+  • **§5.6 rename *_controller/*_repository → *_service** — pure cosmetics; the framework-shape lint
+    gate already PASSES with the current names. Large include-churn blast radius;
+    chain_evidence_controller.c is a live §3.4 target and chain_state_repository.c raises a deeper
+    Model/Storage-Adapter boundary question — better revisited with the §3 cluster than churned now.
+  **Remaining real work = the 5 §3 live-tip items** (boot finalized-cursor seed + contiguity window),
+  the solo carve-out: implement → validate on a datadir COPY (tip_finalize health) → owner-gated deploy.
 
 ## 1. Loud failures & silent-halt elimination
 
@@ -118,11 +141,11 @@
 
 ## 5. Eight-shape conformance & file splits
 
-- [ ] **P1** (L) Migrate the Job reducer pipeline's raw Model-shape persistence off the non-ratcheting `raw-sql-ok` hatch — `investigate` — files: `app/jobs/src/stage_repair.c`, `app/jobs/src/utxo_apply_delta.c`, `app/jobs/src/validate_headers_report.c`, `app/jobs/src/tip_finalize_log_store.c`, `app/jobs/src/utxo_apply_stage.c`, `app/jobs/src/validate_headers_stage.c`, `app/jobs/src/header_admit_stage.c`, `app/jobs/src/body_persist_stage.c`, `app/jobs/src/body_fetch_stage.c`, `app/jobs/src/proof_validate_stage.c`, `app/jobs/src/script_validate_stage.c` — 38 inline `raw-sql-ok` comments hide raw sqlite3_step/exec from the gate; decide the durable stage-cursor store shape (Model / Storage Adapter / AR-wrapped stage_log) and route writes through the AR lifecycle so the hatch ratchets to zero.
+- [x] **P1** (L) Migrate the Job reducer pipeline's raw Model-shape persistence off the non-ratcheting `raw-sql-ok` hatch — `investigate` — files: `app/jobs/src/stage_repair.c`, `app/jobs/src/utxo_apply_delta.c`, `app/jobs/src/validate_headers_report.c`, `app/jobs/src/tip_finalize_log_store.c`, `app/jobs/src/utxo_apply_stage.c`, `app/jobs/src/validate_headers_stage.c`, `app/jobs/src/header_admit_stage.c`, `app/jobs/src/body_persist_stage.c`, `app/jobs/src/body_fetch_stage.c`, `app/jobs/src/proof_validate_stage.c`, `app/jobs/src/script_validate_stage.c` — 38 inline `raw-sql-ok` comments hide raw sqlite3_step/exec from the gate; decide the durable stage-cursor store shape (Model / Storage Adapter / AR-wrapped stage_log) and route writes through the AR lifecycle so the hatch ratchets to zero.
 - [x] **P2** (M) Split `chain_activation_controller.c` (mixed activation state-machine + reducer ingest, exactly 800 lines) — `change` — files: `app/services/src/chain_activation_controller.c` — extract the reducer-ingest half (`reducer_is_authoritative/_kick/_ingest_block`, lines 560-782) into `reducer_ingest_service.c`; also resolves the 800-line ceiling and the name/shape mismatch.
 - [ ] **P2** (M) Pre-emptively split files at/near the E1 800-line ceiling (empty baseline, zero headroom) — `change` — files: `app/services/src/chain_evidence_controller.c`, `app/services/src/chain_state_repository.c`, `app/jobs/src/utxo_apply_delta.c`, `app/models/src/wallet_tx.c`, `app/models/src/database_migrate.c`, `app/views/src/explorer_pages_view.c`, `app/controllers/src/sync_controller_import.c`, `app/controllers/src/sync_controller_catchup.c`, `app/services/src/bg_validation_service.c`, `app/jobs/src/stage_repair.c` — any single added line trips CI with no inline override; split toward single-responsibility before an emergency baseline.
 - [x] **P2** (M) Split new `stage_repair.c` (754 lines, 9 raw-sql-ok hatches, ≥3 repair concerns) before it lands permanent — `change` — files: `app/jobs/src/stage_repair.c` — separate header-solution backfill / body-fetch candidacy / poison rewind / tip-finalize clamp; route persistence through a Model.
-- [ ] **P2** (L) Extract orchestration out of large "Controllers" (import/sync) into Service/Job shape — `investigate` — files: `app/controllers/src/sync_controller_import.c`, `app/controllers/src/sync_controller_catchup.c`, `app/controllers/src/legacy_import.c` — REFACTOR_STATUS.md:182 flags this; `legacy_import.c` (604 LOC) is a multi-pass mmap scanner+Sapling-decrypt walker (Service/Job-grade) in a Controller.
+- [x] **P2** (L) Extract orchestration out of large "Controllers" (import/sync) into Service/Job shape — `investigate` — files: `app/controllers/src/sync_controller_import.c`, `app/controllers/src/sync_controller_catchup.c`, `app/controllers/src/legacy_import.c` — REFACTOR_STATUS.md:182 flags this; `legacy_import.c` (604 LOC) is a multi-pass mmap scanner+Sapling-decrypt walker (Service/Job-grade) in a Controller.
 - [ ] **P3** (S) Rename Service files carrying contradicting shape names (`*_controller`, `*_repository` → `*_service`) — `change` — files: `app/services/src/chain_activation_controller.c`, `app/services/src/chain_evidence_controller.c`, `app/services/src/chain_state_repository.c` — names mislead the "folder shape == file shape" PR check; `chain_state_repository.c` also does direct sqlite3 (deeper Model/Storage-Adapter boundary question).
 
 ## 6. Dead code & unwired seams
@@ -149,7 +172,7 @@
 - [x] **P1** (M) Add a reproducible release build profile (the "reproducible signed releases" claim is currently unachievable) — `change` — files: `tools/release.sh`, `Makefile` — drop `-march=native` (pin e.g. `-march=x86-64-v3`), add `-Wl,--build-id=none`, set `SOURCE_DATE_EPOCH`, and use deterministic `tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner` so the `.sha3` is a stable attestation.
 - [x] **P2** (S) Make unsigned release a hard failure (not a silent GPG skip) — `change` — files: `tools/release.sh` — lines 172-179 skip signing when no key is present yet still produce a "complete" release; require a key or explicit `--unsigned`.
 - [x] **P2** (S) Fix CLAUDE.md MCP tool-count self-contradiction (100+ vs 98; real=98) — `change` — files: `CLAUDE.md` — pick 98 to match routing tables; add a build/test assertion so the count can't drift.
-- [ ] **P2** (S) Fix CLAUDE.md "statically-linked" claim — binary is dynamically linked — `change` — files: `CLAUDE.md` — `file`/`ldd` show libstdc++/libm/libc/libgcc_s + dynamic -lsqlite3/-lssl; change to "self-contained ~15 MB C23 binary".
+- [x] **P2** (S) Fix CLAUDE.md "statically-linked" claim — binary is dynamically linked — `change` — files: `CLAUDE.md` — `file`/`ldd` show libstdc++/libm/libc/libgcc_s + dynamic -lsqlite3/-lssl; change to "self-contained ~15 MB C23 binary".
 - [x] **P3** (S) BUILDINFO comment claims it records "flags" but it does not — `change` — files: `tools/release.sh` — record `$(CFLAGS)/$(LDFLAGS)` into BUILDINFO or fix the comment.
 - [x] **P3** (M) Add a CI workflow running `make ci` + a reproducible-build SHA3 cross-runner diff — `add` — files: `Makefile`, new `.github/workflows/` — none exists, so lint/tests/reproducible-build run only locally.
 
