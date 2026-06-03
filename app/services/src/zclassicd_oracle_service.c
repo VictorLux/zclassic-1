@@ -468,10 +468,11 @@ bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key)
     snprintf(host, sizeof(host), "%s", g_oracle.rpc_host);
     bool have_user = g_oracle.rpc_user[0] != '\0';
     bool have_pass = g_oracle.rpc_password[0] != '\0';
+    bool initialized = g_oracle.initialized;
     pthread_mutex_unlock(&g_oracle.lock);
 
     json_push_kv_bool(out, "running",         running);
-    json_push_kv_bool(out, "initialized",     g_oracle.initialized);
+    json_push_kv_bool(out, "initialized",     initialized);
     json_push_kv_str (out, "rpc_host",        host);
     json_push_kv_int (out, "rpc_port",        port);
     json_push_kv_bool(out, "have_user",       have_user);

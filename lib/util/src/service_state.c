@@ -84,6 +84,11 @@ bool service_state_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
     json_push_kv_str(out, "state", service_state_name(cur));
     json_push_kv_int(out, "state_id", (int)cur);
-    json_push_kv_str(out, "reason", service_state_reason());
+    /* Snapshot the reason under g_reason_lock via the safe accessor instead
+     * of the lock-free service_state_reason(), which can race the writer in
+     * service_state_advance. */
+    char reason_snap[128];
+    service_state_reason_copy(reason_snap, sizeof(reason_snap));
+    json_push_kv_str(out, "reason", reason_snap);
     return true;
 }

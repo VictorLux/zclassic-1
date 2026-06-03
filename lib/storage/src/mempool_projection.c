@@ -26,12 +26,16 @@
 struct mempool_projection {
     sqlite3 *db;
     event_log_t *log;
-    uint64_t last_consumed_offset;
-    uint64_t events_consumed_total;
-    uint64_t tx_admit_total;
-    uint64_t tx_remove_total;
-    uint64_t replace_collisions_total;
-    uint64_t last_catch_up_ms;
+    /* Counters mutated by the catch-up thread and read lock-free by
+     * mempool_projection_dump_state_json on other threads. _Atomic so the
+     * diagnostic reads are race-free (single writer; plain ++/=/read on an
+     * _Atomic compile to atomic RMW/store/load). */
+    _Atomic uint64_t last_consumed_offset;
+    _Atomic uint64_t events_consumed_total;
+    _Atomic uint64_t tx_admit_total;
+    _Atomic uint64_t tx_remove_total;
+    _Atomic uint64_t replace_collisions_total;
+    _Atomic uint64_t last_catch_up_ms;
     char path[1024];
 };
 

@@ -357,8 +357,16 @@ bool progress_store_dump_state_json(struct json_value *out, const char *key)
 
     sqlite3 *db = progress_store_db();
     json_push_kv_bool(out, "open", db != NULL);
-    json_push_kv_str (out, "path", g_path);
-    json_push_kv_int (out, "opened_at", g_opened_at);
+    /* g_path/g_opened_at are written under g_lock in progress_store_open;
+     * snapshot both under the same lock so the dump never reads a torn or
+     * mid-update value. (g_lock is not held on this diagnostic path.) */
+    pthread_mutex_lock(&g_lock);
+    char path_snap[PROGRESS_STORE_PATH_MAX];
+    snprintf(path_snap, sizeof(path_snap), "%s", g_path);
+    int64_t opened_at_snap = g_opened_at;
+    pthread_mutex_unlock(&g_lock);
+    json_push_kv_str (out, "path", path_snap);
+    json_push_kv_int (out, "opened_at", opened_at_snap);
 
     if (db) {
         progress_store_tx_lock();

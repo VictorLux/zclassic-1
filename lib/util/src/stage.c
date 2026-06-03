@@ -40,10 +40,11 @@ struct stage {
     void          *user;
 
     /* Last persisted cursor value (mirrored in stage_cursor table).
-     * Read under the per-stage mutex; updated only on successful
-     * commit. */
+     * Updated only on successful commit (under `lock`); read lock-free via
+     * stage_cursor() from each Job's dump_state_json on other threads, so it
+     * is _Atomic to make those concurrent reads race-free. */
     pthread_mutex_t lock;
-    uint64_t        cursor;
+    _Atomic uint64_t cursor;
 
     _Atomic uint64_t advanced_count;
     _Atomic uint64_t blocked_count;
