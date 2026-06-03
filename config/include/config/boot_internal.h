@@ -53,6 +53,12 @@ bool reindex_chainstate(struct main_state *ms,
                           struct coins_view_cache *cvtip,
                           struct node_db *ndb,
                           const char *datadir);
+
+/* Clear the persisted coins state (utxos + coins_best_block + commitments) so
+ * the UTXO set can be rebuilt from block data. Used by reindex_chainstate and
+ * by the pre-integrity-gate path in app_init (a torn anchor would otherwise
+ * FATAL boot before -reindex-chainstate can run). Idempotent. */
+bool boot_index_clear_coins_state(struct node_db *ndb);
 void *backfill_addresses_thread(void *arg);
 
 /* Scan block files (blk*.dat), parse ZClassic block headers,

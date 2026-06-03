@@ -159,6 +159,27 @@ static bool boot_index_flush_reindex_coins(struct coins_view_sqlite *cvs,
     return true;
 }
 
+/* Clear the persisted coins state (UTXO set + anchor + commitments) so the set
+ * can be rebuilt from block data. Shared by reindex_chainstate and the
+ * pre-integrity-gate path in app_init: a torn coins anchor would otherwise
+ * FATAL the boot integrity gate before the operator's -reindex-chainstate
+ * rebuild can run. Idempotent; node_db_exec logs each failing statement. */
+bool boot_index_clear_coins_state(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        return false;
+    bool ok = node_db_exec(ndb, "DELETE FROM utxos");
+    /* coins_best_block (the anchor the gate checks), utxo_commitment (the XOR
+     * checkpoint) and utxo_sha3 (the self-heal commitment) are ALL stale once
+     * the set is rebuilt — clear them together so nothing stale survives to
+     * mis-seed the rebuild or the boot self-heal. */
+    if (!node_db_exec(ndb,
+            "DELETE FROM node_state WHERE key IN "
+            "('coins_best_block','utxo_commitment','utxo_sha3')"))
+        ok = false;
+    return ok;
+}
+
 bool reindex_chainstate(struct main_state *ms,
                           struct coins_view_sqlite *cvs,
                           struct coins_view_cache *cvtip,
@@ -183,14 +204,8 @@ bool reindex_chainstate(struct main_state *ms,
     coins_view_cache_free(cvtip);
 
     if (ndb->open) {
-        sqlite3_exec(ndb->db, "DELETE FROM utxos", NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
-            "DELETE FROM node_state WHERE key='coins_best_block'",
-            NULL, NULL, NULL);
-        sqlite3_exec(ndb->db,
-            "DELETE FROM node_state WHERE key='utxo_commitment'",
-            NULL, NULL, NULL);
-        printf("reindex-chainstate: wiped SQLite UTXO set\n");
+        if (boot_index_clear_coins_state(ndb))
+            printf("reindex-chainstate: wiped SQLite UTXO set\n");
     }
 
     coins_view_cache_init(cvtip, &cvs->view);

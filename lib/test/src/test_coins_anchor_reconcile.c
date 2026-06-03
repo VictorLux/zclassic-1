@@ -26,6 +26,8 @@
 #include "test/test_helpers.h"
 #include "storage/coins_view_sqlite.h"
 #include "coins/utxo_commitment.h"
+#include "models/database.h"
+#include "config/boot_internal.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -285,6 +287,61 @@ static int test_coins_anchor_reconcile_refuses_commitment_below_frontier(void)
     return failures;
 }
 
+/* CASE 5 — the -reindex-chainstate pre-gate wipe (subsection B): clearing the
+ * coins state lets the boot integrity gate pass so the rebuild can run. Drives
+ * the shared helper boot_index_clear_coins_state() directly over a real
+ * node_db, asserting the utxos table and all three coins-state keys are gone. */
+static int car_state_key_count(struct node_db *ndb)
+{
+    sqlite3_stmt *s = NULL; int n = -1;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*) FROM node_state WHERE key IN "
+            "('coins_best_block','utxo_commitment','utxo_sha3')",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW) n = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+    }
+    return n;
+}
+
+static int test_reindex_clear_coins_state(void)
+{
+    int failures = 0;
+    char dir[256]; car_path(dir, sizeof(dir), "wipe"); car_mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("car: boot_index_clear_coins_state wipes utxos + anchor + commitments") {
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, dbpath));
+        ASSERT(node_db_exec(&ndb,
+            "INSERT INTO utxos(txid,vout,value,script,script_type,"
+            "address_hash,height,is_coinbase) "
+            "VALUES(x'1111',0,1000,x'00',0,NULL,500,0)"));
+        ASSERT(node_db_exec(&ndb, "INSERT OR REPLACE INTO node_state(key,value)"
+            " VALUES('coins_best_block',x'abcd')"));
+        ASSERT(node_db_exec(&ndb, "INSERT OR REPLACE INTO node_state(key,value)"
+            " VALUES('utxo_sha3',x'01')"));
+        ASSERT(node_db_exec(&ndb, "INSERT OR REPLACE INTO node_state(key,value)"
+            " VALUES('utxo_commitment',x'02')"));
+        ASSERT(car_state_key_count(&ndb) == 3);
+
+        ASSERT(boot_index_clear_coins_state(&ndb));
+
+        sqlite3_stmt *s = NULL; int rows = -1;
+        ASSERT(sqlite3_prepare_v2(ndb.db, "SELECT COUNT(*) FROM utxos",
+                                  -1, &s, NULL) == SQLITE_OK);
+        if (sqlite3_step(s) == SQLITE_ROW) rows = sqlite3_column_int(s, 0);
+        sqlite3_finalize(s);
+        ASSERT(rows == 0);                       /* UTXO set cleared */
+        ASSERT(car_state_key_count(&ndb) == 0);  /* anchor + commitments gone */
+
+        node_db_close(&ndb);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_coins_anchor_reconcile_all(void)
 {
     int failures = 0;
@@ -292,5 +349,6 @@ int test_coins_anchor_reconcile_all(void)
     failures += test_coins_anchor_reconcile_refuses_without_commitment();
     failures += test_coins_anchor_reconcile_refuses_torn_set();
     failures += test_coins_anchor_reconcile_refuses_commitment_below_frontier();
+    failures += test_reindex_clear_coins_state();
     return failures;
 }

@@ -1703,6 +1703,17 @@ bool app_init(struct app_context *ctx)
      * which commits node_db's batch before the coins flush runs
      * its own BEGIN/COMMIT. One connection = no WAL lock contention. */
     if (g_node_db.open) {
+        /* -reindex-chainstate explicitly rebuilds the UTXO set from on-disk
+         * block data, discarding the stored coins state. Clear that state
+         * BEFORE the coins-integrity gate runs — otherwise a torn coins anchor
+         * (the §3 wedge) FATAL-halts boot before reindex_chainstate (which
+         * performs the same wipe idempotently, ~line 2539) can run the rebuild
+         * the operator asked for. Guarded strictly on the explicit request: a
+         * normal boot never wipes a recoverable coins set here. */
+        if (ctx->reindex_chainstate && boot_index_clear_coins_state(&g_node_db))
+            fprintf(stderr,
+                "[boot] -reindex-chainstate: cleared coins state before the "
+                "integrity gate; UTXO set will be rebuilt from block data\n");
         (void)utxo_recovery_repair_stale_cursor_from_sync_projection(
             &g_node_db);
         if (!coins_view_sqlite_open(&g_coins_sqlite, g_node_db.db)) {
