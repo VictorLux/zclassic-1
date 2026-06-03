@@ -7,6 +7,10 @@
  *
  * after_save -> emit EV_MODEL_SAVED */
 
+// suffix-ok:entity-FileService — the entity is a "file service" offer (a
+// Model row), not the Service shape; the _service here names the thing,
+// not the folder. See tools/lint/check_framework_filename_suffix.sh.
+
 #include "platform/time_compat.h"
 #include "models/file_service.h"
 #include "event/event.h"

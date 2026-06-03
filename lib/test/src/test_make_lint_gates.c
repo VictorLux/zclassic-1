@@ -757,6 +757,9 @@ static int run_gate_script(const char *script_rel, const char *mode)
 #define E6_FIXTURE_DST   "app/services/src/_e6_write_path_fixture_tmp.c"
 #define E7_SCRIPT_REL    "tools/scripts/check_no_authoritative_ram_state.sh"
 #define E7_FIXTURE_DST   "app/services/src/_e7_ram_state_fixture_tmp.c"
+#define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
+/* A foreign-shape suffix (*_controller) planted under app/services/src. */
+#define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -853,6 +856,30 @@ static int t_e10_no_raw_sqlite_ratchet(void)
     unlink_rel(E10_SQL_FIXTURE_DST);
     int recover_rc = run_gate_script(E10_SQL_SCRIPT_REL, "RATCHET");
     TEST("[lint-gate] E10 no-raw-sqlite RATCHET: clean, trips new file, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate #22 — framework filename suffix (HARD): a file in a shape folder
+ * whose name carries a FOREIGN shape suffix (here a *_controller.c planted
+ * under app/services/src/) trips the gate; removing it restores green. */
+static int t_gate22_framework_filename_suffix(void)
+{
+    int failures = 0;
+    unlink_rel(FSUF_FIXTURE_DST);
+    int baseline_rc = run_gate_script(FSUF_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), FSUF_FIXTURE_DST) == 0 &&
+                   write_file(path, "int fsuf_fixture;\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(FSUF_SCRIPT_REL, NULL) : -1;
+    unlink_rel(FSUF_FIXTURE_DST);
+    int recover_rc = run_gate_script(FSUF_SCRIPT_REL, NULL);
+    TEST("[lint-gate] #22 framework-filename-suffix: clean, trips foreign suffix, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
         ASSERT(trip_rc != 0);
@@ -2656,6 +2683,7 @@ int test_make_lint_gates(void)
     failures += t_e9_operator_needed_sink();
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
+    failures += t_gate22_framework_filename_suffix();
     failures += t_e11_doc_accuracy();
     failures += t_e2_one_result_type();
     failures += t_e3_shape_includes_header();

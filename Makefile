@@ -89,7 +89,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-silent-errors-services check-silent-errors-controllers \
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
-        check-file-size-ceiling check-operator-needed-sink check-doc-accuracy \
+        check-file-size-ceiling check-framework-filename-suffix \
+        check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
         soak-smoke soak-7day chaos chaos-clean
 
@@ -992,6 +993,13 @@ check-framework-shape:
 	@echo "→ Gate #18: framework_shape_check"
 	@ZCL_LINT_MODE=RATCHET ./tools/lint/framework_shape_check.sh
 
+# Gate #22 — framework filename suffix (HARD). The recurrence guard for the
+# S1 service renames: no app/ file may carry a foreign shape's name suffix
+# (e.g. *_controller.c in services/). Override: // suffix-ok:<tag>.
+check-framework-filename-suffix:
+	@echo "→ Gate #22: framework_filename_suffix"
+	@./tools/lint/check_framework_filename_suffix.sh
+
 check-no-raw-clock-outside-platform:
 	@echo "→ Gate #19: no_raw_clock_outside_platform"
 	@./tools/lint/check_no_raw_clock_outside_platform.sh
@@ -1096,7 +1104,7 @@ check-no-silent-ready:
 	@echo "══ LINT: no-silent-ready (E8) ══"
 	@./tools/scripts/check_no_silent_ready.sh
 
-lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready
+lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-before-save-hooks check-pthread-create check-model-validation check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-supervisor-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-doc-accuracy check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready
 	@echo "══ LINT: all checks passed ══"
 
 ci: lint bench-regress zclassic23 test_zcl

@@ -365,13 +365,14 @@ lint: check-malloc check-silent-errors check-raw-sqlite \
       check-framework-shape check-no-raw-clock-outside-platform \
       check-no-raw-sqlite-in-controllers check-supervisor-domain \
       check-file-size-ceiling check-operator-needed-sink \
+      check-framework-filename-suffix \
       check-doc-accuracy
 	@echo "All lint checks passed"
 
 ci: lint test fuzz-ci coverage
 ```
 
-**Status: 33 gates active.** Gates #18 and #20 graduated from WARN to
+**Status: 34 gates active.** Gates #18 and #20 graduated from WARN to
 RATCHET (E10, 2026-05-26) — they fail `make ci` on any *new* off-shape
 file / raw-sqlite controller while tolerating the recorded baseline.
 Gate #19 and #21 are FAIL. The ten E-series gates (E1–E9 and E11:
@@ -459,6 +460,22 @@ Phase 1 after the platform clock/RNG migration landed.
     (`chain`, `net`, `mempool`, `wallet`, `feature`, `onion`, `op`) and
     register through that domain. For a deliberate root child, add
     `// supervisor-root-ok:<tag>` on the registration line.
+
+- **Gate #22: `check_framework_filename_suffix`**
+  - Path: `tools/lint/check_framework_filename_suffix.sh`
+  - Checks: no `.c` under a shape folder may end in a DIFFERENT shape's
+    suffix — the eight suffixes are `controller`, `service`, `model`,
+    `view`, `job`, `supervisor`, `condition`, `event`. A file may keep
+    its own folder's suffix (`services/foo_service.c`) or a bare entity
+    name (`models/block.c`, `jobs/validate_headers_stage.c`); only a
+    foreign suffix (e.g. `*_controller.c` in `services/`) is rejected.
+    This is the recurrence guard for the S1 service renames. `_store` /
+    `_repository` name no shape and are not flagged.
+  - Current mode: FAIL (HARD) — added with the S1 conformance close-out.
+  - Fix: rename to the folder's own suffix or a bare entity name, or move
+    the file to the folder its suffix names. If the entity name
+    legitimately ends in a shape word (e.g. `models/file_service.c`, a
+    "file service" Model row), add a top-of-file `// suffix-ok:<tag>`.
 
 ### Gate #11: every model is either validated or explicitly skipped
 
@@ -717,6 +734,7 @@ edit it whenever you add/remove a gate.
 - `check-coins-lookup-nullcheck`
 - `check-doc-accuracy`
 - `check-file-size-ceiling`
+- `check-framework-filename-suffix`
 - `check-framework-shape`
 - `check-lag-slo-observable`
 - `check-lib-layering`
