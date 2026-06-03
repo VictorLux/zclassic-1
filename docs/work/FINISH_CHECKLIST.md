@@ -138,6 +138,25 @@
   repro-on-copy watching `reorg_detected` stay flat while the tip holds at 3132741. Separately file the
   mmb-register 328s boot-perf regression. §3.1's seed stays as a correct guard for the genuine
   dropped-frontier (coins < frontier) case.
+- **2026-06-03 · Architecture axis: Wave A collapse + Rank 2 prove-first (commits `41174e498`,
+  `b08df1219`).** Opened the deeper "purpose-per-file" board in REFACTOR_STATUS.md (Ranks 1-6) with a
+  full-tree audit: 4 layers, domain/ depends on nothing (0 includes of app/lib), app/ depends inward
+  18×, all 11 lint baselines at 0. **Wave A (done):** base58 + bech32 `lib/encoding` wrappers were pure
+  forwarders → migrated all callers to `domain_encoding_*`, deleted the 4 wrapper files, dropped the
+  now-moot wrapper-parity sub-tests; build + test_parallel 0/290 + lint green. `upgrades.c` investigated
+  and **correctly KEPT** (not a duplicate — lib owns the consensus data tables, domain owns the
+  arithmetic). **Rank 2 / ports (prove-first):** `check_raw_sqlite.sh` is GATE-CLEAN with an empty
+  allowlist; the 49 raw-sqlite app/ sites are correct-by-design (Models=AR storage internals,
+  Jobs=progress-kv kernel store, Views=read-only introspection) → NOT a migration; closed.
+- **2026-06-03 · §5.3 / §5.6 reaffirmed keep-by-design (strengthened).** Re-analyzed with the new
+  evidence: §5.6 rename is high-churn cosmetic over a passing framework-shape gate — `chain_evidence_
+  controller` carries **197 symbol sites across 14 files** + diagnostics-key coupling; `chain_activation_
+  controller` has `test_make_lint_gates` assertion coupling; `chain_state_repository` is a deliberate,
+  consensus-critical **Repository pattern** (the single-writer guarding the 1.3M-UTXO loss). The prior
+  "Model/Storage-Adapter boundary question" on `chain_state_repository` is **resolved** by the Rank-2
+  prove-first (its raw sqlite is correct-by-design AR access, no violation). §5.3 stays churn (no file is
+  over the 800 ceiling). Both remain deferred-by-design; the real structural win is Wave D (boot
+  decomposition), tracked in REFACTOR_STATUS.
 
 ## 1. Loud failures & silent-halt elimination
 
