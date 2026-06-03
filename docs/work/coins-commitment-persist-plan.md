@@ -1,5 +1,52 @@
 # Plan: persist the `utxo_sha3` commitment so the §3 self-heal auto-fires
 
+**Status:** original boundary (below) **SUPERSEDED** — a full implementation
+spec was built and run past a 3-lens consensus-safety panel (2026-06-03,
+`wf_c80cf28e-371`). Verdict: **DO_NOT_APPLY** (2 of 3 lenses, 3 HIGH holes).
+Not implemented. The corrected design is below; the original text is kept for
+context but its persist site is WRONG.
+
+## CORRECTED DESIGN (adversarial review 2026-06-03) — read this first
+
+The paper plan named the wrong boundary. Against the real tree:
+
+1. **Wrong persist site (fatal).** `flush_coins_if_needed` /
+   `process_block_flush_coins` have **zero production callers** — dead on the
+   live path. The authoritative advance is the staged reducer
+   (`app/jobs/src/utxo_apply_stage.c` → `utxo_projection`); live coins-SQLite
+   persistence happens only at **boot-reindex** (`boot_index.c`) and
+   **shutdown** (`shutdown_flush_coins_to_sqlite`). A per-block cadence gate
+   here would never fire → the anchored record would never be written. So the
+   whole IBD/cadence machinery is misplaced.
+2. **Persist must be ATOMIC with the coins flush (HIGH).** Write the 76-byte
+   anchored `utxo_sha3` record **inside `coins_view_sqlite_batch_write_ex`'s
+   transaction** (next to the rows + `coins_best_block` + consensus-commitment
+   writes, before the COMMIT) — not in a trailing separate txn (crash window
+   otherwise: on-disk record wouldn't match the durable set).
+3. **Derive height/identity from the table, in the same txn (HIGH).** Don't
+   trust caller-supplied height/hash. Use `SELECT MAX(height), COUNT(*) FROM
+   utxos`, resolve the anchor as the `status>=3` block AT that height, and
+   **refuse to stamp** unless `coins_best_block` matches it. Only stamp when
+   the cache is empty post-flush (no pending higher rows).
+4. **Anchored heal must re-validate the stored hash (HIGH).** In
+   `coins_reconcile_stale_anchor`, after `_load_anchor` succeeds, run
+   `SELECT height FROM blocks WHERE hash=? AND status>=3` and require
+   `height == commit_h`; on any miss, fall back to the existing height→hash
+   path (never re-point blindly).
+5. **Don't reuse `EV_DB_ERROR` for a success seal** (pollutes the node-health
+   error ring) — add `EV_COINS_COMMITMENT_SEALED` or reuse `EV_COINS_FLUSH`.
+6. **Don't churn the dead `process_block` flush API** signatures.
+
+Net: the keystone is achievable, but it belongs in `batch_write_ex` (the real
+coins-commit boundary), table-derived + atomic, with a validated anchored
+heal — a materially different change from the original below. The 76-byte
+record format + back-compat `_load`/`_load_anchor` from the spec are sound and
+reusable. Implement carefully on a datadir COPY; deploy stays owner-gated.
+
+---
+
+### Original (SUPERSEDED) plan
+
 **Status:** designed + adversarially vetted (2026-06-03), NOT yet implemented.
 Deliberately deferred: it lands in the synchronous block-connect/flush path
 and should not be rushed. This doc is implementation-ready.
