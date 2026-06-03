@@ -275,7 +275,7 @@ static int check_observability_file(const char *path)
 static bool active_chain_set_tip_file_allowed(const char *path)
 {
     return strstr(path, "/app/services/src/chain_tip.c") ||
-           strstr(path, "/app/services/src/chain_state_repository.c");
+           strstr(path, "/app/services/src/chain_state_service.c");
 }
 
 static int check_active_chain_set_tip_file(const char *path)
@@ -1532,7 +1532,7 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
         ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
         ASSERT(strstr(buf, "services/sync_monitor.h") == NULL);
@@ -1580,7 +1580,7 @@ static int t_flyclient_proof_builder_is_callback_injected(void)
         ASSERT(strstr(buf, "coins/utxo_commitment.h") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         ASSERT(strstr(buf, "services/" "snapshot_sync_" "service.h") == NULL);
         PASS();
     } _test_next:;
@@ -1725,8 +1725,8 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "msg_processor_recommit_snapshot_anchor") != NULL);
         ASSERT(strstr(buf, "services/" "block_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "services/block_index_integrity.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/" "header_sync_" "service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
@@ -1917,9 +1917,9 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
         ASSERT(strstr(buf, "models/tx_index.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_activation_controller.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_activation_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_evidence_controller.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         ASSERT(strstr(buf, "services/chain_tip.h") == NULL);
         ASSERT(strstr(buf, "services/gap_fill_service.h") == NULL);
         ASSERT(strstr(buf, "net/snapshot_sync_contract.h") == NULL);
@@ -1968,7 +1968,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
         ASSERT(strstr(buf, "controllers/sync_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -1980,7 +1980,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "process_block_tip_is_best_work") != NULL);
         ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
         ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -1994,7 +1994,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "disk_block_index_init") != NULL);
         ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
         ASSERT(strstr(buf, "models/database.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -2027,7 +2027,7 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         ASSERT(strstr(buf, "process_block_publish_tip") != NULL);
         ASSERT(strstr(buf, "process_block_clear_tip") != NULL);
         ASSERT(strstr(buf, "controllers/blockchain_controller.h") == NULL);
-        ASSERT(strstr(buf, "services/chain_state_repository.h") == NULL);
+        ASSERT(strstr(buf, "services/chain_state_service.h") == NULL);
         free(buf);
         buf = NULL;
 
@@ -2380,8 +2380,8 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/services/src/snapshot_fetch.c",
             "app/services/src/snapshot_verify.c",
             "app/services/src/snapshot_apply.c",
-            "app/services/include/services/chain_activation_controller.h",
-            "app/services/src/chain_activation_controller.c",
+            "app/services/include/services/chain_activation_service.h",
+            "app/services/src/chain_activation_service.c",
             "app/supervisors/include/supervisors/chain_supervisor.h",
             "app/models/include/models/database_internal.h",
             "app/models/include/models/wallet_tx_internal.h",

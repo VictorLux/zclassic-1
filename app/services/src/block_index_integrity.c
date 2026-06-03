@@ -27,7 +27,7 @@
 #include "util/log_macros.h"
 #include "services/block_index_integrity.h"
 
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "util/safe_alloc.h"
 #include "event/event.h"
 #include "core/uint256.h"

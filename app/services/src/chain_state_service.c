@@ -3,7 +3,7 @@
  * Chain state repository — implementation. See header for the design
  * rationale and the 2026-04-10 incident that motivated this service. */
 
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 
 #include "config/db_service.h"
 #include "event/event.h"

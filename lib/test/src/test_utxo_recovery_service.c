@@ -7,7 +7,7 @@
 #include "test/test_helpers.h"
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "storage/utxo_reimport_flag.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"

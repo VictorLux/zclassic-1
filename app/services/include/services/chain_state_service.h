@@ -31,8 +31,8 @@
  * and frees the underlying objects normally.
  */
 
-#ifndef ZCL_SERVICES_CHAIN_STATE_REPOSITORY_H
-#define ZCL_SERVICES_CHAIN_STATE_REPOSITORY_H
+#ifndef ZCL_SERVICES_CHAIN_STATE_SERVICE_H
+#define ZCL_SERVICES_CHAIN_STATE_SERVICE_H
 
 #include "chain/chain.h"
 #include "validation/chainstate.h"
@@ -242,4 +242,4 @@ void csr_set_max_utxo_orphan_rows(struct chain_state_repository *csr,
  * the h=60-vs-h=3M boot bug. */
 void csr_set_stale_index_gap(struct chain_state_repository *csr, int gap);
 
-#endif /* ZCL_SERVICES_CHAIN_STATE_REPOSITORY_H */
+#endif /* ZCL_SERVICES_CHAIN_STATE_SERVICE_H */

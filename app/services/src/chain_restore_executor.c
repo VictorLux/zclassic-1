@@ -6,7 +6,7 @@
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_planner.h"
 #include "services/chain_restore_repair.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "net/snapshot_sync_contract.h"
 #include "models/db_txn.h"

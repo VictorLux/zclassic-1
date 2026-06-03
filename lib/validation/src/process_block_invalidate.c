@@ -25,7 +25,7 @@
  * validation, so this orchestrator necessarily reaches up to the same
  * app-layer controller process_block_revalidate.c uses. Same tradeoff,
  * same marker — keep the lib_layering baseline flat. */
-#include "services/chain_activation_controller.h"  // lib-layer-ok:invalidate-lever
+#include "services/chain_activation_service.h"  // lib-layer-ok:invalidate-lever
 #include "storage/block_index_db.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"

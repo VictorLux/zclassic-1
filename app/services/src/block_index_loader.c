@@ -6,7 +6,7 @@
 #include "platform/time_compat.h"
 #include "services/block_index_loader.h"
 #include "services/block_index_integrity.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"

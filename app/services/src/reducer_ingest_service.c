@@ -3,21 +3,21 @@
  * Reducer-ingest service — the synchronous block-intake path that drives the
  * staged Job pipeline as the authoritative chain-advance engine.
  *
- * This is the single responsibility split out of chain_activation_controller.c
+ * This is the single responsibility split out of chain_activation_service.c
  * (which keeps the activation state machine). The reducer wrapper drives the
  * eight staged-Job step bodies and the stateless check_block gate, then reads
  * back the verdict from the freshly-written stage log rows. Public entry
  * points (reducer_is_authoritative / reducer_kick / reducer_ingest_block) are
- * declared in services/chain_activation_controller.h and keep identical
+ * declared in services/chain_activation_service.h and keep identical
  * names/signatures; the activation FSM shares only reducer_drain_to_convergence
  * via the private services/reducer_ingest_service.h seam. */
 
 // one-result-type-ok:reducer-drive-counts
 /* The reducer entry points return advance-counts / authority bools; a
  * failure surfaces via the stage FATAL latch + EV_OPERATOR_NEEDED, not a
- * return-value reason (same rationale as the parent chain_activation_controller.c). */
+ * return-value reason (same rationale as the parent chain_activation_service.c). */
 
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "services/reducer_ingest_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

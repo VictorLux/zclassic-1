@@ -41,7 +41,7 @@
 #include "core/arith_uint256.h"
 #include "script/script.h"
 #include "bloom/merkle.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/recovery_policy.h"
 #include "models/db_txn.h"
 #include "event/event.h"

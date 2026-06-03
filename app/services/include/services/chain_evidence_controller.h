@@ -13,7 +13,7 @@
 
 #include "core/uint256.h"
 #include "chain/chain.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "util/result.h"
 
 #include <stdbool.h>

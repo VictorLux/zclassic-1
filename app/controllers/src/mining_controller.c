@@ -19,7 +19,7 @@
 #include "script/script.h"
 #include "validation/chainstate.h"
 #include "validation/process_block.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "chain/subsidy.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -9,7 +9,7 @@
 #include "services/chain_restore_disk_repair.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_integrity.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/block_index_integrity.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

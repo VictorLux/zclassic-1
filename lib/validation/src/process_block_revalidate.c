@@ -15,7 +15,7 @@
  * across layers (a validation low-level primitive plus an app-services
  * orchestrator) adds two files for no behavioral gain. Tagged so the
  * lib_layering gate doesn't have to grow its baseline. */
-#include "services/chain_activation_controller.h"  // lib-layer-ok:wave-m-revalidate
+#include "services/chain_activation_service.h"  // lib-layer-ok:wave-m-revalidate
 #include "services/quorum_oracle_service.h"        // lib-layer-ok:wave-m-revalidate
 #include "storage/block_index_db.h"
 #include "util/log_macros.h"

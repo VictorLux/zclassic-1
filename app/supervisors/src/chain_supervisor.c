@@ -11,7 +11,7 @@
 #include "platform/time_compat.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "validation/process_block_revalidate.h"
 #include "core/uint256.h"

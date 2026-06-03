@@ -19,7 +19,7 @@
  * controller reach process_block_revalidate.c/process_block_invalidate.c
  * already take. Inline marker keeps the lib_layering baseline flat. */
 #include "validation/chainstate.h"
-#include "services/chain_activation_controller.h"  // lib-layer-ok:self-heal-reducer-retry
+#include "services/chain_activation_service.h"  // lib-layer-ok:self-heal-reducer-retry
 #include "config/runtime.h"
 #include "event/event.h"
 

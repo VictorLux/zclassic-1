@@ -5,7 +5,7 @@
 #include "framework/condition.h"
 
 #include "platform/time_compat.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "services/gap_fill_service.h"
 #include "validation/process_block.h"
 

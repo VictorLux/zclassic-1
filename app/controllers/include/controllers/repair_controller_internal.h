@@ -9,7 +9,7 @@
 #include "platform/time_compat.h"
 #include "controllers/repair_controller.h"
 #include "controllers/rpc_chainstate_guard.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "controllers/strong_params.h"
 #include "coins/coins.h"
 #include "coins/coins_view.h"

@@ -10,7 +10,7 @@
 
 #include "test/test_helpers.h"
 #include "config/db_service.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"

@@ -17,7 +17,7 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "models/wallet_tx.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "storage/coins_db.h"
 #include "util/log_macros.h"
 #include "validation/main_state.h"

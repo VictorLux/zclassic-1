@@ -33,7 +33,7 @@ bool accept_block_header(const struct block_header *header,
 
 /* The historical block-connection entry points were deleted by the reducer
  * refactor. reducer_ingest_block / reducer_kick (see
- * services/chain_activation_controller.h) are now the sole block-connect
+ * services/chain_activation_service.h) are now the sole block-connect
  * engine. accept_block_header (below) survives because header admit still
  * uses it. */
 

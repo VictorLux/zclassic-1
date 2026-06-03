@@ -6,10 +6,10 @@
 
 #include "services/utxo_recovery_service.h"
 #include "services/recovery_policy.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "services/chain_restore_executor.h"
 #include "services/chain_restore_repair.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "net/snapshot_sync_contract.h"
 #include "config/boot_internal.h"

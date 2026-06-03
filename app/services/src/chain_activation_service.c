@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain Activation Controller — single authority for block connection.
- * See chain_activation_controller.h for architecture overview. */
+ * See chain_activation_service.h for architecture overview. */
 
 // one-result-type-ok:decision-out-structs
 // Activation is a state machine + decision planner. Every fallible decision
@@ -18,7 +18,7 @@
 // activation_state_name() is an enum->name table; activation_drain_deferred()
 // returns a count. No bare-bool strips a failure reason. Behavior unchanged.
 
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "services/reducer_ingest_service.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"

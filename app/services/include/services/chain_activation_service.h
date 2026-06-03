@@ -15,8 +15,8 @@
  * Key invariant: while state is ANCHOR_ACTIVE, reducer activation NEVER runs.
  * No exceptions, no bypasses, no scattered boolean overrides. */
 
-#ifndef ZCL_CHAIN_ACTIVATION_CONTROLLER_H
-#define ZCL_CHAIN_ACTIVATION_CONTROLLER_H
+#ifndef ZCL_CHAIN_ACTIVATION_SERVICE_H
+#define ZCL_CHAIN_ACTIVATION_SERVICE_H
 
 #include "util/sync.h"
 #include <stdbool.h>

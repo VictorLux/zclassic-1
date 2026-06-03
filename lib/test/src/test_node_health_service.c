@@ -12,7 +12,7 @@
 #include "services/block_source_policy.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_evidence_persistence_service.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/sync_monitor.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"

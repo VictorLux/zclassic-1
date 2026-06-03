@@ -24,7 +24,7 @@
  * (lib/validation/check_block.c:148 - it ignores regtest's 48,5). No
  * in-process unit test can solve mainnet Equihash, so NO synthetically
  * constructed block can pass that stateless gate (the force flag does NOT
- * relax it - chain_activation_controller.c:662). That gate is upstream
+ * relax it - chain_activation_service.c:662). That gate is upstream
      * consensus that legacy process_new_block runs IDENTICALLY and is proven
      * elsewhere (test_domain_consensus_check_block). It is NOT the stateful
      * reducer capability under test. So:
@@ -54,7 +54,7 @@
 #include "primitives/transaction.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/utxo_apply_stage.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -406,7 +406,7 @@ static bool rie_utxo_counter(int height_after, int64_t *out_count, void *user)
 }
 
 /* Drive the reducer's eight-stage drain the way reducer_drain_to_convergence
- * does (chain_activation_controller.c:534) for the stages this test owns:
+ * does (chain_activation_service.c:534) for the stages this test owns:
  * utxo_apply (real UTXO delta + reorg unwind) then tip_finalize (real
  * tip-set keystone + post-finalize). The upstream five stages are seeded
  * via proof_validate_log/cursor (they are covered in their own suites and

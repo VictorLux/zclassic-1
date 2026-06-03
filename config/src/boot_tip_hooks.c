@@ -16,7 +16,7 @@
 
 #include "config/boot_internal.h"
 #include "validation/process_block.h"
-#include "services/chain_state_repository.h"
+#include "services/chain_state_service.h"
 #include "services/chain_evidence_controller.h"
 #include "services/chain_tip.h"          /* chain_set_active_tip, TIP_FROM_* (ZCL_TESTING paths) */
 #include "services/gap_fill_service.h"

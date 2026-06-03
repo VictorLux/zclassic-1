@@ -14,7 +14,7 @@
 #include "net/netaddr.h"
 #include "platform/time_compat.h"
 #include "sync/sync_planner.h"
-#include "services/chain_activation_controller.h"
+#include "services/chain_activation_service.h"
 #include "services/gap_fill_service.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
