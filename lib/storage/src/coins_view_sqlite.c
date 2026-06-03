@@ -255,6 +255,174 @@ rollback:
     return -1;
 }
 
+/* Boot-time commitment-validated reconciliation of a STALE coins_best_block
+ * anchor — the "§3" boot-wedge where the anchor pointer was reset far below
+ * the real applied UTXO frontier (e.g. anchor resolves to height 200 while
+ * `utxos` holds millions of rows). The strict tip-consistency check below
+ * correctly refuses a blind fast-forward; this routine is the ONLY sanctioned
+ * way to heal it, and it heals ONLY under cryptographic proof.
+ *
+ * Why a blind "advance the anchor to the highest cursor" heal is UNSAFE (and
+ * is deliberately NOT done here):
+ *   - The tip cursors (cec.utxo_max_height, sync_projection_tip_height,
+ *     blocks-table status>=3 tip) are NOT independent witnesses: each is a
+ *     copy of the same optimistic `new_tip->nHeight` promotion stamp, so a
+ *     single bad promotion forges a "quorum".
+ *   - MAX(utxos.height) is an output's CREATION height; a torn flush that
+ *     dropped SPENDS (lazy/batched coins flush) does not move the max, so a
+ *     double-spendable set looks fine by row counts.
+ *   - height->hash via `blocks WHERE height=H AND status>=3` can name a losing
+ *     orphan sibling after a mid-reorg crash.
+ * The only check that survives all three is a content-bearing, height-stamped
+ * commitment recompute-match: recompute the canonical SHA3 UTXO commitment
+ * over the live `utxos` table and require an exact hash+count match against a
+ * previously-stored trusted commitment. A dropped spend changes the hash; a
+ * partial future block changes the count or hash.
+ *
+ * Returns true (anchor healed, caller may continue boot) ONLY when that proof
+ * holds. Returns false in every other case (no stored commitment, height not
+ * usable, rows above the committed height, recompute mismatch, or anchor hash
+ * unresolvable), so the caller keeps the strict FATAL — the gate is never
+ * weakened. Never trusts a cursor; never deletes UTXOs. */
+static bool coins_reconcile_stale_anchor(sqlite3 *db,
+                                         int64_t max_utxo_height,
+                                         int64_t stale_tip_height)
+{
+    /* (1) A trusted, height-stamped commitment must exist to validate against.
+     * Checked first: it is cheap and gates the expensive recompute in (4). */
+    uint8_t want_hash[32];
+    int32_t commit_h = -1;
+    uint64_t want_count = 0;
+    if (!utxo_commitment_sha3_load(db, want_hash, &commit_h, &want_count)) {
+        LOG_WARN("coins",
+            "[coins] stale-anchor reconcile refused: no stored utxo_sha3 "
+            "commitment to validate the UTXO set against "
+            "(stale_tip=%lld max_utxo=%lld) — preserving FATAL",
+            (long long)stale_tip_height, (long long)max_utxo_height);
+        return false;
+    }
+
+    /* (2) The commitment must be strictly ahead of the stale anchor and cover
+     * the whole live frontier; a commitment at/below the stale anchor, or
+     * below the highest live UTXO row, cannot justify advancing the anchor. */
+    if (commit_h <= stale_tip_height || (int64_t)commit_h < max_utxo_height) {
+        LOG_WARN("coins",
+            "[coins] stale-anchor reconcile refused: commitment height=%d not "
+            "usable (stale_tip=%lld max_utxo=%lld) — preserving FATAL",
+            commit_h, (long long)stale_tip_height, (long long)max_utxo_height);
+        return false;
+    }
+
+    /* (3) No utxos rows may exist above the committed height — the commitment
+     * covers the entire set; rows above it mean the table diverged from the
+     * committed snapshot. (Subsumed by the recompute, but an explicit, cheap
+     * guard that fails fast and documents intent.) */
+    int64_t rows_above = 0;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COUNT(*) FROM utxos WHERE height > ?",
+                -1, &s, NULL) != SQLITE_OK) {
+            LOG_WARN("coins",
+                "[coins] stale-anchor reconcile refused: rows-above prepare "
+                "failed: %s — preserving FATAL", sqlite3_errmsg(db));
+            return false;
+        }
+        sqlite3_bind_int64(s, 1, commit_h);
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+            rows_above = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    if (rows_above != 0) {
+        LOG_WARN("coins",
+            "[coins] stale-anchor reconcile refused: %lld utxo row(s) above "
+            "committed height=%d — preserving FATAL",
+            (long long)rows_above, commit_h);
+        return false;
+    }
+
+    /* (4) CRYPTOGRAPHIC PROOF. Recompute the canonical SHA3 commitment over
+     * the live utxos table; require exact hash+count match. This is the only
+     * check that detects a torn set (dropped spends do not move MAX(height)
+     * but DO change the commitment). No cursor is consulted. */
+    uint8_t got_hash[32];
+    uint64_t got_count = 0;
+    utxo_commitment_sha3_compute(db, got_hash, &got_count);
+    if (got_count != want_count || memcmp(got_hash, want_hash, 32) != 0) {
+        LOG_WARN("coins",
+            "[coins] stale-anchor reconcile refused: UTXO set commitment "
+            "MISMATCH at height=%d (got_count=%llu want_count=%llu) — the set "
+            "is NOT provably intact; preserving FATAL (operator must restore "
+            "or re-derive)",
+            commit_h, (unsigned long long)got_count,
+            (unsigned long long)want_count);
+        return false;
+    }
+
+    /* (5) Proven intact at commit_h. Resolve the canonical block hash at that
+     * height. Narrow orphan-sibling residual (a mid-reorg crash leaving a
+     * losing sibling as the surviving status>=3 row AND carrying a matching
+     * full UTXO commitment) is implausible and logged, not silently trusted. */
+    uint8_t anchor_hash[32];
+    bool anchor_ok = false;
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT hash FROM blocks WHERE height=? AND status>=3",
+                -1, &s, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(s, 1, commit_h);
+            if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                const void *blob = sqlite3_column_blob(s, 0);
+                if (blob && sqlite3_column_bytes(s, 0) == 32) {
+                    memcpy(anchor_hash, blob, 32);
+                    anchor_ok = true;
+                }
+            }
+            sqlite3_finalize(s);
+        }
+    }
+    if (!anchor_ok) {
+        LOG_WARN("coins",
+            "[coins] stale-anchor reconcile refused: committed height=%d has "
+            "no resolvable status>=3 block hash — preserving FATAL", commit_h);
+        return false;
+    }
+
+    /* (6) Commit the heal: re-point coins_best_block to the verified block. */
+    {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('coins_best_block',?)", -1, &s, NULL) != SQLITE_OK) {
+            LOG_WARN("coins",
+                "[coins] stale-anchor reconcile FAILED: anchor write prepare "
+                "failed: %s — preserving FATAL", sqlite3_errmsg(db));
+            return false;
+        }
+        sqlite3_bind_blob(s, 1, anchor_hash, 32, SQLITE_STATIC);
+        int rc = AR_STEP_WRITE(s);
+        sqlite3_finalize(s);
+        if (rc != SQLITE_DONE) {
+            LOG_WARN("coins",
+                "[coins] stale-anchor reconcile FAILED: anchor write step "
+                "rc=%d: %s — preserving FATAL", rc, sqlite3_errmsg(db));
+            return false;
+        }
+    }
+
+    fprintf(stderr,  // obs-ok:helper-context-logged
+        "[coins] stale-anchor reconcile OK: coins_best_block re-pointed from "
+        "height=%lld to committed+verified height=%d (utxo_count=%llu, SHA3 "
+        "commitment matched) — boot continues\n",
+        (long long)stale_tip_height, commit_h,
+        (unsigned long long)want_count);
+    event_emitf(EV_DB_ERROR, 0,
+        "coins_stale_anchor_reconciled from_h=%lld to_h=%d count=%llu",
+        (long long)stale_tip_height, commit_h,
+        (unsigned long long)want_count);
+    return true;
+}
+
 /* Boot-time integrity check: the UTXO set (`utxos` table) must not be
  * strictly ahead of the coins-flush anchor (`coins_best_block`).  This
  * guards against the class of crash-mid-flush corruption where UTXOs
@@ -381,6 +549,16 @@ static bool coins_view_sqlite_check_tip_consistency(sqlite3 *db)
                 (long long)(max_height - tip_height));
             return true;
         }
+        /* Last resort before the strict halt: a STALE coins_best_block anchor
+         * (the §3 boot-wedge, e.g. anchor reset to height 200 while the UTXO
+         * set is millions of blocks ahead). coins_reconcile_stale_anchor heals
+         * ONLY when the live UTXO set is cryptographically proven intact
+         * against a stored height-stamped SHA3 commitment; it returns false
+         * (preserving this FATAL) for any unproven case, so the gate is never
+         * weakened. The single-block auto-rewind (above) and the historical
+         * coins-lag escape (tip_height>1000000) are deliberately left intact. */
+        if (coins_reconcile_stale_anchor(db, max_height, tip_height))
+            return true;
         fprintf(stderr,  // obs-ok:helper-context-logged
             "[coins] DB_ERR_TIP_MISMATCH: utxos max_height=%lld > "
             "tip_height=%lld (UTXOs ahead of tip by %lld blocks) — "
