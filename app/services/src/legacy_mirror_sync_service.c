@@ -568,7 +568,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
         }
     }
 
-    /* Monitor-only: post-B7 the stage pipeline is the authoritative
+    /* Monitor-only: the stage pipeline is the authoritative
      * block writer. The mirror no longer applies blocks; it observes
      * the lag, records the stuck status when behind, and lets the
      * native pipeline advance the tip. */

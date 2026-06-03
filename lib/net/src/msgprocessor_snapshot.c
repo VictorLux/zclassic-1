@@ -1727,8 +1727,7 @@ void mp_snapshot_maybe_offer(struct msg_processor *mp,
 }
 
 /* Per-peer send-side coordinator: serve the snapshot stream + drive
- * the swarm/block-swarm coordinators. Body extracted verbatim from
- * msg_send_messages — no behavior changes. */
+ * the swarm/block-swarm coordinators. */
 void mp_snapshot_send_tick(struct msg_processor *mp,
                             struct p2p_node *node)
 {

@@ -92,8 +92,8 @@ static void coord_esc_stall(struct liveness_contract *c)
         return;
     }
     /* Revalidation couldn't help (no failed pindex at this height, no
-     * quorum, evidence disagreed, or connect_block re-failed). Post-B7
-     * there is no mirror writer to force-promote; surface the named
+     * quorum, evidence disagreed, or connect_block re-failed). There is
+     * no mirror writer to force-promote; surface the named
      * stall and let the reducer/condition path keep ownership. */
     event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
                 "chain.coord_escalation revalidation_exhausted height=%d result=%s",

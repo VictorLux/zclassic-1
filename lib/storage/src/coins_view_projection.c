@@ -25,9 +25,9 @@ static bool cvp_have_coins_impl(void *self, const struct uint256 *txid)
 {
     struct coins_view_projection *cvp = (struct coins_view_projection *)self;
     if (!cvp || !txid) return false;
-    /* "have" = any live output of txid exists. Reuse get_coins (read-only
-     * miss path is dormant until B7, so the extra reconstruction is fine)
-     * and release the coins. */
+    /* "have" = any live output of txid exists. Reuse get_coins (the extra
+     * reconstruction is acceptable on this read-only miss path) and release
+     * the coins. */
     struct coins c;
     bool found = utxo_projection_get_coins(cvp->proj, txid->data, &c);
     if (found) coins_free(&c);
@@ -36,10 +36,9 @@ static bool cvp_have_coins_impl(void *self, const struct uint256 *txid)
 
 static bool cvp_get_best_block_impl(void *self, struct uint256 *hash)
 {
-    /* The projection tracks its consume offset, not a best-block hash.
-     * Best-block consistency for the authoritative read path is wired in
-     * B7 (the flip), where the tip_finalize cursor is the definitional
-     * tip. Until then this view is dormant; report "unknown". */
+    /* The projection tracks its consume offset, not a best-block hash, so
+     * it cannot name a tip: the tip_finalize cursor is the definitional
+     * tip for the authoritative read path. Report "unknown". */
     (void)self;
     if (hash) uint256_set_null(hash);
     return false;

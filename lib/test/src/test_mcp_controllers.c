@@ -52,14 +52,7 @@
                                  * +1 Round 6 C5: zcl_blockers;
                                  * +1 framework Phase 0: zcl_conditions;
                                  * +2 Phase 6b postmortem capsule tools
-                                 * +1 offline replay verifier: zcl_replay_verify
-                                 *
-                                 * Stage 4 of the legacy-engine purge removed the
-                                 * removed comparison surfaces (-14): zcl_cutovermode,
-                                 * zcl_cutoverpreflight, zcl_diff_with_legacy,
-                                 * zcl_diff_with_legacy_shadow, zcl_diff_staged_header_admit,
-                                 * zcl_utxo_projection_diff, zcl_block_index_diff, and the
-                                 * 7 *_projection_diff tools. */
+                                 * +1 offline replay verifier: zcl_replay_verify */
 #define EXPECTED_OPS        37  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
@@ -74,18 +67,10 @@
                                  * syncdiag, replay_dump, replay_exec,
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
-                                 * + zcl_postmortem_list/replay (Phase 6b)
-                                 *
-                                 * Stage 4 purge removed -10 ops tools: zcl_cutovermode,
-                                 * zcl_cutoverpreflight, zcl_diff_with_legacy, and the
-                                 * 7 *_projection_diff tools. */
+                                 * + zcl_postmortem_list/replay (Phase 6b) */
 #define EXPECTED_CHAIN      16  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
-                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery)
-                                 *
-                                 * Stage 4 purge removed -4 chain tools:
-                                 * zcl_diff_with_legacy_shadow, zcl_diff_staged_header_admit,
-                                 * zcl_utxo_projection_diff, zcl_block_index_diff. */
+                                 * + zcl_invalidateblock + zcl_reconsiderblock (recovery) */
 #define EXPECTED_NET         9  /* + zcl_peer_report (wave 4 #5),
                                  * + zcl_onion_health (wave 6 #7) */
 #define EXPECTED_WALLET     20

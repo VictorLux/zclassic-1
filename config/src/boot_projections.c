@@ -2,8 +2,7 @@
  *
  * Boot projection storage — the event_log + reducer read-model projections.
  *
- * Extracted verbatim from boot_services.c (Wave D step 3, behavior-neutral):
- * opens the append-only event log + the per-domain projections (utxo, mempool,
+ * Opens the append-only event log + the per-domain projections (utxo, mempool,
  * peers, block_index, znam, wallet, contacts, onion-announcements, hodl-history)
  * during boot and tears them down in reverse on shutdown. The handles live in
  * module-static pointers so they can be freed regardless of singleton state.

@@ -12,9 +12,9 @@
  * projection. The view is read-only: the stage authors UTXO state via
  * EV_UTXO_ADD/SPEND events, so `batch_write` here is a programming error.
  *
- * Dormant until B7 wires the authority-gated backing selection at connect
- * time; built + parity-proven now (test_coins_view_projection) so the
- * flip is a wiring change, not new logic.
+ * This view is the authoritative miss-resolution source whenever the stage
+ * holds UTXO authority (the production default); parity with
+ * coins_view_sqlite is proven by test_coins_view_projection.
  *
  * Mirrors coins_view_sqlite's vtable-embedding pattern. */
 

@@ -2,7 +2,6 @@
  *
  * Boot tip-publication hooks — the process_block -> chain-state seam.
  *
- * Extracted verbatim from boot_services.c (Wave D STEP 2, behavior-neutral).
  * When the validation engine publishes a new active tip (or clears it on a
  * disconnect-past-genesis), it calls these hooks, which route through the
  * chain_evidence_controller when evidence is present, else the chain_state

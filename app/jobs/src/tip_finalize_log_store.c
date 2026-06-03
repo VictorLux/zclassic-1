@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * tip_finalize_log_store — implementation. See tip_finalize_log_store.h.
- * Extracted verbatim from tip_finalize_stage.c (no logic change). */
+ * tip_finalize_log_store — implementation. See tip_finalize_log_store.h. */
 
 #include "tip_finalize_log_store.h"
 
