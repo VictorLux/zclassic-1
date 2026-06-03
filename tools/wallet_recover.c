@@ -15,7 +15,7 @@
 
 /* Base58 encoding for WIF export */
 #include "crypto/sha256.h"
-#include "encoding/base58.h"
+#include "domain/encoding/base58.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
 #include "keys/key_io.h"

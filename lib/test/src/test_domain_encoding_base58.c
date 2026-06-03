@@ -7,15 +7,11 @@
  *   2. Known-answer vectors (Bitcoin Core unit tests + BIP-13 P2SH).
  *   3. Round-trip across random payload lengths.
  *   4. Checksum mismatch rejection (Base58Check).
- *   5. Wrapper-vs-domain parity: the legacy `base58_*` symbols (the
- *      lib/encoding wrappers) must produce identical bytes to the
- *      pure `domain_encoding_base58_*` symbols for the same input.
  */
 
 #include "test/test_helpers.h"
 
 #include "domain/encoding/base58.h"
-#include "encoding/base58.h"
 #include "core/hash.h"
 
 #include <stdio.h>
@@ -97,29 +93,6 @@ static bool check_roundtrip_ok(const unsigned char *data, size_t data_len)
     if (!domain_encoding_base58check_decode(enc, dec, sizeof(dec), &dec_len))
         return false;
     return dec_len == data_len && memcmp(dec, data, data_len) == 0;
-}
-
-/* Compare wrapper output to domain output, byte-for-byte, on N synthetic
- * payloads of varying length. */
-static bool wrapper_parity(unsigned char seed_byte, size_t data_len)
-{
-    unsigned char data[256];
-    if (data_len > sizeof(data)) return false;
-    for (size_t i = 0; i < data_len; i++)
-        data[i] = (unsigned char)((seed_byte + i * 31u) & 0xff);
-
-    char a[512], b[512];
-    size_t la = 0, lb = 0;
-    bool ok_a = domain_encoding_base58_encode(data, data_len, a, sizeof a, &la);
-    bool ok_b = base58_encode(data, data_len, b, sizeof b, &lb);
-    if (ok_a != ok_b || la != lb || strcmp(a, b) != 0) return false;
-
-    /* Also Base58Check. */
-    ok_a = domain_encoding_base58check_encode(data, data_len, a, sizeof a, &la);
-    ok_b = base58check_encode(data, data_len, b, sizeof b, &lb);
-    if (ok_a != ok_b || la != lb || strcmp(a, b) != 0) return false;
-
-    return true;
 }
 
 int test_domain_encoding_base58(void)
@@ -264,16 +237,6 @@ int test_domain_encoding_base58(void)
             char name[64];
             snprintf(name, sizeof name, "Base58Check round-trip len=%zu", L);
             B58_CHECK(name, check_roundtrip_ok(buf, L));
-        }
-    }
-
-    /* (5) Wrapper-vs-domain parity. */
-    {
-        const size_t lens[] = { 0, 1, 5, 20, 21, 32, 64, 100, 200 };
-        for (size_t i = 0; i < sizeof lens / sizeof lens[0]; i++) {
-            char name[64];
-            snprintf(name, sizeof name, "wrapper parity len=%zu", lens[i]);
-            B58_CHECK(name, wrapper_parity((unsigned char)(i * 19u + 7u), lens[i]));
         }
     }
 

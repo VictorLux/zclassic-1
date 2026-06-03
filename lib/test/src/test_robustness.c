@@ -439,7 +439,7 @@ int test_robustness(void)
     {
         uint8_t result[32];
         size_t rlen = 0;
-        bool ok = !base58check_decode("0InvalidAddr", result, sizeof(result), &rlen);
+        bool ok = !domain_encoding_base58check_decode("0InvalidAddr", result, sizeof(result), &rlen);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -448,7 +448,7 @@ int test_robustness(void)
     {
         uint8_t result[32];
         size_t rlen = 0;
-        bool ok = !base58check_decode("", result, sizeof(result), &rlen);
+        bool ok = !domain_encoding_base58check_decode("", result, sizeof(result), &rlen);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

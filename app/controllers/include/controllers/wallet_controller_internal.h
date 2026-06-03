@@ -36,7 +36,7 @@
 #include "controllers/wallet_scan.h"
 #include "coins/coins_view.h"
 #include "core/serialize.h"
-#include "encoding/base58.h"
+#include "domain/encoding/base58.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"

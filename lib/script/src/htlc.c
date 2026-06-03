@@ -18,7 +18,7 @@
 #include "crypto/sha3.h"
 #include "core/hash.h"
 #include "core/random.h"
-#include "encoding/base58.h"
+#include "domain/encoding/base58.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -165,7 +165,7 @@ bool htlc_p2sh_address(const uint8_t *redeem_script, size_t script_len,
     memcpy(payload + cp->prefix_len, script_hash, 20);
 
     size_t out_len = 0;
-    return base58check_encode(payload, cp->prefix_len + 20,
+    return domain_encoding_base58check_encode(payload, cp->prefix_len + 20,
                               addr_out, addr_len, &out_len);
 }
 
@@ -234,7 +234,7 @@ bool htlc_address_to_pkh(const char *address, enum swap_chain chain,
 
     uint8_t decoded[32];
     size_t decoded_len = 0;
-    if (!base58check_decode(address, decoded, sizeof(decoded), &decoded_len))
+    if (!domain_encoding_base58check_decode(address, decoded, sizeof(decoded), &decoded_len))
         return false;
 
     /* decoded = [prefix bytes] [20-byte pubkey hash]

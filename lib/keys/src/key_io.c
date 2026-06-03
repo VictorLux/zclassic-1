@@ -29,7 +29,7 @@ bool encode_destination(const struct tx_destination *dest,
     }
 
     size_t out_len;
-    return base58check_encode(data, data_len, out, outsize, &out_len);
+    return domain_encoding_base58check_encode(data, data_len, out, outsize, &out_len);
 }
 
 bool decode_destination(const char *str,
@@ -40,7 +40,7 @@ bool decode_destination(const char *str,
     unsigned char data[64];
     size_t data_len;
 
-    if (!base58check_decode(str, data, sizeof(data), &data_len))
+    if (!domain_encoding_base58check_decode(str, data, sizeof(data), &data_len))
         return false;
 
     if (data_len == 20 + pfx_len &&
@@ -74,7 +74,7 @@ bool encode_secret(const struct privkey *key,
         len++;
     }
     size_t out_len;
-    bool ok = base58check_encode(data, len, out, outsize, &out_len);
+    bool ok = domain_encoding_base58check_encode(data, len, out, outsize, &out_len);
     memory_cleanse(data, sizeof(data));
     return ok;
 }
@@ -86,7 +86,7 @@ bool decode_secret(const char *str,
     unsigned char data[64];
     size_t data_len;
 
-    if (!base58check_decode(str, data, sizeof(data), &data_len)) {
+    if (!domain_encoding_base58check_decode(str, data, sizeof(data), &data_len)) {
         memory_cleanse(data, sizeof(data));
         return false;
     }

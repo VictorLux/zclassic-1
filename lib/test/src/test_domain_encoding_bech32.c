@@ -11,13 +11,11 @@
  *   1. Contract / null-edge tests.
  *   2. Valid BIP-173 test strings round-trip.
  *   3. Invalid BIP-173 strings rejected.
- *   4. Wrapper-vs-domain parity on synthetic inputs.
  */
 
 #include "test/test_helpers.h"
 
 #include "domain/encoding/bech32.h"
-#include "encoding/bech32.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -88,32 +86,6 @@ static bool roundtrip_5bit(uint8_t seed, const char *hrp, size_t data_len)
     if (strcmp(hrp_out, hrp) != 0) return false;
     if (dec_len != data_len) return false;
     if (memcmp(dec, data, data_len) != 0) return false;
-    return true;
-}
-
-static bool wrapper_parity(uint8_t seed, const char *hrp, size_t data_len)
-{
-    uint8_t data[256];
-    if (data_len > sizeof data) return false;
-    for (size_t i = 0; i < data_len; i++)
-        data[i] = (uint8_t)((seed + i * 11u) & 31u);
-
-    char a[1024], b[1024];
-    bool ok_a = domain_encoding_bech32_encode(a, sizeof a, hrp, data, data_len);
-    bool ok_b = bech32_encode(b, sizeof b, hrp, data, data_len);
-    if (ok_a != ok_b) return false;
-    if (ok_a && strcmp(a, b) != 0) return false;
-
-    char hrp_a[64], hrp_b[64];
-    uint8_t da[256], db[256];
-    size_t la = 0, lb = 0;
-    bool da_ok = domain_encoding_bech32_decode(hrp_a, sizeof hrp_a, da, sizeof da, &la, a);
-    bool db_ok = bech32_decode(hrp_b, sizeof hrp_b, db, sizeof db, &lb, a);
-    if (da_ok != db_ok) return false;
-    if (da_ok) {
-        if (strcmp(hrp_a, hrp_b) != 0) return false;
-        if (la != lb || memcmp(da, db, la) != 0) return false;
-    }
     return true;
 }
 
@@ -199,19 +171,6 @@ int test_domain_encoding_bech32(void)
         uint8_t d[] = { 0, 1, 2 };
         bool ok = domain_encoding_bech32_encode(tiny, sizeof tiny, "bc", d, sizeof d);
         BCH_CHECK("encode rejects small out buf", !ok);
-    }
-
-    /* (9) Wrapper-vs-domain parity. */
-    {
-        const char *hrps[] = { "bc", "tb", "zcl" };
-        const size_t lens[] = { 0, 1, 16, 32, 64 };
-        for (size_t h = 0; h < sizeof hrps / sizeof hrps[0]; h++) {
-            for (size_t l = 0; l < sizeof lens / sizeof lens[0]; l++) {
-                char name[96];
-                snprintf(name, sizeof name, "wrapper parity hrp=%s len=%zu", hrps[h], lens[l]);
-                BCH_CHECK(name, wrapper_parity((uint8_t)(h * 13u + l + 5u), hrps[h], lens[l]));
-            }
-        }
     }
 
     return failures;

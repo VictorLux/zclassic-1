@@ -7,7 +7,7 @@
 #ifndef ZCL_KEY_IO_H
 #define ZCL_KEY_IO_H
 
-#include "encoding/base58.h"
+#include "domain/encoding/base58.h"
 #include "script/standard.h"
 #include "keys/key.h"
 #include <stdbool.h>

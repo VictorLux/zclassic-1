@@ -14,8 +14,8 @@
 #include "controllers/explorer_internal.h"  /* APPEND macro */
 #include "util/template.h"
 #include "event/event.h"
-#include "encoding/base58.h"
-#include "encoding/bech32.h"
+#include "domain/encoding/base58.h"
+#include "domain/encoding/bech32.h"
 #include "chain/chainparams.h"
 #include <stdio.h>
 #include <stdlib.h>

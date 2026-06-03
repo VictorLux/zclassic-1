@@ -13,7 +13,7 @@
 
 #include "domain/wallet/key_derivation.h"
 #include "core/random.h"
-#include "encoding/base58.h"
+#include "domain/encoding/base58.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 
@@ -131,7 +131,7 @@ bool hd_serialize_xprv(const struct ext_key *ek,
     memcpy(data + 4, payload, BIP32_EXTKEY_SIZE);
 
     size_t written = 0;
-    if (!base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written)) {
+    if (!domain_encoding_base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written)) {
         memory_cleanse(data, sizeof(data));
         LOG_FAIL(DOMAIN, "base58check_encode failed for xprv");
     }
@@ -158,7 +158,7 @@ bool hd_serialize_xpub(const struct ext_pubkey *epk,
     memcpy(data + 4, payload, BIP32_EXTKEY_SIZE);
 
     size_t written = 0;
-    if (!base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written))
+    if (!domain_encoding_base58check_encode(data, BIP32_SERIALIZED_SIZE, out, out_size, &written))
         LOG_FAIL(DOMAIN, "base58check_encode failed for xpub");
 
     return true;
@@ -175,7 +175,7 @@ bool hd_deserialize_xprv(const char *str,
     unsigned char data[BIP32_SERIALIZED_SIZE + 4]; /* extra room for safety */
     size_t decoded_len = 0;
 
-    if (!base58check_decode(str, data, sizeof(data), &decoded_len))
+    if (!domain_encoding_base58check_decode(str, data, sizeof(data), &decoded_len))
         LOG_FAIL(DOMAIN, "base58check_decode failed for xprv");
 
     if (decoded_len != BIP32_SERIALIZED_SIZE)
@@ -207,7 +207,7 @@ bool hd_deserialize_xpub(const char *str,
     unsigned char data[BIP32_SERIALIZED_SIZE + 4];
     size_t decoded_len = 0;
 
-    if (!base58check_decode(str, data, sizeof(data), &decoded_len))
+    if (!domain_encoding_base58check_decode(str, data, sizeof(data), &decoded_len))
         LOG_FAIL(DOMAIN, "base58check_decode failed for xpub");
 
     if (decoded_len != BIP32_SERIALIZED_SIZE)

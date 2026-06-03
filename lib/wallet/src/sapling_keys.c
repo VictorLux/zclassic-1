@@ -4,7 +4,7 @@
 
 #include "wallet/sapling_keys.h"
 #include "core/random.h"
-#include "encoding/bech32.h"
+#include "domain/encoding/bech32.h"
 #include "encoding/utilstrencodings.h"
 #include "sapling/sapling.h"
 #include "support/cleanse.h"
@@ -137,7 +137,7 @@ bool sapling_encode_payment_address(const uint8_t diversifier[ZC_DIVERSIFIER_SIZ
     if (!ConvertBits(8, 5, true, raw, 43, data5, sizeof(data5), &data5_len))
         return false;
 
-    return bech32_encode(out, out_size, hrp, data5, data5_len);
+    return domain_encoding_bech32_encode(out, out_size, hrp, data5, data5_len);
 }
 
 bool sapling_decode_payment_address(const char *str,
@@ -147,7 +147,7 @@ bool sapling_decode_payment_address(const char *str,
     char hrp[64];
     uint8_t data5[128];
     size_t data5_len = 0;
-    if (!bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
+    if (!domain_encoding_bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
         return false;
 
     uint8_t raw[64];
@@ -301,7 +301,7 @@ bool sapling_encode_extended_spending_key(const struct zip32_xsk *xsk,
     }
     memory_cleanse(raw, sizeof(raw));
 
-    bool ok = bech32_encode(out, out_size, hrp, data5, data5_len);
+    bool ok = domain_encoding_bech32_encode(out, out_size, hrp, data5, data5_len);
     memory_cleanse(data5, sizeof(data5));
     return ok;
 }
@@ -312,7 +312,7 @@ bool sapling_decode_extended_spending_key(const char *str,
     char hrp[64];
     uint8_t data5[272];
     size_t data5_len = 0;
-    if (!bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
+    if (!domain_encoding_bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
         return false;
 
     /* Verify HRP starts with "secret-extended-key-" */
@@ -389,7 +389,7 @@ bool sapling_encode_extended_full_viewing_key(const struct zip32_xfvk *xfvk,
                      data5, sizeof(data5), &data5_len))
         return false;
 
-    return bech32_encode(out, out_size, hrp, data5, data5_len);
+    return domain_encoding_bech32_encode(out, out_size, hrp, data5, data5_len);
 }
 
 bool sapling_decode_extended_full_viewing_key(const char *str,
@@ -398,7 +398,7 @@ bool sapling_decode_extended_full_viewing_key(const char *str,
     char hrp[64];
     uint8_t data5[272];
     size_t data5_len = 0;
-    if (!bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
+    if (!domain_encoding_bech32_decode(hrp, sizeof(hrp), data5, sizeof(data5), &data5_len, str))
         return false;
 
     uint8_t raw[256];
