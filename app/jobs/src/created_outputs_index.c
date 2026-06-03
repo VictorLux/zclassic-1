@@ -63,7 +63,7 @@ bool created_outputs_index_put_block(sqlite3 *db, const struct block *blk,
             sqlite3_bind_blob (st, 4, o->script_pub_key.data,
                                (int)o->script_pub_key.size, SQLITE_STATIC);
             sqlite3_bind_int64(st, 5, (sqlite3_int64)height);
-            int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+            int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
             if (rc != SQLITE_DONE) {
                 LOG_WARN("created_outputs",
                          "[created_outputs] put height=%d tx=%zu vout=%zu rc=%d",
@@ -95,7 +95,7 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
     sqlite3_bind_blob (st, 1, txid, 32, SQLITE_STATIC);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)vout);
     bool found = false;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         if (value_out)
             *value_out = (int64_t)sqlite3_column_int64(st, 0);
         const void *blob = sqlite3_column_blob(st, 1);
@@ -127,7 +127,7 @@ bool created_outputs_index_prune_below(sqlite3 *db, int floor)
         return false;
     }
     sqlite3_bind_int(st, 1, floor);
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         LOG_WARN("created_outputs", "[created_outputs] prune floor=%d rc=%d",

@@ -243,7 +243,7 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
         sqlite3_bind_null(stmt, 4);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)platform_time_wall_unix());
 
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         LOG_WARN("validate_headers", "[validate_headers] insert height=%d rc=%d", job->height, rc);
@@ -317,7 +317,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     int n = 0;
     int64_t last_seen = start - 1;
     while (n < VH_BATCH_SIZE &&
-           (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+           (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         int64_t h64 = sqlite3_column_int64(stmt, 0);
         last_seen = h64;
         if (h64 < 0 || h64 > INT32_MAX) {
@@ -623,7 +623,7 @@ bool validate_headers_stage_has_pass_record(int32_t height,
     sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
 
     bool found = false;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
         found = sqlite3_column_int(st, 0) == 1;
     sqlite3_finalize(st);
     progress_store_tx_unlock();

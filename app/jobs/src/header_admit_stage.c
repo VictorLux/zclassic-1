@@ -260,7 +260,7 @@ static bool log_row_active_match(sqlite3 *db, int height,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         const void *blob = sqlite3_column_blob(st, 0);
         int nb = sqlite3_column_bytes(st, 0);
         if (blob && nb == 32) {
@@ -573,7 +573,7 @@ bool header_admit_stage_has_record(int32_t height,
 
     sqlite3_bind_int(st, 1, height);
     bool found = false;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         const void *blob = sqlite3_column_blob(st, 0);
         int nb = sqlite3_column_bytes(st, 0);
         found = (blob && nb == 32 &&

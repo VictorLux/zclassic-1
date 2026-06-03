@@ -92,7 +92,7 @@ static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
                 sqlite3_errmsg(db));
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *out_ok = sqlite3_column_int(st, 0);
         const unsigned char *txt = sqlite3_column_text(st, 1);
@@ -137,7 +137,7 @@ static bool log_insert(sqlite3 *db, int height,
     else
         sqlite3_bind_null(stmt, 7);
 
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         LOG_WARN("body_fetch", "[body_fetch] insert height=%d rc=%d", height, rc);

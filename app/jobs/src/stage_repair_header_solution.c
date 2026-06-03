@@ -101,7 +101,7 @@ bool stage_repair_header_solution_save(sqlite3 *db, int height,
     sqlite3_bind_int64(st, 11, (sqlite3_int64)header->nSolutionSize);
     sqlite3_bind_int64(st, 12,
                        (sqlite3_int64)platform_time_wall_unix());
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(st);
     progress_store_tx_unlock();
     if (rc != SQLITE_DONE) {
@@ -129,7 +129,7 @@ bool stage_repair_header_solution_load(sqlite3 *db, int height,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_DONE) {
         sqlite3_finalize(st);
         return false;

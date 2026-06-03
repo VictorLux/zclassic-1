@@ -50,7 +50,7 @@ static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
     uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
         out = (uint64_t)sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     progress_store_tx_unlock();
@@ -96,7 +96,7 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
         return -1;
     }
     int64_t n = -1;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
         n = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     progress_store_tx_unlock();

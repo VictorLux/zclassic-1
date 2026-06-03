@@ -79,6 +79,49 @@ writes across `app/models/src/`, `app/controllers/src/`,
 the AR lifecycle (one of the three macros above). `make lint` runs
 `check_raw_sqlite.sh` as gate #3 of 17.
 
+### The one principled exception: the `progress.kv` kernel store
+
+The AR lifecycle is the law for **`node.db` domain models** — blocks,
+UTXOs, wallet keys, peers, mempool entries. Those rows have an identity,
+a `validate_*` function, and before/after-save hooks; AR exists to make
+every such write run that chain.
+
+The reducer pipeline does **not** write its stage state to `node.db`. It
+writes to `progress.kv` — a *separate, singleton, WAL kernel store*
+(`lib/storage/src/progress_store.c`, opened once at boot) that holds the
+F-2 `stage` primitive's `stage_cursor` table plus the per-stage `*_log`
+tables (`header_admit_log`, `body_fetch_log`, `validate_headers_log`,
+`utxo_apply_log`, `utxo_apply_delta`, `created_outputs`,
+`tip_finalize_log`, …). `progress.kv` sits **below** the AR/domain-model
+layer by design (see `storage/progress_store.h` and `docs/FRAMEWORK.md`):
+a `stage_cursor` row is not a model, it has no domain identity and no
+save hooks. Cursor commits are tiny, on the hot path, and want their own
+WAL out of the way of the much larger `node.db` transactions; the saga
+atomicity contract (a stage advance and its log row commit together)
+lives in `progress_store_tx_lock()` + `BEGIN IMMEDIATE`, not in AR.
+
+Routing these writes through AR would be a **category error** — there is
+no model to validate and no hook to fire. The correct discipline is:
+
+- A raw `sqlite3_step` on the `progress.kv` handle (always sourced from
+  `progress_store_db()`, never a `node_db`/`ndb` handle) is
+  **correct-by-design**, not migration debt.
+- Every such site MUST carry the single canonical marker
+  **`// raw-sql-ok:progress-kv-kernel-store`** (one no-space token after
+  the colon). The marker is self-documenting: it asserts "this is the
+  kernel cursor store, below AR." The home module
+  `progress_store.c` itself uses the equivalent `kernel-primitive` tag
+  for the same reason.
+- This is a **bounded, stable exception**, not a deferred migration. The
+  count is documented and changes only when the reducer gains or drops a
+  stage table — it does not ratchet toward zero the way the `node.db`
+  allowlist did. `check_raw_sqlite.sh` treats the
+  `progress-kv-kernel-store` tag as the principled kernel-store hatch.
+
+If a reducer Job ever needs to write a `node.db` **model** (not a
+progress.kv `*_log`/cursor row), that write does NOT get the kernel-store
+marker — it goes through the AR lifecycle like any other model write.
+
 ---
 
 ## 2. Every function that can fail returns a result type — not bare bool
@@ -758,9 +801,14 @@ property (e.g. `fatal-true-triggers-rollback-and-partial-write-return`)
   `helper-return-path`, `paired-with-return-false-below`,
   `paired-with-event_emitf-below`, `warning-only-on-best-effort-path`,
   `crash-dump-banner`.
-- `raw-sql-ok:` — `kv-state-primitive`, `read-only-introspection`,
-  `state-kv-write-caller-handles-rc`, `cvs-zcl-ar-raw-sql-rationale`,
-  `test-fixture-setup`, `test-fixture-verify`, `standalone-dev-tool`.
+- `raw-sql-ok:` — `progress-kv-kernel-store` (the reducer pipeline's
+  `progress.kv` stage cursor + per-stage `*_log` tables — a kernel store
+  below the AR layer; see §1 "The one principled exception"),
+  `kernel-primitive` (the equivalent tag used inside
+  `lib/storage/src/progress_store.c` itself), `kv-state-primitive`,
+  `read-only-introspection`, `state-kv-write-caller-handles-rc`,
+  `cvs-zcl-ar-raw-sql-rationale`, `test-fixture-setup`,
+  `test-fixture-verify`, `standalone-dev-tool`.
 - `raw-return-ok:` — `qsort-comparator`, `logged-above`, `sentinel`,
   `bin-parser-bounds`, `sentinel-no-compile-time-windows`.
 - `raw-alloc-ok:` — `test-fixture`, `standalone-dev-tool`,

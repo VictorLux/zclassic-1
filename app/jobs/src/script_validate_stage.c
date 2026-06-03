@@ -243,7 +243,7 @@ static int body_persist_log_at(sqlite3 *db, int height,
     }
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         const unsigned char *src = sqlite3_column_text(st, 0);
         if (src)
@@ -293,7 +293,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     else
         sqlite3_bind_null(stmt, 8);
     sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         LOG_WARN("script_validate", "[script_validate] insert height=%d rc=%d", height, rc);
@@ -687,7 +687,7 @@ static void dump_blocking_failure(struct json_value *out, sqlite3 *db)
         json_push_kv_int(out, "blocking_height", -1);
         return;
     }
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc != SQLITE_ROW) {
         sqlite3_finalize(st);
         json_push_kv_int(out, "blocking_height", -1);

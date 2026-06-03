@@ -455,7 +455,7 @@ bool utxo_apply_delta_persist(sqlite3 *db, int height,
                        branch_hash ? 32 : 0, SQLITE_STATIC);
     sqlite3_bind_blob (stmt, 3, spent_blob, (int)spent_len, SQLITE_STATIC);
     sqlite3_bind_blob (stmt, 4, added_blob, (int)added_len, SQLITE_STATIC);
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     free(spent_blob); free(added_blob);
     if (rc != SQLITE_DONE) {
@@ -487,7 +487,7 @@ static uint64_t cursor_persisted(sqlite3 *db, const char *name)
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
     uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
         out = (uint64_t)sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return out;
@@ -506,7 +506,7 @@ static int delta_branch_hash_at(sqlite3 *db, int height, struct uint256 *out)
     }
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         const void *blob = sqlite3_column_blob(st, 0);
         int n = sqlite3_column_bytes(st, 0);
         if (blob && n == 32) {
@@ -535,7 +535,7 @@ static bool emit_inverse_delta(sqlite3 *db, int height)
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    if (sqlite3_step(st) != SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) != SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         /* No delta row for a height we believe we applied: corruption or
          * a failure row (which we never persist a delta for). Either way
          * there is nothing to invert at this height. */
@@ -611,7 +611,7 @@ static bool delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
         }
         sqlite3_bind_int(st, 1, fork_plus1);
         sqlite3_bind_int(st, 2, last_h);
-        int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+        int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         sqlite3_finalize(st);
         st = NULL;
         if (rc != SQLITE_DONE) {
@@ -639,7 +639,7 @@ static bool unwind_write_cursor(sqlite3 *db, uint64_t value)
     sqlite3_bind_text (st, 1, STAGE_NAME, -1, SQLITE_STATIC);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)value);
     sqlite3_bind_int64(st, 3, (sqlite3_int64)wall_now_s());
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         LOG_WARN("utxo_apply", "[utxo_apply] unwind cursor step rc=%d", rc);

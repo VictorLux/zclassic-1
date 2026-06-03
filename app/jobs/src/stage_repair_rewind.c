@@ -43,7 +43,7 @@ static bool body_fetch_skipped_invalid(sqlite3 *db, int height, bool *out)
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         const unsigned char *source = sqlite3_column_text(st, 0);
         int ok = sqlite3_column_int(st, 1);
@@ -117,7 +117,7 @@ static int delete_from_table(sqlite3 *db, const char *table, int height)
                 "[stage_repair] delete prepare failed table=%s: %s",
                 table, sqlite3_errmsg(db));
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     int changed = sqlite3_changes(db);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE)
@@ -145,7 +145,7 @@ bool stage_repair_force_stage_cursor(sqlite3 *db, const char *name, int height)
     sqlite3_bind_int64(st, 2, (sqlite3_int64)height);
     sqlite3_bind_int64(st, 3,
                        (sqlite3_int64)platform_time_wall_unix());
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
@@ -171,7 +171,7 @@ static bool table_has_success_at_or_above(sqlite3 *db, const char *table,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *out = true;
     } else if (rc != SQLITE_DONE) {

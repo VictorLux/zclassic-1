@@ -58,7 +58,7 @@ bool validate_headers_stage_window_report(
     }
     sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->checked_count = sqlite3_column_int64(st, 0);
         out->failed_count = sqlite3_column_int64(st, 1);
         out->available = true;
@@ -79,7 +79,7 @@ bool validate_headers_stage_window_report(
     }
     sqlite3_bind_int64(st, 1, (sqlite3_int64)start_height);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)end_height);
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->first_failed_height = sqlite3_column_int64(st, 0);
         const unsigned char *reason = sqlite3_column_text(st, 1);
         snprintf(out->first_fail_reason, sizeof(out->first_fail_reason),
@@ -118,7 +118,7 @@ void validate_headers_failure_summary_load(
         "SELECT COUNT(*) FROM validate_headers_log WHERE ok=0",
         -1, &st, NULL);
     if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->count = sqlite3_column_int64(st, 0);
     }
     sqlite3_finalize(st);
@@ -131,7 +131,7 @@ void validate_headers_failure_summary_load(
         " ORDER BY height ASC LIMIT 1",
         -1, &st, NULL);
     if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->first_height = sqlite3_column_int64(st, 0);
         const unsigned char *reason = sqlite3_column_text(st, 1);
         snprintf(out->first_reason, sizeof(out->first_reason),
@@ -147,7 +147,7 @@ void validate_headers_failure_summary_load(
         " ORDER BY height DESC LIMIT 1",
         -1, &st, NULL);
     if (rc == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->last_height = sqlite3_column_int64(st, 0);
         const unsigned char *reason = sqlite3_column_text(st, 1);
         snprintf(out->last_reason, sizeof(out->last_reason),

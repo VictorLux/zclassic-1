@@ -60,7 +60,7 @@ int utxo_apply_log_at(sqlite3 *db, int height,
     }
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         out->ok = sqlite3_column_int(st, 0);
         out->spent_count = sqlite3_column_int64(st, 1);
@@ -88,7 +88,7 @@ bool utxo_apply_sums_through(sqlite3 *db, int height,
     }
     sqlite3_bind_int(st, 1, height);
     bool ok = false;
-    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         *spent_out = sqlite3_column_int64(st, 0);
         *added_out = sqlite3_column_int64(st, 1);
         ok = true;
@@ -132,7 +132,7 @@ bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
         sqlite3_bind_blob(stmt, 9, tip_hash->data, 32, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 9);
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         LOG_WARN("tip_finalize", "[tip_finalize] insert height=%d rc=%d", height, rc);
@@ -153,7 +153,7 @@ bool finalized_tip_row_at(sqlite3 *db, int height,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         out->found = true;
         out->ok = sqlite3_column_int(st, 0) != 0;

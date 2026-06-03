@@ -102,7 +102,7 @@ static int proof_validate_log_at(sqlite3 *db, int height,
     }
     sqlite3_bind_int(st, 1, height);
     int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:kernel-primitive
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         out->ok = sqlite3_column_int(st, 0);
         found = 1;
@@ -143,7 +143,7 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     else
         sqlite3_bind_null(stmt, 8);
     sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
-    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
         LOG_WARN("utxo_apply", "[utxo_apply] insert height=%d rc=%d", height, rc);
@@ -431,7 +431,7 @@ bool utxo_apply_stage_succeeded_at(int height)
             "SELECT ok FROM utxo_apply_log WHERE height = ?",
             -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, height);
-        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
             ok = sqlite3_column_int(st, 0) == 1;
         sqlite3_finalize(st);
     }
@@ -501,7 +501,7 @@ static void dump_first_failure(struct json_value *out, sqlite3 *db)
         "  FROM utxo_apply_log WHERE ok=0 "
         " ORDER BY height ASC LIMIT 1",
         -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:kernel-primitive
+        sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         json_push_kv_int(out, "first_failure_height",
                          sqlite3_column_int64(st, 0));
         const unsigned char *status = sqlite3_column_text(st, 1);

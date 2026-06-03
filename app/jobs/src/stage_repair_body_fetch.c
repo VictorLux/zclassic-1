@@ -34,7 +34,7 @@ bool stage_repair_read_validate_row(sqlite3 *db, int height,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         out->found = true;
         out->ok = sqlite3_column_int(st, 0);
@@ -66,7 +66,7 @@ bool stage_repair_cursor_at_unlocked(sqlite3 *db, const char *name, int *out)
         return false;
     }
     sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *out = sqlite3_column_int(st, 0);
     } else if (rc != SQLITE_DONE) {
@@ -95,7 +95,7 @@ static bool body_fetch_row_observed_unlocked(sqlite3 *db, int height,
         return false;
     }
     sqlite3_bind_int(st, 1, height);
-    int rc = sqlite3_step(st);  // raw-sql-ok:stage-repair-kernel
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *found = true;
         *observed = sqlite3_column_int(st, 0) == 1;
