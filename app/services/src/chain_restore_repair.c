@@ -584,9 +584,30 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
     }
 
     if (!r.ok) {
-        LOG_WARN("chain", "[chain-integrity] post-restore check FAILED: " "zero_nbits=%d (first_h=%d) tip_window_holes=%d (first_h=%d) " "total_holes=%d mismatches=%d (first_h=%d) tip_h=%d", r.zero_nbits_count, r.first_nbits_zero_height, r.tip_window_holes, r.first_tip_window_hole, r.active_chain_holes, r.active_chain_mismatches, r.first_mismatch_height, r.tip_height);
-        chain_restore_log_first_mismatch(&ms->chain_active,
-                                         r.first_mismatch_height);
+        /* `r.ok` also folds in tip_slot_ok / tip_real (the tip block being
+         * data-backed), which are NOT in the counter message — so a benign
+         * header-only / live-tip-only boot can flip r.ok false with every
+         * counter at zero. Classify first so the log names the real state:
+         * only zero-nbits or active-chain height/pprev mismatches are
+         * UNRECOVERABLE corruption; everything else is RECONCILABLE and the
+         * reducer fixes it forward. (Logging only — the return below is
+         * unchanged.) */
+        if (chain_integrity_classify(&r) == CHAIN_INTEGRITY_UNRECOVERABLE) {
+            LOG_WARN("chain", "[chain-integrity] post-restore check FAILED "
+                "(UNRECOVERABLE): zero_nbits=%d (first_h=%d) tip_window_holes=%d "
+                "(first_h=%d) total_holes=%d mismatches=%d (first_h=%d) tip_h=%d",
+                r.zero_nbits_count, r.first_nbits_zero_height, r.tip_window_holes,
+                r.first_tip_window_hole, r.active_chain_holes,
+                r.active_chain_mismatches, r.first_mismatch_height, r.tip_height);
+            chain_restore_log_first_mismatch(&ms->chain_active,
+                                             r.first_mismatch_height);
+        } else {
+            printf("[chain-integrity] post-restore check RECONCILABLE: tip_h=%d "
+                   "(zero_nbits=%d tip_window_holes=%d mismatches=%d; tip not "
+                   "yet data-backed) — reducer will reconcile forward\n",
+                   r.tip_height, r.zero_nbits_count, r.tip_window_holes,
+                   r.active_chain_mismatches);
+        }
     } else if (tip) {
         /* Holes below tip-WINDOW are expected (live-tip-only boot)
          * and not corruption — report them at INFO so operators

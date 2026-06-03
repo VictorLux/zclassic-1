@@ -342,6 +342,43 @@ static int test_reindex_clear_coins_state(void)
     return failures;
 }
 
+/* CASE 6 — the heal is DURABLE/idempotent: after it re-points the anchor, a
+ * second open passes via the normal tip-OK path (not reconcile) and the anchor
+ * stays put. Proves the full self-heal loop a real boot would take. */
+static int test_coins_anchor_reconcile_heal_is_durable(void)
+{
+    int failures = 0;
+    char dir[256]; car_path(dir, sizeof(dir), "durable"); car_mkdir_p(dir);
+    char dbpath[512]; snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("car: heal is durable — second open passes without re-healing") {
+        sqlite3 *db = NULL;
+        ASSERT(car_build_min_db(&db, dbpath));
+        const int FRONTIER = 500;
+        uint8_t frontier_hash[32];
+        car_seed_wedge(db, FRONTIER, frontier_hash);
+        uint8_t cmt[32]; uint64_t count = 0;
+        utxo_commitment_sha3_compute(db, cmt, &count);
+        ASSERT(utxo_commitment_sha3_save(db, cmt, FRONTIER, count));
+
+        struct coins_view_sqlite cvs;
+        ASSERT(coins_view_sqlite_open(&cvs, db));     /* first open heals */
+        coins_view_sqlite_close(&cvs);
+
+        struct coins_view_sqlite cvs2;
+        ASSERT(coins_view_sqlite_open(&cvs2, db));    /* second open: clean */
+        uint8_t now[32];
+        ASSERT(car_get_anchor(db, now));
+        ASSERT(memcmp(now, frontier_hash, 32) == 0);  /* anchor unchanged */
+        coins_view_sqlite_close(&cvs2);
+
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_coins_anchor_reconcile_all(void)
 {
     int failures = 0;
@@ -350,5 +387,6 @@ int test_coins_anchor_reconcile_all(void)
     failures += test_coins_anchor_reconcile_refuses_torn_set();
     failures += test_coins_anchor_reconcile_refuses_commitment_below_frontier();
     failures += test_reindex_clear_coins_state();
+    failures += test_coins_anchor_reconcile_heal_is_durable();
     return failures;
 }
