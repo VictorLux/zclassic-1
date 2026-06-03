@@ -2081,13 +2081,20 @@ bool app_init(struct app_context *ctx)
                                g_state.map_block_index.size,
                                (long long)elapsed);
 
-                        /* Fix phashBlock pointers after bulk insert */
+                        /* Option A: re-seed per-node hash storage and point
+                         * phashBlock at it (boot_insert_block_index_cb ->
+                         * chainstate_insert_block_index already does this at
+                         * insert; idempotent re-assert here). Never points
+                         * into the reallocatable bucket array. */
                         size_t iter2 = 0;
                         struct block_index *pi2;
                         const struct uint256 *hash2;
                         while (block_map_next(&g_state.map_block_index,
                                               &iter2, &hash2, &pi2))
-                            if (pi2) pi2->phashBlock = hash2;
+                            if (pi2 && hash2) {
+                                pi2->hashBlock = *hash2;
+                                pi2->phashBlock = &pi2->hashBlock;
+                            }
 
                         /* Compute chain work + set chain tip directly.
                          * This avoids the O(n^2) find_most_work_chain scan
@@ -2710,25 +2717,12 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    /* Re-link phashBlock pointers after all block_map modifications.
-     * block_map_grow reallocates buckets, invalidating any phashBlock
-     * pointers stored in block_index entries. This single O(n) pass
-     * ensures all pointers are valid before validation and P2P start. */
-    {
-        size_t relink_iter = 0;
-        struct block_index *relink_bi;
-        const struct uint256 *relink_hash;
-        int relinked = 0;
-        while (block_map_next(&g_state.map_block_index, &relink_iter,
-                              &relink_hash, &relink_bi)) {
-            if (relink_bi && relink_bi->phashBlock != relink_hash) {
-                relink_bi->phashBlock = relink_hash;
-                relinked++;
-            }
-        }
-        if (relinked > 0)
-            printf("Re-linked %d phashBlock pointers\n", relinked);
-    }
+    /* Option A: phashBlock now references per-node block_index.hashBlock
+     * (stable, never freed by bucket realloc), seeded at every insert.
+     * The old bucket-identity relink pass is intentionally removed: under
+     * Option A 'phashBlock != &bucket.hash' is ALWAYS true, so it would
+     * re-point every node BACK into the reallocatable bucket array and
+     * re-introduce the UAF. No relink is needed. */
 
     /* Validate coins/chain agreement and execute recovery */
     {

@@ -303,15 +303,19 @@ bool load_block_index_from_projection(struct main_state *ms,
         return true;
     }
 
-    /* Refresh phashBlock — map rehashing during inserts can move bucket
-     * storage (block_map keeps the canonical hash in the bucket). */
+    /* Option A: re-seed every node's per-node hash storage and point
+     * phashBlock at it (never into the reallocatable bucket array). The
+     * projection-fold inserts go through chainstate_insert_block_index
+     * which already does this; this pass re-asserts it idempotently. */
     {
         size_t iter = 0;
         struct block_index *pi;
         const struct uint256 *hash;
         while (block_map_next(&ms->map_block_index, &iter, &hash, &pi)) {
-            if (pi)
-                pi->phashBlock = hash;
+            if (pi && hash) {
+                pi->hashBlock = *hash;
+                pi->phashBlock = &pi->hashBlock;
+            }
         }
     }
 

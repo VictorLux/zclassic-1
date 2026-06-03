@@ -134,15 +134,15 @@ struct block_index *chain_restore_create_anchor(
     anchor->nTx = 0;
     arith_uint256_set_zero(&anchor->nChainWork);
 
+    /* Option A: anchor owns its hash in per-node storage (anchor is a
+     * heap block_index, so &anchor->hashBlock is stable for its lifetime).
+     * Seed before publishing into the map. */
+    anchor->hashBlock = *hash;
+    anchor->phashBlock = &anchor->hashBlock;
+
     if (!block_map_insert(&ms->map_block_index, hash, anchor)) {
         free(anchor);
         return NULL;
-    }
-
-    anchor->phashBlock = block_map_find_hash(&ms->map_block_index, hash);
-    if (!anchor->phashBlock) {
-        /* Insert succeeded but hash lookup failed — shouldn't happen */
-        LOG_INFO("chain_restore", "chain_restore: anchor inserted but hash not found");
     }
 
     return anchor;

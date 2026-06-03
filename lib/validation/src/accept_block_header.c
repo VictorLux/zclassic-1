@@ -174,18 +174,15 @@ struct block_index *add_to_block_index(struct main_state *ms,
         pindex->nSolutionSize = 0;
     }
 
+    /* Option A: stable per-node hash storage, written before publishing
+     * pindex into the map so concurrent lock-free locator builds never
+     * deref a freed bucket. */
+    pindex->hashBlock = hash;
+    pindex->phashBlock = &pindex->hashBlock;
+
     if (!block_map_insert(&ms->map_block_index, &hash, pindex)) {
         free(pindex);
         return block_map_find(&ms->map_block_index, &hash);
-    }
-
-    /* phashBlock points into the block_map_entry's hash storage */
-    struct block_index *found = block_map_find(&ms->map_block_index, &hash);
-    if (found) {
-        const struct uint256 *stored = block_map_find_hash(
-            &ms->map_block_index, &hash);
-        if (stored)
-            found->phashBlock = stored;
     }
 
     /* Link to previous block */

@@ -305,6 +305,7 @@ int test_peer_bandwidth(void);
 int test_peer_lifecycle(void);
 int test_secrets_hygiene(void);
 int test_block_index_integrity(void);
+int test_block_map_grow_phashblock(void);
 int test_wallet_backup(void);
 int test_log_json(void);
 int test_http_middleware(void);

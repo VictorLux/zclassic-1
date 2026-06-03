@@ -115,10 +115,10 @@ bool block_map_reserve(struct block_map *m, size_t expected_count)
             block_map_insert_internal(m, &old[i].hash, old[i].index);
     }
     free(old);
-    for (size_t i = 0; i < cap; i++) {
-        if (m->buckets[i].occupied && m->buckets[i].index)
-            m->buckets[i].index->phashBlock = &m->buckets[i].hash;
-    }
+    /* Option A: phashBlock points at per-node block_index.hashBlock
+     * (never-freed), so reallocating the bucket array does not
+     * invalidate it. The bucket .hash keys are re-seeded by
+     * block_map_insert_internal above; no phashBlock repoint needed. */
     pthread_rwlock_unlock(&m->rwlock);
     return true;
 }
@@ -142,12 +142,14 @@ static bool block_map_grow(struct block_map *m)
     }
     free(old);
 
-    /* Fix phashBlock pointers: they pointed into old buckets which are now freed.
-     * Re-point each block_index's phashBlock to the new bucket location. */
-    for (size_t i = 0; i < new_cap; i++) {
-        if (m->buckets[i].occupied && m->buckets[i].index)
-            m->buckets[i].index->phashBlock = &m->buckets[i].hash;
-    }
+    /* Option A: phashBlock references per-node block_index.hashBlock
+     * (never freed), NOT the bucket array. Growing/reallocating the
+     * bucket array therefore does not invalidate any phashBlock, so
+     * no repoint loop is needed here. This removes the UAF: lock-free
+     * readers (push_getheaders_from, syncsvc_build_locator_from_index,
+     * block_index_get_ancestor) deref *walk->phashBlock against stable
+     * per-node storage that this free() never touches. Bucket .hash
+     * keys are re-seeded by block_map_insert_internal above. */
 
     return true;
 }
@@ -601,7 +603,13 @@ struct block_index *chainstate_insert_block_index(struct chainstate *cs,
     struct block_index *bi = zcl_calloc(1, sizeof(struct block_index), "block_index");
     if (!bi) return NULL;
     block_index_init(bi);
+    /* Option A: stable per-node storage for the hash. Write hashBlock
+     * BEFORE publishing the node into the map, then point phashBlock
+     * at it. Lock-free readers that reach this node via pprev only ever
+     * deref *phashBlock (the value), which is never-freed and written
+     * exactly once here, so they can never observe a torn/dangling hash. */
+    bi->hashBlock = *hash;
+    bi->phashBlock = &bi->hashBlock;
     block_map_insert(&cs->map_block_index, hash, bi);
-    bi->phashBlock = block_map_find_hash(&cs->map_block_index, hash);
     return bi;
 }

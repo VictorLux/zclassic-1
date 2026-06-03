@@ -305,7 +305,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
         bm->buckets[slot].occupied = true;
         bm->size++;
 
-        pindex->phashBlock = &bm->buckets[slot].hash;
+        /* Option A: point phashBlock at per-node storage, not the bucket.
+         * The bucket keeps its own .hash key (memcpy above) for lookups. */
+        memcpy(pindex->hashBlock.data, entries[i].hash, 32);
+        pindex->phashBlock = &pindex->hashBlock;
         pindex->nHeight = entries[i].height;
         pindex->nBits = entries[i].n_bits;
         pindex->nTime = entries[i].n_time;
@@ -603,14 +606,21 @@ bool load_block_index(struct main_state *ms,
             return false;
     }
 
-    /* Fix phashBlock pointers — block_map rehashing invalidates them */
+    /* Option A: ensure every node owns its hash in per-node storage and
+     * phashBlock references it (not the reallocatable bucket array).
+     * The inner loader loop and chainstate_insert_block_index already do
+     * this at insert; this pass is a belt-and-suspenders re-seed that is
+     * also safe under concurrent grow (it writes per-node storage, never
+     * re-points into buckets). */
     {
         size_t iter = 0;
         struct block_index *pi;
         const struct uint256 *hash;
         while (block_map_next(&ms->map_block_index, &iter, &hash, &pi)) {
-            if (pi)
-                pi->phashBlock = hash;
+            if (pi && hash) {
+                pi->hashBlock = *hash;
+                pi->phashBlock = &pi->hashBlock;
+            }
         }
     }
 

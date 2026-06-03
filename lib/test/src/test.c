@@ -716,6 +716,7 @@ int main(void)
     failures += test_peer_lifecycle();
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
+    failures += test_block_map_grow_phashblock();
     failures += test_wallet_backup();
     { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
     { extern int test_wallet_persistence_cycle(void);

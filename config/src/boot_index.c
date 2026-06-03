@@ -480,18 +480,14 @@ static struct block_index *create_block_index_fast(
     pindex->nSolution = NULL;
     pindex->nSolutionSize = 0;
 
+    /* Option A: stable per-node hash storage (never freed by bucket
+     * realloc), seeded before publishing pindex into the map. */
+    pindex->hashBlock = meta->hash;
+    pindex->phashBlock = &pindex->hashBlock;
+
     if (!block_map_insert(&ms->map_block_index, &meta->hash, pindex)) {
         free(pindex);
         return block_map_find(&ms->map_block_index, &meta->hash);
-    }
-
-    /* phashBlock must point to stable storage inside the block map */
-    struct block_index *found = block_map_find(&ms->map_block_index,
-                                               &meta->hash);
-    if (found) {
-        const struct uint256 *stored = block_map_find_hash(
-            &ms->map_block_index, &meta->hash);
-        if (stored) found->phashBlock = stored;
     }
 
     /* Link to previous block */

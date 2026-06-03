@@ -147,10 +147,11 @@ int chain_restore_rebuild_active_chain_from_disk(
                 replacement->pskip = NULL;
                 cur = replacement;
             }
-            const struct uint256 *stored_hash =
-                block_map_find_hash(&ms->map_block_index, &disk_hash);
-            if (stored_hash)
-                cur->phashBlock = stored_hash;
+            /* Option A: point phashBlock at cur's own stable per-node
+             * hash storage rather than into the reallocatable bucket
+             * array. Seed it from the disk hash. */
+            cur->hashBlock = disk_hash;
+            cur->phashBlock = &cur->hashBlock;
             if (h < tip->nHeight && c->chain[h + 1])
                 c->chain[h + 1]->pprev = cur;
             repaired_hashes++;
