@@ -76,7 +76,13 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
     X(mcp_e2e) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(secrets_hygiene) X(block_index_integrity) \
-    X(block_map_grow_phashblock) X(wallet_backup) \
+    X(block_map_grow_phashblock) \
+    X(block_locator_bounds) X(block_map_grow_collision) \
+    X(connect_node_locked) X(stream_read_no_overflow) \
+    X(fast_sync_serve_chunk_db_clamps) X(connman_node_count_locked) \
+    X(fees_oom) X(fees_oom_inject) X(multisig_consensus_branches) \
+    X(parse_script_oversize_hex) X(script_num_minimal_encoding) \
+    X(wallet_backup) \
     X(wallet_canary) X(wallet_persistence_cycle) \
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \

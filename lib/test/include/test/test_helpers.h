@@ -306,6 +306,18 @@ int test_peer_lifecycle(void);
 int test_secrets_hygiene(void);
 int test_block_index_integrity(void);
 int test_block_map_grow_phashblock(void);
+/* Subsection 5/6 finish-drive: defensive + consensus unit-test gaps. */
+int test_block_locator_bounds(void);
+int test_block_map_grow_collision(void);
+int test_connect_node_locked(void);
+int test_stream_read_no_overflow(void);
+int test_fast_sync_serve_chunk_db_clamps(void);
+int test_connman_node_count_locked(void);
+int test_fees_oom(void);
+int test_fees_oom_inject(void);
+int test_multisig_consensus_branches(void);
+int test_parse_script_oversize_hex(void);
+int test_script_num_minimal_encoding(void);
 int test_wallet_backup(void);
 int test_log_json(void);
 int test_http_middleware(void);

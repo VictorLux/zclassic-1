@@ -717,6 +717,18 @@ int main(void)
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_block_map_grow_phashblock();
+    /* Subsection 5/6 finish-drive: defensive + consensus unit-test gaps. */
+    failures += test_block_locator_bounds();
+    failures += test_block_map_grow_collision();
+    failures += test_connect_node_locked();
+    failures += test_stream_read_no_overflow();
+    failures += test_fast_sync_serve_chunk_db_clamps();
+    failures += test_connman_node_count_locked();
+    failures += test_fees_oom();
+    failures += test_fees_oom_inject();
+    failures += test_multisig_consensus_branches();
+    failures += test_parse_script_oversize_hex();
+    failures += test_script_num_minimal_encoding();
     failures += test_wallet_backup();
     { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
     { extern int test_wallet_persistence_cycle(void);

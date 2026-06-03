@@ -370,8 +370,6 @@ void socket_send_data(struct p2p_node *node);
 
 struct p2p_node *find_node_by_addr(struct net_manager *nm,
                                     const struct net_addr *addr);
-struct p2p_node *find_node_by_service(struct net_manager *nm,
-                                       const struct net_service *addr);
 
 struct p2p_node *connect_node(struct net_manager *nm,
                                struct net_address *addr_connect,

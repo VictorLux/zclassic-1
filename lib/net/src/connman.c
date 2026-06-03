@@ -1850,7 +1850,11 @@ void connman_open_connection(struct connman *cm,
 
 size_t connman_get_node_count(const struct connman *cm)
 {
-    return cm->manager.num_nodes;
+    struct net_manager *nm = (struct net_manager *)&cm->manager;
+    zcl_mutex_lock(&nm->cs_nodes);
+    size_t n = nm->num_nodes;
+    zcl_mutex_unlock(&nm->cs_nodes);
+    return n;
 }
 
 size_t connman_outbound_healthy_count(struct connman *cm)

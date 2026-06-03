@@ -724,19 +724,32 @@ struct p2p_node *find_node_by_addr(struct net_manager *nm,
     return NULL;
 }
 
-struct p2p_node *find_node_by_service(struct net_manager *nm,
-                                       const struct net_service *addr)
+/* Find a matching, NON-disconnect node and take a ref on it atomically under
+ * cs_nodes. Returns the node with ref_count already incremented, or NULL.
+ *
+ * connect_node runs on a different thread (RPC/MCP addnode -> connman_open_
+ * connection) than the socket disconnect sweep, which calls p2p_node_free()
+ * the instant ref_count hits 0. A plain find that unlocks cs_nodes before
+ * returning, then takes the add_ref afterwards, is a TOCTOU use-after-free:
+ * the node can be freed in the gap. Keeping the find + add_ref inside one
+ * cs_nodes acquire closes that window, and skipping disconnect-flagged nodes
+ * avoids re-reffing a peer the sweep is about to reap. */
+static struct p2p_node *find_node_by_service_locked(struct net_manager *nm,
+                                                    const struct net_service *addr)
 {
+    struct p2p_node *existing = NULL;
     zcl_mutex_lock(&nm->cs_nodes);
     for (size_t i = 0; i < nm->num_nodes; i++) {
         if (net_addr_eq(&nm->nodes[i]->addr.svc.addr, &addr->addr) &&
-            nm->nodes[i]->addr.svc.port == addr->port) {
-            zcl_mutex_unlock(&nm->cs_nodes);
-            return nm->nodes[i];
+            nm->nodes[i]->addr.svc.port == addr->port &&
+            !nm->nodes[i]->disconnect) {
+            existing = nm->nodes[i];
+            p2p_node_add_ref(existing);
+            break;
         }
     }
     zcl_mutex_unlock(&nm->cs_nodes);
-    return NULL;
+    return existing;
 }
 
 /* --- add node to manager --- */
@@ -768,11 +781,9 @@ struct p2p_node *connect_node(struct net_manager *nm,
      * parallel duplicate sockets to the same peer. Duplicate addnode sockets
      * cause repeated getheaders loops and can split one-shot fast-sync offers
      * across multiple connections. */
-    struct p2p_node *existing = find_node_by_service(nm, &addr_connect->svc);
-    if (existing) {
-        p2p_node_add_ref(existing);
+    struct p2p_node *existing = find_node_by_service_locked(nm, &addr_connect->svc);
+    if (existing)
         return existing;
-    }
 
     zcl_socket_t sock;
 

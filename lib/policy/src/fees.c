@@ -10,6 +10,7 @@
 #include <string.h>
 #include <assert.h>
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* --- tx_confirm_stats --- */
 
@@ -233,12 +234,24 @@ void block_policy_estimator_init(struct block_policy_estimator *e,
 
     size_t fee_cap = 128;
     double *fee_list = zcl_malloc(fee_cap * sizeof(double), "fee_list");
+    if (!fee_list) {
+        LOG_WARN("policy", "block_policy_estimator_init: fee_list alloc failed");
+        return;
+    }
     size_t fee_count = 0;
     for (double b = (double)fee_rate_get_fee_per_k(&e->min_tracked_fee);
          b <= MAX_FEERATE_VAL; b *= FEE_SPACING) {
         if (fee_count >= fee_cap) {
             fee_cap *= 2;
-            fee_list = zcl_realloc(fee_list, fee_cap * sizeof(double), "fee_list");
+            double *fee_tmp = zcl_realloc(fee_list, fee_cap * sizeof(double),
+                                          "fee_list");
+            if (!fee_tmp) {
+                LOG_WARN("policy",
+                         "block_policy_estimator_init: fee_list realloc failed");
+                free(fee_list);
+                return;
+            }
+            fee_list = fee_tmp;
         }
         fee_list[fee_count++] = b;
     }
@@ -249,12 +262,24 @@ void block_policy_estimator_init(struct block_policy_estimator *e,
 
     size_t pri_cap = 128;
     double *pri_list = zcl_malloc(pri_cap * sizeof(double), "pri_list");
+    if (!pri_list) {
+        LOG_WARN("policy", "block_policy_estimator_init: pri_list alloc failed");
+        return;
+    }
     size_t pri_count = 0;
     for (double b = e->min_tracked_priority;
          b <= MAX_PRIORITY_VAL; b *= PRI_SPACING) {
         if (pri_count >= pri_cap) {
             pri_cap *= 2;
-            pri_list = zcl_realloc(pri_list, pri_cap * sizeof(double), "pri_list");
+            double *pri_tmp = zcl_realloc(pri_list, pri_cap * sizeof(double),
+                                          "pri_list");
+            if (!pri_tmp) {
+                LOG_WARN("policy",
+                         "block_policy_estimator_init: pri_list realloc failed");
+                free(pri_list);
+                return;
+            }
+            pri_list = pri_tmp;
         }
         pri_list[pri_count++] = b;
     }
@@ -294,8 +319,13 @@ static struct tx_stats_entry *insert_stats_entry(
 {
     if (e->num_map_entries >= e->map_cap) {
         size_t newcap = e->map_cap * 2;
-        e->map_entries = zcl_realloc(e->map_entries,
-                                 newcap * sizeof(*e->map_entries), "fee_map_entries");
+        void *tmp = zcl_realloc(e->map_entries,
+                                newcap * sizeof(*e->map_entries), "fee_map_entries");
+        if (!tmp)
+            LOG_NULL("policy",
+                     "insert_stats_entry: realloc fee_map_entries failed newcap=%zu",
+                     newcap);
+        e->map_entries = tmp;
         memset(e->map_entries + e->map_cap, 0,
                (newcap - e->map_cap) * sizeof(*e->map_entries));
         e->map_cap = newcap;
@@ -359,6 +389,10 @@ void policy_process_transaction(struct block_policy_estimator *e,
 
     struct tx_stats_entry *ent = existing ? existing :
                                  insert_stats_entry(e, hash);
+    if (!ent)
+        return; /* OOM growing the stats map (logged at the realloc site):
+                 * skip this data point. The fee estimator is best-effort and
+                 * its existing state is intact, so a clean skip is correct. */
     ent->info.block_height = tx_height;
 
     if (entry->fee == 0 || policy_is_pri_data_point(e, &fr, cur_pri)) {

@@ -944,6 +944,7 @@ bool fast_sync_serve_chunk_db(sqlite3 *db, uint32_t chunk_index,
                                struct utxo_chunk *out)
 {
     GUARD(db && out, "sync", "serve_chunk_db: db or out is NULL");
+    if (chunk_size > 1000) chunk_size = 1000; /* entries[] capacity in struct utxo_chunk */
     memset(out, 0, sizeof(*out));
     out->chunk_index = chunk_index;
 

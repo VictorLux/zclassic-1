@@ -107,9 +107,9 @@ bool parse_script(const char *asm_str, struct script *out)
         } else if (strncmp(token, "0x", 2) == 0 && token[2] && IsHex(token + 2)) {
             size_t hex_len = strlen(token + 2);
             size_t byte_len = hex_len / 2;
+            if (byte_len > MAX_SCRIPT_SIZE || out->size + byte_len > MAX_SCRIPT_SIZE) { ok = false; break; }
             unsigned char raw[MAX_SCRIPT_SIZE];
             ParseHex(token + 2, raw, byte_len);
-            if (out->size + byte_len > MAX_SCRIPT_SIZE) { ok = false; break; }
             memcpy(out->data + out->size, raw, byte_len);
             out->size += byte_len;
         } else if (token[0] == '\'' && token[strlen(token)-1] == '\'' &&

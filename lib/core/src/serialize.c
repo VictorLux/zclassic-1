@@ -89,7 +89,7 @@ bool stream_write(struct byte_stream *s, const void *buf, size_t len)
 
 bool stream_read(struct byte_stream *s, void *buf, size_t len)
 {
-    if (s->error || s->read_pos + len > s->size) {
+    if (s->error || s->read_pos > s->size || len > s->size - s->read_pos) {
         s->error = true;
         return false;
     }
