@@ -488,7 +488,8 @@ int node_db_sync_import_utxos(struct node_db *ndb,
      * below starts from a fully-wiped-and-committed table, not a
      * half-deleted one. */
     /* Skip the wipe if the table is already empty — the caller
-     * (utxo_recovery_import_ldb) already wiped at service line 168.
+     * (utxo_recovery_import_ldb) already wiped via the
+     * "boot.ldb_import_prepare" wipe in utxo_recovery_restore.c.
      * This was the third redundant wipe that destroyed data. */
     int64_t existing = node_db_utxo_count(ndb);
     if (existing < 0) existing = 0;

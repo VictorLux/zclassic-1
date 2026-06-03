@@ -224,10 +224,7 @@ bool csr_restore_in_memory_view(struct chain_state_repository *csr,
 /* ── Read-only introspection ──────────────────────────────────── */
 void csr_snapshot(struct chain_state_repository *csr,
                    struct chain_state_view *out);
-void csr_last_persist_status(struct chain_state_repository *csr,
-                             int *out_sqlite_rc,
-                             char *out_msg,
-                             size_t out_msg_sz);
+
 
 /* ── Tunables ─────────────────────────────────────────────────── */
 

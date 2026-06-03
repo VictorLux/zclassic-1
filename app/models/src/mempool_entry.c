@@ -137,13 +137,7 @@ bool db_mempool_find(struct node_db *ndb, const uint8_t txid[32],
     return true;
 }
 
-void db_mempool_entry_free(struct db_mempool_entry *e)
-{
-    if (!e) return;
-    free(e->raw_tx);
-    e->raw_tx = NULL;
-    e->raw_tx_len = 0;
-}
+
 
 /* ── Delete ───────────────────────────────────────────────────── */
 
@@ -185,12 +179,6 @@ int64_t db_mempool_total_fee(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_INT64_SQL(ndb, "SELECT COALESCE(SUM(fee),0) FROM mempool");
-}
-
-int64_t db_mempool_total_size(struct node_db *ndb)
-{
-    if (!ndb->open) return 0;
-    AR_QUERY_INT64_SQL(ndb, "SELECT COALESCE(SUM(size),0) FROM mempool");
 }
 
 struct clear_txid_buf {

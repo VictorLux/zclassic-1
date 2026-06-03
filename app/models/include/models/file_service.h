@@ -32,12 +32,9 @@ bool db_file_service_validate(const struct db_file_service *fs,
 
 bool db_file_service_save(struct node_db *ndb,
                           const struct db_file_service *fs);
-bool db_file_service_find_by_addr(struct node_db *ndb,
-                                  const uint8_t ip[16], uint16_t port,
-                                  struct db_file_service *out);
-bool db_file_service_delete(struct node_db *ndb,
-                            const uint8_t ip[16], uint16_t port);
-int db_file_service_count(struct node_db *ndb);
+
+
+
 
 /* Get recently-seen file services for download scheduling. */
 int db_file_service_recent(struct node_db *ndb,

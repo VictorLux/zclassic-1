@@ -81,19 +81,6 @@ bool db_file_service_save(struct node_db *ndb,
 
 /* ── Find (cached stmt) ──────────────────────────────────────── */
 
-bool db_file_service_find_by_addr(struct node_db *ndb,
-                                  const uint8_t ip[16], uint16_t port,
-                                  struct db_file_service *out)
-{
-    if (!ndb->open) return false;
-
-    sqlite3_stmt *s = ndb->stmt_file_service_find;
-    AR_RESET(s);
-    AR_BIND_BLOB(s, 1, ip, 16);
-    AR_BIND_INT(s, 2, port);
-    AR_FIND_ONE_CACHED(s, out, row_to_file_service(s, out));
-}
-
 /* ── Delete ────────────────────────────────────────────────────── */
 
 bool db_file_service_delete(struct node_db *ndb,
@@ -112,14 +99,6 @@ bool db_file_service_delete(struct node_db *ndb,
         cbs, &fs,
         AR_BIND_BLOB(s, 1, ip, 16);
         AR_BIND_INT(s, 2, port));
-}
-
-/* ── Count ─────────────────────────────────────────────────────── */
-
-int db_file_service_count(struct node_db *ndb)
-{
-    if (!ndb->open) return 0;
-    AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM file_services");
 }
 
 /* ── Recent ────────────────────────────────────────────────────── */

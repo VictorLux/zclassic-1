@@ -152,9 +152,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     struct chain_evidence_controller *authority,
     const struct chain_evidence_controller_tip_request *request);
 
-enum chain_evidence_controller_result chain_evidence_controller_mark_background_progress(
-    struct chain_evidence_controller *authority,
-    int height);
+
 
 enum chain_evidence_controller_result chain_evidence_controller_mark_fully_validated(
     struct chain_evidence_controller *authority,

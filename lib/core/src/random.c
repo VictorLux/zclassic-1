@@ -100,27 +100,9 @@ int GetRandInt(int nMax)
     return (int)GetRand((uint64_t)nMax);
 }
 
-void GetRandHash(struct uint256 *hash)
-{
-    GetRandBytes(hash->data, 32);
-}
+
 
 uint32_t insecure_rand_Rz = 11;
 uint32_t insecure_rand_Rw = 11;
 
-void seed_insecure_rand(bool deterministic)
-{
-    if (deterministic) {
-        insecure_rand_Rz = insecure_rand_Rw = 11;
-    } else {
-        uint32_t tmp;
-        do {
-            GetRandBytes((unsigned char *)&tmp, 4);
-        } while (tmp == 0 || tmp == 0x9068ffffU);
-        insecure_rand_Rz = tmp;
-        do {
-            GetRandBytes((unsigned char *)&tmp, 4);
-        } while (tmp == 0 || tmp == 0x464fffffU);
-        insecure_rand_Rw = tmp;
-    }
-}
+

@@ -20,10 +20,7 @@ int64_t GetTime(void)
     return (int64_t)platform_time_wall_time_t();
 }
 
-void SetMockTime(int64_t nMockTimeIn)
-{
-    nMockTime = nMockTimeIn;
-}
+
 
 int64_t GetTimeMillis(void)
 {
@@ -55,17 +52,7 @@ int64_t GetTimeMicros(void)
 #endif
 }
 
-void MilliSleep(int64_t n)
-{
-#ifdef _WIN32
-    Sleep((DWORD)n);
-#else
-    struct timespec ts;
-    ts.tv_sec = n / 1000;
-    ts.tv_nsec = (n % 1000) * 1000000;
-    nanosleep(&ts, NULL);
-#endif
-}
+
 
 void DateTimeStrFormat(char *out, size_t out_size, const char *fmt, int64_t nTime)
 {

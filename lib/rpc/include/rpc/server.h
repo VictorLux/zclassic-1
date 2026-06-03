@@ -55,14 +55,14 @@ bool rpc_table_execute(const struct rpc_table *t, const char *method,
                        const struct json_value *params,
                        struct json_value *result);
 
-bool is_rpc_running(void);
+
 void set_rpc_warmup_status(const char *status);
 void set_rpc_warmup_finished(void);
 bool rpc_is_in_warmup(char *status_out, size_t status_size);
 
-bool start_rpc(void);
+
 void interrupt_rpc(void);
-void stop_rpc(void);
+
 
 CAmount amount_from_value(const struct json_value *value);
 void value_from_amount(CAmount amount, struct json_value *out);

@@ -57,9 +57,7 @@ void chain_tip_watchdog_register(struct main_state *ms);
 
 /* Optional retuning. All thresholds in seconds. Zero leaves the
  * existing value unchanged. */
-void chain_tip_watchdog_set_thresholds(int64_t mirror_secs,
-                                  int64_t reserved_secs,
-                                  int64_t restart_secs);
+
 
 /* Hard cap on consecutive no-progress restarts at one stuck height.
  * After this many restarts fail to advance the tip, the watchdog stops

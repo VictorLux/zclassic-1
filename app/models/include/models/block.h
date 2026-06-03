@@ -97,8 +97,7 @@ int db_block_transactions(struct node_db *ndb, const uint8_t hash[32],
 
 /* has_many :utxos — find UTXOs created in this block */
 struct db_utxo;
-int db_block_utxos(struct node_db *ndb, int height,
-                   struct db_utxo *out, size_t max);
+
 
 /* belongs_to :prev_block — find the parent block */
 bool db_block_prev(struct node_db *ndb, const struct db_block *b,

@@ -774,23 +774,3 @@ void csr_snapshot(struct chain_state_repository *csr,
         out->commits_rejected_total += csr->commits_rejected[i];
     pthread_mutex_unlock(&csr->lock);
 }
-
-void csr_last_persist_status(struct chain_state_repository *csr,
-                             int *out_sqlite_rc,
-                             char *out_msg,
-                             size_t out_msg_sz)
-{
-    if (out_sqlite_rc)
-        *out_sqlite_rc = SQLITE_OK;
-    if (out_msg && out_msg_sz > 0)
-        out_msg[0] = '\0';
-    if (!csr || !csr->initialized)
-        return;
-
-    pthread_mutex_lock(&csr->lock);
-    if (out_sqlite_rc)
-        *out_sqlite_rc = csr->last_persist_sqlite_rc;
-    if (out_msg && out_msg_sz > 0)
-        snprintf(out_msg, out_msg_sz, "%s", csr->last_persist_error);
-    pthread_mutex_unlock(&csr->lock);
-}

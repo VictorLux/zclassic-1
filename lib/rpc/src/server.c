@@ -153,10 +153,7 @@ bool rpc_table_execute(const struct rpc_table *t, const char *method,
     return cmd->actor(params, false, result);
 }
 
-bool is_rpc_running(void)
-{
-    return rpc_running;
-}
+
 
 void set_rpc_warmup_status(const char *status)
 {
@@ -186,22 +183,11 @@ bool rpc_is_in_warmup(char *status_out, size_t status_size)
     return result;
 }
 
-bool start_rpc(void)
-{
-    LogPrint("rpc", "Starting RPC\n");
-    rpc_running = true;
-    return true;
-}
+
 
 void interrupt_rpc(void)
 {
     LogPrint("rpc", "Interrupting RPC\n");
-    rpc_running = false;
-}
-
-void stop_rpc(void)
-{
-    LogPrint("rpc", "Stopping RPC\n");
     rpc_running = false;
 }
 

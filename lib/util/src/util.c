@@ -130,18 +130,7 @@ bool GetBoolArg(const char *arg, bool default_val)
     return default_val;
 }
 
-bool SoftSetArg(const char *arg, const char *value)
-{
-    if (find_arg(arg) >= 0)
-        return false;
-    if (g_nargs >= MAX_ARGS) return false;
-    snprintf(g_args[g_nargs].key, MAX_ARG_LEN, "%s", arg);
-    snprintf(g_args[g_nargs].value, MAX_ARG_LEN, "%s", value);
-    g_nargs++;
-    if (strcmp(arg, "-datadir") == 0)
-        ClearDataDirCache();
-    return true;
-}
+
 
 bool LogAcceptCategory(const char *category)
 {
@@ -253,40 +242,10 @@ void GetDataDir(bool fNetSpecific, char *out, size_t out_size)
     snprintf(cached, 4096, "%s", out);
 }
 
-void FileCommit(FILE *fp)
-{
-    fflush(fp);
-#ifdef _WIN32
-    HANDLE h = (HANDLE)_get_osfhandle(_fileno(fp));
-    FlushFileBuffers(h);
-#elif defined(__linux__) || defined(__NetBSD__)
-    fdatasync(fileno(fp));
-#elif defined(__APPLE__)
-    fcntl(fileno(fp), F_FULLFSYNC, 0);
-#else
-    fsync(fileno(fp));
-#endif
-}
 
-void SetupEnvironment(void)
-{
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
-    setenv("LC_ALL", "C", 0);
-#endif
-}
 
-void RenameThread(const char *name)
-{
-#if defined(PR_SET_NAME)
-    prctl(PR_SET_NAME, name, 0, 0, 0);
-#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    pthread_set_name_np(pthread_self(), name);
-#elif defined(__APPLE__)
-    pthread_setname_np(name);
-#else
-    (void)name;
-#endif
-}
+
+
 
 int GetNumCores(void)
 {

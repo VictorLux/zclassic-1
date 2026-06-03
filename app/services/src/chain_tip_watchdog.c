@@ -300,14 +300,7 @@ void chain_tip_watchdog_register(struct main_state *ms)
     }
 }
 
-void chain_tip_watchdog_set_thresholds(int64_t mirror_secs,
-                                  int64_t reserved_secs,
-                                  int64_t restart_secs)
-{
-    if (mirror_secs   > 0) atomic_store(&g_thr_mirror,   mirror_secs);
-    if (reserved_secs > 0) atomic_store(&g_thr_reserved, reserved_secs);
-    if (restart_secs  > 0) atomic_store(&g_thr_restart,  restart_secs);
-}
+
 
 void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out)
 {

@@ -607,32 +607,6 @@ int db_block_transactions(struct node_db *ndb, const uint8_t hash[32],
     return db_tx_find_by_block(ndb, hash, out, max);
 }
 
-/* has_many :utxos (created at this height) */
-int db_block_utxos(struct node_db *ndb, int height,
-                   struct db_utxo *out, size_t max)
-{
-    if (!ndb->open) return 0;
-    sqlite3_stmt *s = NULL;
-    AR_QUERY_LIST(ndb, s,
-        "SELECT txid,vout,value,script,script_type,"
-        "address_hash,is_coinbase FROM utxos WHERE height=?"
-        " LIMIT ?",
-        out, max,
-        AR_BIND_INT(s, 1, height);
-        AR_BIND_INT(s, 2, (int)max),
-        AR_READ_BLOB(s, 0, out[count].txid, 32);
-        out[count].vout = (uint32_t)AR_COL_INT(s, 1);
-        out[count].value = AR_COL_INT(s, 2);
-        out[count].script_len = (size_t)AR_COL_BYTES(s, 3);
-        out[count].script = NULL;
-        out[count].script_type = (int)AR_COL_INT(s, 4);
-        AR_READ_BLOB(s, 5, out[count].address_hash, 20);
-        if (sqlite3_column_blob(s, 5))
-            out[count].has_address = true;
-        out[count].is_coinbase = AR_COL_INT(s, 6) != 0;
-        out[count].height = height);
-}
-
 /* belongs_to :prev_block */
 bool db_block_prev(struct node_db *ndb, const struct db_block *b,
                    struct db_block *out)

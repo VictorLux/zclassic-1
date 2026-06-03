@@ -26,7 +26,7 @@ void ParseParameters(int argc, const char *const argv[]);
 const char *GetArg(const char *arg, const char *default_val);
 int64_t GetArgInt(const char *arg, int64_t default_val);
 bool GetBoolArg(const char *arg, bool default_val);
-bool SoftSetArg(const char *arg, const char *value);
+
 
 bool LogAcceptCategory(const char *category);
 int LogPrintStr(const char *str);
@@ -36,10 +36,10 @@ void GetDataDir(bool fNetSpecific, char *out, size_t out_size);
 void ClearDataDirCache(void);
 void SetDataDir(const char *datadir);
 
-void FileCommit(FILE *fileout);
 
-void SetupEnvironment(void);
-void RenameThread(const char *name);
+
+
+
 int GetNumCores(void);
 
 #define LogPrintf(...) do { \

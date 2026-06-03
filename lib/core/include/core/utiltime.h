@@ -13,8 +13,8 @@
 int64_t GetTime(void);
 int64_t GetTimeMillis(void);
 int64_t GetTimeMicros(void);
-void SetMockTime(int64_t nMockTimeIn);
-void MilliSleep(int64_t n);
+
+
 void DateTimeStrFormat(char *out, size_t out_size, const char *fmt, int64_t nTime);
 
 #endif

@@ -347,10 +347,10 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 bool utxo_recovery_prepare_reimport(struct node_db *ndb)
 {
     printf("Forced UTXO re-import requested.\n");
-    /* Only clear the migration flag — the wipe will happen at the
-     * start of utxo_recovery_import_ldb (line 168).  Wiping here
-     * AND in import_ldb was one of the three redundant wipes that
-     * could destroy imported UTXOs. */
+    /* Only clear the migration flag — the wipe happens inside
+     * utxo_recovery_import_ldb (the "boot.ldb_import_prepare" wipe in
+     * utxo_recovery_restore.c).  Wiping here AND in import_ldb was one of
+     * the three redundant wipes that could destroy imported UTXOs. */
     node_db_exec(ndb, "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
     return true;
 }

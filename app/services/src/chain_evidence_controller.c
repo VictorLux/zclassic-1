@@ -738,23 +738,7 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     return CEC_OK;
 }
 
-enum chain_evidence_controller_result chain_evidence_controller_mark_background_progress(
-    struct chain_evidence_controller *authority,
-    int height)
-{
-    if (!authority)
-        return CEC_REJECTED_NULL_ARG;
-    if (authority->state == CEC_CONTRADICTION_FROZEN)
-        return CEC_REJECTED_FROZEN;
-    if (!persist_i64(authority, "cec.background_validation_height", height))
-        return CEC_REJECTED_PERSIST;
-    if (authority->state == CEC_TIP_FOLLOWING ||
-        authority->state == CEC_SNAPSHOT_UTXO_HASH_VERIFIED) {
-        if (!persist_state(authority, CEC_BACKGROUND_VALIDATING))
-            return CEC_REJECTED_PERSIST;
-    }
-    return CEC_OK;
-}
+
 
 enum chain_evidence_controller_result chain_evidence_controller_mark_fully_validated(
     struct chain_evidence_controller *authority,
