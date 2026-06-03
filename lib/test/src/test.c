@@ -729,6 +729,34 @@ int main(void)
     failures += test_multisig_consensus_branches();
     failures += test_parse_script_oversize_hex();
     failures += test_script_num_minimal_encoding();
+    /* Subsection 3 finish-drive: crypto KAT + consensus regression-seal tests. */
+    failures += test_domain_consensus_pow_seal_matrix();
+    failures += test_domain_consensus_pow_seal_powlimit_floor();
+    failures += test_domain_consensus_pow_seal_malformed_paths();
+    failures += test_domain_consensus_pow_seal_deterministic();
+    failures += test_checkpoints_progress_boundary_crossover();
+    failures += test_checkpoints_progress_zero_defenses();
+    failures += test_checkpoints_progress_sigcheck_factor();
+    failures += test_checkpoints_progress_regression_seal();
+    failures += test_equihash_null_guards();
+    failures += test_equihash_solution_size_demux();
+    failures += test_equihash_blake2b_state_seal();
+    failures += test_equihash_serialization_matches_independent_rebuild();
+    failures += test_equihash_legacy_wrapper_regression_seal();
+    failures += test_coins_amount_codec_roundtrip();
+    failures += test_coins_amount_codec_boundary_exponents();
+    failures += test_coins_amount_codec_digit_preservation();
+    failures += test_coins_amount_codec_regression_seal();
+    failures += test_hmac_sha512_kat_rfc4231_jefe();
+    failures += test_hmac_sha512_kat_oversized_key();
+    failures += test_hmac_sha512_empty_message();
+    failures += test_hmac_sha512_multiblock_stateful_write();
+    failures += test_hmac_sha512_key_len_128_boundary();
+    failures += test_pbkdf2_sha512_rfc_vector();
+    failures += test_pbkdf2_sha512_multiblock();
+    failures += test_pbkdf2_sha512_high_iterations();
+    failures += test_pbkdf2_sha512_empty_inputs();
+    failures += test_pbkdf2_sha512_one_byte_output();
     failures += test_wallet_backup();
     { extern int test_wallet_canary(void); failures += test_wallet_canary(); }
     { extern int test_wallet_persistence_cycle(void);

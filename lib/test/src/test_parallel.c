@@ -82,6 +82,21 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(fast_sync_serve_chunk_db_clamps) X(connman_node_count_locked) \
     X(fees_oom) X(fees_oom_inject) X(multisig_consensus_branches) \
     X(parse_script_oversize_hex) X(script_num_minimal_encoding) \
+    X(domain_consensus_pow_seal_matrix)    X(domain_consensus_pow_seal_powlimit_floor) \
+    X(domain_consensus_pow_seal_malformed_paths)    X(domain_consensus_pow_seal_deterministic) \
+    X(checkpoints_progress_boundary_crossover)    X(checkpoints_progress_zero_defenses) \
+    X(checkpoints_progress_sigcheck_factor)    X(checkpoints_progress_regression_seal) \
+    X(equihash_null_guards)    X(equihash_solution_size_demux) \
+    X(equihash_blake2b_state_seal)    X(equihash_serialization_matches_independent_rebuild) \
+    X(equihash_legacy_wrapper_regression_seal)    X(coins_amount_codec_roundtrip) \
+    X(coins_amount_codec_boundary_exponents)    X(coins_amount_codec_digit_preservation) \
+    X(coins_amount_codec_regression_seal)    X(hmac_sha512_kat_rfc4231_jefe) \
+    X(hmac_sha512_kat_oversized_key)    X(hmac_sha512_empty_message) \
+    X(hmac_sha512_multiblock_stateful_write)    X(hmac_sha512_key_len_128_boundary) \
+    X(pbkdf2_sha512_rfc_vector)    X(pbkdf2_sha512_multiblock) \
+    X(pbkdf2_sha512_high_iterations)    X(pbkdf2_sha512_empty_inputs) \
+    X(pbkdf2_sha512_one_byte_output) \
+    X(wallet_backup) \
     X(wallet_backup) \
     X(wallet_canary) X(wallet_persistence_cycle) \
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
