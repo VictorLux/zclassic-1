@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,8 +53,17 @@
 #include "adapters/outbound/persistence/db_maintenance_sqlite.h"
 #include "ports/db_maintenance_port.h"
 
+#include "supervisors/domains.h"
 #include "util/log_macros.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
+
+/* Supervisor deadline (sec). The scheduler ticks every tick_seconds
+ * (default 60) but a single VACUUM can hold the DB lock for minutes on
+ * a multi-GB file, blocking the loop between heartbeats. A 10-minute
+ * deadline tolerates a long vacuum without a false stall, while still
+ * catching a genuinely wedged scheduler. */
+#define DB_MAINT_SUPERVISOR_DEADLINE_SEC 600
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -86,11 +96,80 @@ struct db_maintenance_state {
     char    last_error[256];
 
     db_maintenance_vacuum_gate_fn vacuum_gate;
+
+    /* Supervisor liveness (Round 5). loop_ticks advances once per
+     * outer-loop wake so the supervisor sees forward progress between
+     * the (sparse) maintenance runs. */
+    _Atomic supervisor_child_id supervisor_id;
+    _Atomic int64_t             loop_ticks;
 };
 
 static struct db_maintenance_state g_dbm = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static struct liveness_contract g_dbm_contract;
+
+/* ── Supervisor liveness ────────────────────────────────────── */
+
+static void dbm_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_dbm.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, atomic_load(&g_dbm.loop_ticks));
+}
+
+static void dbm_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int64_t runs = -1;
+    int64_t failures = -1;
+    if (pthread_mutex_trylock(&g_dbm.lock) == 0) {
+        runs = g_dbm.total_runs;
+        failures = g_dbm.total_failures;
+        pthread_mutex_unlock(&g_dbm.lock);
+    }
+    LOG_WARN("db_maintenance",
+             "[db_maint] supervisor stall reason=%s ticks=%lld runs=%lld failures=%lld",
+             reason, (long long)atomic_load(&g_dbm.loop_ticks),
+             (long long)runs, (long long)failures);
+}
+
+static struct zcl_result dbm_register_supervisor(void)
+{
+    if (!supervisor_start())
+        return ZCL_ERR(-13, "db_maint: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_dbm.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, DB_MAINT_SUPERVISOR_DEADLINE_SEC);
+        supervisor_progress(id, atomic_load(&g_dbm.loop_ticks));
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_dbm_contract, "op.db_maintenance");
+    atomic_store(&g_dbm_contract.period_secs, 0);
+    atomic_store(&g_dbm_contract.deadline_secs,
+                 DB_MAINT_SUPERVISOR_DEADLINE_SEC);
+    atomic_store(&g_dbm_contract.progress_max_quiet_us, 0);
+    g_dbm_contract.on_stall = dbm_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_op_sup, &g_dbm_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-14, "db_maint: supervisor_register failed");
+    atomic_store(&g_dbm.supervisor_id, id);
+    supervisor_progress(id, atomic_load(&g_dbm.loop_ticks));
+    supervisor_tick(id);
+    return ZCL_OK;
+}
 
 /* ── Defaults ───────────────────────────────────────────────── */
 
@@ -271,6 +350,9 @@ static void *dbm_thread_fn(void *arg)
 
         if (stop) break;
 
+        atomic_fetch_add(&g_dbm.loop_ticks, 1);
+        dbm_supervisor_heartbeat();
+
         if (db) {
             /* WAL size cap: force checkpoint regardless of interval
              * when WAL exceeds the configured byte limit. */
@@ -284,6 +366,9 @@ static void *dbm_thread_fn(void *arg)
                 if (may_vacuum)
                     (void)db_maintenance_run_now(db, "vacuum");
             }
+            /* Re-tick after the (possibly minutes-long) maintenance
+             * work so the deadline timer is fresh before we sleep. */
+            dbm_supervisor_heartbeat();
         }
 
         /* Sleep in 200ms increments so stop_requested is honoured
@@ -355,6 +440,12 @@ struct zcl_result db_maintenance_start(struct node_db *db,
             "db_maintenance: thread_registry_spawn_ex failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dbm.lock);
+
+    struct zcl_result sup_r = dbm_register_supervisor();
+    if (!sup_r.ok) {
+        db_maintenance_stop();
+        return sup_r;
+    }
     return ZCL_OK;
 }
 
@@ -362,6 +453,10 @@ void db_maintenance_stop(void)
 {
     pthread_t th;
     bool joinable = false;
+
+    supervisor_child_id id = atomic_load(&g_dbm.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
 
     pthread_mutex_lock(&g_dbm.lock);
     if (g_dbm.thread_running) {
@@ -379,4 +474,9 @@ void db_maintenance_stop(void)
         g_dbm.db = NULL;
         pthread_mutex_unlock(&g_dbm.lock);
     }
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_dbm.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }

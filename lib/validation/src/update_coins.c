@@ -14,78 +14,12 @@
 #include "validation/update_coins.h"
 #include "coins/utxo_commitment.h"
 #include "domain/consensus/coins_math.h"
-#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
-
-/* UTXO projection-emission counters. These mirror the
- * utxo_projection internals but are owned by the emitter side so an
- * operator can spot a divergence (emit-side count vs consume-side count)
- * without grepping two subsystems. Reset on every process restart. */
-#include <stdatomic.h>
-static _Atomic uint64_t g_utxo_event_emit_total      = 0;
-static _Atomic uint64_t g_utxo_event_emit_fail_total = 0;
-
-uint64_t update_coins_event_emit_total(void)
-{
-    return atomic_load_explicit(&g_utxo_event_emit_total,
-                                memory_order_relaxed);
-}
-uint64_t update_coins_event_emit_fail_total(void)
-{
-    return atomic_load_explicit(&g_utxo_event_emit_fail_total,
-                                memory_order_relaxed);
-}
-
-void update_coins_emit_utxo_add_projection(const uint8_t txid[32], uint32_t vout,
-                                  int64_t value, uint32_t height,
-                                  bool is_coinbase,
-                                  const uint8_t *script_bytes,
-                                  uint32_t script_len)
-{
-    /* B3: legacy authors only while LEGACY. Once utxo_apply_stage is
-     * the authority (STAGE), the stage emits and we yield so there is
-     * exactly one writer to the projection. */
-    if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
-        return;
-    /* Projection emission: failures NEVER gate the legacy SQLite write.
-     * obs-ok marker downgrades the warning to "operator can grep
-     * later" rather than "abort consensus path". */
-    if (utxo_projection_emit_add(txid, vout, value, height, is_coinbase,
-                                  script_bytes, script_len)) {
-        atomic_fetch_add_explicit(&g_utxo_event_emit_total, 1,
-                                  memory_order_relaxed);
-    } else if (utxo_projection_event_log() != NULL) {
-        /* Only counted as a failure when projection emission is actually
-         * enabled (event log non-NULL). A NULL log is the legitimate
-         * "event log not wired yet" case, not an error. */
-        atomic_fetch_add_explicit(&g_utxo_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        fprintf(stderr,  // obs-ok:utxo-event-emit-failure
-                "[update_coins] projection emit_add failed h=%u\n", height);
-    }
-}
-
-void update_coins_emit_utxo_spend_projection(const uint8_t txid[32], uint32_t vout)
-{
-    /* B3: see update_coins_emit_utxo_add_projection — yield once the stage
-     * is the authority so the projection has a single writer. */
-    if (utxo_projection_get_author() != UTXO_AUTHOR_LEGACY)
-        return;
-    if (utxo_projection_emit_spend(txid, vout)) {
-        atomic_fetch_add_explicit(&g_utxo_event_emit_total, 1,
-                                  memory_order_relaxed);
-    } else if (utxo_projection_event_log() != NULL) {
-        atomic_fetch_add_explicit(&g_utxo_event_emit_fail_total, 1,
-                                  memory_order_relaxed);
-        fprintf(stderr,  // obs-ok:utxo-event-emit-failure
-                "[update_coins] projection emit_spend failed\n");
-    }
-}
 
 bool update_coins_with_undo(const struct transaction *tx,
                             struct coins_view_cache *inputs,
@@ -139,12 +73,6 @@ bool update_coins_with_undo(const struct transaction *tx,
                                     entry->coins.vout[nPos].value,
                                     entry->coins.height);
 
-            /* Projection emission: also append EV_UTXO_SPEND to
-             * the event_log so utxo_projection can derive the same
-             * spend. Additive — does not gate the legacy path. */
-            update_coins_emit_utxo_spend_projection(tx->vin[i].prevout.hash.data,
-                                                nPos);
-
             /* Pure domain mutation: snapshot the txout into the undo
              * record, null the vout, and (if the coin is now fully
              * pruned) populate the parent metadata so a reorg can
@@ -180,16 +108,6 @@ bool update_coins_with_undo(const struct transaction *tx,
                                  tx->hash.data, (uint32_t)vi,
                                  new_entry->coins.vout[vi].value,
                                  nHeight);
-
-            /* Projection emission: also append EV_UTXO_ADD to
-             * the event_log so utxo_projection can derive the same
-             * UTXO. Additive — does not gate the legacy path. */
-            update_coins_emit_utxo_add_projection(tx->hash.data, (uint32_t)vi,
-                                  new_entry->coins.vout[vi].value,
-                                  (uint32_t)nHeight,
-                                  new_entry->coins.is_coinbase,
-                                  new_entry->coins.vout[vi].script_pub_key.data,
-                                  (uint32_t)new_entry->coins.vout[vi].script_pub_key.size);
         }
     }
 

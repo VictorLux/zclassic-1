@@ -35,9 +35,16 @@
 #include <string.h>
 #include <time.h>
 
+#include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
+
+/* Supervisor deadline (sec). The loop ticks every tick_seconds
+ * (default 60) and heartbeats at the top of each sub-second wake, so
+ * 3x the default tick gives ample slack before a genuine wedge fires. */
+#define MEMPOOL_LIMITS_SUPERVISOR_DEADLINE_SEC 180
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -62,11 +69,80 @@ struct mempool_limits_state {
 
     /* Injected clock for expiry tests. */
     mempool_limits_clock_fn clock_fn;
+
+    /* Supervisor liveness (Round 5). loop_ticks advances once per
+     * outer-loop wake so the supervisor sees forward progress between
+     * the (sparse) enforce/expire runs. */
+    _Atomic supervisor_child_id supervisor_id;
+    _Atomic int64_t             loop_ticks;
 };
 
 static struct mempool_limits_state g_ml = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static struct liveness_contract g_ml_contract;
+
+/* ── Supervisor liveness ────────────────────────────────────── */
+
+static void ml_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_ml.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, atomic_load(&g_ml.loop_ticks));
+}
+
+static void ml_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    int64_t enforce = -1;
+    int64_t expire = -1;
+    if (pthread_mutex_trylock(&g_ml.lock) == 0) {
+        enforce = g_ml.enforce_calls;
+        expire = g_ml.expire_calls;
+        pthread_mutex_unlock(&g_ml.lock);
+    }
+    LOG_WARN("mempool_limits",
+             "[mempool_limits] supervisor stall reason=%s ticks=%lld enforce=%lld expire=%lld",
+             reason, (long long)atomic_load(&g_ml.loop_ticks),
+             (long long)enforce, (long long)expire);
+}
+
+static struct zcl_result ml_register_supervisor(void)
+{
+    if (!supervisor_start())
+        return ZCL_ERR(-4, "mempool_limits: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_ml.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, MEMPOOL_LIMITS_SUPERVISOR_DEADLINE_SEC);
+        supervisor_progress(id, atomic_load(&g_ml.loop_ticks));
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_ml_contract, "op.mempool_limits");
+    atomic_store(&g_ml_contract.period_secs, 0);
+    atomic_store(&g_ml_contract.deadline_secs,
+                 MEMPOOL_LIMITS_SUPERVISOR_DEADLINE_SEC);
+    atomic_store(&g_ml_contract.progress_max_quiet_us, 0);
+    g_ml_contract.on_stall = ml_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_op_sup, &g_ml_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-5, "mempool_limits: supervisor_register failed");
+    atomic_store(&g_ml.supervisor_id, id);
+    supervisor_progress(id, atomic_load(&g_ml.loop_ticks));
+    supervisor_tick(id);
+    return ZCL_OK;
+}
 
 /* ── Clock ──────────────────────────────────────────────────── */
 
@@ -381,6 +457,9 @@ static void *ml_thread_fn(void *arg)
         pthread_mutex_unlock(&g_ml.lock);
         if (stop) break;
 
+        atomic_fetch_add(&g_ml.loop_ticks, 1);
+        ml_supervisor_heartbeat();
+
         platform_time_monotonic_timespec(&now);
         now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         if (now_ms >= next_at_ms) {
@@ -436,6 +515,12 @@ struct zcl_result mempool_limits_start(struct tx_mempool *pool,
         pthread_mutex_unlock(&g_ml.lock);
         return ZCL_ERR(-3, "thread_registry_spawn_ex failed (%d)", rc);
     }
+
+    struct zcl_result sup_r = ml_register_supervisor();
+    if (!sup_r.ok) {
+        mempool_limits_stop();
+        return sup_r;
+    }
     return ZCL_OK;
 }
 
@@ -449,6 +534,10 @@ void mempool_limits_stop(void)
      * before we clear the pointer still sees the service state
      * (pool, cfg) — that's fine while shutdown is in progress. */
     tx_mempool_set_post_add_hook(NULL);
+
+    supervisor_child_id id = atomic_load(&g_ml.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
 
     pthread_mutex_lock(&g_ml.lock);
     if (g_ml.thread_running) {
@@ -466,4 +555,9 @@ void mempool_limits_stop(void)
         g_ml.pool = NULL;
         pthread_mutex_unlock(&g_ml.lock);
     }
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_ml.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }

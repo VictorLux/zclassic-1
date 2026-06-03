@@ -23,7 +23,6 @@
 
 #include "storage/event_log.h"
 #include "storage/utxo_projection.h"
-#include "validation/update_coins.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,65 +132,12 @@ done:
     return failures;
 }
 
-/* ── Test 2: single_writer_gate ────────────────────────────────────── */
-
-static int run_single_writer_gate(int *failures_out)
-{
-    int failures = 0;
-    char dir[256];
-    ua_tmpdir(dir, sizeof(dir), "gate");
-    ua_mkdir_p(dir);
-    char log_path[512], proj_path[512];
-    snprintf(log_path,  sizeof(log_path),  "%s/events.log",         dir);
-    snprintf(proj_path, sizeof(proj_path), "%s/utxo_projection.db", dir);
-
-    event_log_t *log = event_log_open(log_path);
-    utxo_projection_t *p = utxo_projection_open(proj_path, log);
-    UA_CHECK("gate: open", log && p);
-    if (!log || !p) goto done;
-
-    utxo_projection_set_event_log(log);
-
-    uint8_t txid[32]; make_txid(txid, 0x55);
-    uint8_t script[8] = {1,2,3,4,5,6,7,8};
-
-    /* Authority STAGE: the legacy projection emitter must yield (no event). */
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-    update_coins_emit_utxo_add_projection(txid, 0, 1234, 7, false, script, 8);
-    UA_CHECK("gate: catch_up after STAGE emit",
-             utxo_projection_catch_up(p) != UINT64_MAX);
-    UA_CHECK("gate: STAGE silences legacy emitter (count==0)",
-             utxo_projection_count(p) == 0);
-
-    /* Authority LEGACY: the legacy emitter writes again. */
-    utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
-    update_coins_emit_utxo_add_projection(txid, 0, 1234, 7, false, script, 8);
-    UA_CHECK("gate: catch_up after LEGACY emit",
-             utxo_projection_catch_up(p) != UINT64_MAX);
-    UA_CHECK("gate: LEGACY emitter writes (count==1)",
-             utxo_projection_count(p) == 1);
-
-    /* Confirm the test-only selector, then restore the production default. */
-    UA_CHECK("gate: LEGACY author selected",
-             utxo_projection_get_author() == UTXO_AUTHOR_LEGACY);
-
-    utxo_projection_set_event_log(NULL);
-    utxo_projection_close(p);
-    event_log_close(log);
-done:
-    utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-    test_cleanup_tmpdir(dir);
-    *failures_out += failures;
-    return failures;
-}
-
 int test_utxo_apply_authorship(void);
 int test_utxo_apply_authorship(void)
 {
     int failures = 0;
-    printf("test_utxo_apply_authorship: B3 single-writer authority\n");
+    printf("test_utxo_apply_authorship: STAGE projection ordering equivalence\n");
     run_ordering_equivalence(&failures);
-    run_single_writer_gate(&failures);
     if (failures == 0)
         printf("  all utxo_apply authorship checks passed\n");
     return failures;

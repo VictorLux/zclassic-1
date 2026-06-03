@@ -15,6 +15,8 @@
 #include "services/disk_monitor.h"
 
 #include "event/event.h"
+#include "supervisors/domains.h"
+#include "util/supervisor.h"
 #include "util/thread_registry.h"
 
 #include <errno.h>
@@ -27,6 +29,11 @@
 #include <time.h>
 
 #include "util/log_macros.h"
+
+/* Supervisor deadline (sec). The loop polls every poll_seconds (default
+ * 60) and heartbeats at the top of each sub-second wake, so 3x the
+ * default poll gives ample slack before a genuine wedge fires. */
+#define DISK_MONITOR_SUPERVISOR_DEADLINE_SEC 180
 
 /* ── Module state ───────────────────────────────────────────── */
 
@@ -50,13 +57,75 @@ struct disk_monitor_state {
 
     /* Hot-path lock-free flag mirroring last_level. */
     _Atomic int atomic_level;
+
+    /* Supervisor liveness (Round 5). loop_ticks advances once per
+     * outer-loop wake so the supervisor sees forward progress even
+     * between the 60 s poll boundaries. */
+    _Atomic supervisor_child_id supervisor_id;
+    _Atomic int64_t             loop_ticks;
 };
 
 static struct disk_monitor_state g_dm = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .last_free_bytes = -1,
     .atomic_level = DISK_MONITOR_OK,
+    .supervisor_id = SUPERVISOR_INVALID_ID,
 };
+
+static struct liveness_contract g_dm_contract;
+
+/* ── Supervisor liveness ────────────────────────────────────── */
+
+static void dm_supervisor_heartbeat(void)
+{
+    supervisor_child_id id = atomic_load(&g_dm.supervisor_id);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_tick(id);
+    supervisor_progress(id, atomic_load(&g_dm.loop_ticks));
+}
+
+static void dm_on_stall(struct liveness_contract *c)
+{
+    const char *reason = c
+        ? supervisor_stall_reason_name(
+              (enum supervisor_stall_reason)atomic_load(&c->stall_reason))
+        : "unknown";
+    LOG_WARN("disk_monitor",
+             "[disk] supervisor stall reason=%s ticks=%lld level=%d",
+             reason, (long long)atomic_load(&g_dm.loop_ticks),
+             (int)atomic_load(&g_dm.atomic_level));
+}
+
+static struct zcl_result dm_register_supervisor(void)
+{
+    if (!supervisor_start())
+        return ZCL_ERR(-5, "disk_monitor: supervisor_start failed");
+
+    supervisor_child_id id = atomic_load(&g_dm.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID) {
+        supervisor_set_deadline(id, DISK_MONITOR_SUPERVISOR_DEADLINE_SEC);
+        supervisor_progress(id, atomic_load(&g_dm.loop_ticks));
+        supervisor_tick(id);
+        return ZCL_OK;
+    }
+
+    liveness_contract_init(&g_dm_contract, "op.disk_monitor");
+    atomic_store(&g_dm_contract.period_secs, 0);
+    atomic_store(&g_dm_contract.deadline_secs,
+                 DISK_MONITOR_SUPERVISOR_DEADLINE_SEC);
+    atomic_store(&g_dm_contract.progress_max_quiet_us, 0);
+    g_dm_contract.on_stall = dm_on_stall;
+
+    supervisor_domains_init();
+    id = supervisor_register_in_domain(g_op_sup, &g_dm_contract);
+    if (id == SUPERVISOR_INVALID_ID)
+        return ZCL_ERR(-6, "disk_monitor: supervisor_register failed");
+    atomic_store(&g_dm.supervisor_id, id);
+    supervisor_progress(id, atomic_load(&g_dm.loop_ticks));
+    supervisor_tick(id);
+    return ZCL_OK;
+}
 
 /* ── Defaults ───────────────────────────────────────────────── */
 
@@ -181,6 +250,9 @@ static void *dm_thread_fn(void *arg)
         pthread_mutex_unlock(&g_dm.lock);
         if (stop) break;
 
+        atomic_fetch_add(&g_dm.loop_ticks, 1);
+        dm_supervisor_heartbeat();
+
         platform_time_monotonic_timespec(&now);
         now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         if (now_ms >= next_at_ms) {
@@ -244,6 +316,12 @@ struct zcl_result disk_monitor_start(const struct disk_monitor_config *cfg)
         return ZCL_ERR(-4, "thread_registry_spawn_ex failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dm.lock);
+
+    struct zcl_result sup_r = dm_register_supervisor();
+    if (!sup_r.ok) {
+        disk_monitor_stop();
+        return sup_r;
+    }
     return ZCL_OK;
 }
 
@@ -251,6 +329,10 @@ void disk_monitor_stop(void)
 {
     pthread_t th;
     bool joinable = false;
+
+    supervisor_child_id id = atomic_load(&g_dm.supervisor_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
 
     pthread_mutex_lock(&g_dm.lock);
     if (g_dm.thread_running) {
@@ -267,6 +349,11 @@ void disk_monitor_stop(void)
         g_dm.stop_requested = false;
         pthread_mutex_unlock(&g_dm.lock);
     }
+#ifdef ZCL_TESTING
+    id = atomic_exchange(&g_dm.supervisor_id, SUPERVISOR_INVALID_ID);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_unregister(id);
+#endif
 }
 
 /* ── Status / queries ───────────────────────────────────────── */
