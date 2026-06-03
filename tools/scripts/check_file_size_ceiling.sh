@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Lint gate E1 — file-size ceiling for app/ .c files (RATCHET).
+# Lint gate E1 — file-size ceiling for app/ and config/ .c files (RATCHET).
 #
 # Mega-modules cannot hide behind a wall of <500-LOC functions: even if
 # every function passes check-long-functions, a 1,900-line file is still
-# doing too many things. This gate caps each app/**/*.c file at CEILING
-# lines and ratchets the existing oversized files down via a baseline.
+# doing too many things. This gate caps each app/**/*.c and config/src/*.c
+# file at CEILING lines and ratchets the existing oversized files down via
+# a baseline.
+#
+# Scope: app/**/*.c (the eight shapes) AND config/src/*.c (the composition
+# root). Both obey the same ceiling — config/ is not exempt: the boot
+# mega-files are grandfathered in the baseline so they can only shrink.
 #
 # Baseline: tools/scripts/file_size_ceiling_baseline.txt lists each
 # pre-existing oversized file with its recorded LOC. The gate fails when:
@@ -42,6 +47,7 @@ fail=0
 new_violations=()
 grown_violations=()
 
+# Scan app/**/*.c and config/src/*.c against the same ceiling.
 while IFS= read -r f; do
     loc=$(wc -l < "$f")
     base="${baseline[$f]+x}"
@@ -59,7 +65,7 @@ while IFS= read -r f; do
         new_violations+=("$f is $loc lines (ceiling $CEILING)")
         fail=1
     fi
-done < <(find app -type f -name '*.c' | sort)
+done < <( { find app -type f -name '*.c'; find config/src -type f -name '*.c' 2>/dev/null; } | sort )
 
 if [ "$fail" = "0" ]; then
     echo "check_file_size_ceiling: clean — ${baseline_count} baselined, no new/grown oversized files (ceiling $CEILING)"
