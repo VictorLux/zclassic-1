@@ -98,6 +98,22 @@
     Model/Storage-Adapter boundary question — better revisited with the §3 cluster than churned now.
   **Remaining real work = the 5 §3 live-tip items** (boot finalized-cursor seed + contiguity window),
   the solo carve-out: implement → validate on a datadir COPY (tip_finalize health) → owner-gated deploy.
+- **2026-06-03 · §3 analysis + §3.1 building block (commit `43a4f031f`).** Ran a 3-agent read-only
+  analysis of the §3 cluster (verified plans; §3.1 confidence high, §3.2/3.3/3.5 medium with a real
+  perf hazard — a 3M-entry map scan per drain — and §3.5 "delete the generic" is WRONG: header_admit/
+  validate_headers still need the best_header extender, so the end-state is two extenders by ROLE).
+  Implemented §3.1 as a forward-only, contiguity-guarded, bounded (≤50000-gap) seed function
+  `block_index_loader_seed_tip_from_finalized` + validated it on a **--light repro-on-copy** of the live
+  stuck datadir. RESULT: **no collapse** (tip never dropped — the regression detector stayed green), but
+  the seed correctly **no-opped**, revealing the placement assumption was wrong: at the boot recovery
+  section the in-memory active tip is still **genesis (h=0)** — the coins/UTXO authority sets the
+  persisted CSR tip but not the in-memory active_chain there (`csr: tip committed from=3132741 to=0
+  reason=genesis_init`). So §3.1's wiring is **BLOCKED** on identifying the boot point where the
+  in-memory active tip is established to the coins frontier; the function is committed as a tested-safe
+  building block (UNWIRED) and the unverified wiring reverted. NEXT (§3.1 wiring follow-up): trace the
+  post-recovery activation/restore that establishes the in-memory active tip to 3132687, place the seed
+  call immediately after it, re-run repro-on-copy expecting tip 3132687→3132741 with reorg_detected
+  flat. §3 stays the owner-gated carve-out.
 
 ## 1. Loud failures & silent-halt elimination
 
