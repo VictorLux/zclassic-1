@@ -2056,16 +2056,27 @@ static int t_process_block_node_db_access_is_runtime_owned(void)
         free(buf);
         buf = NULL;
 
+        /* The process-block hooks were extracted to boot_tip_hooks.c
+         * (behavior-neutral, Wave D). boot_services.c wires them via the seam
+         * call and retains the inline NULL teardown; the hook bodies + the
+         * non-NULL registration live in boot_tip_hooks.c. node_db is still
+         * reached via svc (runtime-owned) in both. */
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "boot_register_process_block_hooks(svc)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
+        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(NULL, NULL, NULL)") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_tip_hooks.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_gap_fill_kick") != NULL);
         ASSERT(strstr(buf, "gap_fill_kick") != NULL);
         ASSERT(strstr(buf, "boot_process_block_commit_tip") != NULL);
         ASSERT(strstr(buf, "boot_process_block_clear_tip") != NULL);
         ASSERT(strstr(buf, "process_block_set_gap_fill_kick(boot_gap_fill_kick, svc)") != NULL);
-        ASSERT(strstr(buf, "process_block_set_gap_fill_kick(NULL, NULL)") != NULL);
         ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(boot_process_block_commit_tip") != NULL);
-        ASSERT(strstr(buf, "process_block_set_tip_publication_hooks(NULL, NULL, NULL)") != NULL);
         PASS();
     } _test_next:;
     free(buf);

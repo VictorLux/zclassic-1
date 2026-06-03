@@ -130,6 +130,12 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
 
+/* Wire the process_block tip-publication hooks + gap-fill kick (defined in
+ * boot_tip_hooks.c) into the validation engine. Called once from
+ * app_init_services. The teardown counterpart stays inline in app_shutdown_svc
+ * since it passes NULLs and references no moved symbol. */
+void boot_register_process_block_hooks(struct boot_svc_ctx *svc);
+
 /* Idempotent open of the append-only event_log + utxo_projection (the read
  * authority for the UTXO projection path). Called early from app_init so
  * the coins_tip read view can bind to utxo_projection_get_global() before
