@@ -2301,6 +2301,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
             "app/jobs/include/jobs/validate_headers_stage.h",
             "app/jobs/include/jobs/body_fetch_stage.h",
             "app/jobs/src/utxo_apply_delta.c",
+            "app/jobs/src/utxo_apply_delta_reorg.c",
             "app/jobs/src/utxo_apply_stage.c",
             "app/jobs/include/jobs/block_header_emit.h",
             "app/jobs/include/jobs/body_persist_stage.h",
