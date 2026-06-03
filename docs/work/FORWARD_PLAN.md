@@ -78,9 +78,12 @@ layering ASSERT string refs in `lib/test/src/test_make_lint_gates.c`.
       Moving just the 2 read-only members would fragment a co-registered family,
       force a cross-shape private-header include, and make those 2 inconsistent
       with the codebase convention. Correct shape = Controller. No move.
-- [ ] **A3 — split `app/jobs/src/utxo_apply_delta.c` (AT the 800 ceiling).**
-      Time-sensitive (cannot absorb any future edit). Clean pure-extraction:
-      the reorg-unwind cluster → `utxo_apply_delta_reorg.c` (move the 6 reorg
+- [x] **A3 — DONE (`f4277da77`): split `utxo_apply_delta.c` 800→440.** Reorg
+      cluster → `utxo_apply_delta_reorg.c` (394); cut verified clean both ways.
+- [x] **A2 — DONE (`f6e972e7a`): split `sync_controller_catchup.c` 775→571.**
+      Job lifecycle → `sync_controller_catchup_jobs.c` (232); algorithm stays.
+- [ ] _(historical spec retained below for reference)_ **A3 reorg cluster**
+      → `utxo_apply_delta_reorg.c` (move the 6 reorg
       fns **plus** `blob_get_u32`/`blob_get_i64`/`wall_now_s` + dup
       `#define STAGE_NAME`, per the verifier's amended move-list).
 - [ ] **A2 — split `app/controllers/src/sync_controller_catchup.c` (775).**
