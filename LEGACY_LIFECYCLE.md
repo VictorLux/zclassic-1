@@ -36,8 +36,8 @@ through the legacy anchor path unless disabled.
 `legacy_body_pull` is not a boot CLI path, but it is still runtime-active:
 `legacy_mirror_sync_service` calls `legacy_body_pull_range_incremental()`
 to catch up local bodies from a legacy node when mirror lag is detected.
-The old boot-time body-pull path was removed in Wave 9i after the
-[body-pull pathology](MEMORY.md) was diagnosed: it pre-populated
+The old boot-time body-pull path was removed after the body-pull
+pathology was diagnosed: it pre-populated
 `block_index` with `BLOCK_HAVE_DATA` but never activated those blocks,
 leaving `find_most_work_chain` stuck.
 
@@ -51,7 +51,7 @@ leaving `find_most_work_chain` stuck.
 |------|--------|------|
 | `legacy_bootstrap_importer.c` + `.h` | **Active** | Canonical mode-driven bootstrap importer. Owns the public `-cold-import`, `-fastimport`, and `-legacy-attach` wrapper contracts plus the shared mode implementation. |
 | `legacy_body_pull.c` + `.h` | **Runtime-active mirror catch-up; disabled as boot CLI** | `legacy_mirror_sync_service` calls the incremental range puller when local blocks lag legacy. The old boot-time body-pull import path remains removed (pathology — see memory). SHA3 spotcheck helpers remain callable. **Slated for narrower API.** |
-| `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status` and `zcl_diff_with_legacy`. |
+| `legacy_mirror_sync_service.c` + `.h` | **Active** | Background drift-detector. Periodically calls `getmirrorstatus` and surfaces lag / divergence via `EV_MIRROR_*` events. Powers `zcl_mirror_status`. |
 | `legacy_import.c` (controller) | **Active** | RPC/controller surface for legacy import operations. Not wired to a `-importfromlegacy` CLI flag in `main.c`. |
 
 ### RPC clients (`lib/rpc/src/`)

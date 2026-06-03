@@ -15,10 +15,9 @@ set, and the legacy block-connect engine files are gone. The remaining refactor
 work is cleanup and hardening:
 
 1. Keep stale shadow/cutover scaffolding and deleted single-engine block
-   terminology out of production; current production C/H searches are clean,
-   and `docs/work` now contains only the parallel-worktree protocol. The
-   small-projection legacy table comparison helpers now live only in tests,
-   not the production storage API.
+   terminology out of production; current production C/H searches are clean.
+   The small-projection legacy table comparison helpers now live only in
+   tests, not the production storage API.
 2. Move every remaining oversized or mixed-purpose app file into one framework
    shape.
 3. Shrink the ratchet baselines to zero.

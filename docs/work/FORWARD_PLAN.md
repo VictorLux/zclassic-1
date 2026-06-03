@@ -49,15 +49,15 @@ be copy-validated while a fresh boot halts).
       `service-state-machine.md`, `FINISH_CHECKLIST.md`. Never strip
       `// obs-ok:` / `// platform-ok:` / `// suffix-ok:` / `// supervisor-root-ok:`
       markers or incident-dated safety rationale.
-- [ ] **Refresh stale numbers/refs** (content edits, re-measure at edit time):
-      - `DEFENSIVE_CODING.md` intro "33 lint gates" → 34.
-      - `docs/REFACTOR_STATUS.md` Rank-1 row boot sizes → current `wc -l`.
-      - `docs/SYNC.md` `chain_evidence_store` → `chain_evidence_persistence_service`.
-      - `docs/PROJECT_OVERVIEW.md` stale tracked-file / boot-LOC counts.
-      - `LEGACY_LIFECYCLE.md` drop deleted `zcl_diff_with_legacy`; fix the
-        broken `[body-pull pathology](MEMORY.md)` link.
-      - `docs/USER_BENCHMARKS.md` / `BENCHMARKS_LOG.md` refresh latest pointers.
-      - `docs/HANDOFF.md` reword the stale "docs/work holds only the protocol".
+- [x] **Refresh stale refs (done):** `DEFENSIVE_CODING.md` "33 lint gates" → 34;
+      `docs/SYNC.md` `chain_evidence_store` → `chain_evidence_persistence_service`/
+      `_authority_service`/`_snapshot`; `LEGACY_LIFECYCLE.md` dropped deleted
+      `zcl_diff_with_legacy` + fixed the broken `MEMORY.md` link;
+      `docs/HANDOFF.md` reworded the false "docs/work holds only the protocol".
+- [ ] **Refresh remaining (need live measurement):** `docs/REFACTOR_STATUS.md`
+      Rank-1 boot sizes → current `wc -l`; `docs/PROJECT_OVERVIEW.md` stale
+      tracked-file / boot-LOC counts; `docs/USER_BENCHMARKS.md` /
+      `BENCHMARKS_LOG.md` latest pointers.
 - [ ] **Future label-scrub:** the same `B7`-era label class may linger
       elsewhere; sweep on the next pass (not a sample-of-60 finding).
 
@@ -68,11 +68,16 @@ be copy-validated while a fresh boot halts).
 Each rename/move must also update the scaffold-label `files[]` guard + the
 layering ASSERT string refs in `lib/test/src/test_make_lint_gates.c`.
 
-- [ ] **A1 — move read-only wallet diagnostics to the View shape.** Move
-      `app/controllers/src/wallet_diagnostic_health.c` (584) +
-      `wallet_diagnostic_keys.c` (574) + their internal header to
-      `app/views/` (joins the `wallet_view_*` family). Read-only render code;
-      RPC registration stays in `wallet_diagnostic_controller.c`. Lowest risk.
+- [~] **A1 — RECLASSIFIED: the wallet-diagnostic family stays in `controllers/`.**
+      The audit proposed moving `wallet_diagnostic_health.c` + `_keys.c` to
+      `app/views/`, but they are 2 of a cohesive 6-file family (ledger, repair,
+      controller, audit, health, keys) that all share the private
+      `wallet_diagnostic_internal.h` and register together — and the family
+      includes the *mutating* `wallet_diagnostic_repair.c`. They are RPC entry
+      points; every other RPC handler in the tree lives in `controllers/`.
+      Moving just the 2 read-only members would fragment a co-registered family,
+      force a cross-shape private-header include, and make those 2 inconsistent
+      with the codebase convention. Correct shape = Controller. No move.
 - [ ] **A3 — split `app/jobs/src/utxo_apply_delta.c` (AT the 800 ceiling).**
       Time-sensitive (cannot absorb any future edit). Clean pure-extraction:
       the reorg-unwind cluster → `utxo_apply_delta_reorg.c` (move the 6 reorg

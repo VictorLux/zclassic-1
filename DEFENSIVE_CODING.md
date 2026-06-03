@@ -77,7 +77,7 @@ becomes a conscious, visible decision.
 writes across `app/models/src/`, `app/controllers/src/`,
 `app/services/src/`, and `lib/wallet/src/wallet_sqlite.c` route through
 the AR lifecycle (one of the three macros above). `make lint` runs
-`check_raw_sqlite.sh` (one of the 33 lint gates defined in the Makefile).
+`check_raw_sqlite.sh` (one of the 34 lint gates defined in the Makefile).
 
 ### The one principled exception: the `progress.kv` kernel store
 
