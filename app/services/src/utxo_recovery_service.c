@@ -185,7 +185,16 @@ bool utxo_recovery_repair_stale_cursor_from_sync_projection(
     if (!node_db_state_set(ndb, "coins_best_block",
                            sync_hash, sizeof(sync_hash)))
         return false;
-    (void)node_db_state_set_int(ndb, "cec.coins_best_block_height", sync_h);
+    /* The height metadata must land too: coins_best_block (hash) and its
+     * height are read together by the coins-integrity gate, so a hash
+     * written without its height is exactly the inconsistency that gate
+     * trips on. Don't claim a successful repair if this write fails. */
+    if (!node_db_state_set_int(ndb, "cec.coins_best_block_height", sync_h)) {
+        LOG_WARN("chain", "stale cursor repair: coins_best_block advanced "
+                 "to h=%lld but height-metadata write failed; reporting "
+                 "repair incomplete", (long long)sync_h);
+        return false;
+    }
 
     LOG_WARN("chain", "stale cursor repair: advanced coins_best_block "
              "from h=%lld to sync projection h=%lld (max_utxo_h=%lld)",
