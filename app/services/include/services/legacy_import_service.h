@@ -16,9 +16,9 @@
  *
  * The legacy node should be stopped to avoid partial block reads.
  *
- * This path is a live recovery primitive (cold-import / legacy-attach). The
- * logic here is byte-identical to the original Controller body — only the
- * housing changed. Do NOT alter the import logic. */
+ * This path is a live recovery primitive (cold-import / legacy-attach). Do
+ * NOT alter the import logic — the cold-import / legacy-attach byte format is
+ * a stable contract. */
 
 #ifndef ZCL_LEGACY_IMPORT_SERVICE_H
 #define ZCL_LEGACY_IMPORT_SERVICE_H

@@ -19,8 +19,8 @@
  *
  * Each section emitter appends one logical section of HTML starting at
  * `off` and returns the new offset. The SHA3 receipt + format helpers are
- * declared `static inline` here so each TU keeps a single internal copy
- * (no behavior change vs the original single-file definitions). This is
+ * declared `static inline` here so each TU keeps a single internal copy.
+ * This is
  * a private header for the factoids view only — not part of the public
  * surface in views/explorer_factoids_view.h. */
 

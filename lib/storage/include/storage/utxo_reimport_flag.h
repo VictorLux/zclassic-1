@@ -10,11 +10,8 @@
  * checks for this marker; if present, it triggers a forced UTXO
  * re-import from the LevelDB chainstate.
  *
- * This primitive used to live inside `utxo_recovery_service.c` as a
- * pair of inline helpers (`utxo_recovery_check_reimport_flag` +
- * `utxo_recovery_prepare_reimport`), and the write side lived inline
- * in `process_block_self_heal.c`. Extracting the flag into its own
- * primitive does three things:
+ * Keeping this flag in its own storage primitive (rather than inline in
+ * utxo_recovery_service.c / process_block_self_heal.c) does three things:
  *
  *   - Puts a storage concern in the storage layer (lib/storage/) rather
  *     than scattering `fopen`/`fread`/`remove` across services.

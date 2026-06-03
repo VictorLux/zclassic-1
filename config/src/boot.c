@@ -1590,7 +1590,7 @@ bool app_init(struct app_context *ctx)
         (void)service_state_restore_from_progress_store();
     }
 
-    /* Snapshot-first (Wave 11A): if a downloaded consensus_snapshot.db
+    /* Snapshot-first: if a downloaded consensus_snapshot.db
      * is present in the datadir, import its UTXOs into node.db *before*
      * any chain-tip restoration runs. This makes coins_best_block
      * resolve to the snapshot height when the coins view first reads

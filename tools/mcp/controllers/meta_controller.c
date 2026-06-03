@@ -30,10 +30,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Destructive flags and self_test argument overrides used to live as
- * ad-hoc tables in this file. They now live inline on the route itself
- * — see the `flags` and `self_test_args` fields on each entry in the
- * k_routes[] tables in {wallet,net,app,ops,chain,meta}_controller.c. */
+/* Destructive flags and self_test argument overrides live inline on the
+ * route itself — see the `flags` and `self_test_args` fields on each entry
+ * in the k_routes[] tables in {wallet,net,app,ops,chain,meta}_controller.c. */
 
 /* True if any required param has no default value we can synthesize. */
 static bool has_unfillable_required(const struct mcp_tool_route *r)

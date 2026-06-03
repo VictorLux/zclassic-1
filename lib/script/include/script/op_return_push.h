@@ -3,9 +3,8 @@
  * Shared OP_RETURN push helpers — raw-buffer Bitcoin script PUSH
  * encode/decode used by the on-chain data protocols (ZSLP, ZNAM).
  *
- * These were byte-identical copies in lib/zslp/src/slp.c and
- * lib/znam/src/znam.c; extracted here so both share one definition.
- * Behavior is intentionally unchanged from those originals. */
+ * Shared by lib/zslp/src/slp.c and lib/znam/src/znam.c so both encode/decode
+ * OP_RETURN pushes through one definition. */
 
 #ifndef SCRIPT_OP_RETURN_PUSH_H
 #define SCRIPT_OP_RETURN_PUSH_H

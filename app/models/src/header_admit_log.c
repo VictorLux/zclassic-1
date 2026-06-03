@@ -2,12 +2,9 @@
  *
  * ActiveRecord model: HeaderAdmitLog — see models/header_admit_log.h.
  *
- * Replaces the hand-rolled INSERT OR REPLACE that header_admit_stage.c
- * used to issue directly against progress.kv. The write now travels the
- * canonical validate -> before_save -> SQL -> after_save lifecycle
- * (Law 2: "Models are the only writers of state — one way in, one way
- * out"). The row, columns, and table are byte-for-byte identical to the
- * legacy path; only the path into SQLite changed. */
+ * The write travels the canonical validate -> before_save -> SQL ->
+ * after_save lifecycle (Law 2: "Models are the only writers of state — one
+ * way in, one way out"). */
 
 #include "models/header_admit_log.h"
 #include "util/log_macros.h"

@@ -3,12 +3,12 @@
  * legacy_import_service — Service-grade orchestration for importing wallet
  * data from a legacy (C++) ZClassic node's raw block files.
  *
- * This is the orchestration core that previously lived inside the
- * legacy_import Controller (app/controllers/src/legacy_import.c). It is
+ * This is the orchestration core for the legacy block-file import. It is
  * Service/Job-grade work — a multi-pass mmap block-file scan plus a Sapling
  * trial-decryption walk that drives a multi-threaded import loop — so it
- * lives in the Service shape. The Controller is now a thin shim that
- * validates arguments and delegates to legacy_import_service_run().
+ * lives in the Service shape. The legacy_import Controller
+ * (app/controllers/src/legacy_import.c) is a thin shim that validates
+ * arguments and delegates to legacy_import_service_run().
  *
  * No LevelDB, no chain index, no RPC. Reads block files directly:
  *   Pass 1: parallel mmap raw byte scan for P2PKH/P2SH wallet patterns
@@ -18,8 +18,8 @@
  * The legacy node should be stopped to avoid partial block reads.
  *
  * RECOVERY-PRIMITIVE NOTE: this path is the live cold-import / legacy-attach
- * recovery primitive. The logic below is byte-identical to the original
- * Controller body — only the housing changed. Do NOT alter the import logic. */
+ * recovery primitive. Do NOT alter the import logic — the cold-import /
+ * legacy-attach byte format is a stable contract. */
 
 // one-result-type-ok:legacy-import-int-contract
 /* legacy_import_service_run keeps the legacy_import() int contract

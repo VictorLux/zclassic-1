@@ -34,9 +34,8 @@ void mirror_consensus_set_enabled(bool enabled)
 void mirror_consensus_record_override(int height, const char *reason)
 {
     const char *r = (reason && reason[0]) ? reason : "local_consensus_overridden";
-    /* All overrides are now "unsafe" by classification — the scope/auth
-     * machinery that earned the "authorized_mirror_scope" tag was
-     * removed in F-1e (Wave F-1). The override observability stays
+    /* All overrides are classified "unsafe": there is no scope/auth machinery
+     * to tag an override as authorized. The override observability stays
      * intact; the stats just no longer split safe vs unsafe. */
     bool safe = false;
     int64_t overrides =

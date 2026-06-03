@@ -362,8 +362,8 @@ int node_db_sync_catchup(struct node_db *ndb,
             interrupted = true;
             break;
         }
-        /* Wave 11B — pump systemd watchdog liveness during long
-         * node_db sync-catchup loops (block indexing replay). */
+        /* Pump systemd watchdog liveness during long node_db sync-catchup
+         * loops (block indexing replay). */
         if ((h % 100) == 0)
             boot_progress_tick("node_db_sync_catchup");
         const struct block_index *pindex = active_chain_at(chain, h);

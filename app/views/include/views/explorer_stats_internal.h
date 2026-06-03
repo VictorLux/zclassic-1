@@ -22,8 +22,7 @@
  * so the render helpers don't need a fat parameter list). Project-internal
  * linkage so the orchestrator in explorer_stats_view.c can call them. This
  * is a private header for the stats view only — not part of the public
- * surface in views/explorer_stats_view.h. No behavior change vs the
- * original single-file definitions. */
+ * surface in views/explorer_stats_view.h. */
 
 #ifndef ZCL_VIEWS_EXPLORER_STATS_INTERNAL_H
 #define ZCL_VIEWS_EXPLORER_STATS_INTERNAL_H

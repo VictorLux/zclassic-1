@@ -134,11 +134,9 @@ size_t api_serve_peers(const char *path, uint8_t *response,
                        size_t response_max);
 
 /* ── Node / diagnostics route handlers (defined in api_controller_node.c) ──
- * Each lifts a formerly-inline route block out of the api_handle_request
- * router verbatim. None touch the background cache buffers in
- * api_controller.c — they read g_api_ctx + lock-free atomics and write
- * directly into the caller's response buffer, so the router's cache
- * semantics are unchanged. */
+ * None touch the background cache buffers in api_controller.c — they read
+ * g_api_ctx + lock-free atomics and write directly into the caller's
+ * response buffer, so the router's cache semantics are unchanged. */
 
 size_t api_serve_events(const char *path, uint8_t *response,
                         size_t response_max);

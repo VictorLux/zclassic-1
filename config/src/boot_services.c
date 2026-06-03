@@ -407,7 +407,7 @@ static void boot_sd_watchdog_tick(void *ctx)
         return;
     struct node_health_snapshot snap = {0};
     node_health_collect(&snap, svc->node_db, svc->state);
-    /* Wave 11B hybrid heartbeat: ping if either the steady-state
+    /* Hybrid heartbeat: ping if either the steady-state
      * health snapshot is healthy OR a long-running synchronous worker
      * has bumped boot_progress_tick recently. Snapshot import bulk
      * INSERT, block-by-block catchup, and UTXO replay all take longer
@@ -1889,10 +1889,9 @@ static bool boot_mmb_leaf_store_repair_prefix_legacy(
 _Atomic bool g_utxo_replay_active = false;
 _Atomic int g_utxo_replay_height = 0;
 
-/* boot_import_snapshot_db moved to config/src/boot_snapshot_import.c in
- * Wave 11A so both boot.c (the pre-restore probe — the authoritative
- * call site) and this file (the legacy late-receive path) share one
- * implementation. */
+/* boot_import_snapshot_db lives in config/src/boot_snapshot_import.c so
+ * both boot.c (the pre-restore probe — the authoritative call site) and
+ * this file (the late-receive path) share one implementation. */
 
 static void *background_utxo_replay(void *arg)
 {

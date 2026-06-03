@@ -3,9 +3,9 @@
  * Reducer-ingest service — private cross-TU seam.
  *
  * The reducer-ingest path (reducer_is_authoritative / reducer_kick /
- * reducer_ingest_block and their staged-drain helpers) was extracted from
- * chain_activation_service.c into reducer_ingest_service.c so each file is
- * one shape with one responsibility. The PUBLIC reducer entry points keep
+ * reducer_ingest_block and their staged-drain helpers) lives in
+ * reducer_ingest_service.c; the activation FSM half lives in
+ * chain_activation_service.c. The PUBLIC reducer entry points keep
  * their declarations in services/chain_activation_service.h (unchanged for
  * every caller); this header only re-exports the ONE helper the activation
  * FSM half still needs across the TU boundary:
