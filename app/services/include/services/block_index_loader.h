@@ -119,4 +119,27 @@ bool load_block_index_from_projection(struct main_state *ms,
                                       struct block_index_projection *bip,
                                       struct sqlite3 *progress_db);
 
+/* FORWARD-ONLY finalized-tip seed for the NORMAL boot path.
+ *
+ * After the normal loaders establish the active tip from the coins/UTXO
+ * authority, this adopts the durable tip_finalize frontier (cursor-1) ONLY
+ * when it is a strictly-higher, CONTIGUOUS forward extension of the current
+ * chain — every intermediate block HAVE_DATA + script-valid + failure-free,
+ * with the pprev walk landing pointer-equal on the current active tip.
+ * Otherwise it is a no-op. It never rewinds the tip, never swaps a fork, and
+ * never mutates the tip_finalize_log or any cursor (read only), so a
+ * sparse/header-only frontier yields a no-op rather than a hole.
+ *
+ * Returns 1 = seeded forward, 0 = no-op, -1 = error.
+ *
+ * BUILDING BLOCK — NOT YET WIRED on the normal boot path. A repro-on-copy
+ * showed the in-memory active tip is still genesis (height 0) at the boot
+ * recovery section (the coins/UTXO authority sets the persisted CSR tip but
+ * not the in-memory active_chain there), so the correct call site is AFTER
+ * the active tip is established to the coins frontier — to be pinned down by
+ * the §3.1 wiring follow-up. Safe to call anywhere: it no-ops unless the
+ * finalized frontier is a small, strictly-higher, contiguous extension. */
+int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
+                                               struct sqlite3 *progress_db);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_LOADER_H */

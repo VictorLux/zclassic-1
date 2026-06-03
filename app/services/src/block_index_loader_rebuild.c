@@ -166,6 +166,107 @@ static void rebuild_seed_tip(struct main_state *ms, sqlite3 *progress_db)
                  tip_height, r.message);
 }
 
+/* Max forward gap this seed will adopt in one shot. The finalized frontier
+ * is normally a handful of blocks ahead of the established tip; a larger gap
+ * means the current active chain is not yet at the coins/UTXO frontier (the
+ * full-restore loaders' job), so we no-op instead of walking the whole chain. */
+#define BLOCK_INDEX_LOADER_SEED_MAX_GAP 50000
+
+/* Public, FORWARD-ONLY finalized-tip seed for the NORMAL boot path.
+ *
+ * rebuild_seed_tip() (above) directly publishes the tip on the
+ * -rebuildfromlog restore, where the in-memory map IS the full projection
+ * and there is no prior tip to extend. This variant is for the normal boot
+ * path, where an active tip has ALREADY been established from the coins
+ * authority. It adopts the durable finalized frontier (tip_finalize
+ * cursor-1) ONLY when it is a strictly-higher, CONTIGUOUS forward extension
+ * of the current chain — every intermediate block HAVE_DATA + script-valid +
+ * failure-free, with the pprev walk landing pointer-equal on the current
+ * active tip. Otherwise it is a no-op.
+ *
+ * Safety (this runs on the live consensus-boot path): it NEVER rewinds the
+ * tip (strictly-higher guard), NEVER swaps a fork (the walk must land on the
+ * current tip), and NEVER mutates the tip_finalize_log or any cursor (read
+ * only). A sparse/header-only frontier yields a no-op, not a hole — so it
+ * cannot reproduce the reverted best-header pre-extend churn.
+ *
+ * Returns 1 = seeded forward, 0 = no-op, -1 = error. */
+int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
+                                               sqlite3 *progress_db)
+{
+    if (!ms)
+        LOG_ERR("block_index",
+                "seed_tip_from_finalized: null main_state");
+    if (!progress_db)
+        return 0;
+
+    uint64_t cursor = stage_cursor_persisted(progress_db, "tip_finalize",
+                                             "block_index_loader");
+    if (cursor == 0)
+        return 0;
+
+    int tip_height = (int)cursor - 1;
+    int cur_h = active_chain_height(&ms->chain_active);
+
+    /* (a) Forward-only: never rewind or sidestep the current tip. */
+    if (tip_height <= cur_h)
+        return 0;
+
+    /* (a2) Bounded: this is for a SMALL forward extension (the durable
+     * finalized frontier is typically a handful of blocks ahead of the
+     * established tip). A large gap means the current tip is not the
+     * coins/UTXO frontier yet (e.g. a cold/genesis active chain) — that is
+     * the full-restore loaders' job, not this seed. Refuse rather than walk
+     * millions of pprev links on the boot/liveness path. */
+    if ((int64_t)tip_height - (int64_t)cur_h > BLOCK_INDEX_LOADER_SEED_MAX_GAP)
+        return 0;
+
+    struct block_index *cur_tip = active_chain_tip(&ms->chain_active);
+    if (!cur_tip)
+        return 0;  /* no current tip to extend from — leave it to the loaders */
+
+    uint8_t tip_hash[32];
+    if (!tip_finalize_stage_finalized_tip_at(progress_db, tip_height, tip_hash))
+        return 0;
+
+    struct uint256 th;
+    memcpy(th.data, tip_hash, 32);
+    struct block_index *tip = block_map_find(&ms->map_block_index, &th);
+    if (!tip)
+        return 0;
+
+    /* (b) Contiguity guard: walk pprev from the finalized block down to the
+     * current tip's height. Every intermediate block must be a have-data,
+     * script-valid, failure-free link (block_index_is_valid already rejects
+     * any failure), and the walk MUST land pointer-equal on the current
+     * active tip — a pure forward extension of the live chain, never a fork. */
+    struct block_index *node = tip;
+    for (int h = tip_height; h > cur_h; h--) {
+        if (!node || node->nHeight != h)
+            return 0;
+        if (!(node->nStatus & BLOCK_HAVE_DATA))
+            return 0;
+        if (!block_index_is_valid(node, BLOCK_VALID_SCRIPTS))
+            return 0;
+        node = node->pprev;
+    }
+    if (node != cur_tip)
+        return 0;  /* not a contiguous extension of the current chain */
+
+    /* (c) Safe: adopt the durable finalized tip forward-only. */
+    tip_finalize_stage_set_authoritative_tip(tip_height, tip_hash);
+    struct zcl_result r = chain_set_active_tip(ms, tip, TIP_FROM_RESTORE,
+                                               "loader_seed_from_finalized");
+    if (!r.ok)
+        LOG_RETURN(-1, "block_index",
+                   "seed_tip_from_finalized: chain_set_active_tip failed at "
+                   "h=%d: %s", tip_height, r.message);
+
+    printf("[boot] active tip seeded forward from durable finalized cursor: "
+           "h=%d (was %d)\n", tip_height, cur_h);
+    return 1;
+}
+
 bool load_block_index_from_projection(struct main_state *ms,
                                       const struct chain_params *params,
                                       struct block_index_projection *bip,
