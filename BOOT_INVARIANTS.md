@@ -86,6 +86,52 @@ When wiring `BOOT_STAGE_BLOCK_INDEX_LOADED` and
 
 ---
 
+## Coins integrity gate and the stale-anchor self-heal
+
+`coins_view_sqlite_open` runs `coins_view_sqlite_check_tip_consistency`
+during `DB_OPEN`. It exists to catch the dangerous class "UTXO writes
+landed but the tip pointer didn't" (crash mid-flush), which could
+double-spend on restart. Its verdict (`true` = consistent/healed,
+`false` = halt) gates boot at `config/src/boot.c` — a `false` is FATAL.
+
+The gate's branches, in order, when `max_utxo_height > resolved_tip`:
+
+1. **`max == tip+1`, ≤32 rows above tip** → bounded auto-rewind
+   (`coins_rewind_above_tip`): delete the overshoot rows. The
+   crash-mid-flush shape.
+2. **`tip > 1,000,000` and gap > 1000** → continue (historical
+   coins-lag-headers; the node serves degraded and reconciles forward).
+   Load-bearing for normal boots — do not narrow it without proving no
+   legitimate lag boot regresses.
+3. **Stale-anchor self-heal** (`coins_reconcile_stale_anchor`, the §3
+   wedge: anchor pointer reset far below the real frontier, e.g. height
+   200 while `utxos` holds millions of rows). This heals **only under
+   cryptographic proof** — a stored height-stamped SHA3 commitment
+   (`utxo_sha3`) recomputed over the live `utxos` table must match
+   (hash+count) before the anchor is re-pointed. A blind "advance the
+   anchor to the highest cursor" heal is consensus-**unsafe**: the tip
+   cursors are non-independent promotion stamps, `MAX(utxos.height)`
+   cannot see a dropped spend, and `height→hash` can name an orphan
+   sibling. So every unproven shape (no commitment, count/hash mismatch,
+   commitment below the live frontier, unresolvable anchor) **returns
+   false → the strict FATAL is preserved**. No UTXO is ever deleted here.
+4. Otherwise → strict FATAL (`DB_ERR_TIP_MISMATCH`).
+
+The self-heal needs a stored `utxo_sha3` commitment to fire. A datadir
+that carries none (the commitment is currently written only at
+snapshot-import) correctly cannot self-heal and FATALs with a clear
+`reconcile refused: no stored utxo_sha3 commitment` reason; recovery is
+then operator-driven: re-derive the coins set (`-reindex-chainstate`,
+which wipes `utxos` and replays every block) or restore the datadir.
+
+> Follow-ups for full auto-heal: (a) persist `utxo_sha3` at finalized-tip
+> checkpoints so a recurring wedge self-heals; (b) `-reindex-chainstate`
+> currently runs *after* this gate, so a torn anchor FATALs before the
+> rebuild can run — a pre-gate coins wipe when reindex is requested makes
+> the documented recovery reachable.
+
+---
+
 ## Adding a new stage
 
 Don't reorder existing stages unless you understand every other
