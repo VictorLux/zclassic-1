@@ -128,10 +128,10 @@ runtime state, follow the convention:
    owns the buffer).
 
 3. Register the dump function in the dispatcher table at
-   `app/controllers/src/diagnostics_controller.c:g_dumpers`. One line.
+   `app/controllers/src/diagnostics_registry.c:g_dumpers`. One line.
 
 4. Add the subsystem name to the MCP `zcl_state` enum at
-   `tools/mcp/controllers/ops_controller.c:p_state[].enum_csv` and to
+   `tools/mcp/controllers/diagnostics_controller.c:p_state[].enum_csv` and to
    the `enum_csv` in `lib/test/src/test_mcp_controllers.c` if it
    asserts the list.
 

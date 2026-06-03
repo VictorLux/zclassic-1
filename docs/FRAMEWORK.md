@@ -181,10 +181,10 @@ know the shape.
 |---|-------|--------|----------------|--------|----------|
 | 1 | **Controller** | `app/controllers/` | `static int h_x(req,res)` + route table | partial; E1 is empty, but import/sync controllers still carry legacy orchestration and raw-SQL debt is ratcheted | `chain_projection.c` |
 | 2 | **Service** | `app/services/` | functions returning `struct zcl_result` | partial; file-level E2 and typed-blocker baselines are empty, but legacy bool compatibility APIs remain | `replay_verify_service.c` |
-| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (29 models, E3+E4+model-validation HARD) | `block.c` |
+| 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (26 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (23 conditions live) | `block_failed_mask_at_tip.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (24 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-and-empty **by design**: the Event concept is wholly owned by `lib/event/` (in-process bus) + `lib/storage/event_log.c` (durable fact log) + `lib/storage/*_projection.c`; app/ code only *produces* events via those primitives (~50 sites) and the one app-level subscriber is correctly a Service (`consensus_reject_index.c`). Keep `app/events/` empty until a file has a typed app-level contract + subscriber surface — see `app/events/README.md`. | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; outbound persistence adapters are real, inbound adapter layer is not currently present | `adapters/outbound/persistence/` |
 
@@ -260,7 +260,7 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (10 ports; 5 services behind them; most storage still bypasses it)
+adapters/ ports/  hexagonal seam (15 ports; 5 services behind them; most storage still bypasses it)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
@@ -339,7 +339,7 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is partial: 10 ports, 5 services read/write through them,
+test. The adapter tree is partial: 15 ports, 5 services read/write through them,
 but most storage still calls `lib/storage/*_sqlite.c` directly. The
 `check-lib-layering` ratchet guards the direction; finishing both is checklist work.
 
