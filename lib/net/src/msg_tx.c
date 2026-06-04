@@ -13,6 +13,7 @@
 #include "net/dandelion.h"
 #include "net/download.h"
 #include "validation/check_transaction.h"
+#include "validation/accept_to_mempool.h"
 #include "consensus/validation.h"
 #include "consensus/upgrades.h"
 #include "event/event.h"
@@ -29,93 +30,38 @@ bool g_dandelion_init = false;
 
 /* ── incoming `tx` classification + scoring ──────────────
  *
- * this helper silently upserted every deserialised tx
- * into the mempool. check_transaction was called but its failure
- * collapsed into a generic bool; fee policy was ignored (fee hard-
- * coded to 0); double-spends were detected only inside
- * tx_mempool_add_unchecked, where they fold into the same bool;
- * and malicious peers were never ban-scored. An attacker could
- * flood the node with invalid or zero-fee txs and poison the
- * mempool for other peers.
+ * Before, this handler silently upserted every deserialised tx,
+ * ran no fee policy, and — critically — ran NO cryptographic
+ * verification: a tx with a valid shape and existing prevouts but a
+ * forged signature or shielded proof was admitted and fluffed
+ * network-wide before block-connect rejected it.
  *
- * Refactored to classify each tx into an enum and apply
- * peer_scoring_record for clearly-malicious outcomes. Orphan /
- * duplicate / below-fee outcomes are *not* malicious — they're
- * our problem or a rate-limit, so they drop silently. */
+ * The acceptance gate (structural + shielded-proof + per-input
+ * scriptSig verification + fee/conflict policy) now lives in the ONE
+ * shared accept_to_mempool() helper (lib/validation), used by BOTH this
+ * P2P path and the RPC sendrawtransaction path so they can never drift.
+ * This wrapper only translates the shared result onto the net layer's
+ * tx_accept_result, which the handler maps to peer ban-scoring. */
 static enum tx_accept_result msg_tx_classify(struct msg_processor *mp,
                                               struct transaction *tx)
 {
     if (!mp || !tx || !mp->mempool)
         return TX_ACCEPT_INTERNAL_ERROR;
 
-    if (transaction_is_coinbase(tx))
-        return TX_ACCEPT_INVALID;
+    enum mempool_accept_result r =
+        accept_to_mempool(mp->mempool, mp->coins_tip, mp->main_state,
+                          mp->params, tx);
 
-    struct validation_state state;
-    validation_state_init(&state);
-
-    if (!check_transaction(tx, &state))
-        return TX_ACCEPT_INVALID;
-
-    struct uint256 hash;
-    transaction_compute_hash(tx);
-    hash = tx->hash;
-
-    if (tx_mempool_exists(mp->mempool, &hash))
-        return TX_ACCEPT_DUPLICATE;
-
-    /* Double-spend vs current mempool — explicit probe so the
-     * handler can attribute it to the sending peer. */
-    if (tx_mempool_has_conflict(mp->mempool, tx))
-        return TX_ACCEPT_CONFLICT;
-
-    /* Fee computation — requires a coins view. Absent view (only
-     * happens in unit tests) means we accept at fee=0 and rely on
-     * the post-add policy hook for eviction. With a view we:
-     *   - reject MISSING_INPUTS (orphan, not malicious)
-     *   - reject INVALID if value sums overflow / over-spend
-     *   - reject BELOW_FEE silently if fee < pool->min_relay_fee */
-    int64_t fee = 0;
-    if (mp->coins_tip) {
-        if (!coins_view_cache_have_inputs(mp->coins_tip, tx))
-            return TX_ACCEPT_MISSING_INPUTS;
-
-        int64_t value_in = coins_view_cache_get_value_in(mp->coins_tip, tx);
-        if (value_in < 0)
-            return TX_ACCEPT_INVALID;
-
-        int64_t value_out = transaction_get_value_out(tx);
-        if (value_out < 0 || value_in < value_out)
-            return TX_ACCEPT_INVALID;
-
-        fee = value_in - value_out;
-
-        int64_t min_relay_fee = mp->mempool->min_relay_fee;
-        if (min_relay_fee > 0 && fee < min_relay_fee)
-            return TX_ACCEPT_BELOW_FEE;
+    switch (r) {
+    case MEMPOOL_ACCEPT_OK:             return TX_ACCEPT_OK;
+    case MEMPOOL_ACCEPT_INVALID:        return TX_ACCEPT_INVALID;
+    case MEMPOOL_ACCEPT_DUPLICATE:      return TX_ACCEPT_DUPLICATE;
+    case MEMPOOL_ACCEPT_CONFLICT:       return TX_ACCEPT_CONFLICT;
+    case MEMPOOL_ACCEPT_BELOW_FEE:      return TX_ACCEPT_BELOW_FEE;
+    case MEMPOOL_ACCEPT_MISSING_INPUTS: return TX_ACCEPT_MISSING_INPUTS;
+    case MEMPOOL_ACCEPT_INTERNAL_ERROR: return TX_ACCEPT_INTERNAL_ERROR;
     }
-
-    int tip_height = (mp->main_state)
-        ? active_chain_height(&mp->main_state->chain_active)
-        : 0;
-    uint32_t branch_id = (mp->params)
-        ? consensus_current_epoch_branch_id(tip_height + 1,
-                                             &mp->params->consensus)
-        : 0;
-
-    struct mempool_entry entry;
-    mempool_entry_init(&entry, tx, fee, (int64_t)platform_time_wall_time_t(), 0.0,
-                       (unsigned int)(tip_height + 1),
-                       tx_mempool_has_no_inputs_of(mp->mempool, tx),
-                       false, branch_id);
-
-    bool accepted = tx_mempool_add_unchecked(mp->mempool, &hash, &entry);
-    if (!accepted) {
-        mempool_entry_free(&entry);
-        return TX_ACCEPT_INTERNAL_ERROR;
-    }
-
-    return TX_ACCEPT_OK;
+    return TX_ACCEPT_INTERNAL_ERROR;
 }
 
 enum tx_accept_result msg_tx_accept(struct msg_processor *mp,

@@ -229,37 +229,42 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
         return true;
     }
 
-    struct validation_state state;
-    validation_state_init(&state);
+    /* Full mempool-acceptance gate (structural + shielded-proof +
+     * per-input scriptSig verification + inputs-exist + fee policy)
+     * via the ONE shared helper that the P2P `tx` path also uses. This
+     * is what stops sendrawtransaction from relaying a tx with a bad
+     * signature, a forged shielded proof, or missing inputs — all of
+     * which the old path admitted and fluffed before block-connect. */
+    if (ctx->mempool) {
+        enum mempool_accept_result r = accept_to_mempool(
+            ctx->mempool, ctx->coins_tip, ctx->main_state,
+            chain_params_get(), &tx);
 
-    if (!check_transaction(&tx, &state)) {
-        char msg[512];
-        format_state_message(&state, msg, sizeof(msg));
-        json_set_str(result, msg);
-        transaction_free(&tx);
-        return false;
-    }
-
-    if (ctx->mempool && ctx->main_state) {
-        int tip_height = active_chain_height(&ctx->main_state->chain_active);
-        uint32_t branch_id = consensus_current_epoch_branch_id(
-            tip_height + 1, &chain_params_get()->consensus);
-
-        struct mempool_entry entry;
-        mempool_entry_init(&entry, &tx, 0, (int64_t)platform_time_wall_time_t(), 0.0,
-                           (unsigned int)(tip_height + 1),
-                           tx_mempool_has_no_inputs_of(ctx->mempool, &tx),
-                           false, branch_id);
-
-        if (!tx_mempool_add_unchecked(ctx->mempool, &hash, &entry)) {
-            mempool_entry_free(&entry);
-            json_set_str(result, "Failed to add to mempool");
+        if (r != MEMPOOL_ACCEPT_OK) {
+            const char *msg;
+            switch (r) {
+            case MEMPOOL_ACCEPT_INVALID:
+                msg = "TX rejected: failed verification "
+                      "(bad signature, proof, or structure)"; break;
+            case MEMPOOL_ACCEPT_DUPLICATE:
+                msg = "TX already in mempool"; break;
+            case MEMPOOL_ACCEPT_CONFLICT:
+                msg = "TX rejected: conflicts with mempool (double-spend)";
+                break;
+            case MEMPOOL_ACCEPT_BELOW_FEE:
+                msg = "TX rejected: insufficient fee"; break;
+            case MEMPOOL_ACCEPT_MISSING_INPUTS:
+                msg = "TX rejected: inputs missing or already spent"; break;
+            default:
+                msg = "TX rejected: failed to add to mempool"; break;
+            }
+            json_set_str(result, msg);
             transaction_free(&tx);
             return false;
         }
     }
 
-    /* Relay to peers */
+    /* Relay to peers (only after the gate above accepted it). */
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &hash);
 

@@ -38,7 +38,10 @@ static void p21_setup_node(struct p2p_node *node, const char *name)
 }
 
 /* Stamp a fresh p2p UTXO into the coins_view_cache at `txid` with
- * `value` in the first vout. Returns true on success. */
+ * `value` in the first vout. The scriptPubKey is OP_1 (anyone-can-
+ * spend): an empty scriptSig satisfies it, so the spends these helpers
+ * build pass the per-input verify_script that accept_to_mempool now
+ * runs. Returns true on success. */
 static bool p21_add_utxo(struct coins_view_cache *cache,
                          const struct uint256 *txid, int64_t value)
 {
@@ -47,7 +50,7 @@ static bool p21_add_utxo(struct coins_view_cache *cache,
     if (!entry) return false;
     coins_alloc(&entry->coins, 1);
     entry->coins.vout[0].value = value;
-    uint8_t pk[] = {0x76};
+    uint8_t pk[] = {0x51}; /* OP_1 — anyone-can-spend */
     script_set(&entry->coins.vout[0].script_pub_key, pk, 1);
     entry->coins.height = 1;
     entry->coins.version = 4;

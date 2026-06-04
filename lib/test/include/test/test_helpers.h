@@ -231,6 +231,7 @@ int test_chain(void);
 int test_sqlite(void);
 int test_keys(void);
 int test_mempool(void);
+int test_accept_to_mempool(void);
 int test_rpc(void);
 int test_transaction(void);
 int test_net(void);

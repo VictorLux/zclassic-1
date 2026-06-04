@@ -28,6 +28,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/txdb.h"
 #include "validation/check_transaction.h"
+#include "validation/accept_to_mempool.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/sighash.h"

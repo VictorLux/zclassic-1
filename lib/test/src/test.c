@@ -628,6 +628,7 @@ int main(void)
     failures += test_connman_addnode_fallback();
     failures += test_transaction();
     failures += test_mempool();
+    failures += test_accept_to_mempool();
     failures += test_rpc();
     failures += test_sqlite();
     failures += test_activerecord();
