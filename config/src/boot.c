@@ -69,7 +69,6 @@
 #include "validation/process_block.h"
 #include "validation/contextual_check_tx.h"
 #include "net/connman.h"
-#include "net/msgprocessor.h"
 #include "keys/key_io.h"
 #include "mining/gen.h"
 #include "script/standard.h"
@@ -90,7 +89,6 @@
 #include "controllers/snapshot_controller.h"
 #include "validation/update_coins.h"
 #include "validation/connect_block.h"
-#include "storage/disk_block_io.h"
 /* LevelDB dbwrapper only used for legacy import paths */
 #include "net/tor_integration.h"
 #include "net/https_server.h"
@@ -389,6 +387,10 @@ static bool g_params_thread_started = false;
 static _Atomic bool g_params_loaded = false;
 static struct boot_svc_ctx g_svc;
 
+/* Single source of truth for the live boot service context — the &g_svc handed
+ * to app_init_services; boot_services.c's main.c-facing entry points read it. */
+struct boot_svc_ctx *boot_active_svc(void) { return &g_svc; }
+
 void *load_params_thread(void *arg)
 {
     (void)arg;
@@ -404,7 +406,6 @@ void *load_params_thread(void *arg)
 /* Block index, chainstate rebuild, and address backfill are in
  * boot_index.c. Service startup (P2P, RPC, Tor) and shutdown
  * are in boot_services.c. */
-
 
 void app_context_defaults(struct app_context *ctx)
 {
@@ -496,7 +497,6 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile)
            profile == ZCL_RUNTIME_ONION_NODE ||
            profile == ZCL_RUNTIME_LEGACY_COMPAT;
 }
-
 
 /* Boot timing helper */
 static int64_t boot_clock_ms(void)

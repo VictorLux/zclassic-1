@@ -136,6 +136,14 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
 
+/* The single boot service context, owned by boot.c's g_svc. The public
+ * app_add_node / app_start_metrics / app_stop_metrics entry points (declared
+ * in boot.h, called from main.c with no svc in scope) reach the live context
+ * through this accessor instead of a boot_services.c file-static alias.
+ * Valid only after app_init builds g_svc; returns the same pointer that is
+ * passed to app_init_services / app_shutdown_svc. */
+struct boot_svc_ctx *boot_active_svc(void);
+
 /* Register the standing UTXO parity service into the runtime kernel (defined
  * in boot_utxo_parity.c). Kept out of boot_services.c so that mega-file gains
  * only one call. Returns false on registration failure. */
@@ -149,7 +157,7 @@ void boot_register_process_block_hooks(struct boot_svc_ctx *svc);
 
 /* Open / close the reducer projection storage — the event_log + per-domain
  * projections — defined in boot_projections.c. boot_start takes the legacy
- * anchor-seed node_db by parameter (the boot_services.c-local boot_node_db())
+ * anchor-seed node_db by parameter (the boot_services.c-local boot_node_db(svc))
  * so the projections TU shares no boot state. Called once from
  * app_init_services / app_shutdown_svc. */
 void boot_start_projection_storage(const char *datadir, struct node_db *seed_ndb);

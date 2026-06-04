@@ -9,7 +9,7 @@
  *
  * Clean seam: the legacy anchor-seed node_db is passed in by the caller
  * (boot_start_projection_storage's seed_ndb parameter) instead of reaching for
- * the boot_services.c-local boot_node_db(), so this TU shares no boot state.
+ * the boot_services.c-local boot_node_db(svc), so this TU shares no boot state.
  * boot_ensure_log_and_utxo_projection / boot_ensure_block_index_projection stay
  * extern — boot.c opens them early for the coins read view (first-opener wins).
  */

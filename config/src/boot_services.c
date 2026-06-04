@@ -149,35 +149,34 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 extern int g_deferred_proof_validation_below_height;
 
 
-/* Module-local pointer to boot context (set once by app_init_services) */
-static struct boot_svc_ctx *S;
-
-static struct app_runtime_context *boot_runtime(void)
+/* Boot context accessors. The handle is threaded explicitly by every caller;
+ * the boot svc is owned by boot.c's g_svc, reached via boot_active_svc(). */
+static struct app_runtime_context *boot_runtime(struct boot_svc_ctx *svc)
 {
-    if (!S)
+    if (!svc)
         return NULL;
-    return &S->runtime;
+    return &svc->runtime;
 }
 
-static struct node_db *boot_node_db(void)
+static struct node_db *boot_node_db(struct boot_svc_ctx *svc)
 {
-    struct app_runtime_context *runtime = boot_runtime();
+    struct app_runtime_context *runtime = boot_runtime(svc);
     if (!runtime || !runtime->db_service)
         return NULL;
     return db_service_node_db(runtime->db_service);
 }
 
-static struct db_service *boot_db_service(void)
+static struct db_service *boot_db_service(struct boot_svc_ctx *svc)
 {
-    struct app_runtime_context *runtime = boot_runtime();
+    struct app_runtime_context *runtime = boot_runtime(svc);
     if (!runtime)
         return NULL;
     return runtime->db_service;
 }
 
-static struct wallet *boot_wallet(void)
+static struct wallet *boot_wallet(struct boot_svc_ctx *svc)
 {
-    struct app_runtime_context *runtime = boot_runtime();
+    struct app_runtime_context *runtime = boot_runtime(svc);
     if (!runtime)
         return NULL;
     return runtime->wallet;
@@ -1391,7 +1390,7 @@ static bool boot_start_catchup_service(struct boot_svc_ctx *svc,
     if (!svc || node_db_sync_catchup_job_is_started(&svc->catchup_job))
         return false;
 
-    return node_db_sync_catchup_job_start(&svc->catchup_job, boot_node_db(),
+    return node_db_sync_catchup_job_start(&svc->catchup_job, boot_node_db(svc),
                                           &svc->state->chain_active,
                                           svc->wallet, datadir);
 }
@@ -1515,7 +1514,7 @@ static void *hodl_history_worker_thread(void *arg)
     /* Initial settle: wait for boot to complete + first chain advance. */
     sleep(15);
     while (!svc->hodl_history_thread_stop) {
-        struct node_db *ndb = boot_node_db();
+        struct node_db *ndb = boot_node_db(svc);
         if (ndb && ndb->open && svc->state) {
             int tip = active_chain_height(&svc->state->chain_active);
             if (tip > 0) {
@@ -1541,7 +1540,7 @@ static void *projection_backfill_service_thread(void *arg)
         return NULL;
 
     while (!svc->projection_backfill_thread_stop && boot_running(svc)) {
-        struct node_db *ndb = boot_node_db();
+        struct node_db *ndb = boot_node_db(svc);
         int chain_tip = svc->state ?
             active_chain_height(&svc->state->chain_active) : -1;
         int projection_tip = -1;
@@ -1914,7 +1913,7 @@ static void *background_utxo_replay(void *arg)
      * activation path starts from the snapshot height, not genesis.
      * Without this, connect_block fails at height 1 with BIP30 because
      * the snapshot's UTXOs include block 1's unspent coinbase. */
-    struct node_db *ndb_restore = boot_node_db();
+    struct node_db *ndb_restore = boot_node_db(svc);
     if (ndb_restore && ndb_restore->open) {
         uint8_t cb_buf[32] = {0};
         size_t cb_len = 0;
@@ -1965,8 +1964,8 @@ static void *background_utxo_replay(void *arg)
     }
 
     /* IBD turbo: skip non-essential work during replay */
-    struct db_service *dbsvc = boot_db_service();
-    struct node_db *ndb = boot_node_db();
+    struct db_service *dbsvc = boot_db_service(svc);
+    struct node_db *ndb = boot_node_db(svc);
     if (dbsvc) {
         db_service_ibd_turbo_mode(dbsvc);
         db_service_set_sync_batch_size(dbsvc, 1000);
@@ -2121,7 +2120,7 @@ static void *build_snapshot_offer_thread(void *arg)
          * bounded RAM serving cache exists; otherwise peers should use the
          * chunk/file manifests below. */
         bool snapshot_serving_ready = false;
-        struct node_db *ndb = boot_node_db();
+        struct node_db *ndb = boot_node_db(svc);
         if (ndb && ndb->open) {
             int64_t snap_count = fast_sync_prebuild_snapshot(
                 datadir, boot_serialize_utxo_snapshot, ndb);
@@ -2219,7 +2218,6 @@ bool app_init_services(struct app_context *ctx,
      * same monotonic-ms basis. */
     int64_t t_svc = svc_clock_ms();
 
-    S = svc;
     node_db_sync_catchup_job_init(&svc->catchup_job);
     snapshot_tx_index_job_init(&svc->tx_index_job);
     snapsync_init(&svc->snapshot_sync, svc->node_db);
@@ -2257,7 +2255,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* Projection storage fan-out. Opens the append-only event log and the
      * reducer read-model projections used by runtime services. */
-    boot_start_projection_storage(ctx->datadir, boot_node_db());
+    boot_start_projection_storage(ctx->datadir, boot_node_db(svc));
 
     /* ── Register sync state observer ──────────────────────────── *
      * Logs every sync state transition via the event system.
@@ -2269,8 +2267,8 @@ bool app_init_services(struct app_context *ctx,
     event_observe_async(EV_BLOCK_CONNECTED, boot_sync_state_logger, NULL);
     event_observe_async(EV_REORG_START, boot_sync_state_logger, NULL);
 
-    if (boot_node_db())
-        node_db_sync_mempool_load(boot_node_db(), svc->mempool);
+    if (boot_node_db(svc))
+        node_db_sync_mempool_load(boot_node_db(svc), svc->mempool);
 
     /* Rescan blockchain for wallet transactions if wallet is behind chain tip */
     {
@@ -2310,7 +2308,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* Rebuild wallet_utxos from ground truth ONLY if empty */
     {
-        struct node_db *ndb = boot_node_db();
+        struct node_db *ndb = boot_node_db(svc);
         if (ndb && ndb->open) {
             int64_t t0 = (int64_t)platform_time_wall_time_t();
             sqlite3_stmt *chk = NULL;
@@ -2382,8 +2380,8 @@ bool app_init_services(struct app_context *ctx,
     }
 
     /* Sync wallet keys to SQLite */
-    if (boot_node_db())
-        node_db_sync_wallet_keys(boot_node_db(), boot_wallet());
+    if (boot_node_db(svc))
+        node_db_sync_wallet_keys(boot_node_db(svc), boot_wallet(svc));
 
     /* Initialize message processor */
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
@@ -2759,10 +2757,10 @@ bool app_init_services(struct app_context *ctx,
     rpc_table_init(svc->rpc_table);
     rpc_blockchain_set_state(svc->state, svc->mempool, ctx->datadir);
     rpc_blockchain_set_coins_db(NULL, svc->coins_tip);
-    rpc_blockchain_set_node_db(boot_node_db());
-    rpc_blockchain_mmr_init_from_state(boot_node_db());
+    rpc_blockchain_set_node_db(boot_node_db(svc));
+    rpc_blockchain_mmr_init_from_state(boot_node_db(svc));
     rpc_blockchain_mmr_catchup(svc->state);
-    rpc_blockchain_mmb_init_from_state(boot_node_db());
+    rpc_blockchain_mmb_init_from_state(boot_node_db(svc));
     rpc_blockchain_mmb_catchup(svc->state);
 
     /* Build MMB leaf hash store for FlyClient proof serving.
@@ -2793,7 +2791,7 @@ bool app_init_services(struct app_context *ctx,
                (unsigned long long)g_mmb_leaf_store.num_leaves);
     }
 
-    rpc_blockchain_commitment_mmr_init_from_state(boot_node_db());
+    rpc_blockchain_commitment_mmr_init_from_state(boot_node_db(svc));
 
     /* Bootstrap commitment MMR if empty but chain is at height.
      * After legacy import, we have the UTXO set at tip but no
@@ -2804,7 +2802,7 @@ bool app_init_services(struct app_context *ctx,
         struct mmr *cm = rpc_blockchain_get_commitment_mmr();
         int chain_h = active_chain_height(&svc->state->chain_active);
         if (cm->num_leaves == 0 && chain_h > 1000 &&
-            boot_node_db() && boot_node_db()->open) {
+            boot_node_db(svc) && boot_node_db(svc)->open) {
             printf("Commitment MMR empty at height %d — computing "
                    "bootstrap commitment...\n", chain_h);
 
@@ -2833,7 +2831,7 @@ bool app_init_services(struct app_context *ctx,
                     commit_h, bi->phashBlock->data,
                     svc->coins_tip->commitment.accumulator,
                     svc->coins_tip->commitment.count);
-                rpc_blockchain_commitment_mmr_save(boot_node_db());
+                rpc_blockchain_commitment_mmr_save(boot_node_db(svc));
                 printf("Bootstrap commitment at height %d saved\n",
                        commit_h);
             }
@@ -2841,26 +2839,26 @@ bool app_init_services(struct app_context *ctx,
     }
     register_blockchain_rpc_commands(svc->rpc_table);
 
-    rpc_hodl_set_state(svc->state, svc->coins_tip, boot_node_db(),
+    rpc_hodl_set_state(svc->state, svc->coins_tip, boot_node_db(svc),
                         ctx->datadir);
     register_hodl_rpc_commands(svc->rpc_table);
 
-    rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db(),
+    rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db(svc),
                          ctx->datadir, params);
     register_repair_rpc_commands(svc->rpc_table);
     register_rebuild_recent_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,
-                                 NULL, svc->coins_tip, boot_node_db());
+                                 NULL, svc->coins_tip, boot_node_db(svc));
     register_chain_inspect_rpc_commands(svc->rpc_table);
 
     if (boot_profile_has_explorer(ctx)) {
         explorer_set_state(svc->state, svc->mempool, svc->coins_tip,
-                            boot_node_db(), ctx->datadir);
+                            boot_node_db(svc), ctx->datadir);
     }
 
     api_set_state(svc->state, svc->mempool, svc->coins_tip,
-                   boot_node_db(), ctx->datadir);
+                   boot_node_db(svc), ctx->datadir);
 
     rpc_rawtx_set_state(svc->state, svc->mempool, svc->coins_tip, ctx->datadir);
     rpc_rawtx_set_keystore(&svc->wallet->keystore);
@@ -2875,7 +2873,7 @@ bool app_init_services(struct app_context *ctx,
     register_misc_rpc_commands(svc->rpc_table);
     rpc_net_set_connman(svc->connman);
     block_source_policy_init(svc->connman, svc->state,
-                                   boot_node_db());
+                                   boot_node_db(svc));
     register_net_rpc_commands(svc->rpc_table);
 
     /* Game platform RPC — latency measurement, game types */
@@ -2903,21 +2901,21 @@ bool app_init_services(struct app_context *ctx,
 
     /* ZCL Market — crypto-incentivized file sharing */
     if (boot_profile_has_store(ctx)) {
-        rpc_market_set_state(boot_node_db());
+        rpc_market_set_state(boot_node_db(svc));
         register_market_rpc_commands(svc->rpc_table);
     }
 
     /* ZCL Names — on-chain name registry */
-    rpc_name_set_state(boot_node_db());
+    rpc_name_set_state(boot_node_db(svc));
     rpc_name_set_wallet(svc->wallet, svc->mempool);
     register_name_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — encrypted P2P messages */
-    rpc_msg_set_state(boot_node_db(), svc->connman);
+    rpc_msg_set_state(boot_node_db(svc), svc->connman);
     register_msg_rpc_commands(svc->rpc_table);
 
     /* Atomic Swaps — HTLC contracts for BTC/LTC/DOGE */
-    rpc_swap_set_state(boot_node_db());
+    rpc_swap_set_state(boot_node_db(svc));
     register_swap_rpc_commands(svc->rpc_table);
 
     /* blk_sync.dat from file service is on disk. P2P will re-request
@@ -2929,7 +2927,7 @@ bool app_init_services(struct app_context *ctx,
     rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
                          svc->mempool, svc->connman);
     rpc_wallet_set_coins_tip(svc->coins_tip);
-    rpc_wallet_set_node_db(boot_node_db());
+    rpc_wallet_set_node_db(boot_node_db(svc));
     register_wallet_rpc_commands(svc->rpc_table);
     register_event_rpc_commands(svc->rpc_table);
 
@@ -3149,8 +3147,8 @@ bool app_init_services(struct app_context *ctx,
     /* SQLite catchup — skip when no UTXO set (P2P snapshot incoming).
      * Running catchup during snapshot receive causes DB lock contention
      * that stalls the snapshot data flow. */
-    if (boot_node_db()) {
-        int64_t utxo_count = db_utxo_count(boot_node_db());
+    if (boot_node_db(svc)) {
+        int64_t utxo_count = db_utxo_count(boot_node_db(svc));
         if (utxo_count == 0) {
             printf("SQLite catchup: skipped (no UTXOs, waiting for P2P snapshot)\n");
         } else {
@@ -3278,9 +3276,9 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     boot_join_projection_backfill_service(svc);
     boot_join_catchup_service(svc);
 
-    rpc_blockchain_mmr_save(boot_node_db());
-    rpc_blockchain_mmb_save(boot_node_db());
-    rpc_blockchain_commitment_mmr_save(boot_node_db());
+    rpc_blockchain_mmr_save(boot_node_db(svc));
+    rpc_blockchain_mmb_save(boot_node_db(svc));
+    rpc_blockchain_commitment_mmr_save(boot_node_db(svc));
 
     if (svc->block_tree_open) {
         block_tree_db_close(svc->block_tree);
@@ -3416,6 +3414,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 
 void app_add_node(const char *host, int port)
 {
+    struct boot_svc_ctx *svc = boot_active_svc();
     char hostbuf[256];
     snprintf(hostbuf, sizeof(hostbuf), "%s", host);
 
@@ -3431,7 +3430,7 @@ void app_add_node(const char *host, int port)
     }
 
     uint16_t use_port = port > 0 ? (uint16_t)port
-                                 : S->connman->manager.default_port;
+                                 : svc->connman->manager.default_port;
 
     struct net_address addr;
     net_address_init(&addr);
@@ -3457,7 +3456,7 @@ void app_add_node(const char *host, int port)
         freeaddrinfo(res);
 
         printf("Connecting to addnode %s:%u\n", hostbuf, use_port);
-        connman_open_connection(S->connman, &addr);
+        connman_open_connection(svc->connman, &addr);
     } else {
         printf("Failed to resolve addnode %s\n", hostbuf);
     }
@@ -3465,19 +3464,21 @@ void app_add_node(const char *host, int port)
 
 void app_start_metrics(bool mining)
 {
-    S->metrics->ms = S->state;
-    S->metrics->cm = S->connman;
-    S->metrics->params = chain_params_get();
-    S->metrics->mining = mining;
-    S->metrics->external_gauges = boot_metrics_external_gauges;
-    S->metrics->external_gauges_ctx = S;
-    if (!metrics_start(S->metrics))
+    struct boot_svc_ctx *svc = boot_active_svc();
+    svc->metrics->ms = svc->state;
+    svc->metrics->cm = svc->connman;
+    svc->metrics->params = chain_params_get();
+    svc->metrics->mining = mining;
+    svc->metrics->external_gauges = boot_metrics_external_gauges;
+    svc->metrics->external_gauges_ctx = svc;
+    if (!metrics_start(svc->metrics))
         fprintf(stderr, "WARNING: failed to start metrics thread\n");
 }
 
 void app_stop_metrics(void)
 {
-    metrics_stop(S->metrics);
+    struct boot_svc_ctx *svc = boot_active_svc();
+    metrics_stop(svc->metrics);
 }
 
 /* ── Sync state observer ──────────────────────────────────────── *
