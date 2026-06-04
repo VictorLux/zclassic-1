@@ -530,7 +530,6 @@ int test_domain_wallet_key_derivation(void);
 int test_domain_wallet_mnemonic(void);
 int test_domain_encoding_base58(void);
 int test_domain_encoding_bech32(void);
-int test_application_consensus_validate_block(void);
 int test_block_log_file(void);
 int test_block_log_legacy(void);
 int test_replay_verify(void);
