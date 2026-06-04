@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "services/utxo_audit_service.h"
+#include "services/utxo_reference_source.h"
 
 #include "coins/utxo_commitment.h"
 #include "encoding/utilstrencodings.h"
@@ -96,5 +97,78 @@ struct zcl_result utxo_audit_compare_remote(struct node_db *ndb,
                     (unsigned long long)out->local_utxo_count);
     }
 
+    return ZCL_OK;
+}
+
+struct zcl_result utxo_audit_compare_source(struct node_db *ndb,
+                                            const struct utxo_reference_source *src,
+                                            int32_t local_height,
+                                            struct utxo_audit_result *out)
+{
+    if (!out)
+        return ZCL_ERR(-1, "utxo_audit: null out");
+    if (!src || !src->commitment_at) {
+        memset(out, 0, sizeof(*out));
+        out->status = UTXO_AUDIT_ERROR;
+        snprintf(out->error, sizeof(out->error), "no reference source");
+        return ZCL_ERR(-2, "utxo_audit: null reference source");
+    }
+
+    /* Ask the reference for its commitment as of the SAME applied height the
+     * local set reflects — same-height parity is the only honest comparison
+     * because there is no historical "as-of height" local commitment. */
+    char ref_sha3[65] = {0};
+    int32_t ref_height = -1;
+    struct zcl_result rr =
+        src->commitment_at((void *)src->self, local_height,
+                           ref_sha3, &ref_height);
+    if (!rr.ok) {
+        /* Reference unreachable/parse-fail: compute local for context but
+         * stay LOCAL_ONLY. Never flag drift on a reference error. */
+        (void)utxo_audit_local(ndb, local_height, out);
+        out->status = UTXO_AUDIT_LOCAL_ONLY;
+        snprintf(out->source, sizeof(out->source), "%s",
+                 src->name ? src->name : "reference");
+        snprintf(out->error, sizeof(out->error), "reference error: %s",
+                 rr.message[0] ? rr.message : "unavailable");
+        return rr;
+    }
+
+    if (src->exact) {
+        /* Same-height guard: only an exact reference AT THE SAME height can
+         * yield a byte-meaningful DRIFT. A height skew (the reference is
+         * ahead/behind the live applied set) is recorded as LOCAL_ONLY and
+         * never pages — this is what prevents the structural false-DRIFT. */
+        if (ref_height != local_height) {
+            (void)utxo_audit_local(ndb, local_height, out);
+            out->status = UTXO_AUDIT_LOCAL_ONLY;
+            out->remote_height = ref_height;
+            snprintf(out->source, sizeof(out->source), "%s",
+                     src->name ? src->name : "reference");
+            snprintf(out->error, sizeof(out->error),
+                     "height skew local=%d ref=%d", local_height, ref_height);
+            return ZCL_OK;
+        }
+        /* Heights agree: delegate to the proven strcmp/persist/emit path,
+         * which sets 'utxo_drift_detected' so the Condition pages on DRIFT. */
+        return utxo_audit_compare_remote(ndb, ref_sha3, local_height,
+                                         src->name, out);
+    }
+
+    /* Coarse source: height-only attestation. It cannot prove the UTXO-set
+     * bytes, so it never declares DRIFT. Compute local for height/count and
+     * EXPLICITLY clear any stale 'utxo_drift_detected' (a coarse confirmation
+     * must not let a prior exact drift keep paging). */
+    struct zcl_result local = utxo_audit_local(ndb, local_height, out);
+    if (!local.ok)
+        return local;
+    snprintf(out->source, sizeof(out->source), "%s",
+             src->name ? src->name : "coarse");
+    out->remote_sha3[0] = '\0';
+    out->remote_height = ref_height;
+    out->drift_detected = false;
+    out->status = (ref_height == local_height) ? UTXO_AUDIT_MATCH
+                                               : UTXO_AUDIT_LOCAL_ONLY;
+    (void)node_db_state_set_int(ndb, "utxo_drift_detected", 0);
     return ZCL_OK;
 }

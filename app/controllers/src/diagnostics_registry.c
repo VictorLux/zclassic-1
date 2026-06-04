@@ -31,6 +31,7 @@
 #include "services/block_source_policy.h"
 #include "services/zclassicd_oracle_service.h"
 #include "services/header_probe.h"
+#include "services/utxo_parity_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/oracle_policy.h"
 #include "services/quorum_oracle_service.h"
@@ -444,6 +445,8 @@ static const struct dump_entry g_dumpers[] = {
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
                      "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
+    { "utxo_parity", utxo_parity_dump_state_json,
+                     "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag" },
     { "legacy_mirror", legacy_mirror_sync_dump_state_json,
                      "legacy mirror: always-on lockstep catch-up from co-located zclassicd" },
     { "oracle_policy", oracle_policy_dump_state_json,

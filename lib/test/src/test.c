@@ -352,6 +352,13 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "utxo_parity") == 0) {
+        printf("[test] ZCL_TEST_ONLY=utxo_parity — running only\n");
+        failures += test_utxo_parity_service();
+        printf("\n=== utxo_parity subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "mcp_controllers") == 0) {
         printf("[test] ZCL_TEST_ONLY=mcp_controllers — running MCP controller subset\n");
         failures += test_mcp_controllers();
@@ -831,6 +838,7 @@ int main(void)
     failures += test_connect_tip_hot_loop_exit();
     failures += test_self_heal_scan_fallback();
     failures += test_utxo_audit();
+    failures += test_utxo_parity_service();
     failures += test_rpc_error_envelope();
     failures += test_tx_property();
     failures += test_workpool();

@@ -136,6 +136,11 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
 
+/* Register the standing UTXO parity service into the runtime kernel (defined
+ * in boot_utxo_parity.c). Kept out of boot_services.c so that mega-file gains
+ * only one call. Returns false on registration failure. */
+bool boot_utxo_parity_register(struct boot_svc_ctx *svc);
+
 /* Wire the process_block tip-publication hooks + gap-fill kick (defined in
  * boot_tip_hooks.c) into the validation engine. Called once from
  * app_init_services. The teardown counterpart stays inline in app_shutdown_svc
