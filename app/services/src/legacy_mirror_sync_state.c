@@ -51,11 +51,14 @@ struct zcl_result legacy_mirror_sync_request_catchup_result(const char *reason)
     return lms_request_catchup_result_internal(reason);
 }
 
-bool legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
-                             struct main_state *ms,
-                             struct coins_view_cache *coins_tip,
-                             const struct chain_params *params,
-                             const char *datadir)
+/* zcl_result error band for this file: -200..-209. The -1 code is owned
+ * by lms_request_catchup_result_internal in legacy_mirror_sync_service.c. */
+struct zcl_result
+legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
+                        struct main_state *ms,
+                        struct coins_view_cache *coins_tip,
+                        const struct chain_params *params,
+                        const char *datadir)
 {
     pthread_mutex_lock(&g_lms.lock);
 
@@ -147,9 +150,9 @@ bool legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
 
     if (!have_creds) {
         lms_set_error("no zclassicd RPC credentials");
-        return false;
+        return ZCL_ERR(-200, "no zclassicd RPC credentials");
     }
-    return true;
+    return ZCL_OK;
 }
 
 void legacy_mirror_sync_reload_from_env(void)
@@ -178,17 +181,21 @@ void legacy_mirror_sync_reload_from_env(void)
     pthread_mutex_unlock(&g_lms.lock);
 }
 
-bool legacy_mirror_sync_start(void)
+struct zcl_result legacy_mirror_sync_start(void)
 {
     if (!g_lms.initialized) {
         fprintf(stderr, "[legacy_mirror] start before init\n");
-        return false;
+        return ZCL_ERR(-201, "legacy_mirror start before init");
     }
     if (!g_lms.enabled)
-        return true;
+        return ZCL_OK;
     int cad = g_lms.cadence_secs > 0 ? g_lms.cadence_secs
                                      : LMS_DEFAULT_CADENCE;
-    return legacy_mirror_supervisor_start(cad);
+    if (!legacy_mirror_supervisor_start(cad))
+        return ZCL_ERR(-202,
+                       "legacy_mirror supervisor start failed cadence=%d",
+                       cad);
+    return ZCL_OK;
 }
 
 void legacy_mirror_sync_stop(void)

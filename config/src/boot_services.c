@@ -374,9 +374,9 @@ static bool boot_legacy_mirror_start(void *ctx)
     struct legacy_mirror_sync_config cfg = {0};
     cfg.enabled = true;
     if (!legacy_mirror_sync_init(&cfg, svc->state, svc->coins_tip,
-                                 svc->params, svc->datadir))
+                                 svc->params, svc->datadir).ok)
         return false;
-    if (legacy_mirror_sync_start()) {
+    if (legacy_mirror_sync_start().ok) {
         printf("[legacy-mirror] always-on mirror sync started\n");
         return true;
     }

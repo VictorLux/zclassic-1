@@ -169,8 +169,8 @@ static int test_legacy_mirror_registers_supervisor_contract(void)
             .cadence_secs = 300,
             .enabled = true,
         };
-        ASSERT(legacy_mirror_sync_init(&cfg, NULL, NULL, NULL, NULL));
-        ASSERT(legacy_mirror_sync_start());
+        ASSERT(legacy_mirror_sync_init(&cfg, NULL, NULL, NULL, NULL).ok);
+        ASSERT(legacy_mirror_sync_start().ok);
 
         struct supervisor_snapshot snaps[SUPERVISOR_CAP];
         int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);

@@ -61,6 +61,7 @@ static bool line_has_terminal_propagation(const char *line)
            strstr(line, "return -1;") ||
            strstr(line, "return 1;") ||
            strstr(line, "return NULL;") ||
+           strstr(line, "return ZCL_ERR(") ||
            strstr(line, "exit(") ||
            strstr(line, "abort(");
 }

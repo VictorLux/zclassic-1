@@ -300,7 +300,7 @@ int test_zclassicd_oracle(void)
             .enabled = true,
         };
         ZO_CHECK("legacy mirror init for contradiction",
-                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL));
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
         struct zcl_result catchup =
             legacy_mirror_sync_request_catchup_result("unit-contradiction");
         ZO_CHECK("legacy mirror catchup rejects contradiction",

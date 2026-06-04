@@ -39,12 +39,13 @@ struct legacy_mirror_sync_config {
     bool        enabled;         /* default true when credentials exist */
 };
 
-bool legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
-                             struct main_state *ms,
-                             struct coins_view_cache *coins_tip,
-                             const struct chain_params *params,
-                             const char *datadir);
-bool legacy_mirror_sync_start(void);
+struct zcl_result
+legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
+                        struct main_state *ms,
+                        struct coins_view_cache *coins_tip,
+                        const struct chain_params *params,
+                        const char *datadir);
+struct zcl_result legacy_mirror_sync_start(void);
 void legacy_mirror_sync_stop(void);
 
 /* One synchronous catch-up attempt. Uses the service single-flight lock,
