@@ -668,6 +668,8 @@ int main(void)
     { extern int test_sha3_windows(void);
       failures += test_sha3_windows(); }
     failures += test_flyclient();
+    { extern int test_flyclient_chainwork_floor(void);
+      failures += test_flyclient_chainwork_floor(); }
     failures += test_scan_util();
     failures += test_tor();
     { extern int test_onion_bootstrap(void);

@@ -97,3 +97,12 @@ int zcl_chainwork_compare_le(const uint8_t a[32], const uint8_t b[32])
     }
     return 0;
 }
+
+bool zcl_chainwork_below_floor(const uint8_t chain_work[32],
+                               const uint8_t floor_le[32])
+{
+    /* A zero floor is the "no floor configured" case: never reject. */
+    if (zcl_chainwork_is_zero(floor_le))
+        return false;
+    return zcl_chainwork_compare_le(chain_work, floor_le) < 0;
+}

@@ -16,6 +16,8 @@
 #include "chain/pow.h"
 #include "chain/chainparams.h"
 #include "chain/chain.h"
+#include "core/arith_uint256.h"
+#include "core/uint256.h"
 #include "net/flyclient.h"
 #include "net/fast_sync.h"
 #include "core/serialize.h"
@@ -485,6 +487,34 @@ struct zcl_result snapsync_verify_flyclient(struct snapshot_sync_service *svc,
         printf("[snapsync] FlyClient: no chain params for PoW check\n");
         return ZCL_ERR(-5, "verify_flyclient: no chain params for PoW check");
     }
+
+    /* Minimum-chainwork FLOOR: serialize the consensus nMinimumChainWork to the
+     * canonical little-endian byte layout (byte 0 = least significant), which is
+     * exactly the layout of offered_chain_work / mmb_leaf.chain_work, and reject
+     * any offered anchor whose accumulated work is below it. The floor sits far
+     * below any genuine ~3M-height snapshot, so it never false-rejects a real
+     * anchor, but it blocks a forged minimum-difficulty chain whose tiny work
+     * could otherwise pass the relative leaf<=offered checks below. */
+    uint8_t min_chainwork_le[32];
+    {
+        struct arith_uint256 floor_arith;
+        struct uint256 floor_le;
+        uint256_to_arith(&floor_arith, &consensus->nMinimumChainWork);
+        arith_to_uint256(&floor_le, &floor_arith);
+        memcpy(min_chainwork_le, floor_le.data, 32);
+    }
+    if (zcl_chainwork_below_floor(offered_chain_work, min_chainwork_le)) {
+        char got[65], floor_hex[65];
+        HexStr(offered_chain_work, 32, false, got, sizeof(got));
+        HexStr(min_chainwork_le, 32, false, floor_hex, sizeof(floor_hex));
+        printf("[snapsync] FlyClient: offered chainwork below floor "
+               "(work=%s floor=%s)\n", got, floor_hex);
+        event_emitf(EV_FC_CHAIN_VERIFIED, serving_peer_id,
+                    "flyclient=FAILED chainwork=below_floor");
+        return ZCL_ERR(-9, "verify_flyclient: offered chainwork %s below "
+                       "minimum floor %s", got, floor_hex);
+    }
+
     uint32_t pow_failures = 0;
     uint32_t work_failures = 0;
     for (uint32_t i = 0; i < resp->num_samples; i++) {

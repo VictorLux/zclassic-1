@@ -63,7 +63,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
     X(explorer) X(mining) X(utxo_commitment) X(mmr) X(mmb) \
-    X(flyclient) X(scan_util) X(tor) X(event) X(download) X(consensus) \
+    X(flyclient) X(flyclient_chainwork_floor) X(scan_util) X(tor) X(event) X(download) X(consensus) \
     X(policy) X(wallet_view) X(fast_sync) X(block_scan) \
     X(node_health_service) X(chain_state_repo) X(recovery_policy) \
     X(chain_evidence_controller) \
