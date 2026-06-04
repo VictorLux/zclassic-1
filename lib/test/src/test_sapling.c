@@ -4764,8 +4764,12 @@ int test_sapling(void)
         /* Invariant (2a): a wallet note whose nf was computed at the CORRECT
          * position is detected as spent. */
         {
-            struct wallet w;
-            wallet_init(&w);
+            /* Heap-allocate: struct wallet is ~65 MB (embeds map_wallet[]),
+             * which overflows the default process stack. Match the
+             * zcl_calloc pattern used everywhere else in the test suite. */
+            struct wallet *w = zcl_calloc(1, sizeof(struct wallet),
+                                          "test_bug7_wallet");
+            wallet_init(w);
             struct sapling_received_note note;
             memset(&note, 0, sizeof(note));
             memcpy(note.diversifier, d, 11);
@@ -4778,28 +4782,32 @@ int test_sapling(void)
             note.spent = false;
             note.used = true;
             /* Insert directly (wallet_add_sapling_note is file-static). */
-            w.sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note");
-            w.sapling_notes[0] = note;
-            w.num_sapling_notes = 1;
-            w.sapling_notes_cap = 1;
+            w->sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note");
+            w->sapling_notes[0] = note;
+            w->num_sapling_notes = 1;
+            w->sapling_notes_cap = 1;
 
-            int64_t bal_before = wallet_get_sapling_balance(&w);
-            wallet_mark_sapling_nullifiers_spent(&w, &spend_tx);
-            bool detected = wallet_sapling_nullifier_is_spent(&w, exp_nf);
-            int64_t bal_after = wallet_get_sapling_balance(&w);
+            int64_t bal_before = wallet_get_sapling_balance(w);
+            wallet_mark_sapling_nullifiers_spent(w, &spend_tx);
+            bool detected = wallet_sapling_nullifier_is_spent(w, exp_nf);
+            int64_t bal_after = wallet_get_sapling_balance(w);
 
             ok = ok && bal_before == (int64_t)value;
             ok = ok && detected;                 /* MUST match */
             ok = ok && bal_after == 0;            /* balance no longer counts it */
-            wallet_free(&w);
+            wallet_free(w);
+            free(w);
         }
 
         /* Invariant (2b): the SAME note with the placeholder nf (position 0)
          * is NOT detected as spent — the wallet would overstate z-balance.
          * This is the exact failure the placeholder produced. */
         {
-            struct wallet w;
-            wallet_init(&w);
+            /* Heap-allocate (see invariant 2a above): struct wallet is
+             * ~65 MB and must not live on the stack. */
+            struct wallet *w = zcl_calloc(1, sizeof(struct wallet),
+                                          "test_bug7_wallet0");
+            wallet_init(w);
             struct sapling_received_note note;
             memset(&note, 0, sizeof(note));
             memcpy(note.diversifier, d, 11);
@@ -4811,18 +4819,19 @@ int test_sapling(void)
             memcpy(note.nf, nf_zero, 32);     /* WRONG (placeholder) position */
             note.spent = false;
             note.used = true;
-            w.sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note0");
-            w.sapling_notes[0] = note;
-            w.num_sapling_notes = 1;
-            w.sapling_notes_cap = 1;
+            w->sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note0");
+            w->sapling_notes[0] = note;
+            w->num_sapling_notes = 1;
+            w->sapling_notes_cap = 1;
 
-            wallet_mark_sapling_nullifiers_spent(&w, &spend_tx);
-            bool detected = wallet_sapling_nullifier_is_spent(&w, exp_nf);
-            int64_t bal_after = wallet_get_sapling_balance(&w);
+            wallet_mark_sapling_nullifiers_spent(w, &spend_tx);
+            bool detected = wallet_sapling_nullifier_is_spent(w, exp_nf);
+            int64_t bal_after = wallet_get_sapling_balance(w);
 
             ok = ok && !detected;                /* MUST NOT match */
             ok = ok && bal_after == (int64_t)value; /* note wrongly still counted */
-            wallet_free(&w);
+            wallet_free(w);
+            free(w);
         }
 
         if (ok) printf("OK\n");
