@@ -83,6 +83,79 @@ size_t net_recv_total_bytes_cap(void)
     return recv_total_bytes_cap();
 }
 
+/*
+ * Process-wide send-queue byte budget — the symmetric mirror of the
+ * recv budget above.
+ *
+ * Receive was already budgeted (g_recv_total_bytes), but SEND was not:
+ * a single getdata for up to MAX_INV_SZ block hashes, or a slow-reader
+ * peer that never drains its socket, would force us to buffer tens of
+ * GB of send_segments -> OOM. This counter tracks the sum of every
+ * live send_segment->size across all peers. process_getdata consults
+ * it (and the per-peer node->send_size) to stop serving once over
+ * budget (Core's fPauseSend behaviour) — it does NOT disconnect the
+ * peer, which is within protocol and will simply re-request later.
+ *
+ * Charged in send_segment_create, released in send_segment_free, so
+ * every path that frees a segment — socket drain, p2p_node_free, and
+ * the connman forced-disconnect cleanup (which now calls
+ * send_segment_free too) — returns its bytes to the budget. The
+ * counter must therefore never leak on a forced disconnect.
+ *
+ * Default cap 512 MiB, overridable via ZCL_MAX_SENDBUFFER_TOTAL_BYTES.
+ */
+static _Atomic size_t g_send_total_bytes = 0;
+
+static size_t send_total_bytes_cap(void)
+{
+    size_t cap = 512 * 1024 * 1024; /* 512 MiB default */
+    const char *env = getenv("ZCL_MAX_SENDBUFFER_TOTAL_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
+size_t net_send_total_bytes(void)
+{
+    return atomic_load(&g_send_total_bytes);
+}
+
+size_t net_send_total_bytes_cap(void)
+{
+    return send_total_bytes_cap();
+}
+
+bool net_send_over_budget(const struct p2p_node *node)
+{
+    /* Whitelisted / trusted peers are exempt — we never throttle them. */
+    if (node && node->whitelisted)
+        return false;
+
+    /* Per-peer cap stops one slow reader from hoarding the whole budget;
+     * the process-wide cap stops a swarm from doing the same in
+     * aggregate. Either tripping pauses further serving. */
+    if (node && node->send_size > net_send_peer_bytes_cap())
+        return true;
+    return atomic_load(&g_send_total_bytes) >= send_total_bytes_cap();
+}
+
+size_t net_send_peer_bytes_cap(void)
+{
+    size_t cap = 32 * 1024 * 1024; /* 32 MiB per peer default */
+    const char *env = getenv("ZCL_MAX_SENDBUFFER_PEER_BYTES");
+    if (env && *env) {
+        char *endp = NULL;
+        long long v = strtoll(env, &endp, 10);
+        if (endp != env && v > 0 && (unsigned long long)v < SIZE_MAX)
+            cap = (size_t)v;
+    }
+    return cap;
+}
+
 void net_message_init(struct net_message *msg,
                       const unsigned char msgstart[MESSAGE_START_SIZE])
 {
@@ -193,11 +266,20 @@ static struct send_segment *send_segment_create(const uint8_t *data, size_t size
     memcpy(seg->data, data, size);
     seg->size = size;
     seg->next = NULL;
+    /* Charge this segment against the process-wide send budget. Released
+     * symmetrically in send_segment_free on every drain/disconnect path. */
+    atomic_fetch_add(&g_send_total_bytes, size);
     return seg;
 }
 
-static void send_segment_free(struct send_segment *seg)
+/* Exposed (declared in net.h) so the connman forced-disconnect cleanup
+ * frees segments through the same path that releases the send budget,
+ * instead of a raw free() that would leak g_send_total_bytes. */
+void send_segment_free(struct send_segment *seg)
 {
+    if (!seg) return;
+    /* Return this segment's bytes to the process-wide send budget. */
+    atomic_fetch_sub(&g_send_total_bytes, seg->size);
     free(seg->data);
     free(seg);
 }

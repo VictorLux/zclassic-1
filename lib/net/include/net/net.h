@@ -109,6 +109,28 @@ struct send_segment {
     struct send_segment *next;
 };
 
+/* Free a send_segment AND release its bytes from the process-wide send
+ * budget. Every drain/disconnect path must use this rather than a raw
+ * free(), or g_send_total_bytes leaks. */
+void send_segment_free(struct send_segment *seg);
+
+struct p2p_node;
+
+/* Process-wide send-queue byte budget — the symmetric mirror of the
+ * recv budget above. net_send_total_bytes() is the current sum of every
+ * live send_segment->size across all peers; net_send_total_bytes_cap()
+ * is the configured process ceiling (env ZCL_MAX_SENDBUFFER_TOTAL_BYTES,
+ * default 512 MiB) and net_send_peer_bytes_cap() the per-peer ceiling
+ * (env ZCL_MAX_SENDBUFFER_PEER_BYTES, default 32 MiB). net_send_over_budget()
+ * is true when this peer's buffered send bytes exceed the per-peer cap OR
+ * the process-wide total is at/over the cap; whitelisted peers are exempt.
+ * Serving loops (e.g. process_getdata) consult it to pause serving — they
+ * must NOT disconnect, the peer is within protocol and re-requests later. */
+size_t net_send_total_bytes(void);
+size_t net_send_total_bytes_cap(void);
+size_t net_send_peer_bytes_cap(void);
+bool net_send_over_budget(const struct p2p_node *node);
+
 struct ban_entry {
     struct net_addr addr;
     uint8_t prefix_len;

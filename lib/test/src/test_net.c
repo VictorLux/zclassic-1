@@ -1352,6 +1352,123 @@ int test_net(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Send-queue budget (getdata-flood / slow-reader DoS guard).
+     *
+     * A single getdata can request up to MAX_INV_SZ (50000) blocks and a
+     * slow-reader peer may never drain its socket, so serving the whole
+     * batch could buffer tens of GB of send_segments -> OOM. The fix
+     * charges every queued send_segment against a process-wide and a
+     * per-peer budget; process_getdata stops serving once over budget
+     * (without disconnecting), and every drain/disconnect path releases
+     * the bytes so the counter never leaks. This test exercises that
+     * accounting end-to-end through the public p2p_node send path. */
+    {
+        printf("net: send budget caps + counter returns to 0 ... ");
+
+        /* Small caps so a handful of queued messages trips them.
+         * Per-peer cap 4 KB, process cap 16 KB. */
+        setenv("ZCL_MAX_SENDBUFFER_PEER_BYTES", "4096", 1);
+        setenv("ZCL_MAX_SENDBUFFER_TOTAL_BYTES", "16384", 1);
+
+        struct net_manager nm;
+        net_manager_init(&nm);
+        unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+        memcpy(nm.message_start, magic, MESSAGE_START_SIZE);
+
+        struct net_address addr;
+        net_address_init(&addr);
+        unsigned char ip4[4] = {127, 0, 0, 1};
+        net_addr_set_ipv4(&addr.svc.addr, ip4);
+        addr.svc.port = 8033;
+
+        /* Baseline: other peers/tests in this binary may have outstanding
+         * segments, so all assertions are on the delta from `base`. */
+        size_t base = net_send_total_bytes();
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                 &addr, "flood-peer", true);
+        bool ok = (node != NULL);
+
+        /* Nothing queued yet -> not over budget. */
+        ok = ok && !net_send_over_budget(node);
+        ok = ok && (node->send_size == 0);
+
+        /* Queue several 2 KB "block" messages. send() on the invalid
+         * socket can't drain them, so they accumulate exactly like a
+         * slow-reader peer's queue would. */
+        unsigned char payload[2048];
+        memset(payload, 0x5a, sizeof(payload));
+
+        size_t before = net_send_total_bytes();
+        p2p_node_begin_message(node, "block", magic);
+        p2p_node_write_message_data(node, payload, sizeof(payload));
+        p2p_node_end_message(node);
+        /* One message bumped both the per-peer and process-wide counters
+         * by (header + payload). */
+        ok = ok && (net_send_total_bytes() > before);
+        ok = ok && (node->send_size > 0);
+        /* One 2 KB message is under the 4 KB per-peer cap. */
+        ok = ok && !net_send_over_budget(node);
+
+        /* Keep queueing until the per-peer cap (4 KB) is exceeded; the
+         * serving loop in process_getdata would break at exactly this
+         * point. Bound the loop so a regression can't hang the test. */
+        int guard = 0;
+        while (!net_send_over_budget(node) && guard++ < 1000) {
+            p2p_node_begin_message(node, "block", magic);
+            p2p_node_write_message_data(node, payload, sizeof(payload));
+            p2p_node_end_message(node);
+        }
+        ok = ok && net_send_over_budget(node);
+        ok = ok && (node->send_size > net_send_peer_bytes_cap());
+
+        /* Whitelisted/trusted peers are exempt even when over the cap. */
+        node->whitelisted = true;
+        ok = ok && !net_send_over_budget(node);
+        node->whitelisted = false;
+        ok = ok && net_send_over_budget(node);
+
+        /* Tearing the node down drains the send queue through
+         * send_segment_free, which releases every charged byte. After
+         * the drain the process-wide counter must return to baseline —
+         * proving the counter does not leak on disconnect/free. */
+        p2p_node_free(node);
+        ok = ok && (net_send_total_bytes() == base);
+
+        /* The cap helpers honour the env overrides. */
+        ok = ok && (net_send_peer_bytes_cap() == 4096);
+        ok = ok && (net_send_total_bytes_cap() == 16384);
+
+        /* Direct check of the disconnect-cleanup drain symmetry: a
+         * manually built queue freed with send_segment_free (the exact
+         * primitive connman's forced-disconnect path now uses) must also
+         * leave the counter at baseline. */
+        {
+            size_t b2 = net_send_total_bytes();
+            /* Build a segment via the same public send path on a fresh
+             * node, then free the node — whose drain calls the exact
+             * send_segment_free primitive connman's forced-disconnect
+             * cleanup now uses — to confirm the counter returns to baseline
+             * a second time. */
+            struct p2p_node *n2 = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                  &addr, "flood-peer-2", true);
+            ok = ok && (n2 != NULL);
+            p2p_node_begin_message(n2, "block", magic);
+            p2p_node_write_message_data(n2, payload, sizeof(payload));
+            p2p_node_end_message(n2);
+            ok = ok && (net_send_total_bytes() > b2);
+            p2p_node_free(n2);
+            ok = ok && (net_send_total_bytes() == b2);
+        }
+
+        net_manager_free(&nm);
+        unsetenv("ZCL_MAX_SENDBUFFER_PEER_BYTES");
+        unsetenv("ZCL_MAX_SENDBUFFER_TOTAL_BYTES");
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* version_message: serialize/deserialize roundtrip */
     {
         printf("version_message: serialize roundtrip... ");

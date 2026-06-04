@@ -1273,14 +1273,17 @@ static void *thread_socket_handler(void *arg)
                 node->state = PEER_DISCONNECTED;
                 p2p_node_close_socket(node);
 
-                /* Clean send queue while holding cs_nodes */
+                /* Clean send queue while holding cs_nodes. Use
+                 * send_segment_free (not a raw free) so each segment's
+                 * bytes are returned to the process-wide send budget;
+                 * otherwise g_send_total_bytes leaks on forced disconnect. */
                 zcl_mutex_lock(&node->cs_send);
                 while (node->send_head) {
                     struct send_segment *seg = node->send_head;
                     node->send_head = seg->next;
-                    free(seg->data);
-                    free(seg);
+                    send_segment_free(seg);
                 }
+                node->send_tail = NULL;
                 node->send_size = 0;
                 zcl_mutex_unlock(&node->cs_send);
 

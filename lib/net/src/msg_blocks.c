@@ -153,6 +153,19 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
     size_t not_found_count = 0;
 
     for (uint64_t i = 0; i < count; i++) {
+        /* Bound the send queue: a single getdata can request up to
+         * MAX_INV_SZ (50000) blocks, and a slow-reader peer may never
+         * drain its socket, so serving the whole batch could buffer
+         * tens of GB of send_segments -> OOM. Once this peer (or the
+         * process as a whole) is over the send budget, stop serving and
+         * return — the peer is within protocol and will re-request the
+         * remaining items later (Core's fPauseSend behaviour). Do NOT
+         * disconnect. Whitelisted/trusted peers are exempt (checked
+         * inside net_send_over_budget). Any not-found items already
+         * accumulated are still flushed below. */
+        if (net_send_over_budget(node))
+            break;
+
         struct inv_item inv;
         if (!inv_item_deserialize(&inv, s))
             LOG_FAIL("net", "failed to deserialize getdata inv[%llu] from %s",
