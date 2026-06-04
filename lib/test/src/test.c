@@ -120,6 +120,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "parity_slice") == 0) {
+        printf("[test] ZCL_TEST_ONLY=parity_slice — running the MVP C8 hermetic parity slice only\n");
+        { extern int test_parity_slice(void);
+          failures += test_parity_slice(); }
+        printf("\n=== parity_slice subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "store_e2e") == 0) {
         printf("[test] ZCL_TEST_ONLY=store_e2e — running store e2e gate only\n");
         { extern int test_store_e2e_gate(void);
@@ -732,6 +740,7 @@ int main(void)
     { extern int test_onion_bootstrap_slice(void);  failures += test_onion_bootstrap_slice(); }
     { extern int test_shielded_receive_slice(void); failures += test_shielded_receive_slice(); }
     { extern int test_reducer_forward_progress_gate(void); failures += test_reducer_forward_progress_gate(); }
+    { extern int test_parity_slice(void);           failures += test_parity_slice(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();

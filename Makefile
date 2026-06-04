@@ -522,6 +522,7 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP gate 2 (slice): onion bootstrap <60s budget + v3 address (hermetic),onion_slice,=== onion_bootstrap_slice subset complete:)
 	$(call mvp_gate,MVP gate 4 (slice): note encrypted to wallet ivk -> wallet decrypts -> z-balance (hermetic),shielded_receive,=== shielded_receive subset complete:)
 	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg (hermetic),reducer_forward,=== reducer-forward subset complete:)
+	$(call mvp_gate,MVP gate 8 (slice): consensus-parity mismatch-detection machinery (hermetic fixture),parity_slice,=== parity_slice subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
 
 # mvp-it-works: the single "you know your app works" proof — boots a fresh
@@ -561,6 +562,16 @@ mvp-shielded-receive: test_zcl
 mvp-forward-progress: test_zcl
 	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg through the reducer,reducer_forward,=== reducer-forward subset complete:)
 	@echo "══ MVP forward-progress gate: PASSED ══"
+
+# mvp-parity-slice (C8 hermetic slice): regression-protects the UTXO parity
+# service's mismatch-detection machinery via the in-process fixture reference —
+# a CONSISTENT set reports 0 mismatches, a REAL injected outpoint is DETECTED
+# (the negative control). The FULL C8 claim (live zclassicd oracle parity over
+# the soak window) still needs the oracle. Runs isolated (parity-service globals).
+.PHONY: mvp-parity-slice
+mvp-parity-slice: test_zcl
+	$(call mvp_gate,MVP C8 (slice): consensus-parity mismatch-detection machinery,parity_slice,=== parity_slice subset complete:)
+	@echo "══ MVP parity-slice gate: PASSED ══"
 
 # ci-stress: the fixture/network-bound MVP gates. Run on a worker that
 # has the resource (Tor egress for #2, ~/.zcash-params for #4). Reuses
