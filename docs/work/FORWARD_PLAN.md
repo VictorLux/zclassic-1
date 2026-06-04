@@ -11,26 +11,32 @@
 
 ---
 
-## ⛔ #1 PRIORITY — the live forward-progress blocker (RE-DIAGNOSED 2026-06-04)
+## ⛔ #1 PRIORITY — the live forward-progress blocker (CONFIRMED 2026-06-04)
 
-**The blocker is NOT the tip_finalize window-extender oscillation** that earlier
-entries described. A live `make diagnose-gap` (2026-06-04) verdict is
-**COINS-APPLICATION-LAG**, not oscillation:
+> **Read [`working-mvp-strategy.md`](./working-mvp-strategy.md) — the decision
+> doc.** Two prior diagnoses here were WRONG: neither the tip_finalize
+> window-extender oscillation NOR "drive the reducer from genesis / coins-lag."
+> The `C applied coins tip : 5` that drove the genesis framing is
+> `diagnose_gap.sh:50` reading a **dead legacy marker**
+> (`node_state['cec.coins_best_block_height']`), NOT the reducer cursor.
 
-```
-  A active public tip : 3,134,303    (legacy engine SERVES this — healthy)
-  H best header tip   : 3,135,412
-  C applied coins tip : 5            ◄── the REDUCER's utxo_apply cursor is at GENESIS
-  D have_data at A+1  : False
-  gettxoutsetinfo     : height 3,134,303, 1,346,323 txouts (legacy coins = full set)
-```
+**Code+live-confirmed:** the **reducer IS the live tip authority and is at the
+tip** (cursors `utxo_apply=tip_finalize=3134304`; 637 finalized rows). The wedge
+is a **single-frontier-window solution-source desync** (h=3134304..~3134311): the
+forward validator reads the Equihash solution from `node.db blocks.solution`
+(no row at the frontier) and the recheck path hits `active_chain_at(h)→NULL` one
+above the tip, while the valid solution sits unused in `progress.kv
+header_solution_repair`. A **dishonest self-healer**
+(`stale_validate_headers_repair.c:96-115`) then loops forever — witness returns
+`ok` when the poison rows vanish, never when the tip moves, so it rewinds 7
+cursors + deletes ~1129 rows every ~5s (`cleared_count=9421`+ live) and never
+pages. The exact Law-7 violation: a remedy lying about success, hiding the halt.
 
-The node **serves correctly via the legacy engine** (full UTXO set at tip, peers,
-RPC). The **reducer / Jobs single-engine** — the intended future authority — is at
-height 5; **it is not being driven forward at all.** So "make the tip finalize
-forward" really means **drive the reducer forward (the single-engine cutover)** —
-the audit's structural theme #1 — not a localized stage swap. C3/C6/C8 still need
-the reducer to be the live forward authority.
+**Strategic call (3 adversarial reviewers concur): SHIP ON THE REDUCER.** Don't
+revert to legacy (offline-reindex-only). Don't replay from genesis (phantom).
+The fix is **collapse the two header-solution stores into one frontier-covering
+resolver + make the self-healer's witness honest** — hours, not days, on a
+datadir COPY. Next workflows W1..W5 in [`working-mvp-strategy.md`](./working-mvp-strategy.md).
 
 **Window-extender swap — done, correct, but NOT the live fix.** The contiguous
 `reducer_extend_window_contiguous` swap (`active_chain_extend_window_have_data`
