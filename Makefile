@@ -92,7 +92,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-file-size-ceiling check-framework-filename-suffix \
         check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
-        soak-smoke soak-7day chaos chaos-clean
+        soak-smoke soak-7day soak-ci test-crash-bootstrap chaos chaos-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
 all: test_zcl zclassic23 zclassic-cli
@@ -333,8 +333,11 @@ chaos-clean:
 # restart, and assert data-integrity invariants. Needs a pre-seeded
 # datadir (skips trivially if none exists — see tool header). Build
 # depends on the node binary and the CLI RPC helper.
-crash_recovery_test: tools/crash_recovery_test.c
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread -o $@ $<
+crash_recovery_test: tools/crash_recovery_test.c lib/platform/src/clock.c
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread \
+	    -Ilib/platform/include -Ilib/util/include -Ivendor/include -o $@ \
+	    tools/crash_recovery_test.c lib/platform/src/clock.c \
+	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
 .PHONY: test-crash
 # CI entry point for the crash recovery harness.
@@ -355,6 +358,85 @@ test-crash: crash_recovery_test zclassic23 zcl-rpc
 	     echo "test-crash: ZCL_CRASH_DATADIR=$$dd does not exist — harness will SKIP"; \
 	 fi; \
 	 ZCL_CRASH_DATADIR="$$dd" ./crash_recovery_test --iterations=10
+
+# ── Opt-in, node-spawning harnesses (NOT in `make ci`) ─────────────
+#
+# test-crash-bootstrap and soak-ci both SPAWN a real (isolated regtest)
+# node. They are DELIBERATELY excluded from the default `ci:` recipe to
+# keep CI hermetic and fast — `make ci` must never start a node. Run
+# them explicitly (operator/agent) on a clean host, or in a dedicated
+# slow-CI stage. Both source tools/scripts/isolated_node_env.sh, which
+# is the single audited chokepoint enforcing /tmp datadir + 39xxx ports
+# + refuse-on-live preflight + process-group kill + cleanup trap.
+#
+# C7 full-binary kill-9: the bootstrap path self-seeds a fresh isolated
+# /tmp regtest datadir (mine N blocks), then runs kill/restart cycles
+# asserting height-monotone + zero-UTXO-above-tip recovery. The `iso_*`
+# helpers mint the datadir/ports and own the cleanup trap; the C harness
+# does its own spawn/kill loop against them.
+.PHONY: test-crash-bootstrap
+# The recipe runs under bash (NOT the default /bin/sh=dash) because
+# isolated_node_env.sh relies on `set -o pipefail`. The whole body is one
+# bash invocation so the sourced trap stays armed for the harness run.
+test-crash-bootstrap: crash_recovery_test zclassic23 zcl-rpc
+	@bash -c 'set -euo pipefail; \
+	 export ISO_KIND=crash ISO_PORT_BASE=39030; \
+	 . tools/scripts/isolated_node_env.sh; \
+	 iso_init; \
+	 echo "test-crash-bootstrap: kill-9 cycles on $$ISO_DD (rpc=$$ISO_RPCPORT)"; \
+	 ./crash_recovery_test \
+	     --bootstrap-regtest \
+	     --datadir="$$ISO_DD" \
+	     --rpc-port="$$ISO_RPCPORT" \
+	     --p2p-port="$$ISO_PORT" \
+	     --fs-port="$$ISO_FSPORT" \
+	     --https-port="$$ISO_HTTPSPORT" \
+	     --connect=127.0.0.1:"$$ISO_CONNECT_SINK" \
+	     --seed-blocks=30 \
+	     --iterations=2 --min-delay-ms=200 --max-delay-ms=800 \
+	     --verbose; \
+	 echo "test-crash-bootstrap: PASS (recovery invariants held under SIGKILL)"'
+
+# C6 bounded compressed-soak PROXY: self-spawn an isolated /tmp regtest
+# node, drive 180 s of generate-load, and assert the soak runner exits
+# SOAK_OK (verdict=OK sentinel grepped so a no-op runner fails loud —
+# false-green guard, same discipline as the mvp_gate macro). This is a
+# hermetic CI green/red SIGNAL, NOT the real 168 h operational soak.
+.PHONY: soak-ci
+# Runs under bash for `set -o pipefail` (see test-crash-bootstrap note).
+# `set +e` around the runner so a non-zero verdict is reported (not
+# swallowed by errexit) before the false-green sentinel check.
+soak-ci: tools/soak/soak_runner zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 export ISO_KIND=soak ISO_PORT_BASE=39040; \
+	 . tools/scripts/isolated_node_env.sh; \
+	 iso_init; \
+	 log="$$ISO_DD/soak-ci.log"; \
+	 echo "soak-ci: 180s compressed soak on $$ISO_DD (rpc=$$ISO_RPCPORT)"; \
+	 set +e; \
+	 out=$$(./tools/soak/soak_runner \
+	     --ci-proxy \
+	     --node-datadir="$$ISO_DD" \
+	     --rpcport="$$ISO_RPCPORT" \
+	     --p2p-port="$$ISO_PORT" \
+	     --fs-port="$$ISO_FSPORT" \
+	     --https-port="$$ISO_HTTPSPORT" \
+	     --connect=127.0.0.1:"$$ISO_CONNECT_SINK" \
+	     --interval-sec=5 \
+	     --load=generate:5 \
+	     --rpc=./zcl-rpc \
+	     --log="$$log" 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ]; then \
+	     echo "soak-ci: FAILED (runner exit $$rc != SOAK_OK); log tail:"; \
+	     tail -20 "$$log" 2>/dev/null || true; \
+	     exit 1; \
+	 fi; \
+	 if ! echo "$$out" | grep -q "verdict=OK"; then \
+	     echo "soak-ci: FALSE-GREEN GUARD — runner exited 0 but never printed verdict=OK (no-op?)"; \
+	     exit 1; \
+	 fi; \
+	 echo "soak-ci: PASS (SOAK_OK — tip advanced under load, RSS plateaued)"'
 
 # Always-fresh end-to-end MCP test.
 #
@@ -556,10 +638,12 @@ fuzz-ci-leaks: $(FUZZ_TARGETS)
 # is obviously out of band, and the smoke target needs a live
 # node on the same host, which most CI workers don't provide.
 tools/soak/soak_runner: tools/soak/main.c lib/test/src/soak_harness.c \
+                        lib/platform/src/clock.c \
                         lib/test/include/test/soak_harness.h
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Ilib/test/include -o $@ \
-	    tools/soak/main.c lib/test/src/soak_harness.c
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ilib/test/include -Ilib/platform/include -Ilib/util/include -o $@ \
+	    tools/soak/main.c lib/test/src/soak_harness.c lib/platform/src/clock.c
 
 soak-7day: tools/soak/soak_runner zcl-rpc
 	./tools/soak/soak_runner \

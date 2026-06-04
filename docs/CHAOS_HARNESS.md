@@ -1,5 +1,104 @@
 # Chaos Harness
 
+There are **two distinct chaos tools**, for two different layers:
+
+| Tool | Layer | What it kills | Make target |
+|------|-------|---------------|-------------|
+| `zclassic23-chaos` | **Simulation engine** | Nothing real — a deterministic in-process state machine driven by `.scenario` files | `make chaos` |
+| `crash_recovery_test` | **Real process (C7)** | A real `./zclassic23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
+
+The sim engine (documented below, from "Chaos Harness" onward) is for
+fast, hermetic, seed-reproducible consensus/boot scenarios. The
+**full-binary kill-9 harness** (next section) is for proving on-disk
+recovery of a real node process under `SIGKILL`.
+
+---
+
+## Full-binary kill-9 (C7)
+
+`crash_recovery_test` (source: `tools/crash_recovery_test.c`) spawns a
+**real** `./zclassic23`, drives it briefly, `SIGKILL`s its whole process
+group, restarts it, and asserts the recovery invariants. It is the
+end-to-end counterpart to the in-process kill9 unit test
+(`lib/test/src/test_kill9_recovery.c`) — it asserts the *same* on-disk
+shape against the real binary instead of a hand-built SQLite slice.
+
+### Isolation contract (the hard rails)
+
+The single audited chokepoint is **`tools/scripts/isolated_node_env.sh`**,
+sourced by `make test-crash-bootstrap` and `make soak-ci`. It guarantees
+a spawned test node can never touch the live node, datadir, or ports:
+
+- **Throwaway datadir** under `/tmp` (`mktemp -d /tmp/zcl23-<kind>-XXXXXX`);
+  refuses if the path resolves under `~/.zclassic-c23*`.
+- **39xxx port quad** (`-port/-rpcport/-fsport/-httpsport` = base+0..3,
+  default base 39030/39040) plus a dead `-connect=127.0.0.1:39999` sink.
+  Refuses if any chosen port is in the live refuse-set
+  (`8023 8033 8034 … 18034 18232 …`).
+- **ss(8) LISTEN preflight** — the *authoritative* collision guard:
+  refuses loudly if any chosen port is already `LISTEN`ing (an operator
+  port-math error). The trap is armed *before* this check so a refusal
+  never leaks the just-minted datadir.
+- **`-connect=39999`** is load-bearing isolation: it sets
+  `g_connect_only`, which both skips seeds and bypasses the
+  auto-addnode-to-`127.0.0.1:8034` path that would otherwise dial
+  `zclassicd`.
+- **`-fsport` override** is required — without it the node binds the
+  hardcoded live file-service port `18034`.
+- **Process-group kill**: the node is spawned under `setsid` (its own
+  group); teardown sends `SIGTERM` then `SIGKILL` to the whole group,
+  with a `pkill -f -- -datadir=$ISO_DD` backstop that can only ever
+  match the throwaway datadir string.
+- **Cleanup trap** on `EXIT/INT/TERM` kills the group and `rm -rf`s the
+  `/tmp` datadir (only after re-proving it is under `/tmp`).
+
+### Bootstrap-regtest self-seed
+
+`make test-crash-bootstrap` runs the harness with **no external
+fixture**: it mints an isolated `/tmp` regtest datadir, spawns the node,
+mines `--seed-blocks` blocks via `generate`, then runs the kill/restart
+loop. This is the C7 self-test.
+
+> **Build caveat (current):** on this build the regtest `generate` RPC
+> does not solve Equihash, so the seed stays at genesis. The harness
+> **detects this and prints a loud `DEGRADED genesis-only recovery
+> mode` warning** rather than silently claiming a UTXO seed. The
+> kill/restart loop still validates real boot recovery; the
+> UTXO-above-tip overshoot window simply reports `over=-1`
+> (not-applicable) until a working regtest miner lands.
+
+### Recovery assertions
+
+Reused from the unit invariants (so the full-binary harness asserts the
+same shape the SQLite slice proves in-process):
+
+- **Height monotone** — `getblockcount` never regresses across a
+  kill/restart (`CR_HEIGHT_REGRESSED`).
+- **UTXO count monotone / commitment identical-or-advanced**
+  (`CR_UTXOS_DECREASED`, `CR_COMMITMENT_CHANGED_BUT_NOT_ADVANCED`).
+- **Zero UTXO above tip** (`CR_UTXO_ABOVE_TIP`) — reads the spawned
+  node's **`node.db`** directly, read-only, and runs
+  `SELECT COUNT(*) FROM utxos WHERE height > tip` (tip from
+  `node_state.coins_best_block → blocks.height`). This is the exact
+  invariant from `test_kill9_recovery.c:p11_7_count_utxos_above_tip`.
+  Note there is **no `coins.db`** — the canonical UTXO set lives in
+  `node.db`.
+- **Recovered within budget** — `getblockcount` answers ≥ pre-kill
+  height within the 60 s restart wait.
+
+### Operational variant (NOT in default CI)
+
+The literal MVP #7 claim "caught up to **peer**-tip within 2 min" needs a
+second node. A `--with-peer` two-node resync variant (spawn a 2nd
+isolated regtest node, mine on B, kill A, assert A resyncs to B's tip
+within 120 s) is the operational form — regtest two-node P2P sync is
+timing-sensitive, so it ships opt-in/operational and is **not** in
+`make ci` or the default self-test. See `docs/RUNBOOK.md`.
+
+---
+
+## Simulation chaos engine (`zclassic23-chaos`)
+
 The Phase 6c chaos harness runs declarative scenarios through
 `zclassic23-chaos`. It is intentionally small: each non-comment line is one
 command, arguments are whitespace-separated, and assertions use simple integer

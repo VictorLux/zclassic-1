@@ -19,6 +19,26 @@
 | 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | ~2.4 GB & climbing (05-24 soak, 6.6% bg-verify) | `zcl_status.memory_rss_mb` over a soak |
 | 5 | **Recovery from kill -9** | ≤ **60 s** | — (not measured this session) | scripted kill loop, recovery histogram |
 
+### Soak: hermetic proxy vs. operational acceptance (#3/#4)
+
+`make soak-ci` is a **3–5 min hermetic PROXY**: it spawns an isolated
+`/tmp` regtest node with synthetic `generate`-load and scores the run
+through the *same* verdict math (`lib/test/src/soak_harness.c`) as the
+real soak — crash → `FAIL_CRASH`, tip stall → `FAIL_TIP_STALL`, RSS walk
+past the post-warmup baseline → `FAIL_RSS_WALK`. It gives a fast green/red
+CI signal that the soak machinery and RSS-plateau logic are sound.
+
+It is **not** the acceptance run. The real #3 (≥ 30-day MTBF) and #4
+(≤ 1 GB steady-state RSS) require **168 h+ of live wall time under real
+tx load** with zero operator restarts, and depend on the live wedge being
+cleared (node holds tip AND finalizes forward). Run that with
+`make soak-7day` against the installed node.
+
+> **Gap to call out:** `make soak-7day` defaults to a **7-day** window,
+> while this table's #3 target is **30 days**. The 7-day target is the
+> CI-affordable floor; the 30-day MTBF is the user-facing bar. Neither
+> is met today (the proxy earns ◐, not ✅).
+
 ## Quality-of-life numbers
 
 - Cold sync to last 10 blocks: ≤ 30 s (FlyClient + UTXO snapshot path)

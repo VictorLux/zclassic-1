@@ -17,19 +17,52 @@
  * keeps polling, records the crash sample, and lets the verdict
  * logic flip to FAIL_CRASH.
  *
+ * Two run modes
+ * -------------
+ *
+ *   PIDOF (default, operational): poll a *live, externally-managed*
+ *   node found by `pidof <service>` — this is the `make soak-7day` /
+ *   `make soak-smoke` path against the installed systemd node. The
+ *   runner does NOT own that process; it samples and scores only.
+ *
+ *   SPAWN (`--node-datadir=DIR`, hermetic): the runner OWNS an
+ *   isolated regtest node it forks/execs itself, samples ITS OWN
+ *   child pid directly (never `pidof`, which would hit the live
+ *   node), and — with `--load=generate:N` — injects synthetic load by
+ *   mining one block every N seconds via `zcl-rpc generate 1`. This is
+ *   the `make soak-ci` compressed-soak proxy. Isolation (the /tmp
+ *   datadir, 39xxx ports, refuse-on-live preflight, process-group kill
+ *   and cleanup trap) is provided by the *make target* via
+ *   tools/scripts/isolated_node_env.sh; this runner is handed an
+ *   already-validated datadir + rpcport.
+ *
+ * CRITICAL isolation rule (spawn mode): EVERY zcl-rpc invocation is
+ * made with ZCL_DATADIR + ZCL_RPCPORT pinned to the isolated node, so
+ * zcl-rpc can never fall through to the live default RPC port (18232).
+ *
  * Usage:
  *     make soak-7day                   (7 days, against installed zclassic23)
+ *     make soak-ci                     (compressed hermetic proxy)
  *     tools/soak/soak_runner --help
  *
  * Flags:
  *     --duration-sec=N      total run length (default 7d = 604800)
  *     --interval-sec=N      poll interval (default 60)
- *     --service=NAME        process name to pidof (default zclassic23)
+ *     --service=NAME        process name to pidof (pidof mode, default zclassic23)
  *     --rpc=PATH            zcl-rpc binary (default ./zcl-rpc)
  *     --log=PATH            output log (default ./soak-YYYYMMDD-HHMM.log)
  *     --stall-sec=N         tip stall threshold (default 1800)
  *     --rss-growth-mib=N    RSS walk threshold (default 512)
  *     --warmup-sec=N        RSS baseline warmup (default 1800)
+ *   Spawn-mode (hermetic CI proxy):
+ *     --node-datadir=DIR    spawn+own an isolated node on this datadir
+ *     --rpcport=N           isolated node RPC port (pinned on every zcl-rpc)
+ *     --p2p-port=N          isolated node P2P port
+ *     --fs-port=N           isolated node file-service port
+ *     --https-port=N        isolated node HTTPS port
+ *     --connect=HOST:PORT   single -connect peer (dead sink → no peers)
+ *     --load=generate:N     mine 1 block every N seconds (synthetic load)
+ *     --ci-proxy            use the accelerated CI-proxy thresholds
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -38,6 +71,7 @@
 #include "test/soak_harness.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -51,6 +85,24 @@
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
+
+/* ── Spawn-mode config (the hermetic CI-proxy path) ──────────────
+ *
+ * When node_datadir is non-empty the runner OWNS the node: it forks
+ * an isolated regtest node, samples that child's pid directly, and
+ * (optionally) injects generate-load. Every zcl-rpc call is pinned to
+ * (datadir, rpcport) so it can never touch the live node. */
+struct spawn_cfg {
+    bool  enabled;
+    char  datadir[512];
+    int   rpcport;
+    int   p2p_port;
+    int   fs_port;
+    int   https_port;
+    char  connect[128];
+    int   load_interval; /* >0: `generate 1` every N seconds; 0: off */
+    pid_t pid;           /* the owned child (the ONLY pid we sample) */
+};
 
 /* Pull the first non-whitespace integer value that follows the
  * literal "result" key in a JSON-RPC response body. Accepts the
@@ -108,18 +160,112 @@ static uint64_t rss_bytes_for(pid_t pid)
     return rss;
 }
 
-static bool height_via_rpc(const char *rpc_bin, int64_t *out)
+/* Run `<rpc_bin> <method>` and return its stdout. In spawn mode the
+ * ZCL_DATADIR + ZCL_RPCPORT env is PINNED to the isolated node so the
+ * call can never reach the live node's default RPC port. `sp` may be
+ * NULL (pidof mode) — then no env is forced and zcl-rpc uses its
+ * defaults (the operator's live node). */
+static bool rpc_capture(const struct spawn_cfg *sp, const char *rpc_bin,
+                        const char *method, char *out, size_t out_cap)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "%s getblockcount 2>/dev/null", rpc_bin);
+    char cmd[1024];
+    if (sp && sp->enabled) {
+        /* Pin BOTH env vars on EVERY isolated call — the lynchpin that
+         * keeps spawn-mode hermetic. */
+        snprintf(cmd, sizeof(cmd),
+                 "ZCL_DATADIR=%s ZCL_RPCPORT=%d %s %s 2>/dev/null",
+                 sp->datadir, sp->rpcport, rpc_bin, method);
+    } else {
+        snprintf(cmd, sizeof(cmd), "%s %s 2>/dev/null", rpc_bin, method);
+    }
     FILE *f = popen(cmd, "r");
     if (!f) return false;
-    char buf[8192] = {0};
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    size_t n = fread(out, 1, out_cap - 1, f);
     pclose(f);
-    if (n == 0) return false;
-    buf[n] = '\0';
+    out[n] = '\0';
+    return n > 0;
+}
+
+static bool height_via_rpc(const struct spawn_cfg *sp, const char *rpc_bin,
+                          int64_t *out)
+{
+    char buf[8192];
+    if (!rpc_capture(sp, rpc_bin, "getblockcount", buf, sizeof(buf)))
+        return false;
     return scan_result_int(buf, out);
+}
+
+/* ── Spawn-mode node management ─────────────────────────────────── */
+
+/* Fork+exec an isolated regtest node in its OWN process group (setsid),
+ * recording the child pid in sp->pid. Mirrors the crash harness spawn:
+ * -connect=<sink> blocks the auto-addnode-to-zclassicd trap, -fsport
+ * overrides the live FS port, -nobgvalidation/-nolegacyimport keep it
+ * lean and offline. */
+static bool spawn_node(struct spawn_cfg *sp)
+{
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        if (setsid() < 0) (void)setpgid(0, 0);
+
+        char dd[600], rpcp[64], p2p[64], fsp[64], httpsp[64], conn[160];
+        snprintf(dd,    sizeof(dd),    "-datadir=%s", sp->datadir);
+        snprintf(rpcp,  sizeof(rpcp),  "-rpcport=%d", sp->rpcport);
+        snprintf(p2p,   sizeof(p2p),   "-port=%d", sp->p2p_port);
+        snprintf(fsp,   sizeof(fsp),   "-fsport=%d", sp->fs_port);
+        snprintf(httpsp,sizeof(httpsp),"-httpsport=%d", sp->https_port);
+        snprintf(conn,  sizeof(conn),  "-connect=%s",
+                 sp->connect[0] ? sp->connect : "127.0.0.1:39999");
+
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execl("./zclassic23", "zclassic23",
+              dd, "-regtest", rpcp, p2p, fsp, httpsp, conn,
+              "-nobgvalidation", "-nolegacyimport", "-showmetrics=0",
+              (char *)NULL);
+        _exit(127);
+    }
+    (void)setpgid(pid, pid);
+    sp->pid = pid;
+    return true;
+}
+
+/* SIGKILL the spawned node's whole process group (no orphan survives).
+ * Idempotent: safe to call when sp->pid is already reaped. */
+static void kill_spawned_node(struct spawn_cfg *sp)
+{
+    if (!sp || sp->pid <= 0) return;
+    if (kill(-sp->pid, SIGKILL) != 0 && errno == ESRCH)
+        kill(sp->pid, SIGKILL);
+    int status;
+    (void)waitpid(sp->pid, &status, 0);
+    sp->pid = 0;
+}
+
+/* Poll the isolated RPC until getblockcount answers, or timeout. */
+static bool spawn_wait_ready(struct spawn_cfg *sp, const char *rpc_bin,
+                            int timeout_sec)
+{
+    time_t deadline = platform_time_wall_time_t() + timeout_sec;
+    while (platform_time_wall_time_t() < deadline) {
+        if (sp->pid > 0 && kill(sp->pid, 0) != 0) return false; /* died */
+        int64_t h = 0;
+        if (height_via_rpc(sp, rpc_bin, &h)) return true;
+        platform_sleep_ms(250);
+    }
+    return false;
+}
+
+/* Inject synthetic load: mine one regtest block. Best-effort. */
+static void spawn_generate_one(struct spawn_cfg *sp, const char *rpc_bin)
+{
+    char buf[16384];
+    (void)rpc_capture(sp, rpc_bin, "generate 1", buf, sizeof(buf));
 }
 
 static void default_log_path(char *out, size_t n)
@@ -138,12 +284,21 @@ static void usage(const char *argv0)
         "Usage: %s [options]\n"
         "  --duration-sec=N    total run length (default 604800 = 7d)\n"
         "  --interval-sec=N    poll interval (default 60)\n"
-        "  --service=NAME      pidof target (default zclassic23)\n"
+        "  --service=NAME      pidof target (pidof mode, default zclassic23)\n"
         "  --rpc=PATH          zcl-rpc binary (default ./zcl-rpc)\n"
         "  --log=PATH          output log (default soak-YYYYMMDD-HHMM.log)\n"
         "  --stall-sec=N       tip-stall threshold (default 1800)\n"
         "  --rss-growth-mib=N  RSS-walk threshold MiB (default 512)\n"
         "  --warmup-sec=N      RSS baseline warmup (default 1800)\n"
+        "  --ci-proxy          accelerated CI-proxy thresholds (180s/30s/96MiB)\n"
+        " spawn mode (hermetic CI proxy — isolated /tmp regtest node):\n"
+        "  --node-datadir=DIR  own+spawn an isolated node on this datadir\n"
+        "  --rpcport=N         isolated RPC port (REQUIRED; pinned on every rpc)\n"
+        "  --p2p-port=N        isolated P2P port (default rpcport-1)\n"
+        "  --fs-port=N         isolated file-service port (default rpcport+1)\n"
+        "  --https-port=N      isolated HTTPS port (default rpcport+2)\n"
+        "  --connect=HOST:PORT single -connect peer (dead sink → 0 peers)\n"
+        "  --load=generate:N   mine 1 block every N seconds (synthetic load)\n"
         "Exit status: 0 = SOAK_OK, else verdict ordinal.\n",
         argv0);
 }
@@ -169,10 +324,16 @@ int main(int argc, char **argv)
     char log_path[256] = {0};
     default_log_path(log_path, sizeof(log_path));
 
+    struct spawn_cfg sp;
+    memset(&sp, 0, sizeof(sp));
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             usage(argv[0]); return 0;
+        }
+        if (strcmp(a, "--ci-proxy") == 0) {
+            soak_thresholds_ci_proxy(&cfg); continue;
         }
         if (strncmp(a, "--duration-sec=", 15) == 0) {
             parse_u64(a + 15, &cfg.min_duration_sec); continue;
@@ -197,6 +358,21 @@ int main(int argc, char **argv)
         if (strncmp(a, "--warmup-sec=", 13) == 0) {
             parse_u64(a + 13, &cfg.rss_walk_warmup_sec); continue;
         }
+        /* ── Spawn-mode (hermetic CI-proxy) flags ── */
+        if (strncmp(a, "--node-datadir=", 15) == 0) {
+            snprintf(sp.datadir, sizeof(sp.datadir), "%s", a + 15);
+            sp.enabled = true; continue;
+        }
+        if (strncmp(a, "--rpcport=", 10) == 0)   { sp.rpcport    = atoi(a + 10); continue; }
+        if (strncmp(a, "--p2p-port=", 11) == 0)  { sp.p2p_port   = atoi(a + 11); continue; }
+        if (strncmp(a, "--fs-port=", 10) == 0)   { sp.fs_port    = atoi(a + 10); continue; }
+        if (strncmp(a, "--https-port=", 13) == 0){ sp.https_port = atoi(a + 13); continue; }
+        if (strncmp(a, "--connect=", 10) == 0) {
+            snprintf(sp.connect, sizeof(sp.connect), "%s", a + 10); continue;
+        }
+        if (strncmp(a, "--load=generate:", 16) == 0) {
+            sp.load_interval = atoi(a + 16); continue;
+        }
         fprintf(stderr, "unknown flag: %s\n", a);
         usage(argv[0]);
         return 2;
@@ -205,6 +381,19 @@ int main(int argc, char **argv)
     if (interval_sec == 0 || interval_sec > cfg.min_duration_sec) {
         fprintf(stderr, "interval-sec (%" PRIu64 ") out of range\n", interval_sec);
         return 2;
+    }
+
+    /* Spawn-mode validation: a datadir REQUIRES a real isolated rpcport
+     * so a misconfigured invocation can never fall through to live. */
+    if (sp.enabled) {
+        if (sp.rpcport <= 0) {
+            fprintf(stderr, "spawn mode: --rpcport is required with "
+                            "--node-datadir\n");
+            return 2;
+        }
+        if (sp.p2p_port <= 0)  sp.p2p_port  = sp.rpcport - 1;
+        if (sp.fs_port <= 0)   sp.fs_port   = sp.rpcport + 1;
+        if (sp.https_port <= 0)sp.https_port= sp.rpcport + 2;
     }
 
     signal(SIGINT,  on_signal);
@@ -216,6 +405,22 @@ int main(int argc, char **argv)
         return 2;
     }
     setvbuf(log, NULL, _IOLBF, 0);
+
+    /* Spawn mode: bring the isolated node up and wait for RPC BEFORE
+     * the sampling loop, so the first sample sees a live node and the
+     * tip-HWM clock starts from a real height. The make target owns the
+     * /tmp datadir + cleanup trap; we own the node process lifecycle. */
+    if (sp.enabled) {
+        fprintf(stderr, "soak: spawn mode — datadir=%s rpcport=%d load=%s\n",
+                sp.datadir, sp.rpcport,
+                sp.load_interval > 0 ? "generate" : "none");
+        if (!spawn_node(&sp) || !spawn_wait_ready(&sp, rpc_bin, 60)) {
+            fprintf(stderr, "soak: isolated node never came up — aborting\n");
+            kill_spawned_node(&sp);
+            fclose(log);
+            return 2;
+        }
+    }
 
     soak_state_t st;
     soak_state_init(&st, &cfg);
@@ -238,16 +443,22 @@ int main(int argc, char **argv)
         log_path, cfg.min_duration_sec);
 
     time_t deadline = started + (time_t)cfg.min_duration_sec;
+    time_t last_load = started;
     while (!g_stop) {
         time_t now = platform_time_wall_time_t();
         if (now >= deadline) break;
 
-        pid_t pid = pidof_service(service);
-        bool alive = pid > 0;
+        /* In spawn mode sample OUR OWN child pid directly — never
+         * pidof, which would resolve the LIVE node. In pidof mode the
+         * runner watches the externally-managed live node. */
+        pid_t pid = sp.enabled ? sp.pid : pidof_service(service);
+        bool alive = pid > 0 && (sp.enabled ? kill(pid, 0) == 0 : true);
         uint64_t rss = alive ? rss_bytes_for(pid) : 0;
         int64_t h = 0;
         if (alive) {
-            if (!height_via_rpc(rpc_bin, &h)) {
+            /* RPC pinned to the isolated node in spawn mode (sp.enabled);
+             * NULL in pidof mode so zcl-rpc uses live defaults. */
+            if (!height_via_rpc(sp.enabled ? &sp : NULL, rpc_bin, &h)) {
                 /* RPC failed but process exists → treat as crash: a
                  * node that can't answer getblockcount is, from the
                  * user's perspective, not up. */
@@ -257,6 +468,15 @@ int main(int argc, char **argv)
         soak_record_sample(&st, (uint64_t)now, alive, h, rss);
         fprintf(log, "%ld\t%d\t%" PRId64 "\t%" PRIu64 "\n",
                 (long)now, alive ? 1 : 0, h, rss);
+
+        /* Synthetic load: mine one block every load_interval seconds so
+         * the tip-stall HWM clock is genuinely exercised (not a frozen
+         * empty chain) and real connect_block/coins/WAL writes churn. */
+        if (sp.enabled && sp.load_interval > 0 && alive &&
+            now - last_load >= sp.load_interval) {
+            spawn_generate_one(&sp, rpc_bin);
+            last_load = now;
+        }
 
         /* Wake fractions of interval_sec to stay responsive to SIGTERM;
          * using `sleep()` rounds up and can sit in the syscall for the
@@ -280,6 +500,30 @@ int main(int argc, char **argv)
         " rss_max=%" PRIu64 "\n",
         soak_verdict_str(v), st.n_samples, st.crash_count,
         st.tip_hwm, st.rss_max_seen);
+
+    /* Diagnostic: in spawn mode with generate-load configured, a
+     * TIP_STALL with tip_hwm==0 means the synthetic miner never
+     * advanced the chain — i.e. the regtest `generate` RPC did not
+     * mine a valid block on this build (a NODE miner issue, not a
+     * harness bug). Name it explicitly so operators do not chase the
+     * harness. */
+    if (sp.enabled && sp.load_interval > 0 &&
+        v == SOAK_FAIL_TIP_STALL && st.tip_hwm == 0) {
+        fprintf(stderr,
+            "soak: NOTE — tip_hwm stayed at 0 under generate-load: the "
+            "regtest `generate` RPC produced no valid block on this build "
+            "(node miner does not solve Equihash on the generate path). "
+            "The soak machinery (spawn/sample/RSS/verdict) ran correctly; "
+            "this verdict reflects a non-functional synthetic-load source, "
+            "not a harness defect.\n");
+    }
+
+    /* In spawn mode the runner owns the node — reap it (process-group
+     * SIGKILL). The make target's cleanup trap is the backstop that
+     * also removes the /tmp datadir; this just ensures we don't leave
+     * our own child running between the loop end and trap fire. */
+    if (sp.enabled)
+        kill_spawned_node(&sp);
 
     return (int)v;
 }

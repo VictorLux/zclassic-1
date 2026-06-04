@@ -4,6 +4,71 @@ Symptom-driven troubleshooting. Each section: what you see, how to diagnose, how
 
 ---
 
+## Running the soak / chaos harnesses safely
+
+Two opt-in harnesses spawn a **real** node. Both are **fully isolated**
+and never touch the live node — but read this before running.
+
+### Hard rails (enforced by `tools/scripts/isolated_node_env.sh`)
+
+- They run on a throwaway `/tmp/zcl23-*` datadir and 39xxx ports only.
+  They **refuse** to start if any chosen port is already `LISTEN`ing or
+  is in the live set, or if the datadir would resolve under
+  `~/.zclassic-c23*`.
+- They never use `-tor`, always pass `-nobgvalidation -nolegacyimport`,
+  and `-connect` a dead sink so they form 0 peers and cannot dial
+  `zclassicd`.
+- The spawned node is killed by **process group** and the datadir is
+  `rm -rf`'d on exit (success, failure, or Ctrl-C).
+- They are **NOT** in `make ci` (CI stays hermetic). Run them explicitly.
+
+### Commands
+
+```bash
+# C7 full-binary kill-9 self-test: spawn an isolated regtest node,
+# mine a seed, run kill/restart cycles, assert recovery invariants.
+make test-crash-bootstrap
+
+# C6 bounded compressed-soak PROXY: spawn an isolated regtest node,
+# drive ~180s of synthetic generate-load, assert SOAK_OK.
+make soak-ci
+```
+
+### Reading the output
+
+- **Crash harness summary** prints `passes / height_regress /
+  utxo_decrease / commitment_drift / utxo_above_tip / harness_errors`.
+  Any non-zero failure column → exit 1. `over=-1` means
+  "not-applicable" (no UTXO set, e.g. genesis-only).
+- **Soak runner** writes a TSV log (`# ts<TAB>alive<TAB>height<TAB>rss_bytes`)
+  and a trailer (`# ended=… verdict=… tip_hwm=… rss_max=… rss_baseline=…`).
+  Exit status = verdict ordinal (`0 = SOAK_OK`). `make soak-ci` greps for
+  `verdict=OK` as a false-green guard.
+
+### Known build caveat
+
+On the current build the regtest `generate` RPC does not solve Equihash,
+so a self-spawned chain stays at genesis. The crash harness reports this
+as `DEGRADED genesis-only recovery mode` (still validates boot recovery);
+the soak proxy will report `FAIL_TIP_STALL` with `tip_hwm=0` and an
+explicit NOTE that the **node miner**, not the harness, is the cause.
+`make soak-ci` therefore goes red until a working regtest miner lands —
+that is honest, not a harness defect.
+
+### Escalating to the long / operational versions (OPERATOR actions)
+
+These touch a **live or real-peer** environment — they are not hermetic:
+
+- **`make soak-7day`** — the real 168 h MVP #6 soak against the
+  *installed live node* under real tx load. Needs 7 days of wall time
+  AND the live wedge cleared (node must hold tip AND finalize forward).
+  The CI proxy is a signal, not this acceptance.
+- **C7 `--with-peer`** two-node resync-to-peer-tip — the operational
+  form of the literal MVP #7 "caught up to peer-tip within 2 min" claim;
+  timing-sensitive, opt-in, not in default CI.
+
+---
+
 ## BIP30 Stale Coinbase Wedge — fixed structurally (2026-05-26)
 
 **Symptoms:** `zcl_status` shows the tip frozen (`tip_advance_age_seconds`

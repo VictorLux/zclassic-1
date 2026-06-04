@@ -184,6 +184,59 @@ static int t_rss_walk_is_fail_walk(void)
     return 0;
 }
 
+/* The CI-proxy thresholds drive `make soak-ci`. Verify they run through
+ * the SAME verdict math: a healthy 180 s compressed run with the tip
+ * advancing under load and flat RSS → SOAK_OK, while a sub-floor run
+ * still trips FAIL_TOO_SHORT (the un-fakeable duration gate). */
+static int t_ci_proxy_healthy_is_ok(void)
+{
+    soak_thresholds_t cfg;
+    soak_thresholds_ci_proxy(&cfg);
+    if (cfg.min_duration_sec != 180 || cfg.max_tip_stall_sec != 30 ||
+        cfg.rss_walk_warmup_sec != 30 ||
+        cfg.max_rss_growth_bytes != 96ULL * 1024 * 1024) {
+        printf("FAIL (ci_proxy thresholds drifted from the documented set)\n");
+        return 1;
+    }
+    soak_state_t s;
+    soak_state_init(&s, &cfg);
+    /* 5 s cadence for 180 s; tip advances every 10 s (generate-load),
+     * RSS pinned at 256 MiB so the only question is the verdict path. */
+    int64_t h = 100;
+    for (uint64_t ts = 0; ts <= 180; ts += 5) {
+        if (ts > 0 && ts % 10 == 0) h++;
+        soak_record_sample(&s, ts, true, h, 256ULL << 20);
+    }
+    soak_verdict_t v = soak_compute_verdict(&s);
+    if (v != SOAK_OK) {
+        printf("FAIL (ci_proxy healthy → expected OK, got %s)\n",
+               soak_verdict_str(v));
+        return 1;
+    }
+    return 0;
+}
+
+static int t_ci_proxy_short_is_too_short(void)
+{
+    soak_thresholds_t cfg;
+    soak_thresholds_ci_proxy(&cfg);
+    soak_state_t s;
+    soak_state_init(&s, &cfg);
+    /* Only 60 s of samples — below the 180 s floor. */
+    int64_t h = 100;
+    for (uint64_t ts = 0; ts <= 60; ts += 5) {
+        if (ts > 0 && ts % 10 == 0) h++;
+        soak_record_sample(&s, ts, true, h, 256ULL << 20);
+    }
+    soak_verdict_t v = soak_compute_verdict(&s);
+    if (v != SOAK_FAIL_TOO_SHORT) {
+        printf("FAIL (ci_proxy 60s → expected FAIL_TOO_SHORT, got %s)\n",
+               soak_verdict_str(v));
+        return 1;
+    }
+    return 0;
+}
+
 int test_soak_harness(void)
 {
     int failures = 0;
@@ -211,6 +264,14 @@ int test_soak_harness(void)
 
     printf("soak_harness rss walk → FAIL_RSS_WALK... ");
     if (t_rss_walk_is_fail_walk()) failures++;
+    else printf("OK\n");
+
+    printf("soak_harness ci-proxy healthy → OK... ");
+    if (t_ci_proxy_healthy_is_ok()) failures++;
+    else printf("OK\n");
+
+    printf("soak_harness ci-proxy 60s → FAIL_TOO_SHORT... ");
+    if (t_ci_proxy_short_is_too_short()) failures++;
     else printf("OK\n");
 
     return failures;

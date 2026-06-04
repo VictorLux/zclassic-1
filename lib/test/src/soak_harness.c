@@ -50,6 +50,20 @@ void soak_thresholds_default_7d(soak_thresholds_t *out)
     out->max_rss_growth_bytes = 512ULL * 1024 * 1024;/* 512 MiB */
 }
 
+void soak_thresholds_ci_proxy(soak_thresholds_t *out)
+{
+    /* ~3 min bounded run. min_duration is the un-fakeable floor (a
+     * runner that exits early trips FAIL_TOO_SHORT). Stall window 30 s
+     * is meaningful because synthetic generate-load advances the tip
+     * every few seconds; warmup 30 s lets the UTXO cache settle before
+     * the RSS baseline latches; 96 MiB tolerates CI RSS noise while
+     * still catching a real leak. */
+    out->min_duration_sec     = 180;                /* 3 minutes */
+    out->max_tip_stall_sec    = 30;                 /* 30 seconds */
+    out->rss_walk_warmup_sec  = 30;                 /* 30 seconds */
+    out->max_rss_growth_bytes = 96ULL * 1024 * 1024;/* 96 MiB */
+}
+
 void soak_state_init(soak_state_t *s, const soak_thresholds_t *cfg)
 {
     memset(s, 0, sizeof(*s));

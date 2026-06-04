@@ -87,6 +87,15 @@ typedef struct {
  * a local copy and tune one field without mutating a shared one. */
 void soak_thresholds_default_7d(soak_thresholds_t *out);
 
+/* Accelerated thresholds for the hermetic CI compressed-soak PROXY
+ * (`make soak-ci`): a ~180 s bounded run on an isolated /tmp regtest
+ * node under synthetic generate-load. Named so the proxy uses an
+ * intentional, reviewable threshold set rather than magic flags. The
+ * verdict MATH is identical to the 7-day path — only the numbers
+ * differ. This is a CI green/red SIGNAL, never a substitute for the
+ * real operational #6 soak (168 h live + real tx load). */
+void soak_thresholds_ci_proxy(soak_thresholds_t *out);
+
 void soak_state_init(soak_state_t *s, const soak_thresholds_t *cfg);
 
 /* Record one sample.
