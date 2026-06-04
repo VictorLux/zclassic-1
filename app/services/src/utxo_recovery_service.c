@@ -206,13 +206,17 @@ bool utxo_recovery_repair_stale_cursor_from_sync_projection(
     return true;
 }
 
-bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
+struct zcl_result utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
                               struct block_index *tip,
                               const char *reason,
                               bool persist_coins_best)
 {
     if (!ctx || !ctx->state || !tip || !tip->phashBlock)
-        return false;
+        return ZCL_ERR(-43,
+            "utxo_recovery_commit_tip: invalid args ctx=%p state=%p tip=%p "
+            "phashBlock=%p reason=%s",
+            (void *)ctx, ctx ? (void *)ctx->state : NULL, (void *)tip,
+            tip ? (void *)tip->phashBlock : NULL, reason ? reason : "");
 
     struct chain_state_rollback_authorization rollback_auth = {
         .source = CSR_ROLLBACK_SOURCE_UTXO_REPAIR,
@@ -236,7 +240,7 @@ bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
 
     enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
     if (rc == CSR_OK)
-        return true;
+        return ZCL_OK;
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED) {
@@ -249,33 +253,40 @@ bool utxo_recovery_commit_tip(struct utxo_recovery_ctx *ctx,
         (void)chain_set_active_tip(ctx->state, tip, TIP_FROM_UTXO_REPAIR,
                              reason ? reason : "utxo_recovery_csr_uninit");
         ctx->state->pindex_best_header = tip;
-        return true;
+        return ZCL_OK;
     }
 #endif
 
     LOG_WARN("utxo_recovery", "utxo_recovery: csr rejected tip promotion (%s) reason=%s h=%d", csr_result_name(rc), reason ? reason : "", tip->nHeight);
-    return false;
+    return ZCL_ERR(-44,
+        "utxo_recovery_commit_tip: csr rejected tip promotion (%s) reason=%s "
+        "h=%d", csr_result_name(rc), reason ? reason : "", tip->nHeight);
 }
 
-bool utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
+struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
                                   const char *reason)
 {
     if (!ctx || !ctx->state || !ctx->params)
-        return false;
+        return ZCL_ERR(-45,
+            "utxo_recovery_commit_genesis: invalid args ctx=%p state=%p "
+            "params=%p reason=%s",
+            (void *)ctx, ctx ? (void *)ctx->state : NULL,
+            ctx ? (void *)ctx->params : NULL, reason ? reason : "");
 
     struct block_index *genesis = block_map_find(
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (!genesis) {
         LOG_WARN("utxo_recovery", "utxo_recovery: cannot reset coins best to genesis; " "genesis is missing from block index (reason=%s)", reason ? reason : "");
-        return false;
+        return ZCL_ERR(-46,
+            "utxo_recovery_commit_genesis: genesis is missing from block "
+            "index (reason=%s)", reason ? reason : "");
     }
 
-    if (!utxo_recovery_commit_tip(ctx, genesis,
+    ZCL_CHECK(utxo_recovery_commit_tip(ctx, genesis,
                                   reason ? reason : "utxo_recovery_genesis",
-                                  true))
-        return false;
-    return true;
+                                  true));
+    return ZCL_OK;
 }
 
 struct utxo_count_check_result utxo_recovery_classify_count_check(
@@ -410,7 +421,7 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
             if (bi && chain_restore_block_is_consensus_backed_on_disk(
                     bi, ctx->datadir)) {
                 if (utxo_recovery_commit_tip(
-                        ctx, bi, "best_have_data", true)) {
+                        ctx, bi, "best_have_data", true).ok) {
                     printf("RECOVERY: restored chain tip from UTXO set: h=%d\n",
                            max_h);
                 }
@@ -436,7 +447,7 @@ static bool reset_to_genesis(struct utxo_recovery_ctx *ctx)
         &ctx->state->map_block_index,
         &ctx->params->consensus.hashGenesisBlock);
     if (genesis) {
-        if (!utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true))
+        if (!utxo_recovery_commit_tip(ctx, genesis, "fresh_genesis", true).ok)
             return false;
     } else {
         LOG_WARN("utxo_recovery",
@@ -638,7 +649,7 @@ struct recovery_exec_result utxo_recovery_execute(
                        vr->chain_height - vr->coins_height);
                 if (!utxo_recovery_commit_tip(
                         ctx, coins_block,
-                        "chain_coins_mismatch_reset", true)) {
+                        "chain_coins_mismatch_reset", true).ok) {
                     res.status = ZCL_ERR(-33,
                         "utxo_recovery_execute: failed to reset chain "
                         "to coins tip h=%d", vr->coins_height);
@@ -668,7 +679,7 @@ struct recovery_exec_result utxo_recovery_execute(
             active_chain_tip(&ctx->state->chain_active);
         if (chain_tip) {
             if (!utxo_recovery_commit_tip(
-                    ctx, chain_tip, "coins_cursor_to_chain_tip", true)) {
+                    ctx, chain_tip, "coins_cursor_to_chain_tip", true).ok) {
                 res.status = ZCL_ERR(-36,
                     "utxo_recovery_execute: failed to reset coins cursor "
                     "to active chain tip h=%d", chain_tip->nHeight);
@@ -691,7 +702,7 @@ struct recovery_exec_result utxo_recovery_execute(
                 "chain params");
             LOG_WARN("utxo_recovery", "%s", res.status.message);
         } else if (utxo_recovery_commit_genesis(ctx,
-                                                "coins_cursor_to_genesis")) {
+                                                "coins_cursor_to_genesis").ok) {
             res.recovered = true;
         } else {
             res.status = ZCL_ERR(-39,

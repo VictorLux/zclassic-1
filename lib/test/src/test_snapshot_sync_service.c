@@ -424,7 +424,7 @@ static int test_snapshot_manifest_contract(void)
         stream_init(&offer, 192);
         write_valid_snapshot_manifest(&offer, 10000, 10010);
 
-        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result).ok);
         ASSERT(result == SNAPSHOT_MANIFEST_OK);
         ASSERT(manifest.height == 10000);
         ASSERT(manifest.peer_tip_height == 10010);
@@ -433,13 +433,13 @@ static int test_snapshot_manifest_contract(void)
 
         offer.read_pos = 0;
         stream_write_u8(&offer, 0xff);
-        ASSERT(!snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(!snapshot_manifest_parse(&manifest, &offer, &result).ok);
         ASSERT(result == SNAPSHOT_MANIFEST_TRAILING_BYTES);
         stream_free(&offer);
 
         stream_init(&offer, 192);
         write_valid_snapshot_manifest(&offer, 10000, 10009);
-        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result).ok);
         ASSERT(snapshot_manifest_validate_offer(&manifest, 0) ==
                SNAPSHOT_MANIFEST_UNFINAL);
 
@@ -470,7 +470,7 @@ static int test_snapshot_manifest_recovery_contract(void)
         stream_init(&offer, 192);
         write_valid_snapshot_manifest(&offer, 10000, 10010);
 
-        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result));
+        ASSERT(snapshot_manifest_parse(&manifest, &offer, &result).ok);
         ASSERT(result == SNAPSHOT_MANIFEST_OK);
         ASSERT(snapshot_manifest_validate_offer(&manifest, 9500) ==
                SNAPSHOT_MANIFEST_NOT_AHEAD);

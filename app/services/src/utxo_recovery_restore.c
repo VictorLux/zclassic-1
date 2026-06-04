@@ -193,7 +193,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
             if (found && found->nHeight > 0) {
                 /* Block found in index — set as chain tip */
                 if (utxo_recovery_commit_tip(
-                        ctx, found, "ldb_import_found", true)) {
+                        ctx, found, "ldb_import_found", true).ok) {
                     printf("LDB import: chain tip at h=%d hash=%s\n",
                            found->nHeight, dbg_hex);
                     res.skip_activate = true;
@@ -426,7 +426,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         /* No best block — try fast rebuild if fallback available */
         if (scan_fallback) {
             if (utxo_recovery_commit_tip(
-                    ctx, scan_fallback, "scan_fallback", false)) {
+                    ctx, scan_fallback, "scan_fallback", false).ok) {
                 printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
                        scan_fallback->nHeight);
                 printf("Attempting fast chainstate rebuild from SQLite...\n");
@@ -547,7 +547,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
         }
 
         if (!utxo_recovery_commit_tip(
-                ctx, restore_tip, "coins_best_restore", true)) {
+                ctx, restore_tip, "coins_best_restore", true).ok) {
             res.status = ZCL_ERR(-22,
                 "utxo_recovery_restore_chain_tip: coins_best_restore commit "
                 "failed h=%d", restore_tip->nHeight);
@@ -624,7 +624,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
             LOG_WARN("utxo_recovery", "%s", res.status.message);
             return res;
         }
-        if (!utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos")) {
+        if (!utxo_recovery_commit_genesis(ctx, "boot.restore_no_utxos").ok) {
             res.status = ZCL_ERR(-24,
                 "utxo_recovery_restore_chain_tip: genesis commit failed "
                 "after empty UTXO restore");

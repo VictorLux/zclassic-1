@@ -341,7 +341,7 @@ struct zcl_result snapsync_parse_offer_params(struct snapshot_offer_params *para
         return ZCL_ERR(-1, "parse_offer_params: params=%p stream=%p", (void*)params, (void*)s);
 
     memset(params, 0, sizeof(*params));
-    if (!snapshot_manifest_parse(&manifest, s, &parse_result))
+    if (!snapshot_manifest_parse(&manifest, s, &parse_result).ok)
         return ZCL_ERR(-2,
                  "parse_offer_params: invalid v2 manifest reason=%s pos=%zu/%zu",
                  snapshot_manifest_result_name(parse_result),

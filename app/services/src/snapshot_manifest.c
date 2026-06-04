@@ -21,7 +21,11 @@ static bool bytes32_nonzero(const uint8_t bytes[32])
     return !zcl_chainwork_is_zero(bytes);
 }
 
-bool snapshot_manifest_parse(struct snapshot_manifest *out,
+/* Local error-code band for this file: -1..-3 (one per failure path).
+ * The typed enum out-param still travels with every failure (the
+ * wire-level rejection reason callers switch on, per the file header);
+ * the struct zcl_result return adds the Law 2 (one way out) message. */
+struct zcl_result snapshot_manifest_parse(struct snapshot_manifest *out,
                                 struct byte_stream *s,
                                 enum snapshot_manifest_result *result)
 {
@@ -30,7 +34,8 @@ bool snapshot_manifest_parse(struct snapshot_manifest *out,
     if (!out || !s) {
         if (result)
             *result = SNAPSHOT_MANIFEST_NULL_ARG;
-        return false;
+        return ZCL_ERR(-1, "snapshot_manifest_parse: null arg out=%p s=%p",
+                       (void *)out, (void *)s);
     }
 
     memset(out, 0, sizeof(*out));
@@ -47,15 +52,19 @@ bool snapshot_manifest_parse(struct snapshot_manifest *out,
         !stream_read_bytes(s, out->chain_work, 32)) {
         if (result)
             *result = SNAPSHOT_MANIFEST_TRUNCATED;
-        return false;
+        return ZCL_ERR(-2,
+                       "snapshot_manifest_parse: truncated manifest pos=%zu/%zu",
+                       s->read_pos, s->size);
     }
 
     if (s->read_pos != s->size) {
         if (result)
             *result = SNAPSHOT_MANIFEST_TRAILING_BYTES;
-        return false;
+        return ZCL_ERR(-3,
+                       "snapshot_manifest_parse: trailing bytes pos=%zu/%zu",
+                       s->read_pos, s->size);
     }
-    return true;
+    return ZCL_OK;
 }
 
 static enum snapshot_manifest_result snapshot_manifest_validate_common(

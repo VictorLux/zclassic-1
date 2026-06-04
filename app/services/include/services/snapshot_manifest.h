@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 struct byte_stream;
 
 enum snapshot_manifest_result {
@@ -36,7 +38,7 @@ struct snapshot_manifest {
     int32_t  peer_tip_height;
 };
 
-bool snapshot_manifest_parse(struct snapshot_manifest *out,
+struct zcl_result snapshot_manifest_parse(struct snapshot_manifest *out,
                                 struct byte_stream *s,
                                 enum snapshot_manifest_result *result);
 enum snapshot_manifest_result snapshot_manifest_validate_offer(
