@@ -96,6 +96,22 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "onion_slice") == 0) {
+        printf("[test] ZCL_TEST_ONLY=onion_slice — running the MVP #2 hermetic onion slice only\n");
+        { extern int test_onion_bootstrap_slice(void);
+          failures += test_onion_bootstrap_slice(); }
+        printf("\n=== onion_bootstrap_slice subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "shielded_receive") == 0) {
+        printf("[test] ZCL_TEST_ONLY=shielded_receive — running the shielded-receive slice gate only\n");
+        { extern int test_shielded_receive_slice(void);
+          failures += test_shielded_receive_slice(); }
+        printf("\n=== shielded_receive subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "store_e2e") == 0) {
         printf("[test] ZCL_TEST_ONLY=store_e2e — running store e2e gate only\n");
         { extern int test_store_e2e_gate(void);
@@ -704,6 +720,9 @@ int main(void)
     { extern int test_locktime_edge(void);        failures += test_locktime_edge(); }
     /* MVP "it works" gate: one mined block through the reducer front door */
     { extern int test_reducer_block_ingest_gate(void); failures += test_reducer_block_ingest_gate(); }
+    /* MVP C2/C4 hermetic slices (self-skip without ZCL_STRESS_TESTS) */
+    { extern int test_onion_bootstrap_slice(void);  failures += test_onion_bootstrap_slice(); }
+    { extern int test_shielded_receive_slice(void); failures += test_shielded_receive_slice(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();

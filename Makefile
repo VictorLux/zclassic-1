@@ -519,6 +519,8 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP gate 7: kill -9 recovery (hermetic),kill9,=== kill9 subset complete:)
 	$(call mvp_gate,MVP support: chain-advance atomicity (hermetic),chain_advance_atomicity,=== chain_advance_atomicity subset complete:)
 	$(call mvp_gate,MVP "it works": mined block -> reducer front door -> tip+1 (hermetic),reducer_ingest,=== reducer-ingest subset complete:)
+	$(call mvp_gate,MVP gate 2 (slice): onion bootstrap <60s budget + v3 address (hermetic),onion_slice,=== onion_bootstrap_slice subset complete:)
+	$(call mvp_gate,MVP gate 4 (slice): note encrypted to wallet ivk -> wallet decrypts -> z-balance (hermetic),shielded_receive,=== shielded_receive subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
 
 # mvp-it-works: the single "you know your app works" proof — boots a fresh
@@ -532,6 +534,22 @@ ci-mvp-gates: test_zcl
 mvp-it-works: test_zcl
 	$(call mvp_gate,MVP "it works": one mined block through the reducer -> tip+1,reducer_ingest,=== reducer-ingest subset complete:)
 	@echo "══ MVP it-works gate: PASSED ══"
+
+# mvp-onion-slice (C2 hermetic half): proves the bootstrap readiness/<60s budget
+# LOGIC + the v3 .onion address format check in-process. The real <60s gate
+# stays in ci-stress (selector "onion"). Runs isolated (onion_service singleton).
+.PHONY: mvp-onion-slice
+mvp-onion-slice: test_zcl
+	$(call mvp_gate,MVP gate 2 (slice): onion bootstrap <60s budget + v3 address,onion_slice,=== onion_bootstrap_slice subset complete:)
+	@echo "══ MVP onion-slice gate: PASSED ══"
+
+# mvp-shielded-receive (C4 hermetic half): encrypts a note to the wallet's ivk,
+# drives wallet_try_sapling_decrypt, asserts z-balance reflects it (and a note
+# to a foreign ivk is NOT credited). Params-free — decryption needs no proving key.
+.PHONY: mvp-shielded-receive
+mvp-shielded-receive: test_zcl
+	$(call mvp_gate,MVP C4 (receive): note encrypted to wallet ivk -> wallet decrypts -> z-balance,shielded_receive,=== shielded_receive subset complete:)
+	@echo "══ MVP shielded-receive gate: PASSED ══"
 
 # ci-stress: the fixture/network-bound MVP gates. Run on a worker that
 # has the resource (Tor egress for #2, ~/.zcash-params for #4). Reuses
