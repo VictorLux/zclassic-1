@@ -688,6 +688,155 @@ int test_sapling_crypto(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* BLS12-381 subgroup check (Groth16 soundness, consensus Sapling path).
+     *
+     * G1/G2 have large cofactors, so a point can be ON the curve yet carry a
+     * torsion component outside the prime-order-r subgroup. The pairing still
+     * "accepts" such points, so without a subgroup check a malicious prover
+     * could forge an accepting Groth16 proof — a soundness gap. The fix wires
+     * [r]P==O membership into groth16_proof_read for A, B, C.
+     *
+     * This is the hermetic, must-have negative+positive test:
+     *   - the generator (in subgroup) and the identity (point at infinity)
+     *     MUST pass — re-verifying honest historical proofs yields 0 new
+     *     rejections;
+     *   - an on-curve-but-not-in-subgroup point MUST be rejected.
+     *
+     * Test vectors (deterministically derived): the compressed encoding with
+     * affine x = 4 over Fp (G1) and x.c0 = 2 over Fp2, x.c1 = 0 (G2) each
+     * decode to a valid on-curve point that is NOT in the prime-order
+     * subgroup (verified at authoring time by an exhaustive small-x scan). */
+    printf("BLS12-381 G1 subgroup: generator+identity pass, torsion point rejected... ");
+    {
+        const uint8_t g1_gen_c[48] = {
+            0x97,0xf1,0xd3,0xa7,0x31,0x97,0xd7,0x94,
+            0x26,0x95,0x63,0x8c,0x4f,0xa9,0xac,0x0f,
+            0xc3,0x68,0x8c,0x4f,0x97,0x74,0xb9,0x05,
+            0xa1,0x4e,0x3a,0x3f,0x17,0x1b,0xac,0x58,
+            0x6c,0x55,0xe8,0x3f,0xf9,0x7a,0x1a,0xef,
+            0xfb,0x3a,0xf0,0x0a,0xdb,0x22,0xc6,0xbb
+        };
+        struct g1_point gen;
+        bool ok = g1_from_compressed(&gen, g1_gen_c);
+        ok = ok && g1_in_subgroup(&gen);
+
+        struct g1_point id;
+        g1_identity(&id);
+        ok = ok && g1_in_subgroup(&id);
+
+        /* x = 4: on curve, but not in the prime-order subgroup. */
+        uint8_t g1_torsion[48];
+        memset(g1_torsion, 0, 48);
+        g1_torsion[0] = 0x80;  /* compressed flag */
+        g1_torsion[47] = 0x04; /* affine x = 4 */
+        struct g1_point bad;
+        bool on_curve = g1_from_compressed(&bad, g1_torsion);
+        ok = ok && on_curve;            /* decodes (is on curve) */
+        ok = ok && !g1_in_subgroup(&bad); /* but rejected by subgroup check */
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("BLS12-381 G2 subgroup: generator+identity pass, torsion point rejected... ");
+    {
+        const uint8_t g2_gen_c[96] = {
+            0x93,0xe0,0x2b,0x60,0x52,0x71,0x9f,0x60,
+            0x7d,0xac,0xd3,0xa0,0x88,0x27,0x4f,0x65,
+            0x59,0x6b,0xd0,0xd0,0x99,0x20,0xb6,0x1a,
+            0xb5,0xda,0x61,0xbb,0xdc,0x7f,0x50,0x49,
+            0x33,0x4c,0xf1,0x12,0x13,0x94,0x5d,0x57,
+            0xe5,0xac,0x7d,0x05,0x5d,0x04,0x2b,0x7e,
+            0x02,0x4a,0xa2,0xb2,0xf0,0x8f,0x0a,0x91,
+            0x26,0x08,0x05,0x27,0x2d,0xc5,0x10,0x51,
+            0xc6,0xe4,0x7a,0xd4,0xfa,0x40,0x3b,0x02,
+            0xb4,0x51,0x0b,0x64,0x7a,0xe3,0xd1,0x77,
+            0x0b,0xac,0x03,0x26,0xa8,0x05,0xbb,0xef,
+            0xd4,0x80,0x56,0xc8,0xc1,0x21,0xbd,0xb8
+        };
+        struct g2_point gen;
+        bool ok = g2_from_compressed(&gen, g2_gen_c);
+        ok = ok && g2_in_subgroup(&gen);
+
+        struct g2_point id;
+        g2_identity(&id);
+        ok = ok && g2_in_subgroup(&id);
+
+        /* x.c0 = 2, x.c1 = 0: on curve, but not in the prime-order subgroup. */
+        uint8_t g2_torsion[96];
+        memset(g2_torsion, 0, 96);
+        g2_torsion[0] = 0x80;  /* compressed flag */
+        g2_torsion[95] = 0x02; /* affine x.c0 = 2 */
+        struct g2_point bad;
+        bool on_curve = g2_from_compressed(&bad, g2_torsion);
+        ok = ok && on_curve;
+        ok = ok && !g2_in_subgroup(&bad);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* End-to-end: groth16_proof_read must reject a proof whose A, B, or C is a
+     * torsion point, and accept an all-in-subgroup proof. This is the actual
+     * consensus seam the soundness fix protects. */
+    printf("groth16_proof_read rejects torsion A/B/C, accepts in-subgroup proof... ");
+    {
+        const uint8_t g1_gen_c[48] = {
+            0x97,0xf1,0xd3,0xa7,0x31,0x97,0xd7,0x94,
+            0x26,0x95,0x63,0x8c,0x4f,0xa9,0xac,0x0f,
+            0xc3,0x68,0x8c,0x4f,0x97,0x74,0xb9,0x05,
+            0xa1,0x4e,0x3a,0x3f,0x17,0x1b,0xac,0x58,
+            0x6c,0x55,0xe8,0x3f,0xf9,0x7a,0x1a,0xef,
+            0xfb,0x3a,0xf0,0x0a,0xdb,0x22,0xc6,0xbb
+        };
+        const uint8_t g2_gen_c[96] = {
+            0x93,0xe0,0x2b,0x60,0x52,0x71,0x9f,0x60,
+            0x7d,0xac,0xd3,0xa0,0x88,0x27,0x4f,0x65,
+            0x59,0x6b,0xd0,0xd0,0x99,0x20,0xb6,0x1a,
+            0xb5,0xda,0x61,0xbb,0xdc,0x7f,0x50,0x49,
+            0x33,0x4c,0xf1,0x12,0x13,0x94,0x5d,0x57,
+            0xe5,0xac,0x7d,0x05,0x5d,0x04,0x2b,0x7e,
+            0x02,0x4a,0xa2,0xb2,0xf0,0x8f,0x0a,0x91,
+            0x26,0x08,0x05,0x27,0x2d,0xc5,0x10,0x51,
+            0xc6,0xe4,0x7a,0xd4,0xfa,0x40,0x3b,0x02,
+            0xb4,0x51,0x0b,0x64,0x7a,0xe3,0xd1,0x77,
+            0x0b,0xac,0x03,0x26,0xa8,0x05,0xbb,0xef,
+            0xd4,0x80,0x56,0xc8,0xc1,0x21,0xbd,0xb8
+        };
+        /* Build an all-in-subgroup proof: A=G1, B=G2, C=G1. */
+        uint8_t good[192];
+        memcpy(good, g1_gen_c, 48);
+        memcpy(good + 48, g2_gen_c, 96);
+        memcpy(good + 144, g1_gen_c, 48);
+
+        struct groth16_proof pr;
+        bool ok = groth16_proof_read(&pr, good); /* must accept */
+
+        /* Torsion A (G1 x=4) must reject. */
+        uint8_t bad_a[192];
+        memcpy(bad_a, good, 192);
+        memset(bad_a, 0, 48);
+        bad_a[0] = 0x80; bad_a[47] = 0x04;
+        ok = ok && !groth16_proof_read(&pr, bad_a);
+
+        /* Torsion B (G2 x.c0=2) must reject. */
+        uint8_t bad_b[192];
+        memcpy(bad_b, good, 192);
+        memset(bad_b + 48, 0, 96);
+        bad_b[48] = 0x80; bad_b[143] = 0x02;
+        ok = ok && !groth16_proof_read(&pr, bad_b);
+
+        /* Torsion C (G1 x=4) must reject. */
+        uint8_t bad_c[192];
+        memcpy(bad_c, good, 192);
+        memset(bad_c + 144, 0, 48);
+        bad_c[144] = 0x80; bad_c[191] = 0x04;
+        ok = ok && !groth16_proof_read(&pr, bad_c);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* g1_scalar_mul must run identical work regardless of scalar
      * Hamming weight. Pre-fix, the prover only executed `g1_add` on
      * bits that were set — so an attacker measuring wall time of the

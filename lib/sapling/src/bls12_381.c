@@ -1704,15 +1704,87 @@ void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t 
     *r = result;
 }
 
-/* Groth16 proof deserialization: A (G1, 48B) + B (G2, 96B) + C (G1, 48B) = 192B */
+/* G2 scalar multiplication: r = scalar * p (double-and-add, 256 bits).
+ *
+ * Unlike g1_scalar_mul, this is NOT constant-time: its only caller is the
+ * subgroup membership check below, whose input is the PUBLIC proof point
+ * (no secret material), so a side channel reveals nothing. Keeping it
+ * branch-on-bit makes the [r]P==O check trivially auditable. */
+static void g2_scalar_mul(struct g2_point *r, const struct g2_point *p,
+                          const uint64_t scalar[4])
+{
+    struct g2_point result;
+    g2_identity(&result);
+    struct g2_point base = *p;
+
+    for (int i = 0; i < 4; i++) {
+        for (int bit = 0; bit < 64; bit++) {
+            if ((scalar[i] >> bit) & 1ULL) {
+                struct g2_point sum;
+                g2_add(&sum, &result, &base);
+                result = sum;
+            }
+            struct g2_point dbl;
+            g2_double(&dbl, &base);
+            base = dbl;
+        }
+    }
+    *r = result;
+}
+
+/* BLS12-381 subgroup order r (little-endian 64-bit limbs):
+ * r = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+ * (matches FR_MODULUS in fr.c / fr_avx512.c). */
+static const uint64_t BLS12_381_R[4] = {
+    0xffffffff00000001ULL, 0x53bda402fffe5bfeULL,
+    0x3339d80809a1d805ULL, 0x73eda753299d7d48ULL
+};
+
+/* Subgroup membership: G1/G2 have large cofactors, so an on-curve point can
+ * still carry a torsion (non-prime-order) component that the pairing accepts —
+ * a Groth16 soundness gap (a prover could forge an accepting "proof").  A point
+ * P lies in the prime-order-r subgroup iff [r]P == O.  These checks ADD ONLY
+ * rejections: they cannot accept anything the on-curve check already rejected,
+ * and cannot cause a UAF/split.
+ *
+ * The identity (point at infinity) IS in the subgroup and MUST pass:
+ * [r]O == O.  Callers must never feed the identity branch of
+ * g1/g2_from_compressed through anything that would reject it — but [r]O==O
+ * holds here regardless, so the function is correct for the identity too. */
+bool g1_in_subgroup(const struct g1_point *p)
+{
+    struct g1_point rp;
+    g1_scalar_mul(&rp, p, BLS12_381_R);
+    return g1_is_identity(&rp);
+}
+
+bool g2_in_subgroup(const struct g2_point *p)
+{
+    struct g2_point rp;
+    g2_scalar_mul(&rp, p, BLS12_381_R);
+    return g2_is_identity(&rp);
+}
+
+/* Groth16 proof deserialization: A (G1, 48B) + B (G2, 96B) + C (G1, 48B) = 192B.
+ *
+ * Each point is checked for (1) on-curve (inside g{1,2}_from_compressed) AND
+ * (2) prime-order subgroup membership.  Without (2), a malicious prover could
+ * submit on-curve-but-torsion points that the pairing still accepts, breaking
+ * Groth16 soundness on the consensus Sapling proof path. */
 bool groth16_proof_read(struct groth16_proof *proof, const uint8_t data[192])
 {
     if (!g1_from_compressed(&proof->a, data))
         LOG_FAIL("groth16", "proof_read: g1_from_compressed(A) failed");
+    if (!g1_in_subgroup(&proof->a))
+        LOG_FAIL("groth16", "proof_read: A not in G1 prime-order subgroup");
     if (!g2_from_compressed(&proof->b, data + 48))
         LOG_FAIL("groth16", "proof_read: g2_from_compressed(B) failed");
+    if (!g2_in_subgroup(&proof->b))
+        LOG_FAIL("groth16", "proof_read: B not in G2 prime-order subgroup");
     if (!g1_from_compressed(&proof->c, data + 144))
         LOG_FAIL("groth16", "proof_read: g1_from_compressed(C) failed");
+    if (!g1_in_subgroup(&proof->c))
+        LOG_FAIL("groth16", "proof_read: C not in G1 prime-order subgroup");
     return true;
 }
 

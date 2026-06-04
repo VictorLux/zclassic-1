@@ -106,6 +106,12 @@ bool g1_from_uncompressed(struct g1_point *p, const uint8_t in[96]);
 void g1_to_affine(struct fp *ax, struct fp *ay, const struct g1_point *p);
 void g1_scalar_mul(struct g1_point *r, const struct g1_point *p, const uint64_t scalar[4]);
 
+/* Prime-order subgroup membership: true iff [r]P == O. G1/G2 have large
+ * cofactors, so an on-curve point may carry a torsion component; the Groth16
+ * verifier requires every proof point to lie in the prime-order-r subgroup
+ * (a soundness requirement). The identity passes ([r]O == O). */
+bool g1_in_subgroup(const struct g1_point *p);
+
 /* G2: y^2 = x^3 + 4(u+1) over Fp2 (Jacobian coordinates) */
 struct g2_point {
     struct fp2 x, y, z;
@@ -119,6 +125,9 @@ void g2_double(struct g2_point *r, const struct g2_point *a);
 bool g2_from_compressed(struct g2_point *p, const uint8_t in[96]);
 bool g2_from_uncompressed(struct g2_point *p, const uint8_t in[192]);
 void g2_to_affine(struct fp2 *ax, struct fp2 *ay, const struct g2_point *p);
+
+/* G2 prime-order subgroup membership (see g1_in_subgroup above). */
+bool g2_in_subgroup(const struct g2_point *p);
 
 /* Optimal Ate pairing */
 void bls12_381_pairing(struct fp12 *result,
