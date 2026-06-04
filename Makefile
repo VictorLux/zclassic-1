@@ -521,6 +521,7 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP "it works": mined block -> reducer front door -> tip+1 (hermetic),reducer_ingest,=== reducer-ingest subset complete:)
 	$(call mvp_gate,MVP gate 2 (slice): onion bootstrap <60s budget + v3 address (hermetic),onion_slice,=== onion_bootstrap_slice subset complete:)
 	$(call mvp_gate,MVP gate 4 (slice): note encrypted to wallet ivk -> wallet decrypts -> z-balance (hermetic),shielded_receive,=== shielded_receive subset complete:)
+	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg (hermetic),reducer_forward,=== reducer-forward subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
 
 # mvp-it-works: the single "you know your app works" proof — boots a fresh
@@ -550,6 +551,16 @@ mvp-onion-slice: test_zcl
 mvp-shielded-receive: test_zcl
 	$(call mvp_gate,MVP C4 (receive): note encrypted to wallet ivk -> wallet decrypts -> z-balance,shielded_receive,=== shielded_receive subset complete:)
 	@echo "══ MVP shielded-receive gate: PASSED ══"
+
+# mvp-forward-progress: the live-wedge repro gate — boots a fresh in-process
+# regtest reducer, mines + ingests N=32 sequential blocks through the front
+# door asserting MONOTONIC tip advance (no stall/oscillation), then a heavier
+# near-tip fork and asserts a clean reorg with a consistent UTXO commitment.
+# On a stall it captures the height + all 8 stage cursors. Runs isolated.
+.PHONY: mvp-forward-progress
+mvp-forward-progress: test_zcl
+	$(call mvp_gate,MVP forward-progress: N sequential blocks + heavier-fork reorg through the reducer,reducer_forward,=== reducer-forward subset complete:)
+	@echo "══ MVP forward-progress gate: PASSED ══"
 
 # ci-stress: the fixture/network-bound MVP gates. Run on a worker that
 # has the resource (Tor egress for #2, ~/.zcash-params for #4). Reuses
