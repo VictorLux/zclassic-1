@@ -330,7 +330,7 @@ bool utxo_recovery_xor_mismatch_is_corruption_candidate(
  *
  * This is the gate that would have saved the 1.3M UTXOs on
  * 2026-04-10. Do not bypass. */
-bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
+struct zcl_result utxo_recovery_wipe(struct node_db *ndb, const char *reason)
 {
     int64_t proposed = node_db_utxo_count(ndb);
 
@@ -340,12 +340,19 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
     enum policy_decision d = policy_check_utxo_wipe(&pol, proposed, reason);
     if (d != POLICY_ALLOW) {
         LOG_INFO("utxo_recovery", "utxo_recovery: REFUSING wipe at \"%s\" — would drop %lld rows, " "policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)", reason, (long long)proposed, policy_decision_name(d), (long long)(proposed + 1));
-        return false;
+        return ZCL_ERR(-41,
+            "utxo_recovery_wipe: policy denied wipe at \"%s\" — would drop "
+            "%lld rows, policy=%s (override with ZCL_MAX_UTXO_WIPE_ROWS=%lld)",
+            reason, (long long)proposed, policy_decision_name(d),
+            (long long)(proposed + 1));
     }
     event_emitf(EV_RECOVERY_ACTION, 0,
         "action=utxo_wipe reason=%s rows=%lld", reason, (long long)proposed);
-    node_db_wipe_utxos(ndb);
-    return true;
+    if (!node_db_wipe_utxos(ndb))
+        return ZCL_ERR(-42,
+            "utxo_recovery_wipe: node_db_wipe_utxos failed at \"%s\" "
+            "(rows=%lld)", reason, (long long)proposed);
+    return ZCL_OK;
 }
 
 /* ── Auto-reimport flag ──────────────────────────────────────── */
@@ -353,15 +360,18 @@ bool utxo_recovery_wipe(struct node_db *ndb, const char *reason)
  * `utxo_reimport_flag_check_and_clear`. This service owns only the
  * node_db state transition needed before reimport starts. */
 
-bool utxo_recovery_prepare_reimport(struct node_db *ndb)
+struct zcl_result utxo_recovery_prepare_reimport(struct node_db *ndb)
 {
     printf("Forced UTXO re-import requested.\n");
     /* Only clear the migration flag — the wipe happens inside
      * utxo_recovery_import_ldb (the "boot.ldb_import_prepare" wipe in
      * utxo_recovery_restore.c).  Wiping here AND in import_ldb was one of
      * the three redundant wipes that could destroy imported UTXOs. */
-    node_db_exec(ndb, "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'");
-    return true;
+    if (!node_db_exec(ndb,
+            "DELETE FROM node_state WHERE key='leveldb_utxo_migrated'"))
+        return ZCL_ERR(-50, "prepare_reimport: failed to clear "
+                       "leveldb_utxo_migrated flag");
+    return ZCL_OK;
 }
 
 /* ── LDB→SQLite UTXO import + chain tip restoration ─────────────
@@ -415,8 +425,12 @@ static bool recover_stale_metadata(struct utxo_recovery_ctx *ctx)
 /* Helper: wipe UTXOs and reset to genesis for clean re-sync */
 static bool reset_to_genesis(struct utxo_recovery_ctx *ctx)
 {
-    if (!utxo_recovery_wipe(ctx->ndb, "boot.reset_to_genesis"))
+    struct zcl_result wipe = utxo_recovery_wipe(ctx->ndb,
+                                                "boot.reset_to_genesis");
+    if (!wipe.ok) {
+        LOG_WARN("utxo_recovery", "%s", wipe.message);
         return false;
+    }
 
     struct block_index *genesis = block_map_find(
         &ctx->state->map_block_index,
@@ -462,8 +476,10 @@ static bool integrity_checks_boot_ok(struct utxo_recovery_ctx *ctx,
             printf("WARNING: Chain at genesis but %lld stale UTXOs "
                    "from previous snapshot — wiping for clean sync\n",
                    (long long)stale_utxos);
-            (void)utxo_recovery_wipe(ctx->ndb,
-                                      "boot.stale_utxos_at_genesis");
+            struct zcl_result wipe = utxo_recovery_wipe(
+                ctx->ndb, "boot.stale_utxos_at_genesis");
+            if (!wipe.ok)
+                LOG_WARN("utxo_recovery", "%s", wipe.message);
             (void)utxo_recovery_commit_genesis(
                 ctx, "boot.stale_utxos_at_genesis");
             *out_skip_activate = true;

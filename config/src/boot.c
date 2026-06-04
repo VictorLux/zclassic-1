@@ -662,9 +662,9 @@ static void boot_step_backfill_shielded_if_needed(struct app_context *ctx,
             shielded_count = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
     }
-    if (shielded_count < 1000 && tip->nHeight > 100000)
-        utxo_recovery_backfill_shielded(&g_node_db,
-            boot_runtime_db_service(), &g_state, g_datadir);
+    if (shielded_count < 1000 && tip->nHeight > 100000 &&
+        !utxo_recovery_backfill_shielded(&g_node_db, boot_runtime_db_service(), &g_state, g_datadir, NULL).ok)
+        LOG_WARN("boot", "shielded backfill: persistence/validation failure (see service log)");
 }
 
 static void boot_step_build_svc_ctx(struct app_context *ctx,
@@ -1775,7 +1775,7 @@ bool app_init(struct app_context *ctx)
 
         /* -reimport-utxos: force re-import from LevelDB chainstate */
         if (ctx->reimport_utxos) {
-            if (!utxo_recovery_prepare_reimport(&g_node_db))
+            if (!utxo_recovery_prepare_reimport(&g_node_db).ok)
                 ctx->reimport_utxos = false;
         }
 
@@ -1999,7 +1999,7 @@ bool app_init(struct app_context *ctx)
         if (!rebuilt_from_log && !loaded) {
             int64_t t_idx_start = (int64_t)platform_time_wall_time_t();
             printf("Loading block index from LevelDB...\n");
-            if (!load_block_index(&g_state, params, &g_block_tree, g_block_tree_open)) {
+            if (!load_block_index(&g_state, params, &g_block_tree, g_block_tree_open).ok) {
                 fprintf(stderr, "Warning: Failed to load block index\n");
             }
             int64_t t_idx_elapsed = (int64_t)platform_time_wall_time_t() - t_idx_start;
@@ -3349,7 +3349,7 @@ sapling_tree_boot_check_done:
                        rr.floor, (long long)coins_best);
                 service_state_advance(SERVICE_STATE_RECONCILE,
                                       "reducer cursor/coins desync reconcile");
-                service_state_persist_to_progress_store();
+                (void)service_state_persist_to_progress_store();
             }
         }
     }
@@ -3498,7 +3498,7 @@ sapling_tree_boot_check_done:
                     tip_h);
                 service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
                     "allow-degraded over structural corruption");
-                service_state_persist_to_progress_store();
+                (void)service_state_persist_to_progress_store();
             } else {
                 /* RECONCILABLE: coins-application lag. Self-heal; never
                  * exit. The node serves at the contiguous applied tip
@@ -3516,11 +3516,11 @@ sapling_tree_boot_check_done:
                 service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
                     "reconcilable post-restore divergence");
             }
-            service_state_persist_to_progress_store();
+            (void)service_state_persist_to_progress_store();
         } else {
             service_state_advance(SERVICE_STATE_SYNCING,
                                   "post-restore integrity clean");
-            service_state_persist_to_progress_store();
+            (void)service_state_persist_to_progress_store();
         }
     }
 

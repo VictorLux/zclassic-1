@@ -144,7 +144,12 @@ struct utxo_import_result utxo_recovery_import_ldb(
         snprintf(import_path, sizeof(import_path), "%s", cs_path);
     }
 
-    (void)utxo_recovery_wipe(ctx->ndb, "boot.ldb_import_prepare");
+    {
+        struct zcl_result wipe =
+            utxo_recovery_wipe(ctx->ndb, "boot.ldb_import_prepare");
+        if (!wipe.ok)
+            LOG_WARN("utxo_recovery", "%s", wipe.message);
+    }
     coins_view_sqlite_close(ctx->coins_sqlite);
 
     struct coins_view_db migrate_db;
@@ -262,8 +267,10 @@ struct utxo_import_result utxo_recovery_import_ldb(
                 res.utxo_count = imported_count;
             } else {
                 LOG_WARN("chain", "only %llu UTXOs imported " "— will retry on next boot", (unsigned long long)imported_count);
-                (void)utxo_recovery_wipe(ctx->ndb,
+                struct zcl_result wipe = utxo_recovery_wipe(ctx->ndb,
                     "boot.ldb_import_failed_retry");
+                if (!wipe.ok)
+                    LOG_WARN("utxo_recovery", "%s", wipe.message);
             }
         }
 
@@ -608,10 +615,12 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     } else {
         /* No UTXOs — wipe and start fresh */
         printf("No UTXOs found — wiping coins state.\n");
-        if (!utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos")) {
-            res.status = ZCL_ERR(-23,
+        struct zcl_result wipe =
+            utxo_recovery_wipe(ctx->ndb, "boot.restore_no_utxos");
+        if (!wipe.ok) {
+            res.status = ZCL_ERR(wipe.code,
                 "utxo_recovery_restore_chain_tip: wipe refused/failed for "
-                "empty UTXO restore");
+                "empty UTXO restore: %s", wipe.message);
             LOG_WARN("utxo_recovery", "%s", res.status.message);
             return res;
         }

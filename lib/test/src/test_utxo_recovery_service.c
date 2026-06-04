@@ -113,7 +113,7 @@ int test_utxo_recovery_service(void)
 
             /* Set env to allow wipe of 10 rows */
             setenv("ZCL_MAX_UTXO_WIPE_ROWS", "10", 1);
-            bool ok = utxo_recovery_wipe(&ndb, "test.small_wipe");
+            bool ok = utxo_recovery_wipe(&ndb, "test.small_wipe").ok;
             int64_t after = node_db_utxo_count(&ndb);
             unsetenv("ZCL_MAX_UTXO_WIPE_ROWS");
 
@@ -151,7 +151,7 @@ int test_utxo_recovery_service(void)
 
             /* Set env to allow only 10 rows — should refuse 50 */
             setenv("ZCL_MAX_UTXO_WIPE_ROWS", "10", 1);
-            bool ok = utxo_recovery_wipe(&ndb, "test.large_wipe");
+            bool ok = utxo_recovery_wipe(&ndb, "test.large_wipe").ok;
             int64_t after = node_db_utxo_count(&ndb);
             unsetenv("ZCL_MAX_UTXO_WIPE_ROWS");
 
@@ -226,7 +226,7 @@ int test_utxo_recovery_service(void)
                 node_db_exec(&ndb, sql);
             }
 
-            bool ok = utxo_recovery_prepare_reimport(&ndb);
+            bool ok = utxo_recovery_prepare_reimport(&ndb).ok;
 
             /* prepare_reimport no longer wipes UTXOs (the wipe happens
              * at the start of import_ldb instead).  It only clears the

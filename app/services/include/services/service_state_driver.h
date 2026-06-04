@@ -24,20 +24,27 @@
 
 #include <stdbool.h>
 
+#include "util/result.h"
+
 /* Periodic driver tick. Idempotent; safe to call when subsystems are not
  * yet wired (no main_state / no peers) — it simply makes no transition. */
 void service_state_driver_tick(void);
 
-/* Write the current service_state id + reason to progress.kv. Returns false
- * (logged) if the store is unavailable or a write fails; never aborts. The
- * transient REPAIRING mode is intentionally NOT persisted by the driver — the
- * underlying operational mode is what survives a restart. */
-bool service_state_persist_to_progress_store(void);
+/* Write the current service_state id + reason to progress.kv. Returns a non-ok
+ * zcl_result (already logged) carrying a self-describing reason if the store is
+ * unavailable (code -5, io) or an atomic write/transaction fails (code -6,
+ * persistence); never aborts. The transient REPAIRING mode is intentionally
+ * NOT persisted by the driver — the underlying operational mode is what
+ * survives a restart. */
+struct zcl_result service_state_persist_to_progress_store(void);
 
 /* Restore the persisted operational mode early in boot (after progress.kv is
- * open). Idempotent; a missing/invalid record is a no-op that leaves the
- * state at BOOT. Returns true only if a valid record was applied. */
-bool service_state_restore_from_progress_store(void);
+ * open). Idempotent; a missing/invalid record is a no-op that leaves the state
+ * at BOOT. Returns ZCL_OK only if a valid record was applied. A fresh datadir
+ * with no record yields a benign non-ok result (code -7) so the boot caller can
+ * `(void)`-ignore it; a store-unavailable / invalid-id condition yields an
+ * io-class non-ok result (code -5). */
+struct zcl_result service_state_restore_from_progress_store(void);
 
 #ifdef ZCL_TESTING
 /* Override the gap inputs so the sync-gap decision is testable without a live

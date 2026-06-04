@@ -159,10 +159,10 @@ int test_service_state_driver(void)
     {
         service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
                               "reconcilable divergence");
-        SSD("persist succeeds", service_state_persist_to_progress_store());
+        SSD("persist succeeds", service_state_persist_to_progress_store().ok);
 
         service_state_advance(SERVICE_STATE_BOOT, "boot");
-        SSD("restore returns true", service_state_restore_from_progress_store());
+        SSD("restore returns true", service_state_restore_from_progress_store().ok);
         SSD("restored state == DEGRADED_SERVING",
             service_state_current() == SERVICE_STATE_DEGRADED_SERVING);
         SSD("restored reason preserved",
@@ -176,7 +176,7 @@ int test_service_state_driver(void)
         progress_store_tx_unlock();
         service_state_advance(SERVICE_STATE_SYNCING, "pre-bogus");
         SSD("restore of invalid id returns false",
-            service_state_restore_from_progress_store() == false);
+            service_state_restore_from_progress_store().ok == false);
         SSD("invalid id leaves state unchanged (SYNCING)",
             service_state_current() == SERVICE_STATE_SYNCING);
     }

@@ -596,14 +596,15 @@ static struct block_index *insert_block_index_cb(void *ctx_ptr,
         (struct chainstate *)ms, hash);
 }
 
-bool load_block_index(struct main_state *ms,
+struct zcl_result load_block_index(struct main_state *ms,
                        const struct chain_params *params,
                        struct block_tree_db *btdb, bool btdb_open)
 {
     if (btdb_open) {
         if (!block_tree_db_load_block_index_guts(btdb,
                                                   insert_block_index_cb, ms))
-            return false;
+            return ZCL_ERR(-1, "load_block_index: LevelDB block-tree "
+                           "deserialization failed (corrupt block tree db)");
     }
 
     /* Option A: ensure every node owns its hash in per-node storage and
@@ -655,27 +656,28 @@ bool load_block_index(struct main_state *ms,
             };
             enum csr_result rc = csr_commit_tip(csr_instance(), &commit);
             if (rc == CSR_OK) {
-                return true;
+                return ZCL_OK;
             }
 #ifdef ZCL_TESTING
             if (rc == CSR_REJECTED_NOT_INITIALIZED) {
                 (void)chain_set_active_tip(ms, genesis, TIP_FROM_RESTORE,
                                       "loader_init_genesis_csr_uninit");
                 ms->pindex_best_header = genesis;
-                return true;
+                return ZCL_OK;
             }
 #endif
-            LOG_WARN("block_index_loader", "block_index_loader: csr rejected genesis init (%s)", csr_result_name(rc));
-            return false;
+            return ZCL_ERR(-3, "load_block_index: csr rejected genesis tip "
+                           "commit (%s)", csr_result_name(rc));
         }
-        return true;
+        return ZCL_OK;
     }
 
     /* Post-load: compute nChainWork, nChainTx, skip links */
     size_t count = ms->map_block_index.size;
     struct block_index **sorted = zcl_malloc(count * sizeof(struct block_index *), "block_index sorted load");
     if (!sorted)
-        LOG_FAIL("block_index", "malloc failed for %zu sorted block_index pointers", count);
+        return ZCL_ERR(-2, "load_block_index: out of memory allocating %zu "
+                       "sorted block_index pointers", count);
 
     size_t idx = 0;
     size_t iter = 0;
@@ -691,5 +693,5 @@ bool load_block_index(struct main_state *ms,
     block_index_forward_pass(sorted, count);
 
     free(sorted);
-    return true;
+    return ZCL_OK;
 }

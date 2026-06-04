@@ -47,18 +47,20 @@ struct utxo_recovery_ctx {
 /* ── Policy-gated UTXO wipe ───────────────────────────────── */
 
 /* Wipe the UTXO set after checking recovery_policy.
- * Returns true if wipe was allowed and executed, false if refused.
+ * Returns ZCL_OK if the wipe was allowed and executed; a policy ZCL_ERR
+ * (code -41) if recovery_policy refused; a persistence ZCL_ERR (code -42)
+ * if node_db_wipe_utxos failed to delete the rows.
  * `reason` is a grep-able tag, e.g. "boot.reimport_utxos_flag".
  * This is the gate that would have saved the 1.3M UTXOs on
  * 2026-04-10. Do not bypass. */
-bool utxo_recovery_wipe(struct node_db *ndb, const char *reason);
+struct zcl_result utxo_recovery_wipe(struct node_db *ndb, const char *reason);
 
 /* ── Auto-reimport flag ───────────────────────────────────── */
 
 /* Prepare for reimport: clear migration flag (the actual UTXO wipe
- * happens at the start of utxo_recovery_import_ldb). Returns true on
- * success. */
-bool utxo_recovery_prepare_reimport(struct node_db *ndb);
+ * happens at the start of utxo_recovery_import_ldb). Returns ZCL_OK on
+ * success, or a persistence ZCL_ERR if clearing the flag failed. */
+struct zcl_result utxo_recovery_prepare_reimport(struct node_db *ndb);
 
 /* ── LDB→SQLite UTXO import ──────────────────────────────── */
 
@@ -157,10 +159,14 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
 
 /* Backfill sprout_value/sapling_value into SQLite blocks table
  * from block files on disk. Idempotent — skips already-populated.
- * Returns count of blocks updated, or -1 on failure. */
-int utxo_recovery_backfill_shielded(struct node_db *ndb,
+ * On success returns ZCL_OK and, if out_updated != NULL, writes the
+ * count of blocks updated. On failure returns a non-ok zcl_result
+ * (-50/-51 = invalid args, -52 = write/persistence failure) and leaves
+ * *out_updated untouched. */
+struct zcl_result utxo_recovery_backfill_shielded(struct node_db *ndb,
                                      struct db_service *dbsvc,
                                      struct main_state *state,
-                                     const char *datadir);
+                                     const char *datadir,
+                                     int *out_updated);
 
 #endif /* ZCL_SERVICES_UTXO_RECOVERY_SERVICE_H */

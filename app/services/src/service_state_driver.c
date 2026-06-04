@@ -9,16 +9,10 @@
  * writes only two opaque kv rows ("service_state", "service_state_reason")
  * to progress.kv. Every failure is logged and swallowed. */
 
-// one-result-type-ok:observability-state-bool — this file owns no fallible
-// *service* surface: the only fallible functions (persist/restore) are plain
-// success predicates for an observability kv write, and every failure path
-// already logs its own context (LOG_WARN) before returning bool. A
-// struct zcl_result here would add ceremony without a caller that consumes a
-// contextual reason — callers `(void)`-ignore the result.
-
 #include "services/service_state_driver.h"
 
 #include "util/service_state.h"
+#include "util/result.h"
 #include "util/log_macros.h"
 #include "storage/progress_store.h"
 #include "framework/condition.h"
@@ -70,13 +64,13 @@ static bool repair_condition_active(void)
     return false;
 }
 
-bool service_state_persist_to_progress_store(void)
+struct zcl_result service_state_persist_to_progress_store(void)
 {
     sqlite3 *db = progress_store_db();
     if (!db) {
         LOG_WARN("service_state",
                  "[service_state] persist: progress.kv unavailable");
-        return false;
+        return ZCL_ERR(-5, "persist: progress.kv unavailable");
     }
 
     int32_t id = (int32_t)service_state_current();
@@ -92,9 +86,11 @@ bool service_state_persist_to_progress_store(void)
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("service_state", "[service_state] persist BEGIN failed: %s",
                  err ? err : "(no message)");
+        struct zcl_result r =
+            ZCL_ERR(-6, "persist BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         progress_store_tx_unlock();
-        return false;
+        return r;
     }
     bool ok = progress_meta_set_in_tx(db, "service_state", &id, sizeof(id)) &&
               progress_meta_set_in_tx(db, "service_state_reason",
@@ -103,27 +99,33 @@ bool service_state_persist_to_progress_store(void)
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("service_state", "[service_state] persist %s failed: %s",
                  fini, err ? err : "(no message)");
+        struct zcl_result r =
+            ZCL_ERR(-6, "persist %s failed: %s", fini,
+                    err ? err : "(no message)");
         if (err) sqlite3_free(err);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
-        return false;
+        return r;
     }
     progress_store_tx_unlock();
 
-    if (!ok)
+    if (!ok) {
         LOG_WARN("service_state",
                  "[service_state] persist failed (id=%d) — rolled back",
                  (int)id);
-    return ok;
+        return ZCL_ERR(-6, "persist meta write failed (id=%d) — rolled back",
+                       (int)id);
+    }
+    return ZCL_OK;
 }
 
-bool service_state_restore_from_progress_store(void)
+struct zcl_result service_state_restore_from_progress_store(void)
 {
     sqlite3 *db = progress_store_db();
     if (!db) {
         LOG_WARN("service_state",
                  "[service_state] restore: progress.kv unavailable");
-        return false;
+        return ZCL_ERR(-5, "restore: progress.kv unavailable");
     }
 
     int32_t id = SERVICE_STATE_BOOT;
@@ -134,13 +136,15 @@ bool service_state_restore_from_progress_store(void)
                                  &n, &found);
     progress_store_tx_unlock();
     if (!got || !found || n != sizeof(id)) {
-        /* Expected on first boot / fresh datadir — not an error. */
-        return false;
+        /* Expected on first boot / fresh datadir — not a hard error, but no
+         * record was applied, so this is a non-ok (informational) result. */
+        return ZCL_ERR(-7, "restore: no persisted service_state record "
+                           "(fresh datadir / first boot)");
     }
     if ((int)id < 0 || (int)id >= SERVICE_STATE__COUNT) {
         LOG_WARN("service_state",
                  "[service_state] restore: invalid state id=%d", (int)id);
-        return false;
+        return ZCL_ERR(-5, "restore: invalid persisted state id=%d", (int)id);
     }
 
     char reason[256] = {0};
@@ -157,7 +161,7 @@ bool service_state_restore_from_progress_store(void)
     if ((enum service_state)id >= SERVICE_STATE_DEGRADED_SERVING &&
         (enum service_state)id != SERVICE_STATE_REPAIRING)
         atomic_store(&g_prior_state, (int)id);
-    return true;
+    return ZCL_OK;
 }
 
 void service_state_driver_tick(void)
@@ -179,7 +183,7 @@ void service_state_driver_tick(void)
         enum service_state prior =
             (enum service_state)atomic_load(&g_prior_state);
         service_state_advance(prior, "repair condition cleared");
-        service_state_persist_to_progress_store();
+        (void)service_state_persist_to_progress_store();
         return;
     }
     if (repairing_now)
@@ -236,7 +240,7 @@ void service_state_driver_tick(void)
                  local_h, peer_max, gap, active, (long long)age);
         service_state_advance(next, reason);
         atomic_store(&g_prior_state, (int)next);
-        service_state_persist_to_progress_store();
+        (void)service_state_persist_to_progress_store();
     }
 }
 

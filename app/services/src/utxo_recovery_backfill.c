@@ -139,16 +139,15 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
     return true;
 }
 
-int utxo_recovery_backfill_shielded(struct node_db *ndb,
+struct zcl_result utxo_recovery_backfill_shielded(struct node_db *ndb,
                                      struct db_service *dbsvc,
                                      struct main_state *state,
-                                     const char *datadir)
+                                     const char *datadir,
+                                     int *out_updated)
 {
     struct zcl_result valid = backfill_validate_args(ndb, dbsvc, state);
-    if (!valid.ok) {
-        LOG_ERR("recovery", "%s", valid.message);
-        return -1;
-    }
+    if (!valid.ok)
+        return valid;  /* zcl_result self-describes; the caller logs the reason */
 
     struct shielded_backfill_ctx bctx = {
         .updated = 0,
@@ -167,9 +166,11 @@ int utxo_recovery_backfill_shielded(struct node_db *ndb,
         printf("Backfill: updated %d blocks with shielded values\n",
                bctx.updated);
         fflush(stdout);
-        return bctx.updated;
+        if (out_updated)
+            *out_updated = bctx.updated;
+        return ZCL_OK;
     }
 
-    LOG_ERR("recovery", "backfill: failed to update shielded values");
-    return -1;
+    return ZCL_ERR(-52, "backfill: failed to persist shielded values "
+                   "to blocks table");
 }

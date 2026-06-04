@@ -30,6 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "util/result.h"
+
 /* Forward declarations — avoids pulling in heavy headers */
 struct main_state;
 struct node_db;
@@ -64,8 +66,15 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
 /* Load block_index from LevelDB block tree database.
  * Post-processes: recomputes nChainWork, nChainTx, skip links,
  * branch IDs, and failed-child propagation.
- * If btdb_open is false and no entries exist, inserts genesis. */
-bool load_block_index(struct main_state *ms,
+ * If btdb_open is false and no entries exist, inserts genesis.
+ *
+ * Returns ZCL_OK on success (including the empty-but-genesis-seeded case).
+ * On failure the result self-describes the cause (Law 2, "one way out"):
+ *   code -1  LevelDB block-tree deserialization failed (corruption)
+ *   code -2  out of memory allocating the post-load sort array (io/resource)
+ *   code -3  csr rejected the genesis tip commit (integrity)
+ * The previous bare-bool true/false maps to .ok true/false. */
+struct zcl_result load_block_index(struct main_state *ms,
                        const struct chain_params *params,
                        struct block_tree_db *btdb, bool btdb_open);
 
