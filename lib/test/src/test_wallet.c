@@ -326,5 +326,70 @@ skip_ubal:
         sapling_keystore_free(&sks);
     }
 
+    /* Regression: the sapling-note readers race a concurrent append realloc.
+     * wallet_copy_sapling_notes() must hand back an independent buffer that
+     * survives the live array being freed/moved (the UAF scenario), and the
+     * locked accessors must report correct balance / spent state. */
+    printf("sapling note snapshot is an independent, lock-safe copy... ");
+    {
+        struct wallet *w = zcl_calloc(1, sizeof(struct wallet), "test_wallet_sap");
+        if (!w) { printf("FAIL (alloc)\n"); failures++; goto skip_sap_snap; }
+        wallet_init(w);
+
+        /* Seed two notes directly — the add path is static, and the array is
+         * a plain heap buffer, exactly what wallet_add_sapling_note manages. */
+        w->sapling_notes = zcl_calloc(2, sizeof(*w->sapling_notes),
+                                      "test_sap_notes");
+        if (!w->sapling_notes) {
+            printf("FAIL (notes alloc)\n"); failures++;
+            wallet_free(w); free(w); goto skip_sap_snap;
+        }
+        w->num_sapling_notes = 2;
+        w->sapling_notes_cap = 2;
+        w->sapling_notes[0].value = 100;
+        w->sapling_notes[0].used = true;
+        w->sapling_notes[0].spent = false;
+        memset(w->sapling_notes[0].nf, 0xA1, 32);
+        w->sapling_notes[1].value = 250;
+        w->sapling_notes[1].used = true;
+        w->sapling_notes[1].spent = true; /* spent → excluded from balance */
+        memset(w->sapling_notes[1].nf, 0xB2, 32);
+
+        int ok = 1;
+        /* Balance counts only unspent, used notes. */
+        if (wallet_get_sapling_balance(w) != 100) ok = 0;
+
+        /* nullifier_is_spent matches the spent note, not the unspent one. */
+        uint8_t nf_spent[32];   memset(nf_spent, 0xB2, 32);
+        uint8_t nf_unspent[32]; memset(nf_unspent, 0xA1, 32);
+        if (!wallet_sapling_nullifier_is_spent(w, nf_spent)) ok = 0;
+        if (wallet_sapling_nullifier_is_spent(w, nf_unspent)) ok = 0;
+
+        size_t snap_n = 0;
+        struct sapling_received_note *snap =
+            wallet_copy_sapling_notes(w, &snap_n);
+        if (!snap || snap_n != 2 || snap == w->sapling_notes) ok = 0;
+
+        if (snap && snap_n == 2) {
+            /* Mutating the live array must not perturb the snapshot. */
+            w->sapling_notes[0].value = 999999;
+            if (snap[0].value != 100 || snap[1].value != 250) ok = 0;
+
+            /* Freeing/replacing the live array (the realloc-UAF scenario)
+             * must leave the snapshot fully readable. */
+            free(w->sapling_notes);
+            w->sapling_notes = NULL;
+            w->num_sapling_notes = 0;
+            w->sapling_notes_cap = 0;
+            if (snap[0].value != 100 || snap[1].value != 250) ok = 0;
+        }
+        free(snap);
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+        wallet_free(w);
+        free(w);
+    }
+skip_sap_snap:;
+
     return failures;
 }

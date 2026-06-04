@@ -79,12 +79,16 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                     transaction_compute_hash(tx);
                     size_t notes_before = wallet->num_sapling_notes;
                     wallet_try_sapling_decrypt(wallet, tx, &tx->hash);
-                    /* Persist newly discovered notes to SQLite */
-                    if (ndb && wallet->num_sapling_notes > notes_before) {
-                        for (size_t ni = notes_before;
-                             ni < wallet->num_sapling_notes; ni++) {
-                            struct sapling_received_note *note =
-                                &wallet->sapling_notes[ni];
+                    /* Persist newly discovered notes to SQLite. Snapshot the
+                     * notes under the wallet lock first: iterating the live
+                     * array here would race a concurrent note-append realloc
+                     * (e.g. an RPC rescan) and read freed memory. */
+                    if (ndb) {
+                        size_t n_notes = 0;
+                        struct sapling_received_note *snap =
+                            wallet_copy_sapling_notes(wallet, &n_notes);
+                        for (size_t ni = notes_before; ni < n_notes; ni++) {
+                            struct sapling_received_note *note = &snap[ni];
                             node_db_sync_sapling_note(ndb,
                                 note->txid.data, note->output_index,
                                 (int64_t)note->value, note->rcm,
@@ -93,6 +97,7 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                                 note->cm, note->nf,
                                 pindex_new->nHeight);
                         }
+                        free(snap);
                     }
                 }
                 /* Mark spent nullifiers */

@@ -128,8 +128,11 @@ bool rpc_z_getbalance(const struct json_value *params, bool help,
     if (sapling_decode_payment_address(addr_str, z_d, z_pkd)) {
         int64_t balance = 0;
         bool found_in_memory = false;
-        for (size_t i = 0; i < ctx->wallet->num_sapling_notes; i++) {
-            const struct sapling_received_note *n = &ctx->wallet->sapling_notes[i];
+        size_t n_notes = 0;
+        struct sapling_received_note *snap =
+            wallet_copy_sapling_notes(ctx->wallet, &n_notes);
+        for (size_t i = 0; i < n_notes; i++) {
+            const struct sapling_received_note *n = &snap[i];
             if (!n->used || n->spent)
                 continue;
             if (memcmp(n->diversifier, z_d, 11) == 0 &&
@@ -140,6 +143,7 @@ bool rpc_z_getbalance(const struct json_value *params, bool help,
                 }
             }
         }
+        free(snap);
         /* Fall back to SQLite if no in-memory notes */
         if (!found_in_memory && ctx->node_db) {
             const struct sapling_key_entry *ske =
@@ -347,8 +351,11 @@ bool rpc_z_listreceivedbyaddress(const struct json_value *params,
     }
 
     json_set_array(result);
-    for (size_t i = 0; i < ctx->wallet->num_sapling_notes; i++) {
-        const struct sapling_received_note *n = &ctx->wallet->sapling_notes[i];
+    size_t n_notes = 0;
+    struct sapling_received_note *snap =
+        wallet_copy_sapling_notes(ctx->wallet, &n_notes);
+    for (size_t i = 0; i < n_notes; i++) {
+        const struct sapling_received_note *n = &snap[i];
         if (!n->used) continue;
         if (memcmp(n->diversifier, z_d, 11) != 0 ||
             memcmp(n->pk_d, z_pkd, 32) != 0)
@@ -405,6 +412,7 @@ bool rpc_z_listreceivedbyaddress(const struct json_value *params,
         json_push_back(result, &entry);
         json_free(&entry);
     }
+    free(snap);
     return true;
 }
 

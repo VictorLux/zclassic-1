@@ -233,4 +233,12 @@ void wallet_mark_sapling_nullifiers_spent(struct wallet *w,
                                            const struct transaction *tx);
 int64_t wallet_get_sapling_balance(const struct wallet *w);
 
+/* Return a heap-allocated point-in-time snapshot of all sapling notes,
+ * copied under w->cs (caller owns the buffer and must free() it). Sets
+ * *count to the number copied. Returns NULL when there are no notes or on
+ * OOM (with *count == 0). This lets readers iterate the notes without
+ * holding the wallet lock or racing a concurrent note-append realloc. */
+struct sapling_received_note *wallet_copy_sapling_notes(const struct wallet *w,
+                                                         size_t *count);
+
 #endif
