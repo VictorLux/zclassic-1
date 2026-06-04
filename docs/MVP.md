@@ -23,12 +23,23 @@ criteria; MVP is achieved at 8/8.
 but not the full operator-acceptance claim) · ✅ the full criterion is verified
 end-to-end in CI. The MRS counts only ✅.
 
-**Full criteria met: ~2 / 8 (manual). CI-verified full criteria (✅): 0 / 8.**
-What the `ci-mvp-gates` wiring added: three **hermetic slice-gates** (◐) now
-run-and-pass (not SKIP) under `make ci` and block the build — **#3** cold-start
-sync FSM (~7s), **#5** store end-to-end proxy (sub-second), **#7** kill-9
-SQLite-atomicity recovery (~4-8s), plus a supporting `chain_advance_atomicity`
-fork test. Each gate runs FOCUSED via `ZCL_TEST_ONLY` under `ZCL_STRESS_TESTS=1`
+**Full criteria met: ~2 / 8 (manual, NOT CI-enforced). CI-verified full
+criteria (✅): 0 / 8.** (The "~2/8 manual" is a by-hand demonstration of #1/#7
+only — it is *not* readiness and is not gated; the load-bearing number is
+✅ = 0/8.)
+What the `ci-mvp-gates` wiring added: **five hermetic gates** (◐ / supporting)
+now run-and-pass (not SKIP) under `make ci` and block the build — **#3**
+cold-start sync FSM (~7s), **#5** store end-to-end proxy (sub-second), **#7**
+kill-9 SQLite-atomicity recovery (~4-8s), a supporting `chain_advance_atomicity`
+fork test, and the **"it works" gate** `reducer_ingest`
+(`test_reducer_block_ingest_gate.c`, `make mvp-it-works`) — mines one real
+regtest Equihash (48,5) block and drives it through the **reducer front door**
+(`reducer_ingest_block`, the same entry live intake uses) on production stage
+defaults, asserting the authoritative tip advances by exactly 1 with a
+consistent UTXO commitment. It is teeth-verified (fails if the reducer cannot
+finalize forward — the live-wedge failure mode) but is supporting
+infrastructure, not a numbered criterion, so the MRS is unchanged. Each gate
+runs FOCUSED via `ZCL_TEST_ONLY` under `ZCL_STRESS_TESTS=1`
 and is guarded against false-green fall-through (a vanished selector fails the
 gate loudly instead of silently running the full suite). That is real
 regression protection for a *slice* of each criterion — but none proves the
