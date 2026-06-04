@@ -11,38 +11,53 @@
 
 ---
 
-## ⛔ #1 PRIORITY — the live wedge
+## ⛔ #1 PRIORITY — the live forward-progress blocker (RE-DIAGNOSED 2026-06-04)
 
-The node **holds at tip but does not finalize forward.** `tip_finalize` shows
-`reorg_detected_total` climbing while `finalized_total=0` (it oscillates,
-never commits a new finalized frontier); the boot self-heal
-`tip_stall_oracle_rebuild` is **exhausted**. **No v1 criterion that needs live
-forward progress — C3 real cold-sync, C6 soak, C8 parity — can pass until the
-tip finalizes again.** This is the single most valuable thing to fix.
+**The blocker is NOT the tip_finalize window-extender oscillation** that earlier
+entries described. A live `make diagnose-gap` (2026-06-04) verdict is
+**COINS-APPLICATION-LAG**, not oscillation:
 
-**Method (never skip):** diagnose on a datadir **COPY**, never live. Run
-`tools/diagnose_gap.sh`, then follow [`fast-path.md`](./fast-path.md)
-(diagnose → design + adversarial critique → reset-safe test → repro-on-copy →
-commit). NEVER delete `tip_finalize_log` rows; NEVER ship a consensus-adjacent
-fix without a copy proof (see [`import-reset-and-write-ordering-assessment.md`](./import-reset-and-write-ordering-assessment.md)
-— the 47279 reset mistake).
+```
+  A active public tip : 3,134,303    (legacy engine SERVES this — healthy)
+  H best header tip   : 3,135,412
+  C applied coins tip : 5            ◄── the REDUCER's utxo_apply cursor is at GENESIS
+  D have_data at A+1  : False
+  gettxoutsetinfo     : height 3,134,303, 1,346,323 txouts (legacy coins = full set)
+```
 
-**Leading fix (autonomous — bucket A):** swap the window extender used by the
-8 reducer stages from the unsafe most-work extender to the bounded have-data
-one:
-- `app/jobs/include/jobs/stage_helpers.h` `reducer_extend_window_to_candidate`
-  → call `active_chain_extend_window_have_data`
-  (`lib/validation/src/chainstate.c:418-485`, already unit-tested, unwired),
-  bounded by `utxo_apply_stage_cursor() - 1`.
-- Add the regression assertion in `lib/test/src/test_active_chain_extend.c`
-  that the wrapper never overwrites a finalized slot with a header-only
-  successor. A prior naïve pre-extend wiring was reverted (`481c520b9`) for
-  churning `tip_finalize` — **this is HIGH risk; copy-prove before any deploy.**
+The node **serves correctly via the legacy engine** (full UTXO set at tip, peers,
+RPC). The **reducer / Jobs single-engine** — the intended future authority — is at
+height 5; **it is not being driven forward at all.** So "make the tip finalize
+forward" really means **drive the reducer forward (the single-engine cutover)** —
+the audit's structural theme #1 — not a localized stage swap. C3/C6/C8 still need
+the reducer to be the live forward authority.
 
-**Companion fix (owner-gated — bucket B):** the coins-commitment-persist
-keystone makes the boot self-heal auto-fire — design-of-record
-[`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md).
-Recovery FSM design: [`service-state-machine.md`](./service-state-machine.md).
+**Window-extender swap — done, correct, but NOT the live fix.** The contiguous
+`reducer_extend_window_contiguous` swap (`active_chain_extend_window_have_data`
+bounded by the utxo_apply cursor — note the bound is the cursor, **not**
+`cursor-1`, which would starve utxo_apply) is implemented, unit-proven (asserts
+the exact `tip_finalize:312` pprev-contiguity predicate), code-reviewed, and
+**copy-proof-confirmed to do no harm** (pre-change baseline regressed
+identically → it's a light-copy clamp, not the change). It is preserved on branch
+**`wip/wedge-contiguous-extender`**, held off main because its efficacy can only
+be validated once the reducer is driven forward (the live state — reducer at
+C=5 — cannot reproduce the oscillation it fixes). Land it as part of the
+reducer-drive work, copy-proved with `--full`.
+
+**Method (never skip):** `make diagnose-gap` FIRST (the live triple A/H/C/D);
+design + adversarial critique; reset-safe unit test; `repro-on-copy` (use
+`--full` for anything that needs `blocks/` — the light copy clamps the tip to
+~3,132,299 regardless, so its PASS only means "no NEW regression"). NEVER delete
+`tip_finalize_log` rows; NEVER lower the public tip below `coins_best`; NEVER ship
+a consensus-adjacent fix without a copy proof.
+
+**The real reducer-drive blocker (owner-gated — consensus authority):** why is the
+reducer at C=5, and what drives it forward to the tip? This is the single-engine
+cutover (theme #1) + the coins-commitment-persist keystone
+([`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md)) +
+the reducer shielded-consensus enforcement
+([`reducer-shielded-consensus-plan.md`](./reducer-shielded-consensus-plan.md)).
+Recovery FSM: [`service-state-machine.md`](./service-state-machine.md).
 
 ---
 
