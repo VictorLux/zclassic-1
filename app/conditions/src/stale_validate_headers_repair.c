@@ -95,23 +95,32 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
 
 static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
 {
+    /* The engine passes a wall-clock TIMESTAMP here (condition.c stores
+     * `now` into target_at_detect), NOT a height — ignore it and read our
+     * own captured frontier height. */
     (void)target_at_detect;
-    sqlite3 *db = progress_store_db();
+
+    /* SOLE success predicate: the durable public tip advanced PAST the
+     * frontier captured at detect time. Anything less is NOT cleared.
+     *
+     * The old witness also returned true the instant the poison rows were
+     * deleted or a repair header became available — but the destructive
+     * rewind itself deletes those rows / writes that header WITHOUT moving
+     * the tip, so it could self-certify "cleared" on every ~5s tick while
+     * the tip stayed frozen (the Law-7 lie). Those shortcuts are gone:
+     * active_chain_height reads MAX(height) FROM tip_finalize_log WHERE
+     * ok=1 (or the chain-authority shim), which the rewind never moves, so
+     * a non-advancing remedy now leaves the witness false, accrues
+     * attempts, trips max_attempts, and pages EV_OPERATOR_NEEDED. */
     int target = atomic_load(&g_target_at_detect);
-    if (!db || target < 0)
+    if (target < 0)
         return false;
 
     struct main_state *ms = condition_engine_main_state();
-    if (ms && active_chain_height(&ms->chain_active) >= target)
-        return true;
-
-    if (stage_repair_header_solution_poison_present(db, target))
+    if (!ms)
         return false;
 
-    int mode = atomic_load(&g_mode_at_detect);
-    if (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS)
-        return stage_repair_header_solution_available(db, target);
-    return true;
+    return active_chain_height(&ms->chain_active) >= target;
 }
 
 static struct condition c_stale_validate_headers_repair = {
@@ -142,6 +151,21 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
     atomic_store(&s->currently_active, false);
     atomic_store(&s->operator_needed_emitted, false);
+    /* Zero last_remedy_unix so condition_due_for_remedy treats the next tick
+     * as due (last==0 bypasses the wall-clock backoff). There is no
+     * injectable clock; the escalation test re-zeros this between ticks to
+     * drive successive remedy attempts within the same wall-second. */
+    atomic_store(&s->last_remedy_unix, (int64_t)0);
+    atomic_store(&s->last_operator_needed_unix, (int64_t)0);
+}
+
+/* Test-only: clear last_remedy_unix between ticks so the next remedy is due
+ * despite backoff_secs (no injectable clock — see test_reset). */
+void stale_validate_headers_repair_test_clear_backoff(void);
+void stale_validate_headers_repair_test_clear_backoff(void)
+{
+    struct condition_state *s = &c_stale_validate_headers_repair.state;
+    atomic_store(&s->last_remedy_unix, (int64_t)0);
 }
 
 int stale_validate_headers_repair_test_remedy_calls(void)

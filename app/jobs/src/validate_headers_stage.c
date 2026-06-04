@@ -254,6 +254,31 @@ static bool log_insert(sqlite3 *db, const struct vh_job *job)
 
 static bool mark_valid_header(struct block_index *bi);
 
+/* Resolve the block_index at height `h`, including the live frontier ONE
+ * (or more) above the finalized active-chain window.
+ *
+ * active_chain_at is a finalized-window accessor: it returns NULL for any
+ * height above c->height (chainstate.c). That is by design and MUST stay
+ * that way — every other reader depends on its finalized-window contract,
+ * so we never "fix" it to peek the map. Instead, when the window does not
+ * cover `h`, reach the canonical header via the block_map (pprev/pskip)
+ * up to the best-header frontier. This only changes HOW bi is found; the
+ * resolved bi still flows through the SAME validator (PoW + Equihash) and
+ * is never marked valid without that verdict. No window extend (the
+ * window-extend machinery is the tip_finalize oscillator we must not
+ * poke) and no array-bound dependence. */
+static struct block_index *vh_resolve_bi(struct main_state *ms, int h)
+{
+    if (!ms)
+        return NULL;
+    struct block_index *bi = active_chain_at(&ms->chain_active, h);
+    if (bi)
+        return bi;
+    if (ms->pindex_best_header && h <= ms->pindex_best_header->nHeight)
+        return block_index_get_ancestor(ms->pindex_best_header, h);
+    return NULL;
+}
+
 static void vh_job_bind_block(sqlite3 *db, struct vh_job *job,
                               struct block_index *bi, int height)
 {
@@ -327,7 +352,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
                     "failed-row recheck height out of range");
             return JOB_FATAL;
         }
-        struct block_index *bi = active_chain_at(&ms->chain_active, (int)h64);
+        struct block_index *bi = vh_resolve_bi(ms, (int)h64);
         if (!bi || !bi->phashBlock) {
             sqlite3_finalize(stmt);
             progress_store_tx_unlock();
@@ -435,12 +460,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     memset(jobs, 0, sizeof(jobs));
     for (int i = 0; i < batch_n; i++) {
         int h = next_h + i;
-        struct block_index *bi = active_chain_at(&ms->chain_active, h);
+        struct block_index *bi = vh_resolve_bi(ms, h);
         if (!bi || !bi->phashBlock) {
-            /* Active chain doesn't have this height — shouldn't happen
-             * since header_admit just admitted it, but a concurrent
-             * reorg between admission and validation is conceivable.
-             * Block on this specific case so the supervisor surfaces it. */
+            /* Neither the finalized window nor the best-header frontier
+             * covers this height — shouldn't happen since header_admit
+             * just admitted it, but a concurrent reorg between admission
+             * and validation is conceivable. Block on this specific case
+             * so the supervisor surfaces it. */
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_IDLE;
         }

@@ -13,9 +13,11 @@
 #include "chain/pow.h"
 #include "config/runtime.h"
 #include "core/uint256.h"
+#include "jobs/stage_repair.h"
 #include "models/block.h"
 #include "primitives/block.h"
 #include "storage/block_index_db.h"
+#include "storage/progress_store.h"
 #include "validation/check_block.h"
 
 #include <stdio.h>
@@ -43,6 +45,67 @@ static struct node_db *fallback_node_db(void)
     if (g_fallback_node_db_set)
         return g_fallback_node_db;
     return app_runtime_node_db();
+}
+
+/* Source the full header (incl. Equihash nSolution) from the progress.kv
+ * header_solution_repair side-table. header_probe writes this row at
+ * accept_block_header time for the LIVE frontier, so it covers heights
+ * ABOVE the persisted node.db tip (which has no row there) and any
+ * active-chain window position. This is the FIRST source in the ordered
+ * resolver below.
+ *
+ * The bytes are validated IDENTICALLY to every other source — the
+ * assembled header is handed to the SAME validate_header_fields
+ * (CheckProofOfWork + check_equihash_solution). The loader independently
+ * hash-binds the stored row to bi->phashBlock and recomputes the header
+ * hash, so a forged / empty / wrong-height row can never be injected; but
+ * hash-binding is NOT PoW — a hash-binding-yet-non-PoW solution still
+ * fails check_equihash_solution. Returns false (distinct reason) when no
+ * repair row exists, so the resolver falls through to the index/node.db
+ * sources and ultimately keeps failing rather than passing unverified. */
+static bool header_from_repair_table(const struct block_index *bi,
+                                     struct block_header *out,
+                                     char *out_reason,
+                                     size_t out_reason_size)
+{
+    if (!bi || !bi->phashBlock || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        snprintf(out_reason, out_reason_size, "no-repair-store");
+        return false;
+    }
+
+    struct block_header rh;
+    if (!stage_repair_header_solution_load(db, bi->nHeight,
+                                           bi->phashBlock, &rh)) {
+        /* No hash-bound repair row at this height — fall through. */
+        snprintf(out_reason, out_reason_size, "no-repair-header");
+        return false;
+    }
+    if (rh.nSolutionSize == 0 ||
+        rh.nSolutionSize > sizeof(out->nSolution)) {
+        snprintf(out_reason, out_reason_size, "solution-too-large");
+        return false;
+    }
+
+    /* The loaded header already hashes to bi->phashBlock (the loader's
+     * round-trip proved it), so copy its stored fields exactly as stored —
+     * including hashPrevBlock from the row, not bi->pprev. */
+    block_header_init(out);
+    out->nVersion = rh.nVersion;
+    out->hashPrevBlock = rh.hashPrevBlock;
+    out->hashMerkleRoot = rh.hashMerkleRoot;
+    out->hashFinalSaplingRoot = rh.hashFinalSaplingRoot;
+    out->nTime = rh.nTime;
+    out->nBits = rh.nBits;
+    out->nNonce = rh.nNonce;
+    memcpy(out->nSolution, rh.nSolution, rh.nSolutionSize);
+    out->nSolutionSize = rh.nSolutionSize;
+    return true;
 }
 
 /* Source the Equihash solution from the node.db blocks.solution BLOB when
@@ -245,10 +308,25 @@ bool validate_headers_default_validator(const struct block_index *bi,
         return false;
     }
 
+    /* (3) Header source resolution — ONE ordered resolver, four sources,
+     * EVERY one funneling through the SAME validate_header_fields below.
+     *
+     * FIRST source: the progress.kv header_solution_repair side-table.
+     * header_probe writes this row at accept_block_header time for the
+     * live frontier, so it is the authoritative source for heights ABOVE
+     * the persisted node.db tip (the wedge). When it holds a (hash-bound)
+     * solution it hashes to bi->phashBlock identically to every other
+     * source, so the PoW/Equihash verdict is source-independent. */
+    struct block_header index_header;
+    if (header_from_repair_table(bi, &index_header,
+                                 out_reason, out_reason_size)) {
+        return validate_header_fields(&index_header, cp,
+                                      out_reason, out_reason_size);
+    }
+
     /* The block index stores full header fields, including nonce and
      * Equihash solution, for headers admitted through normal P2P/RPC
-     * paths. Validate from that header snapshot first. */
-    struct block_header index_header;
+     * paths. Validate from that header snapshot next. */
     if (header_from_block_index(bi, &index_header,
                                 out_reason, out_reason_size)) {
         return validate_header_fields(&index_header, cp,

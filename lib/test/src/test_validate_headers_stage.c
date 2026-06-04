@@ -54,6 +54,16 @@ extern struct block_tree_db *g_active_block_tree;
  * sibling-private header). */
 void validate_headers_validator_set_node_db(struct node_db *ndb);
 
+/* W1 seam: the default header validator (PoW + Equihash from the ordered
+ * source resolver) — declared in the sibling-private internal header. The
+ * W1 resolver tests call it DIRECTLY to exercise the repair-table source
+ * (the new first branch) without going through the stage. */
+bool validate_headers_default_validator(const struct block_index *bi,
+                                        const char *datadir,
+                                        char *out_reason,
+                                        size_t out_reason_size,
+                                        void *user);
+
 /* Insert one connected (status>=3) block row at `height` carrying
  * `sol`/`sol_len` as its Equihash solution. A NULL/0 solution exercises
  * the empty-column residual path. Returns true on save. */
@@ -190,6 +200,58 @@ static bool log_row_at(sqlite3 *db, int height,
     }
     sqlite3_finalize(st);
     return found;
+}
+
+/* True when `reason` is one of the "no real verified solution available"
+ * markers — i.e. a verdict that did NOT reach the actual PoW/Equihash
+ * verification. Asserting a reason is NOT in this set proves the resolved
+ * bytes flowed into the identical validate_header_fields. */
+static bool reason_is_pre_pow(const char *reason)
+{
+    return strcmp(reason, "no-header-solution") == 0 ||
+           strcmp(reason, "no-header-solution-backfill-required") == 0 ||
+           strcmp(reason, "disk-read-failed") == 0 ||
+           strcmp(reason, "no-repair-store") == 0 ||
+           strcmp(reason, "no-repair-header") == 0;
+}
+
+/* Insert a failed (ok=0) validate_headers_log row at `height` carrying
+ * `hash` — used by the W1 T4 frontier-reach test to stage a failed
+ * frontier row that the recheck path must rebind. */
+static bool seed_failed_vh_row(sqlite3 *db, int height,
+                               const struct uint256 *hash,
+                               const char *reason)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO validate_headers_log"
+            "(height,hash,ok,fail_reason,validated_at) "
+            "VALUES(?,?,0,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_text(st, 3, reason, -1, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Force a stage_cursor row to `value` (test-only). Mirrors the stage's
+ * own cursor table layout. */
+static bool set_stage_cursor(sqlite3 *db, const char *name, int value)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES(?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, value);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 static bool seed_repair_header_for_block(sqlite3 *db, struct block_index *bi,
@@ -780,6 +842,186 @@ int test_validate_headers_stage(void)
         validate_headers_validator_set_node_db(NULL);
         vh_teardown(dir, &ms, &sc);
         node_db_close(&ndb);
+    }
+
+    /* ── W1 T1: resolver covers the frontier from header_solution_repair
+     *           with an EMPTY node.db, via a DIRECT validator call ──────
+     * The repair table is the new FIRST source. With node.db empty and the
+     * block index solution-less, only the repair row can supply bytes. We
+     * call validate_headers_default_validator() DIRECTLY (the W1 surface)
+     * and assert the verdict is a real PoW/Equihash result (reason NOT a
+     * pre-PoW marker) — proving the repair bytes reached identical
+     * verification. The synthetic 32B solution is non-PoW so it correctly
+     * fails check_equihash_solution: a real verdict, never a false pass. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("resolver-direct: node.db opens (empty)",
+                 node_db_open(&ndb, ":memory:"));
+        VH_CHECK("resolver-direct: setup",
+                 vh_setup("resolver_direct", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_validator_set_node_db(&ndb);
+
+        VH_CHECK("resolver-direct: seed repair header",
+                 seed_repair_header_for_block(progress_store_db(),
+                                              &sc.blocks[0],
+                                              &sc.hashes[0]));
+
+        /* Direct validator call — NOT through the stage. */
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("resolver-direct: repair bytes reached identical PoW path",
+                 !ok && !reason_is_pre_pow(reason));
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+    }
+
+    /* ── W1 T2: no-false-pass — empty node.db AND empty repair table ────
+     * Direct validator call. With no source holding a solution, every
+     * branch (repair / index / persisted / node.db) returns false and the
+     * verdict is the distinct backfill reason — never a false pass. This
+     * pins that the new first branch falls through cleanly on a missing
+     * repair row. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("resolver-nofalsepass: node.db opens (empty)",
+                 node_db_open(&ndb, ":memory:"));
+        VH_CHECK("resolver-nofalsepass: setup",
+                 vh_setup("resolver_nofalsepass", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_validator_set_node_db(&ndb);
+        /* No repair row seeded; index solution-less; node.db empty. */
+
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("resolver-nofalsepass: fails distinct backfill reason",
+                 !ok && strcmp(reason,
+                               "no-header-solution-backfill-required") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+    }
+
+    /* ── W1 T3: precedence — repair row consulted FIRST, still PoW-verified
+     * Seed BOTH a header_solution_repair row AND a node.db solution at the
+     * same height. The repair branch is first; whatever bytes it returns
+     * still funnel through validate_header_fields, so the verdict is a real
+     * PoW/Equihash result (reason NOT a pre-PoW marker). Both sources
+     * hash-bind to bi->phashBlock, so the verdict is source-independent. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("resolver-precedence: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        unsigned char sol[MAX_SOLUTION_SIZE];
+        memset(sol, 0x00, sizeof(sol));
+        VH_CHECK("resolver-precedence: seed node.db solution at h=0",
+                 vh_db_put_block(&ndb, 0, sol, sizeof(sol)));
+
+        VH_CHECK("resolver-precedence: setup",
+                 vh_setup("resolver_precedence", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        validate_headers_validator_set_node_db(&ndb);
+        VH_CHECK("resolver-precedence: seed repair header",
+                 seed_repair_header_for_block(progress_store_db(),
+                                              &sc.blocks[0],
+                                              &sc.hashes[0]));
+
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("resolver-precedence: real PoW verdict (repair first)",
+                 !ok && !reason_is_pre_pow(reason));
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+    }
+
+    /* ── W1 T4: the recheck path REACHES + VALIDATES the frontier whose
+     *           height is ABOVE the finalized active-chain window tip ─────
+     * The live wedge: a failed validate_headers_log row sits at the frontier
+     * height N — ONE above the finalized window tip (N-1) — and the recheck
+     * path's height resolve must reach it. Pre-fix, the recheck used
+     * active_chain_at, which returns NULL for any height above the window
+     * tip, so the recheck bailed JOB_IDLE and never reached the frontier.
+     * Post-fix, vh_resolve_bi falls back to block_index_get_ancestor over
+     * ms->pindex_best_header to reach it.
+     *
+     * We build heights 0..N, set the window tip to N-1 while best_header
+     * points at the frontier block N, seed an ok=0 frontier row + a real
+     * header_solution_repair row at N, advance the persisted validate cursor
+     * past N so the recheck query selects it, then drive step_once. The
+     * assertion is that the frontier row is REBOUND: the recheck returns
+     * JOB_ADVANCED and the row's reason flips from the seeded backfill marker
+     * to a real PoW/Equihash verdict (the synthetic 32B repair solution is
+     * non-PoW, so it correctly fails Equihash — a real verdict, never a
+     * false pass). The load-bearing point is that the frontier was REACHED
+     * at all (no longer JOB_IDLE / no longer the backfill marker). */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        const int N = 4;   /* frontier height; window tip will be N-1 */
+
+        /* Build heights 0..N (N+1 blocks). vh_setup moves the window tip to
+         * the top (N); we then collapse it back to N-1 to model the
+         * finalized window sitting one below the frontier. */
+        VH_CHECK("frontier-reach: setup",
+                 vh_setup("frontier_reach", N + 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        sqlite3 *db = progress_store_db();
+
+        /* Window tip -> N-1; the frontier block N stays best_header. */
+        active_chain_move_window_tip(&ms.chain_active, &sc.blocks[N - 1]);
+        ms.pindex_best_header = &sc.blocks[N];
+        VH_CHECK("frontier-reach: active_chain_at(N) is NULL (above window)",
+                 active_chain_at(&ms.chain_active, N) == NULL);
+        VH_CHECK("frontier-reach: ancestor reaches the frontier above window",
+                 block_index_get_ancestor(ms.pindex_best_header, N) ==
+                     &sc.blocks[N]);
+
+        /* Seed a failed frontier row + a real repair header at N, and push
+         * the validate cursor past N so the recheck selects [.., N+1). */
+        VH_CHECK("frontier-reach: seed failed frontier row",
+                 seed_failed_vh_row(db, N, &sc.hashes[N],
+                                    "no-header-solution-backfill-required"));
+        VH_CHECK("frontier-reach: seed repair header at frontier",
+                 seed_repair_header_for_block(db, &sc.blocks[N],
+                                              &sc.hashes[N]));
+        VH_CHECK("frontier-reach: advance validate cursor past frontier",
+                 set_stage_cursor(db, "validate_headers", N + 1));
+
+        /* Pre-state: frontier row is ok=0 with the backfill marker. */
+        int ok = -1;
+        char reason[VH_MAX_REASON] = {0};
+        VH_CHECK("frontier-reach: pre row ok=0 backfill marker",
+                 log_row_at(db, N, &ok, reason, sizeof(reason)) && ok == 0 &&
+                 strcmp(reason,
+                        "no-header-solution-backfill-required") == 0);
+
+        /* Drive the recheck. step_once runs the forward step (IDLE — header
+         * admit floor) then the recheck, which must reach the frontier. */
+        job_result_t r = validate_headers_stage_step_once();
+        VH_CHECK("frontier-reach: recheck ADVANCED (frontier reached)",
+                 r == JOB_ADVANCED);
+
+        /* Frontier row REBOUND: reason flips off the backfill marker to a
+         * real PoW/Equihash verdict (repair bytes flowed into validation). */
+        ok = -1;
+        reason[0] = 0;
+        VH_CHECK("frontier-reach: frontier row rebound to real verdict",
+                 log_row_at(db, N, &ok, reason, sizeof(reason)) &&
+                 !reason_is_pre_pow(reason));
+
+        vh_teardown(dir, &ms, &sc);
     }
 
     /* ── persisted failures are rechecked after restart ────────────── */
