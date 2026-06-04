@@ -572,6 +572,26 @@ ci-stress: test_zcl
 	@echo "══ MVP gate #4: shielded payment (needs ~/.zcash-params) ══"
 	$(MAKE) test-shielded-payment
 
+# ── MVP gate #1: hermetic single-binary install ───────────────
+#
+# ci-install: the C1 ("single-binary install on clean Ubuntu/Debian")
+# proxy gate. It BUILDS, INSTALLs the node + zcl-rpc to a THROWAWAY /tmp
+# prefix (the file-copy a real `make install` performs, to a disposable
+# DESTDIR), then SPAWNS one fully isolated regtest node FROM that prefix
+# via the single audited isolation chokepoint
+# tools/scripts/isolated_node_env.sh (unique /tmp datadir + 39xxx
+# non-live ports + -connect=39999 dead sink + process-group cleanup),
+# polls RPC readiness with a bounded timeout, asserts the installed
+# binary answers + bound ONLY non-live ports, and cleans everything up.
+#
+# DELIBERATELY opt-in (NOT in `make ci`) — like ci-stress / soak-ci it
+# spawns a real process. It NEVER runs systemctl and NEVER touches a
+# live port or the live datadir. Runs under bash because the sourced
+# isolation harness relies on `set -o pipefail`.
+.PHONY: ci-install
+ci-install: zclassic23 zcl-rpc
+	@bash tools/scripts/ci_install_gate.sh
+
 # ── libFuzzer harnesses ───────────────────────────────────────
 #
 # Fuzz targets use clang + libFuzzer + ASan + UBSan. They compile

@@ -9,7 +9,7 @@ criteria; MVP is achieved at 8/8.
 
 | # | Criterion | How we verify | Status |
 |---|---|---|---|
-| 1 | **Single-binary install on clean Ubuntu/Debian** | CI: clean container, `make install && systemctl --user start zclassic23`, exit 0 | ☐ |
+| 1 | **Single-binary install on clean Ubuntu/Debian** | CI: clean container, `make install && systemctl --user start zclassic23`, exit 0 — **hermetic CI proxy: `make ci-install`** (opt-in, NOT in `make ci`): builds + installs the node + `zcl-rpc` to a throwaway `/tmp` prefix (the file-copy a real `make install` performs), then starts ONE node FROM that prefix as a fully isolated regtest node (unique `/tmp` datadir + 39xxx non-live ports + `-connect=39999` dead sink, via the audited `tools/scripts/isolated_node_env.sh`), polls RPC readiness, asserts the installed binary answers + bound only non-live ports, and cleans up. Still ◐: no real `systemctl --user start` on a clean container (no systemd in CI) and the literal `make install` target are the remaining gap. | ◐ |
 | 2 | **Tor onion bootstrap in <60s** | `zcl_onion_status` returns `bootstrap_state=ready` within 60s of start — test: `lib/test/src/test_onion_bootstrap.c` (`make ci-stress`; needs Tor egress) | ☐ |
 | 3 | **Cold-start sync to tip in <10 min** | Fresh datadir → `zcl_syncstate.phase=ready` within 10 min on 100 Mbps link — test: `lib/test/src/test_cold_start_sync.c` (**CI slice: `make ci-mvp-gates`** — drives the sync FSM to `at_tip` in ~7s; does **not** download/validate a real 3M-block chain) | ◐ |
 | 4 | **Receive shielded payment end-to-end** | Test wallet receives 1 ZCL to a z-addr, balance reflects within 2 blocks — test: `lib/test/src/test_shielded_payment_gate.c` (`make ci-stress`; needs `~/.zcash-params`) | ☐ |
@@ -54,9 +54,14 @@ The other five are not gated at all:
   it, a false-green risk). They live in `make ci-stress` / the opt-in
   `mvp-stress` workflow job, to run on a worker that has those resources. NOT
   in `make ci`.
-- **#1** (single-binary install), **#6** (7-day soak), **#8** (consensus
-  parity) have no CI test at all (#8's diff service is a net-new build). #6/#8
-  also need live forward progress, blocked on the live wedge.
+- **#1** (single-binary install) now has the hermetic `make ci-install` proxy
+  gate (opt-in, NOT in `make ci`) — install-to-throwaway-`/tmp`-prefix +
+  isolated regtest start + RPC-ready proof; it does not run a real `systemctl
+  --user start` (no systemd in CI) and the literal `make install` target is
+  still TODO, so it is ◐ not ✅.
+- **#6** (7-day soak) and **#8** (consensus parity) have no CI test in the
+  default `make ci` (#8's diff service is a net-new build, ships dormant).
+  Both also need live forward progress, blocked on the live wedge.
 
 Manual status: #1 and #7 are also demonstrated by hand; #2's onion is live but
 its <60s timing isn't measured; #6 is **regressing** (no soak — node holds at
