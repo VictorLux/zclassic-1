@@ -186,11 +186,11 @@ know the shape.
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
 | 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (24 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-and-empty **by design**: the Event concept is wholly owned by `lib/event/` (in-process bus) + `lib/storage/event_log.c` (durable fact log) + `lib/storage/*_projection.c`; app/ code only *produces* events via those primitives (~50 sites) and the one app-level subscriber is correctly a Service (`consensus_reject_index.c`). Keep `app/events/` empty until a file has a typed app-level contract + subscriber surface — see `app/events/README.md`. | `lib/storage/event_log.c` |
-| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | partial; outbound persistence adapters are real, inbound adapter layer is not currently present | `adapters/outbound/persistence/` |
+| 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — OUTBOUND-ONLY by design; inbound adapter layer reserved-empty by design (Models ARE storage — Law 5)**: writes go out through swappable ports (Law 2) — `adapters/outbound/persistence/` has 15 ports + 12 sqlite impls, all real and wired; reads are owned by the Models (Law 5), so no inbound "repository" port fronts them by design. The 49 bare-sqlite `app/` sites are all legitimate (Models ARE storage via AR internals; Jobs use the progress-kv kernel store; Views are read-only introspection). Same posture as `app/events/` (reserved-empty by design). `check_raw_sqlite.sh` stays CLEAN with an empty baseline. | `adapters/outbound/persistence/` |
 
-The honest read: **Model, Condition, Job, and the projection/state-dump registry
-are real and enforced; Supervisor and Storage Adapter are partial; Controller
-and Service still carry legacy debt.** That gap — not the absence of ideas — is
+The honest read: **Model, Condition, Job, the projection/state-dump registry, and
+the Storage Adapter (outbound-only by design) are real and enforced; Supervisor is
+partial; Controller and Service still carry legacy debt.** That gap — not the absence of ideas — is
 the work. Underneath the shapes the pure `domain/` core is real and the storage
 seam is growing behind ports, but remaining mixed-purpose code still needs to
 converge on one clear shape per file.
@@ -260,7 +260,7 @@ lib/
   storage/       event_log + projections + (legacy) coins/sqlite
   net/ rpc/ crypto/ chain/ validation/ …                (primitives, incremental migration)
 
-adapters/ ports/  hexagonal seam (15 ports; 5 services behind them; most storage still bypasses it)
+adapters/ ports/  hexagonal seam (outbound-only by design: 15 ports + 12 sqlite impls for writes; reads owned by Models per Law 5)
 config/           composition root (today: boot monoliths — to become supervisor decls)
 tools/lint/       the ratcheting gates — beauty enforced by the build
 docs/             FRAMEWORK.md (this) · REFACTOR_STATUS.md (checklist) · work/ (assignments)
@@ -339,9 +339,13 @@ next routing, all without the domain moving.
 Honest status: the domain core is **real but partial** — `domain/` (top-level)
 holds 21 pure no-clock/no-RNG/no-IO modules (consensus/ wallet/ encoding/), each
 fronted by a thin `lib/` legacy wrapper and sealed by a `test_domain_*` regression
-test. The adapter tree is partial: 15 ports, 5 services read/write through them,
-but most storage still calls `lib/storage/*_sqlite.c` directly. The
-`check-lib-layering` ratchet guards the direction; finishing both is checklist work.
+test. The adapter tree is **outbound-only by design**: 15 ports + 12 sqlite impls carry
+writes out through swappable ports (Law 2); reads are owned by the Models (Law 5),
+so no inbound "repository" port fronts them — the same reserved-empty-by-design
+posture as `app/events/`. App sites that call `lib/storage/*_sqlite.c` directly are
+legitimate (Models ARE storage; Jobs use the progress-kv kernel store; Views are
+read-only introspection), and `check_raw_sqlite.sh` stays CLEAN with an empty
+baseline. The `check-lib-layering` ratchet guards the write direction.
 
 ---
 
