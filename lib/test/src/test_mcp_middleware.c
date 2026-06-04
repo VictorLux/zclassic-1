@@ -16,6 +16,8 @@
 #include <string.h>
 #include <time.h>
 #include <stdbool.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 static void sleep_ms(long ms)
 {
@@ -40,6 +42,58 @@ static int h_slow(const struct mcp_request *req, struct mcp_response *res)
     return 0;
 }
 
+/* ── Gated slow handler (UAF regression) ────────────────────────
+ *
+ * A handler whose completion is controlled by the test, so the worker
+ * thread is guaranteed to touch the shared timeout context STRICTLY
+ * AFTER mcp_middleware_dispatch() returns on the timeout path. That is
+ * exactly the window where the old stack-allocated ctx had already been
+ * destroyed and its frame reused — a use-after-free. With the heap +
+ * refcount fix the ctx outlives both threads.
+ */
+static pthread_mutex_t g_gate_m       = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_gate_cv      = PTHREAD_COND_INITIALIZER;
+static bool            g_gate_open     = false;  /* test releases worker */
+static bool            g_handler_entered = false;
+static atomic_bool     g_handler_finished = false;
+
+static void gate_reset(void)
+{
+    pthread_mutex_lock(&g_gate_m);
+    g_gate_open = false;
+    g_handler_entered = false;
+    pthread_mutex_unlock(&g_gate_m);
+    atomic_store(&g_handler_finished, false);
+}
+
+static void gate_open(void)
+{
+    pthread_mutex_lock(&g_gate_m);
+    g_gate_open = true;
+    pthread_cond_broadcast(&g_gate_cv);
+    pthread_mutex_unlock(&g_gate_m);
+}
+
+static int h_gated(const struct mcp_request *req, struct mcp_response *res)
+{
+    (void)req;
+    pthread_mutex_lock(&g_gate_m);
+    g_handler_entered = true;
+    pthread_cond_broadcast(&g_gate_cv);
+    /* Block until the test explicitly releases us — guarantees we finish
+     * after the caller has already timed out and returned. */
+    while (!g_gate_open)
+        pthread_cond_wait(&g_gate_cv, &g_gate_m);
+    pthread_mutex_unlock(&g_gate_m);
+
+    res->body = strdup("{\"ok\":true,\"gated\":true}");
+    /* The worker is about to touch the shared timeout context (lock its
+     * mutex). Mark that it returned cleanly so the test can confirm the
+     * ctx outlived this thread. */
+    atomic_store(&g_handler_finished, true);
+    return 0;
+}
+
 static const struct mcp_tool_route r_read = {
     "t_read", "test", "read-only", NULL, 0, h_ok, 0, NULL
 };
@@ -49,6 +103,9 @@ static const struct mcp_tool_route r_send = {
 static const struct mcp_tool_route r_slow = {
     "t_slow", "test", "slow handler", NULL, 0, h_slow, 0, NULL
 };
+static const struct mcp_tool_route r_gated = {
+    "t_gated", "test", "gated handler", NULL, 0, h_gated, 0, NULL
+};
 
 static void register_routes(void)
 {
@@ -56,6 +113,7 @@ static void register_routes(void)
     mcp_router_register(&r_read);
     mcp_router_register(&r_send);
     mcp_router_register(&r_slow);
+    mcp_router_register(&r_gated);
 }
 
 /* ── Helpers ───────────────────────────────────────────────── */
@@ -282,6 +340,81 @@ static int test_timeout_fires(void)
     return failures;
 }
 
+/* Recursively descend the stack, poisoning a wide region of each frame
+ * with a non-zero pattern. After mcp_middleware_dispatch() returns on the
+ * timeout path, the buggy (stack-allocated) timeout context — including
+ * its already-destroyed mutex/cv — sits in a reclaimed frame at a HIGHER
+ * address than the test's frame. Re-descending here overwrites that exact
+ * region, so a late worker locking that mutex operates on poisoned memory
+ * (deterministic misbehaviour) rather than on bytes that happen to survive.
+ * With the heap+refcount fix the worker's mutex lives on the heap and is
+ * untouched by this. `volatile` + the returned checksum prevent the
+ * compiler from eliding the writes. */
+static volatile int g_poison_sink;
+static int poison_stack(int depth)
+{
+    volatile unsigned char buf[2048];
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = (unsigned char)(0xC3 ^ (i & 0xFF) ^ (unsigned)depth);
+    int sum = 0;
+    for (size_t i = 0; i < sizeof(buf); i++) sum += buf[i];
+    if (depth > 0) sum += poison_stack(depth - 1);
+    g_poison_sink = sum;
+    return sum;
+}
+
+/* Regression for the detached-worker UAF: a handler that completes
+ * AFTER the caller times out must not touch a destroyed mutex on a
+ * reclaimed stack frame. The shared timeout context is heap-allocated
+ * and refcounted, so it outlives whichever side finishes last. */
+static int test_timeout_worker_outlives_caller(void)
+{
+    int failures = 0;
+    TEST("late worker safely touches ctx after caller timed out (no UAF)") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        mw.default_timeout_ms = 50;  /* short deadline */
+        register_routes();
+        gate_reset();
+
+        /* The handler blocks on the gate, so dispatch is guaranteed to
+         * exceed the 50 ms deadline and return TOOL_TIMEOUT. */
+        char *r = run(&mw, "t_gated", NULL);
+        ASSERT(contains(r, "TOOL_TIMEOUT"));
+        free(r);
+        ASSERT(mw.stat_timeout >= 1);
+
+        /* mcp_middleware_dispatch has now fully returned and unwound its
+         * frame. The worker is still blocked on the gate and has NOT yet
+         * re-acquired the timeout context's mutex. Poison the reclaimed
+         * stack region so that — under the OLD stack-allocated ctx — the
+         * worker's subsequent pthread_mutex_lock would hit clobbered bytes
+         * (a use-after-free that crashes/hangs/corrupts). Under the fix the
+         * ctx is on the heap and this is a no-op for the worker. */
+        ASSERT(poison_stack(8) != 0);
+
+        gate_open();
+
+        /* The worker must complete cleanly: it acquires the (heap) ctx
+         * mutex, stores/frees its result, and drops its reference. If the
+         * ctx had been freed/destroyed this would crash or hang. Bounded
+         * wait so a regression manifests as a test failure, not a hang. */
+        bool finished = false;
+        for (int i = 0; i < 200; i++) {  /* up to ~2 s */
+            if (atomic_load(&g_handler_finished)) { finished = true; break; }
+            sleep_ms(10);
+        }
+        ASSERT(finished);
+
+        /* Give the worker a moment to drop its ref and (if last) free the
+         * ctx before we tear down the middleware. */
+        sleep_ms(50);
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_timeout_pass(void)
 {
     int failures = 0;
@@ -447,6 +580,7 @@ int test_mcp_middleware(void)
     failures += test_global_rate_limit();
     failures += test_destructive_rate_limit();
     failures += test_timeout_fires();
+    failures += test_timeout_worker_outlives_caller();
     failures += test_timeout_pass();
     failures += test_destructive_detection();
     failures += test_uninitialized_passthrough();

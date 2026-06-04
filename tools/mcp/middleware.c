@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "util/safe_alloc.h"
+#include "util/log_macros.h"
 
 /* ── Canonical destructive tool list ─────────────────────────── *
  *
@@ -222,7 +223,20 @@ static bool consume_destructive(struct mcp_middleware *mw)
     return ok;
 }
 
-/* ── Timeout dispatch ────────────────────────────────────────── */
+/* ── Timeout dispatch ────────────────────────────────────────── *
+ *
+ * The dispatch context is HEAP-allocated and shared between two threads:
+ * the caller (which waits up to `timeout_ms`) and a detached worker
+ * (which runs the handler). On a timeout the caller returns immediately
+ * but the worker keeps running — it must still touch ctx->m / ctx->cv
+ * when it eventually completes. A stack-allocated ctx would be destroyed
+ * and its frame reclaimed the moment the caller returned, so the late
+ * worker would lock a destroyed mutex on a reused frame (UB + UAF).
+ *
+ * Ownership is a refcount: each side holds one reference and drops it
+ * when it is done touching the ctx. Whoever drops the LAST reference
+ * destroys the mutex/cv and frees the ctx — never the loser of the race.
+ */
 
 struct timeout_ctx {
     const char              *tool_name;
@@ -231,23 +245,38 @@ struct timeout_ctx {
     bool                     done;
     pthread_mutex_t          m;
     pthread_cond_t           cv;
+    atomic_int               refcount;    /* caller + worker; last frees */
 };
+
+/* Drop a reference; the last toucher tears down and frees the ctx. */
+static void timeout_ctx_release(struct timeout_ctx *ctx)
+{
+    if (atomic_fetch_sub_explicit(&ctx->refcount, 1,
+                                  memory_order_acq_rel) != 1)
+        return;
+    /* We are the last reference: no other thread can touch the mutex/cv
+     * now, so destroying them here is safe. */
+    pthread_mutex_destroy(&ctx->m);
+    pthread_cond_destroy(&ctx->cv);
+    free(ctx);
+}
 
 static void *run_dispatch(void *arg)
 {
     struct timeout_ctx *ctx = arg;
     char *b = mcp_router_dispatch(ctx->tool_name, ctx->args);
     pthread_mutex_lock(&ctx->m);
-    /* If the caller already gave up (timeout), free here and exit. */
+    /* If the caller already gave up (timeout), discard our result. */
     if (ctx->done) {
         pthread_mutex_unlock(&ctx->m);
         free(b);
-        return NULL;
+    } else {
+        ctx->body = b;
+        ctx->done = true;
+        pthread_cond_signal(&ctx->cv);
+        pthread_mutex_unlock(&ctx->m);
     }
-    ctx->body = b;
-    ctx->done = true;
-    pthread_cond_signal(&ctx->cv);
-    pthread_mutex_unlock(&ctx->m);
+    timeout_ctx_release(ctx);
     return NULL;
 }
 
@@ -262,20 +291,30 @@ static char *dispatch_with_timeout(const char *tool_name,
     if (timeout_ms <= 0)
         return mcp_router_dispatch(tool_name, args);
 
-    struct timeout_ctx ctx = {
-        .tool_name = tool_name,
-        .args      = args,
-        .body      = NULL,
-        .done      = false,
-    };
-    pthread_mutex_init(&ctx.m, NULL);
-    pthread_cond_init(&ctx.cv, NULL);
+    struct timeout_ctx *ctx = zcl_malloc(sizeof(*ctx), "mcp.timeout_ctx");
+    if (!ctx) {
+        /* zcl_malloc already logged the OOM with context. Degrade
+         * gracefully: run synchronously, with no timeout guard. */
+        LOG_WARN("mcp", "timeout_ctx alloc failed; dispatching synchronously");
+        return mcp_router_dispatch(tool_name, args);
+    }
+    ctx->tool_name = tool_name;
+    ctx->args      = args;
+    ctx->body      = NULL;
+    ctx->done      = false;
+    /* Two owners: this caller and the worker we are about to spawn. */
+    atomic_init(&ctx->refcount, 2);
+    pthread_mutex_init(&ctx->m, NULL);
+    pthread_cond_init(&ctx->cv, NULL);
 
     pthread_t th;
-    /* raw-pthread-ok: per-dispatch helper, joined below within this fn */
-    if (pthread_create(&th, NULL, run_dispatch, &ctx) != 0) {
-        pthread_mutex_destroy(&ctx.m);
-        pthread_cond_destroy(&ctx.cv);
+    /* Per-dispatch helper, detached; ctx is refcounted so the worker
+     * safely outlives this frame on the timeout path. */
+    /* raw-pthread-ok: detached per-dispatch helper, refcounted ctx */
+    if (pthread_create(&th, NULL, run_dispatch, ctx) != 0) {
+        /* Worker never started — reclaim its reference too, then ours. */
+        timeout_ctx_release(ctx);
+        timeout_ctx_release(ctx);
         /* Fall back to synchronous dispatch. */
         return mcp_router_dispatch(tool_name, args);
     }
@@ -290,29 +329,28 @@ static char *dispatch_with_timeout(const char *tool_name,
         deadline.tv_nsec -= 1000000000L;
     }
 
-    pthread_mutex_lock(&ctx.m);
+    pthread_mutex_lock(&ctx->m);
     int rc = 0;
-    while (!ctx.done && rc == 0)
-        rc = pthread_cond_timedwait(&ctx.cv, &ctx.m, &deadline);
+    while (!ctx->done && rc == 0)
+        rc = pthread_cond_timedwait(&ctx->cv, &ctx->m, &deadline);
 
     char *result = NULL;
-    if (ctx.done) {
-        result = ctx.body;
-        ctx.body = NULL;
+    if (ctx->done) {
+        result = ctx->body;
+        ctx->body = NULL;
     } else {
         /* Timed out — abandon the worker thread.  It will free its own
          * body when it eventually completes (see run_dispatch). */
         *out_timed_out = true;
-        ctx.done = true;  /* instruct worker to discard its result */
+        ctx->done = true;  /* instruct worker to discard its result */
     }
-    pthread_mutex_unlock(&ctx.m);
+    pthread_mutex_unlock(&ctx->m);
 
-    /* Destroy cv/mutex.  Safe once we observed ctx.done=true OR we set
-     * done=true under the lock; in the latter case the worker will skip
-     * touching cv.  A small race with the worker entering run_dispatch's
-     * mutex lock is handled because it holds ctx.m before signaling. */
-    pthread_mutex_destroy(&ctx.m);
-    pthread_cond_destroy(&ctx.cv);
+    /* Drop our reference. If the worker already finished it dropped its
+     * reference first and this frees the ctx; otherwise the still-running
+     * worker holds the last reference and frees it on completion. Either
+     * way the mutex/cv outlive every thread that touches them. */
+    timeout_ctx_release(ctx);
     return result;
 }
 
