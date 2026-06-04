@@ -1475,13 +1475,21 @@ static int t_handshake_peer_save_is_async(void)
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "msg_processor_set_peer_save") != NULL);
+        ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
+        free(buf);
+        buf = NULL;
+        /* The advisory peer-save callback body (its async-write impl detail)
+         * lives in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "db_service_enqueue_write(dbsvc") != NULL);
         ASSERT(strstr(buf, "db_peer_save_advisory") != NULL);
         ASSERT(strstr(buf, "boot.peer_save_ctx") != NULL);
         ASSERT(strstr(buf, "enqueue_queue_full") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped") != NULL);
         ASSERT(strstr(buf, "peer_lifecycle_note_cache_skipped_addr") != NULL);
-        ASSERT(strstr(buf, "msg_processor_set_peer_save") != NULL);
         ASSERT(strstr(buf, "EV_DB_ERROR") == NULL);
         free(buf);
         buf = NULL;
@@ -1511,14 +1519,20 @@ static int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_save_zmsg") != NULL);
-        ASSERT(strstr(buf, "db_zmsg_save") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_zmsg_save") != NULL);
         ASSERT(strstr(buf, "boot_save_file_offer") != NULL);
-        ASSERT(strstr(buf, "db_file_offer_save") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_file_offer_save") != NULL);
         ASSERT(strstr(buf, "boot_save_file_service") != NULL);
-        ASSERT(strstr(buf, "db_file_service_save") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_file_service_save") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the DB-write impl detail) live in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "db_zmsg_save") != NULL);
+        ASSERT(strstr(buf, "db_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "db_file_service_save") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msgprocessor.c") == 0);
@@ -1550,11 +1564,17 @@ static int t_tx_wallet_sync_is_callback_injected(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_wallet_tx_accepted") != NULL);
-        ASSERT(strstr(buf, "wallet_sync_transaction") != NULL);
-        ASSERT(strstr(buf, "node_db_sync_wallet_tx") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_snapshot_active") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_snapshot_anchor_accessors") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_wallet_tx_accepted") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the wallet-sync impl detail) live in boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "wallet_sync_transaction") != NULL);
+        ASSERT(strstr(buf, "node_db_sync_wallet_tx") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_tx.c") == 0);
@@ -1582,11 +1602,18 @@ static int t_p2p_block_submit_is_callback_injected(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_submit_p2p_block") != NULL);
-        ASSERT(strstr(buf, "REDUCER_SRC_P2P") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_block_submit") != NULL);
         ASSERT(strstr(buf, "boot_block_connected_observer") != NULL);
-        ASSERT(strstr(buf, "sync_monitor_on_block_connected") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_block_connected") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (block-submit + observer impl detail) live in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "REDUCER_SRC_P2P") != NULL);
+        ASSERT(strstr(buf, "sync_monitor_on_block_connected") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_blocks.c") == 0);
@@ -1821,9 +1848,7 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "boot_request_header_activation") != NULL);
         ASSERT(strstr(buf, "activation_request_connect") != NULL);
         ASSERT(strstr(buf, "boot_clear_header_activation_anchor") != NULL);
-        ASSERT(strstr(buf, "activation_clear_anchor") != NULL);
         ASSERT(strstr(buf, "boot_repair_header_post_activation_anchor") != NULL);
-        ASSERT(strstr(buf, "bii_repair_post_activation_anchor") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_activation_hooks") != NULL);
         ASSERT(strstr(buf, "boot_scan_header_block_files") != NULL);
         ASSERT(strstr(buf, "scan_block_files_mark_data") != NULL);
@@ -1831,11 +1856,20 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "block_index_heights_repaired") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_header_index_hooks") != NULL);
         ASSERT(strstr(buf, "boot_commit_header_tip") != NULL);
-        ASSERT(strstr(buf, "csr_commit_header_tip") != NULL);
         ASSERT(strstr(buf, "boot_recommit_snapshot_anchor") != NULL);
         ASSERT(strstr(buf, "csr_commit_tip") != NULL);
-        ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_header_chainstate_hooks") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback bodies (the activation/index/chainstate impl detail) live in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "activation_clear_anchor") != NULL);
+        ASSERT(strstr(buf, "bii_repair_post_activation_anchor") != NULL);
+        ASSERT(strstr(buf, "csr_commit_header_tip") != NULL);
+        ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path),
@@ -1868,8 +1902,15 @@ static int t_header_peer_votes_are_callback_injected(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_record_peer_header_vote") != NULL);
-        ASSERT(strstr(buf, "quorum_oracle_record_peer_header_vote") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_peer_header_vote") != NULL);
+        free(buf);
+        buf = NULL;
+        /* Callback body (the quorum-oracle impl detail) lives in
+         * boot_msg_callbacks.c. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_msg_callbacks.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "quorum_oracle_record_peer_header_vote") != NULL);
         free(buf);
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "lib/net/src/msg_headers.c") == 0);
@@ -2320,6 +2361,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
     TEST("production comments name purpose, not refactor scaffold labels") {
         const char *files[] = {
             "config/src/boot_services.c",
+            "config/src/boot_msg_callbacks.c",
             "config/src/boot.c",
             "lib/storage/include/storage/utxo_reimport_flag.h",
             "lib/validation/include/validation/process_block.h",
