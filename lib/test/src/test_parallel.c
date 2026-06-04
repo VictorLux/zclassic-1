@@ -193,7 +193,10 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(power_node_contract_spec) X(process_block_revalidate) \
     X(rpc_safety) X(service_kernel) X(sync_state_fsm) \
     X(unclean_shutdown_advance) X(utxo_audit) X(utxo_parity_service) \
-    X(zclassicd_oracle) X(oracle_policy)
+    X(zclassicd_oracle) X(oracle_policy) \
+    X(script_interp_edge) X(sighash_edge) X(sigops_edge) \
+    X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
+    X(locktime_edge)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

@@ -686,6 +686,14 @@ int main(void)
       failures += test_store_e2e_gate(); }
     { extern int test_soak_harness(void);
       failures += test_soak_harness(); }
+    /* Consensus edge-case coverage (boundary / overflow / known-CVE patterns) */
+    { extern int test_script_interp_edge(void);  failures += test_script_interp_edge(); }
+    { extern int test_sighash_edge(void);         failures += test_sighash_edge(); }
+    { extern int test_sigops_edge(void);          failures += test_sigops_edge(); }
+    { extern int test_check_tx_edge(void);        failures += test_check_tx_edge(); }
+    { extern int test_check_block_edge(void);     failures += test_check_block_edge(); }
+    { extern int test_amount_subsidy_edge(void);  failures += test_amount_subsidy_edge(); }
+    { extern int test_locktime_edge(void);        failures += test_locktime_edge(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();
