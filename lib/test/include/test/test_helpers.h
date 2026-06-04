@@ -518,6 +518,7 @@ int test_domain_consensus_sapling_structural(void);
 int test_domain_consensus_sighash(void);
 int test_domain_consensus_check_block(void);
 int test_domain_consensus_equihash(void);
+int test_regtest_generate(void);
 int test_domain_consensus_script_interp(void);
 int test_domain_consensus_coins_math(void);
 int test_domain_consensus_checkpoints(void);

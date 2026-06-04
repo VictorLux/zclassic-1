@@ -48,6 +48,28 @@ bool equihash_is_valid_solution(const struct equihash_params *p,
                                 const struct blake2b_ctx *base_state,
                                 const unsigned char *soln, size_t soln_len);
 
+/* Generic Wagner-algorithm Equihash solver (BasicSolve).
+ *
+ * Given the personalised BLAKE2b base_state (already initialised via
+ * equihash_initialise_state() and fed the header pre-solution bytes +
+ * nonce — exactly the input equihash_is_valid_solution() verifies
+ * against), search for ONE valid Equihash answer for the (N,K) in `p`.
+ *
+ * On success writes the minimal on-wire solution (p->solution_width
+ * bytes) to soln_out and returns true. soln_out must have room for at
+ * least p->solution_width bytes. Returns false when this challenge has
+ * no solution reachable by the basic algorithm (the caller advances the
+ * nonce and retries) or on allocation failure.
+ *
+ * The produced bytes are the same encoding equihash_is_valid_solution()
+ * consumes; a true return guarantees that verifier accepts soln_out for
+ * the same base_state. This is intended for the small regtest/testnet
+ * parameter sets (e.g. (48,5)); it is a correctness-first reference
+ * solver, not the optimised mainnet miner in lib/crypto/equihash_solver.c. */
+bool equihash_basic_solve(const struct equihash_params *p,
+                          const struct blake2b_ctx *base_state,
+                          unsigned char *soln_out, size_t soln_out_len);
+
 void eh_expand_array(const unsigned char *in, size_t in_len,
                      unsigned char *out, size_t out_len,
                      size_t bit_len, size_t byte_pad);

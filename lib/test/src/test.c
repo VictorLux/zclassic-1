@@ -663,6 +663,7 @@ int main(void)
     failures += test_api();
     failures += test_explorer();
     failures += test_mining();
+    failures += test_regtest_generate();
     failures += test_utxo_commitment();
     failures += test_mmr();
     failures += test_mmb();

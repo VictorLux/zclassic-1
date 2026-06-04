@@ -118,6 +118,17 @@ static bool rpc_generate(const struct json_value *params, bool help,
 
     const struct chain_params *cp = chain_params_get();
 
+    /* generate is an on-demand miner for regtest. On mainnet/testnet the
+     * Equihash parameters make an in-process solve impractical (and mining
+     * goes through real workers/peers), so we refuse — matching zcashd's
+     * "regtest mode only" contract via fMineBlocksOnDemand. */
+    if (!cp->fMineBlocksOnDemand) {
+        json_set_str(result,
+                     "Error: generate is for regtest only "
+                     "(this network is not mine-blocks-on-demand)");
+        return false;
+    }
+
     struct script coinbase_script;
     coinbase_script.size = 0;
 
@@ -131,6 +142,17 @@ static bool rpc_generate(const struct json_value *params, bool help,
         struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
         unsigned int extra_nonce = 0;
         increment_extra_nonce(&tmpl->block, tip, &extra_nonce);
+
+        /* Solve the Equihash PoW so the block passes the reducer's
+         * stateless check_block(check_pow=true) gate. Without this the
+         * block carries an empty solution and is rejected at intake, so
+         * the tip never advances. Fast for regtest/testnet (small N,K). */
+        int new_height = (tip ? tip->nHeight : 0) + 1;
+        if (!mine_block_pow(&tmpl->block, new_height, cp, 0)) {
+            block_template_free(tmpl);
+            free(tmpl);
+            break;
+        }
 
         if (mining_submit_mined_block(&tmpl->block)) {
             struct uint256 hash;

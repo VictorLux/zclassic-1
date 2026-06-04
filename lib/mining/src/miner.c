@@ -5,6 +5,10 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "mining/miner.h"
+#include "crypto/blake2b.h"
+#include "crypto/equihash.h"
+#include "core/arith_uint256.h"
+#include "core/uint256.h"
 #include "validation/check_block.h"
 #include "validation/check_transaction.h"
 #include "validation/connect_block.h"
@@ -210,4 +214,105 @@ void increment_extra_nonce(struct block *pblock,
 
     transaction_compute_hash(cb);
     block_compute_merkle_root(pblock);
+}
+
+/* Build the personalised BLAKE2b state and feed the header's
+ * pre-solution bytes + the 32-byte nonce, EXACTLY as the consensus
+ * verifier does (domain/consensus/equihash.c). Solving against this
+ * state guarantees the witness verifies. */
+static void miner_build_eh_state(const struct block_header *h,
+                                 const struct equihash_params *ep,
+                                 struct blake2b_ctx *out_state)
+{
+    equihash_initialise_state(ep, out_state);
+
+    uint8_t le[4];
+    le[0] = (uint8_t)((uint32_t)h->nVersion        & 0xff);
+    le[1] = (uint8_t)(((uint32_t)h->nVersion >>  8) & 0xff);
+    le[2] = (uint8_t)(((uint32_t)h->nVersion >> 16) & 0xff);
+    le[3] = (uint8_t)(((uint32_t)h->nVersion >> 24) & 0xff);
+    blake2b_update(out_state, le, 4);
+
+    blake2b_update(out_state, h->hashPrevBlock.data,        32);
+    blake2b_update(out_state, h->hashMerkleRoot.data,       32);
+    blake2b_update(out_state, h->hashFinalSaplingRoot.data, 32);
+
+    le[0] = (uint8_t)(h->nTime        & 0xff);
+    le[1] = (uint8_t)((h->nTime >>  8) & 0xff);
+    le[2] = (uint8_t)((h->nTime >> 16) & 0xff);
+    le[3] = (uint8_t)((h->nTime >> 24) & 0xff);
+    blake2b_update(out_state, le, 4);
+
+    le[0] = (uint8_t)(h->nBits        & 0xff);
+    le[1] = (uint8_t)((h->nBits >>  8) & 0xff);
+    le[2] = (uint8_t)((h->nBits >> 16) & 0xff);
+    le[3] = (uint8_t)((h->nBits >> 24) & 0xff);
+    blake2b_update(out_state, le, 4);
+
+    blake2b_update(out_state, h->nNonce.data, 32);
+}
+
+bool mine_block_pow(struct block *block, int height,
+                    const struct chain_params *params,
+                    uint64_t max_nonces)
+{
+    if (!block || !params)
+        return false;
+
+    unsigned int n = chain_params_equihash_n(params, height);
+    unsigned int k = chain_params_equihash_k(params, height);
+
+    struct equihash_params ep;
+    equihash_params_init(&ep, n, k);
+    if (ep.solution_width > MAX_SOLUTION_SIZE) {
+        fprintf(stderr, "[miner] equihash solution width %zu exceeds cap %d "
+                "(N=%u K=%u)\n", ep.solution_width, MAX_SOLUTION_SIZE, n, k);
+        return false;
+    }
+
+    /* PoW target from nBits — the same compact decode the verifier uses. */
+    struct arith_uint256 target;
+    bool neg = false, over = false;
+    arith_uint256_set_compact(&target, block->header.nBits, &neg, &over);
+    if (neg || over || arith_uint256_is_zero(&target)) {
+        fprintf(stderr, "[miner] malformed nBits=0x%08x at height %d\n",
+                block->header.nBits, height);
+        return false;
+    }
+
+    if (max_nonces == 0)
+        max_nonces = 1u << 20; /* generous; small (N,K) solve in << this */
+
+    /* Start the nonce at zero and increment a little-endian counter in the
+     * low 8 bytes of the 32-byte nonce. Deterministic and reproducible. */
+    memset(block->header.nNonce.data, 0, 32);
+
+    for (uint64_t attempt = 0; attempt < max_nonces; attempt++) {
+        struct blake2b_ctx state;
+        miner_build_eh_state(&block->header, &ep, &state);
+
+        unsigned char soln[MAX_SOLUTION_SIZE];
+        if (equihash_basic_solve(&ep, &state, soln, sizeof(soln))) {
+            memcpy(block->header.nSolution, soln, ep.solution_width);
+            block->header.nSolutionSize = ep.solution_width;
+
+            struct uint256 hash;
+            block_header_get_hash(&block->header, &hash);
+            struct arith_uint256 hash_arith;
+            uint256_to_arith(&hash_arith, &hash);
+            if (arith_uint256_compare(&hash_arith, &target) <= 0)
+                return true; /* valid Equihash + hash <= target */
+        }
+
+        /* Advance the little-endian nonce counter and retry. */
+        for (int b = 0; b < 32; b++) {
+            if (++block->header.nNonce.data[b] != 0)
+                break;
+        }
+    }
+
+    fprintf(stderr, "[miner] mine_block_pow: no PoW within %llu nonces "
+            "(height %d, N=%u K=%u)\n",
+            (unsigned long long)max_nonces, height, n, k);
+    return false;
 }
