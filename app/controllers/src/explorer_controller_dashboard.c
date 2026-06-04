@@ -50,7 +50,7 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 
         /* Extract hash from {"result":"<hash>",...} */
         char hash[65] = "";
-        json_extract_str(buf, "result", hash, sizeof(hash));
+        zcl_json_extract_str(buf, "result", hash, sizeof(hash));
         if (!hash[0]) continue;
 
         /* Get block details */

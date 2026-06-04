@@ -30,6 +30,11 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+/* Tier-2 public-tip authority query — single source of truth (Law 8).
+ * The highest finalized (ok=1) height in tip_finalize_log, or -1 if none. */
+static const char SQL_TIP_FINALIZE_MAX_OK[] =
+    "SELECT COALESCE(MAX(height),-1) FROM tip_finalize_log WHERE ok=1";
+
 static void uw_exec(sqlite3 *db, const char *sql)
 {
     sqlite3_exec(db, sql, NULL, NULL, NULL);
@@ -110,8 +115,7 @@ int test_stage_reducer_unwedge(void)
     }
 
     int rows_before = uw_query_int(db, "SELECT COUNT(*) FROM tip_finalize_log");
-    int max_before  = uw_query_int(db,
-        "SELECT COALESCE(MAX(height),-1) FROM tip_finalize_log WHERE ok=1");
+    int max_before  = uw_query_int(db, SQL_TIP_FINALIZE_MAX_OK);
 
     /* ── the reconcile ── */
     struct stage_reconcile_result rr;
@@ -133,13 +137,9 @@ int test_stage_reducer_unwedge(void)
        uw_query_int(db, "SELECT COUNT(*) FROM tip_finalize_log") == rows_before);
     /* the ~47279-style regression guard: Tier-2 floor never drops below coins */
     UW("Tier-2 MAX(ok=1) >= coins_best (no tip collapse)",
-       uw_query_int(db,
-         "SELECT COALESCE(MAX(height),-1) FROM tip_finalize_log WHERE ok=1")
-       >= APPLIED);
+       uw_query_int(db, SQL_TIP_FINALIZE_MAX_OK) >= APPLIED);
     UW("Tier-2 MAX(ok=1) unchanged by reconcile",
-       uw_query_int(db,
-         "SELECT COALESCE(MAX(height),-1) FROM tip_finalize_log WHERE ok=1")
-       == max_before);
+       uw_query_int(db, SQL_TIP_FINALIZE_MAX_OK) == max_before);
 
     /* ── no-op: cursor already at the floor ── */
     uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',4,1)");

@@ -44,7 +44,7 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
         char params[64];
         snprintf(params, sizeof(params), "[%s]", param);
         rpc_call("getblockhash", params, buf, sizeof(buf));
-        json_extract_str(buf, "result", hash, sizeof(hash));
+        zcl_json_extract_str(buf, "result", hash, sizeof(hash));
     } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
     }
@@ -64,9 +64,9 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
     d.difficulty = json_extract_real(buf, "difficulty");
     (void)json_extract_int(buf, "size");
 
-    json_extract_str(buf, "merkleroot", d.merkle, sizeof(d.merkle));
-    json_extract_str(buf, "previousblockhash", d.prev, sizeof(d.prev));
-    json_extract_str(buf, "nextblockhash", d.next_hash, sizeof(d.next_hash));
+    zcl_json_extract_str(buf, "merkleroot", d.merkle, sizeof(d.merkle));
+    zcl_json_extract_str(buf, "previousblockhash", d.prev, sizeof(d.prev));
+    zcl_json_extract_str(buf, "nextblockhash", d.next_hash, sizeof(d.next_hash));
     snprintf(d.hash, sizeof(d.hash), "%s", hash);
 
     format_time(d.ts, sizeof(d.ts), (uint32_t)blk_time);

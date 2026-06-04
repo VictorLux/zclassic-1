@@ -49,6 +49,11 @@ int db_utxo_list_for_address(struct node_db *ndb,
 /* Count total UTXOs in the set. */
 int64_t db_utxo_count(struct node_db *ndb);
 
+/* Highest height present in the UTXO set, or -1 when the db is closed.
+ * Mirrors db_block_max_height(): an empty table yields 0 (the "no utxos yet"
+ * floor). Single source of truth for "SELECT MAX(height) FROM utxos". */
+int db_utxo_max_height(struct node_db *ndb);
+
 /* Sum total UTXO value in zatoshis. Returns -1 on unavailable DB. */
 int64_t db_utxo_total_value(struct node_db *ndb);
 

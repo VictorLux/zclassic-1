@@ -47,8 +47,6 @@ struct explorer_context *explorer_ctx(void);
 
 int rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
-bool json_extract_str(const char *json, const char *key,
-                      char *out, size_t outmax);
 int64_t json_extract_int(const char *json, const char *key);
 double json_extract_real(const char *json, const char *key);
 bool use_rpc_proxy(void);

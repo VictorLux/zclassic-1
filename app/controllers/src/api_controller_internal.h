@@ -79,8 +79,6 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
                   const char *message);
 int api_rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
-bool api_json_extract_str(const char *json, const char *key,
-                      char *out, size_t outmax);
 int64_t api_json_extract_int(const char *json, const char *key);
 double api_json_extract_real(const char *json, const char *key);
 bool api_is_json_safe_param(const char *s, size_t maxlen);

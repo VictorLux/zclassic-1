@@ -73,7 +73,7 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
         snprintf(params, sizeof(params), "[%s]", param);
         if (api_rpc_call("getblockhash", params, buf, sizeof(buf)) <= 0)
             return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
-        api_json_extract_str(buf, "result", hash, sizeof(hash));
+        zcl_json_extract_str(buf, "result", hash, sizeof(hash));
     } else if (zcl_is_hex_string(param, 64)) {
         snprintf(hash, sizeof(hash), "%s", param);
     }
@@ -96,10 +96,10 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     double diff = api_json_extract_real(buf, "difficulty");
 
     char merkle[65] = "", prev[65] = "", next_hash[65] = "", nonce[65] = "";
-    api_json_extract_str(buf, "merkleroot", merkle, sizeof(merkle));
-    api_json_extract_str(buf, "previousblockhash", prev, sizeof(prev));
-    api_json_extract_str(buf, "nextblockhash", next_hash, sizeof(next_hash));
-    api_json_extract_str(buf, "nonce", nonce, sizeof(nonce));
+    zcl_json_extract_str(buf, "merkleroot", merkle, sizeof(merkle));
+    zcl_json_extract_str(buf, "previousblockhash", prev, sizeof(prev));
+    zcl_json_extract_str(buf, "nextblockhash", next_hash, sizeof(next_hash));
+    zcl_json_extract_str(buf, "nonce", nonce, sizeof(nonce));
 
     int64_t confirmations = api_json_extract_int(buf, "confirmations");
 
@@ -188,7 +188,7 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
     double value_balance = api_json_extract_real(result, "valuebalance");
 
     char blockhash[65] = "";
-    api_json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
+    zcl_json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
 
     size_t off = 0;
     off += (size_t)snprintf((char *)r + off, max - off,
@@ -279,7 +279,7 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
                     if (!entry_end) break;
 
                     char prev_txid[65] = "";
-                    api_json_extract_str(entry, "txid", prev_txid, sizeof(prev_txid));
+                    zcl_json_extract_str(entry, "txid", prev_txid, sizeof(prev_txid));
                     int64_t vout_n = api_json_extract_int(entry, "vout");
 
                     if (idx > 0)
@@ -373,7 +373,7 @@ size_t compute_address(const char *param, uint8_t *r, size_t max)
                         if (!entry_end) break;
 
                         char txid[65] = "";
-                        api_json_extract_str(entry, "txid", txid, sizeof(txid));
+                        zcl_json_extract_str(entry, "txid", txid, sizeof(txid));
                         int64_t output_idx = api_json_extract_int(entry, "outputIndex");
                         int64_t satoshis = api_json_extract_int(entry, "satoshis");
                         int64_t utxo_height = api_json_extract_int(entry, "height");

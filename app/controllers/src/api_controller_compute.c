@@ -84,7 +84,7 @@ size_t compute_blocks(uint8_t *r, size_t max)
             continue;
 
         char hash[65] = "";
-        api_json_extract_str(buf, "result", hash, sizeof(hash));
+        zcl_json_extract_str(buf, "result", hash, sizeof(hash));
         if (!hash[0]) continue;
 
         char params2[128];
@@ -130,7 +130,7 @@ size_t compute_stats(uint8_t *r, size_t max)
     double diff = api_json_extract_real(buf, "difficulty");
 
     char chain[32] = "";
-    api_json_extract_str(buf, "chain", chain, sizeof(chain));
+    zcl_json_extract_str(buf, "chain", chain, sizeof(chain));
 
     /* Get mining info for hashrate */
     char mbuf[8192];

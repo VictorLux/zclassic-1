@@ -205,13 +205,10 @@ int api_rpc_call(const char *method, const char *params_json,
     return (int)total;
 }
 
-/* JSON extraction and validation: delegated to shared format_helpers */
-bool api_json_extract_str(const char *json, const char *key,
-                              char *out, size_t outmax)
-{
-    return zcl_json_extract_str(json, key, out, outmax);
-}
-
+/* JSON extraction and validation: delegated to shared format_helpers.
+ * The int/real wrappers adapt the (out-param, bool-return) helper API to
+ * the old (return-value, default) call-site convention. The string variant
+ * had an identical signature, so call sites use zcl_json_extract_str directly. */
 int64_t api_json_extract_int(const char *json, const char *key)
 {
     int64_t v = -1;

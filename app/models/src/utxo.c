@@ -247,6 +247,25 @@ int64_t db_utxo_count(struct node_db *ndb)
     AR_QUERY_INT64_BOUND(ndb, s, "SELECT COUNT(*) FROM utxos", (void)0);
 }
 
+/* Highest height present in the UTXO set, or -1 if the db is closed.
+ * Mirrors db_block_max_height() (block model): MAX(height) yields NULL on an
+ * empty table, which AR_COL_INT reads as 0 — the "no utxos written yet" floor.
+ * The utxos table has no status column, so there is no status>=3 filter.
+ * Single source of truth for "SELECT MAX(height) FROM utxos" (Law 8). */
+int db_utxo_max_height(struct node_db *ndb)
+{
+    if (!ndb->open) return -1;
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT MAX(height) FROM utxos",
+        -1);
+    int h = -1;
+    if (AR_STEP_ROW(s))
+        h = (int)AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return h;
+}
+
 int64_t db_utxo_total_value(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)

@@ -78,7 +78,7 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
                        (int64_t)(value_balance * (double)ZATOSHI_PER_ZCL));
     }
 
-    json_extract_str(result, "blockhash", d.blockhash, sizeof(d.blockhash));
+    zcl_json_extract_str(result, "blockhash", d.blockhash, sizeof(d.blockhash));
     d.has_block = d.blockhash[0] != '\0';
 
     /* Parse vout array for outputs */
