@@ -18,6 +18,7 @@
 #include "views/format_helpers.h"
 #include "controllers/wallet_scan.h"
 #include "controllers/sync_controller.h"
+#include "services/wallet_scan_service.h"
 #include "models/wallet_tx.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -79,15 +80,6 @@ static bool wallet_scan_exec_checked(struct node_db *ndb,
     if (!node_db_exec(ndb, sql))
         LOG_FAIL("wallet_scan", "wallet_scan: %s failed", label);
     return true;
-}
-
-static uint8_t *ser_tx(const struct transaction *tx, size_t *len)
-{
-    struct byte_stream s;
-    stream_init(&s, 512);
-    transaction_serialize(tx, &s);
-    *len = s.size;
-    return s.data;
 }
 
 /* --- Pass 1: Raw byte pattern scan --- */
@@ -152,80 +144,6 @@ static void *scan_file_thread(void *arg)
     return NULL;
 }
 
-/* --- Pass 2: Selective deserialization --- */
-
-/* Process a single block: check outputs for ownership, inputs for spends */
-static bool scan_block_txs(const struct block *blk, int height,
-                            const struct addr_ht *ht,
-                            struct utxo_set *uset,
-                            struct wtx_list *wl)
-{
-    bool any_found = false;
-
-    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
-        struct transaction *tx = &blk->vtx[ti];
-        bool is_ours = false, from_me = false;
-        int64_t debit = 0;
-
-        for (size_t vi = 0; vi < tx->num_vout; vi++) {
-            uint8_t ah[20];
-            if (!extract_addr(tx->vout[vi].script_pub_key.data,
-                              tx->vout[vi].script_pub_key.size, ah))
-                continue;
-            if (!aht_has(ht, ah)) continue;
-
-            is_ours = true;
-            struct mem_utxo u;
-            memset(&u, 0, sizeof(u));
-            memcpy(u.txid, tx->hash.data, 32);
-            u.vout = (uint32_t)vi;
-            u.value = tx->vout[vi].value;
-            memcpy(u.addr_hash, ah, 20);
-            size_t sl = tx->vout[vi].script_pub_key.size;
-            if (sl > sizeof(u.script)) sl = sizeof(u.script);
-            memcpy(u.script, tx->vout[vi].script_pub_key.data, sl);
-            u.script_len = (uint8_t)sl;
-            u.height = height;
-            u.is_coinbase = (ti == 0);
-            uset_add(uset, &u);
-        }
-
-        if (ti > 0) {
-            for (size_t vi = 0; vi < tx->num_vin; vi++) {
-                int ui = uset_find(uset,
-                    tx->vin[vi].prevout.hash.data,
-                    tx->vin[vi].prevout.n);
-                if (ui >= 0) {
-                    is_ours = true;
-                    from_me = true;
-                    debit += uset->items[ui].value;
-                    uset->items[ui].spent = true;
-                    memcpy(uset->items[ui].spent_txid,
-                           tx->hash.data, 32);
-                    uset->items[ui].spent_vin = (int)vi;
-                }
-            }
-        }
-
-        if (is_ours) {
-            any_found = true;
-            struct mem_wtx wt;
-            memset(&wt, 0, sizeof(wt));
-            memcpy(wt.txid, tx->hash.data, 32);
-            wt.raw = ser_tx(tx, &wt.raw_len);
-            wt.height = height;
-            wt.time = blk->header.nTime;
-            wt.from_me = from_me;
-            if (from_me) {
-                int64_t vout_total = transaction_get_value_out(tx);
-                wt.fee = debit > vout_total ? debit - vout_total : 0;
-            }
-            wl_add(wl, &wt);
-        }
-    }
-    return any_found;
-}
-
 /* --- Main entry point --- */
 
 int wallet_scan_blocks(struct node_db *ndb,
@@ -246,7 +164,7 @@ int wallet_scan_blocks(struct node_db *ndb,
         return 0;
     }
 
-    struct timespec ts_start, ts_p1, ts_p2;
+    struct timespec ts_start, ts_p1;
     platform_time_monotonic_timespec(&ts_start);
 
     /* Build address hash table */
@@ -358,172 +276,18 @@ int wallet_scan_blocks(struct node_db *ndb,
            matched_files);
     fflush(stdout);
 
-    struct utxo_set uset;
-    uset_init(&uset);
-    struct wtx_list wl;
-    wl_init(&wl);
-
-    /* We need to process blocks in height order for correct spend tracking.
-     * Build a set of heights whose blocks are in matched files, then
-     * iterate heights in order. */
-
-    /* First, find which heights map to matched files */
-    int blocks_deserialized = 0;
-    int found = 0;
-    int cached_file = -1;
-    uint8_t *fdata = NULL;
-    size_t fsize = 0;
-
-    for (int h = start_height; h <= end_height; h++) {
-        const struct block_index *pi = active_chain_at(chain, h);
-        if (!pi) continue;
-        if (!(pi->nStatus & BLOCK_HAVE_DATA)) continue;
-
-        /* Skip files that pass 1 ruled out */
-        if (!file_has_match[pi->nFile]) continue;
-
-        if (pi->nFile != cached_file) {
-            if (fdata) munmap(fdata, fsize);
-            char path[512];
-            snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     datadir, pi->nFile);
-            int fd = open(path, O_RDONLY);
-            if (fd < 0) { fdata = NULL; cached_file = -1; continue; }
-            struct stat st;
-            if (fstat(fd, &st) != 0) { close(fd); continue; }
-            fsize = (size_t)st.st_size;
-            fdata = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
-            close(fd);
-            if (fdata == MAP_FAILED) {
-                fdata = NULL; cached_file = -1; continue;
-            }
-            cached_file = pi->nFile;
-            posix_madvise(fdata, fsize, POSIX_MADV_SEQUENTIAL);
-        }
-        if (!fdata || pi->nDataPos >= fsize) continue;
-
-        struct block blk;
-        block_init(&blk);
-        size_t rem = fsize - pi->nDataPos;
-        struct byte_stream bs;
-        stream_init_from_data(&bs, fdata + pi->nDataPos, rem);
-        if (!block_deserialize(&blk, &bs)) {
-            block_free(&blk);
-            continue;
-        }
-        blocks_deserialized++;
-
-        if (scan_block_txs(&blk, h, &aht, &uset, &wl))
-            found++;
-
-        block_free(&blk);
-    }
-    if (fdata) munmap(fdata, fsize);
-
-    platform_time_monotonic_timespec(&ts_p2);
-    double p2_ms = (double)(ts_p2.tv_sec - ts_p1.tv_sec) * 1000.0 +
-                   (double)(ts_p2.tv_nsec - ts_p1.tv_nsec) / 1e6;
-    double total_ms = (double)(ts_p2.tv_sec - ts_start.tv_sec) * 1000.0 +
-                      (double)(ts_p2.tv_nsec - ts_start.tv_nsec) / 1e6;
-
-    /* Compute balance */
-    int64_t balance = 0;
-    int unspent = 0;
-    for (int i = 0; i < uset.count; i++) {
-        if (!uset.items[i].spent) {
-            balance += uset.items[i].value;
-            unspent++;
-        }
-    }
-
-    printf("wallet_scan: pass 2 done in %.1f ms — %d blocks deserialized, "
-           "%d wallet txs\n", p2_ms, blocks_deserialized, wl.count);
-    printf("wallet_scan: TOTAL %.1f ms — %d unspent UTXOs, "
-           "balance %.8f ZCL\n",
-           total_ms, unspent, (double)balance / (double)ZATOSHI_PER_ZCL);
-    fflush(stdout);
-
-    /* ========== Write results to SQLite ========== */
-    {
-        bool write_tx_open = false;
-        if (!wallet_scan_begin_checked(ndb, "result write begin")) {
-            found = -1;
-            goto write_cleanup;
-        }
-        write_tx_open = true;
-        if (!wallet_scan_exec_checked(ndb, "DELETE FROM wallet_utxos",
-                                      "result write clear wallet_utxos") ||
-            !wallet_scan_exec_checked(ndb, "DELETE FROM wallet_transactions",
-                                      "result write clear wallet_transactions")) {
-            found = -1;
-            goto write_fail;
-        }
-
-        for (int i = 0; i < uset.count; i++) {
-            struct mem_utxo *u = &uset.items[i];
-            struct db_wallet_utxo du;
-            memset(&du, 0, sizeof(du));
-            memcpy(du.txid, u->txid, 32);
-            du.vout = u->vout;
-            du.value = u->value;
-            memcpy(du.address_hash, u->addr_hash, 20);
-            du.script = u->script;
-            du.script_len = u->script_len;
-            du.height = u->height;
-            du.is_coinbase = u->is_coinbase;
-            if (!db_wallet_utxo_save(ndb, &du)) {
-                LOG_WARN("wallet_scan", "wallet_scan: wallet_utxo save failed");
-                found = -1;
-                goto write_fail;
-            }
-            if (u->spent &&
-                !db_wallet_utxo_mark_spent(ndb, u->txid, u->vout,
-                                           u->spent_txid, u->spent_vin)) {
-                LOG_WARN("wallet_scan", "wallet_scan: wallet_utxo mark_spent failed");
-                found = -1;
-                goto write_fail;
-            }
-        }
-
-        for (int i = 0; i < wl.count; i++) {
-            struct mem_wtx *t = &wl.items[i];
-            struct db_wallet_tx dt;
-            memset(&dt, 0, sizeof(dt));
-            memcpy(dt.txid, t->txid, 32);
-            dt.raw_tx = t->raw;
-            dt.raw_tx_len = t->raw_len;
-            dt.has_block = true;
-            dt.block_height = t->height;
-            dt.time_received = (int64_t)t->time;
-            dt.from_me = t->from_me;
-            dt.fee = t->fee;
-            if (!db_wallet_tx_save(ndb, &dt)) {
-                LOG_WARN("wallet_scan", "wallet_scan: wallet_tx save failed");
-                found = -1;
-                goto write_fail;
-            }
-        }
-
-        if (!wallet_scan_commit_checked(ndb, "result write commit")) {
-            found = -1;
-            write_tx_open = false;
-            goto write_cleanup;
-        }
-        write_tx_open = false;
-        goto write_cleanup;
-
-write_fail:
-        if (write_tx_open)
-            wallet_scan_rollback_best_effort(ndb, "result write rollback");
-write_cleanup:
-        ;
-    }
+    /* Pass 2 — the selective-deserialize loop, balance compute, and the
+     * SQLite result-write transaction — is a Service. The Controller owns the
+     * address hash table and the Pass-1 match array; it hands them to the
+     * Service by const reference and frees them afterward. */
+    int found = wallet_scan_pass2_execute(ndb, chain, datadir,
+                                          start_height, end_height,
+                                          &aht, file_has_match,
+                                          &ts_start, &ts_p1);
 
     /* Cleanup */
     aht_free(&aht);
-    uset_free(&uset);
-    wl_free(&wl);
     free(file_has_match);
 
-    return found < 0 ? -1 : wl.count;
+    return found;
 }
