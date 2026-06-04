@@ -19,6 +19,7 @@
 static _Atomic int64_t g_first_seen;
 static _Atomic uint64_t g_inflight_at_detect;
 static _Atomic uint64_t g_queued_at_detect;
+static _Atomic uint64_t g_requested_at_detect;
 static _Atomic int64_t g_age_at_detect;
 
 #ifdef ZCL_TESTING
@@ -37,8 +38,8 @@ static bool detect_download_queue_starved(void)
         return false;
     }
 
-    uint64_t inflight = 0, queued = 0;
-    dl_get_stats(dm, NULL, NULL, NULL, &inflight, &queued);
+    uint64_t requested = 0, inflight = 0, queued = 0;
+    dl_get_stats(dm, &requested, NULL, NULL, &inflight, &queued);
     uint64_t threshold = DL_MAX_IN_FLIGHT_TOTAL_IBD /
                          QUEUE_STARVED_RATIO_DEN;
     if (inflight >= threshold) {
@@ -56,6 +57,7 @@ static bool detect_download_queue_starved(void)
 
     atomic_store(&g_inflight_at_detect, inflight);
     atomic_store(&g_queued_at_detect, queued);
+    atomic_store(&g_requested_at_detect, requested);
     atomic_store(&g_age_at_detect, age);
     return true;
 }
@@ -77,9 +79,17 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
         sync_monitor_download_manager();
     if (!dm)
         return false;
-    uint64_t inflight = 0;
-    dl_get_stats(dm, NULL, NULL, NULL, &inflight, NULL);
-    return inflight >= (DL_MAX_IN_FLIGHT_TOTAL_IBD / 2);
+    /* HONEST witness (Law 7): the remedy (kick_refill) is async and mutates
+     * nothing observable on return, so an inflight-level threshold here is
+     * orthogonal to whether the remedy did anything — a transient inflight
+     * spike could satisfy it with zero effect. The symptom is "the queue is
+     * not refilling" (no new requests going out), so we witness that it MOVED:
+     * the cumulative request counter advanced past the value captured at
+     * detect, i.e. the queue was actually refilled and new blocks were
+     * requested. A frozen download pipeline cannot manufacture that increase. */
+    uint64_t requested = 0;
+    dl_get_stats(dm, &requested, NULL, NULL, NULL, NULL);
+    return requested > atomic_load(&g_requested_at_detect);
 }
 
 static struct condition c_download_queue_starved = {
@@ -105,6 +115,7 @@ void download_queue_starved_test_reset(void)
     atomic_store(&g_first_seen, 0);
     atomic_store(&g_inflight_at_detect, 0);
     atomic_store(&g_queued_at_detect, 0);
+    atomic_store(&g_requested_at_detect, 0);
     atomic_store(&g_age_at_detect, 0);
     atomic_store(&g_test_remedy_calls, 0);
 }

@@ -75,6 +75,13 @@ static enum condition_remedy_result remedy_chain_integrity_failed(void)
 static bool witness_chain_integrity_failed(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    // honest-witness-ok: this is NOT poison-absence. check_integrity()
+    // re-walks the real active_chain over the block index
+    // (chain_integrity_check_post_restore) and recomputes holes / mismatches /
+    // zero-nbits from scratch. The remedy (chain_restore_finalize) repairs the
+    // chain but sets NO flag this witness reads, so it cannot self-certify —
+    // r.ok is an independent structural re-verification that the symptom
+    // (broken chain) is gone.
     struct chain_integrity_result r;
     return check_integrity(&r) && r.ok;
 }

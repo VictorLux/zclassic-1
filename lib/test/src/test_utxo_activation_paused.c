@@ -242,6 +242,21 @@ int test_utxo_activation_paused(void)
         struct fake_clock clock;
         fake_clock_install(&clock, 3000);
         bool ok = true;
+        /* Honest witness (Law 7) requires the chain tip to have ACTUALLY
+         * advanced past the paused height — not just the pause flag cleared.
+         * Stand up a real chain whose tip sits at the paused height so the
+         * resumed activation observably reached it. */
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[2];
+        struct block_index *b0 = insert_test_block(
+            &ms, hashes, 0, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *b1 = insert_test_block(
+            &ms, hashes, 1, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        b1->nHeight = 1600;
+        ok = ok && b0 && b1 &&
+             active_chain_move_window_tip(&ms.chain_active, b1);
+        condition_engine_set_main_state(&ms);
         register_utxo_activation_paused();
         process_block_test_set_utxo_activation_paused_height(1600);
 
@@ -253,6 +268,7 @@ int test_utxo_activation_paused(void)
         ok = ok && process_block_test_get_utxo_activation_paused_height() == -1;
         ok = ok && condition_engine_get_active_count() == 0;
         UAP_CHECK("resume remedy clears pause", ok);
+        main_state_free(&ms);
         clock_reset_default();
     }
 
@@ -261,6 +277,17 @@ int test_utxo_activation_paused(void)
         struct fake_clock clock;
         fake_clock_install(&clock, 4000);
         bool ok = true;
+        struct main_state ms;
+        main_state_init(&ms);
+        struct uint256 hashes[2];
+        struct block_index *b0 = insert_test_block(
+            &ms, hashes, 0, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        struct block_index *b1 = insert_test_block(
+            &ms, hashes, 1, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA);
+        b1->nHeight = 1700;
+        ok = ok && b0 && b1 &&
+             active_chain_move_window_tip(&ms.chain_active, b1);
+        condition_engine_set_main_state(&ms);
         register_utxo_activation_paused();
         utxo_activation_paused_test_set_reason("utxo_audit_drift");
         process_block_test_set_utxo_activation_paused_height(1700);
@@ -272,6 +299,7 @@ int test_utxo_activation_paused(void)
         ok = ok && utxo_activation_paused_test_repair_calls() == 1;
         ok = ok && process_block_test_get_utxo_activation_paused_height() == -1;
         UAP_CHECK("drift reason takes repair path", ok);
+        main_state_free(&ms);
         clock_reset_default();
     }
 

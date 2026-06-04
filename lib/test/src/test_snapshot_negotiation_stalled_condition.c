@@ -61,6 +61,16 @@ int test_snapshot_negotiation_stalled_condition(void)
         ok = ok && snapshot_negotiation_stalled_test_remedy_calls() == 1;
         ok = ok && svc.state == SNAPSYNC_IDLE;
         ok = ok && snapsync_is_peer_blacklisted(&svc, 11);
+        /* Honest witness (Law 7): the remedy reset + blacklisted the dead
+         * peer, but the symptom has not yet MOVED — no fresh negotiation is
+         * advancing, so the condition stays active (unwitnessed). The reset's
+         * real forward progress is that a DIFFERENT peer can now negotiate. */
+        ok = ok && condition_engine_get_active_count() == 1;
+        svc.state = SNAPSYNC_NEGOTIATING;
+        svc.serving_peer_id = 14;
+        svc.offered_height = 3000001;
+        svc.offered_count = 1350001;
+        condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         SNS_CHECK("stalled negotiation resets and blacklists peer", ok);
         cleanup_sns();

@@ -73,7 +73,22 @@ static enum condition_remedy_result remedy_sync_state_stuck(void)
 static bool witness_sync_state_stuck(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return sync_get_state() != (enum sync_state)atomic_load(&g_state_at_detect);
+    /* Law 7: the witness must observe the SYMPTOM moving, not merely that the
+     * remedy mutated the FSM. The remedy force-sets SYNC_HEADERS_DOWNLOAD, so a
+     * bare "FSM changed" check is always true and would be a LIE — a stuck FSM
+     * can just become stuck in a different state. Require BOTH: we are now in a
+     * healthy state (at tip or actively downloading), AND the tip height has
+     * advanced since detect (real forward progress). */
+    enum sync_state state = sync_get_state();
+    bool healthy = (state == SYNC_AT_TIP ||
+                    state == SYNC_HEADERS_DOWNLOAD ||
+                    state == SYNC_BLOCKS_DOWNLOAD);
+    if (!healthy)
+        return false;
+
+    struct main_state *ms = sync_monitor_main_state();
+    int h = ms ? active_chain_height(&ms->chain_active) : -1;
+    return h > atomic_load(&g_height_at_detect);
 }
 
 static struct condition c_sync_state_stuck = {

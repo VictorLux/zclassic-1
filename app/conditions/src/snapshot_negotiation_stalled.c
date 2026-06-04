@@ -54,7 +54,21 @@ static bool witness_snapshot_negotiation_stalled(int64_t target_at_detect)
     if (!svc)
         return true;
     snapsync_get_negotiation_status(svc, &st);
-    return !st.negotiating || !st.stalled;
+
+    /* Law 7: a remedy that returns ok without moving the symptom is a LIE.
+     * The remedy blacklists the stalled peer and resets to IDLE, so the bare
+     * !st.stalled flag flips on its own and would always pass — that is the
+     * pure inverse of detect, not independent verification. Witness instead
+     * that the negotiation actually MOVED relative to what we captured at
+     * detect: either the offer advanced (height/utxos grew) or a fresh peer
+     * is now serving (the reset reopened the path to a different peer). */
+    bool offer_advanced =
+        st.offered_height > atomic_load(&g_height_at_detect) ||
+        st.offered_utxos > atomic_load(&g_utxos_at_detect);
+    bool new_peer =
+        st.negotiating && st.serving_peer_id != atomic_load(&g_peer_at_detect);
+
+    return offer_advanced || new_peer;
 }
 
 static struct condition c_snapshot_negotiation_stalled = {

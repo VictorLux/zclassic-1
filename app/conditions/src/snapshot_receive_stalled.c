@@ -53,7 +53,18 @@ static bool witness_snapshot_receive_stalled(int64_t target_at_detect)
     if (!svc)
         return true;
     snapsync_get_stall_status(svc, &st);
-    return !st.receiving || !st.stalled;
+
+    /* Law 7: witness that the symptom MOVED, not merely that the stall
+     * flag cleared. A pure inverse of detect (!receiving || !stalled)
+     * would accept a still-RECEIVING stream whose timer was refreshed
+     * without a single new UTXO. Honest post-conditions:
+     *   (a) the snapshot advanced — received_utxos climbed past what
+     *       we captured at detect; OR
+     *   (b) the stalled receive was actually torn down — no longer
+     *       RECEIVING, so a fresh offer or header-sync fallback runs. */
+    if (!st.receiving)
+        return true;
+    return st.received_utxos > atomic_load(&g_received_at_detect);
 }
 
 static struct condition c_snapshot_receive_stalled = {

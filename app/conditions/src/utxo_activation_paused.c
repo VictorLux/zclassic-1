@@ -7,6 +7,8 @@
 #include "platform/time_compat.h"
 #include "services/chain_activation_service.h"
 #include "services/gap_fill_service.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
 #include "validation/process_block.h"
 
 #include <stdatomic.h>
@@ -16,6 +18,7 @@
 static _Atomic int64_t g_paused_height_at_detect = -1;
 static _Atomic int64_t g_paused_since_unix = 0;
 static _Atomic int64_t g_pause_age_at_detect = 0;
+static _Atomic int64_t g_tip_at_detect = -1;
 static char g_pause_reason[128];
 
 #ifdef ZCL_TESTING
@@ -42,6 +45,7 @@ static bool detect_utxo_activation_paused(void)
         atomic_store(&g_paused_since_unix, 0);
         atomic_store(&g_paused_height_at_detect, -1);
         atomic_store(&g_pause_age_at_detect, 0);
+        atomic_store(&g_tip_at_detect, -1);
         return false;
     }
 
@@ -55,6 +59,9 @@ static bool detect_utxo_activation_paused(void)
     if (age < 300)
         return false;
 
+    struct main_state *ms = condition_engine_main_state();
+    atomic_store(&g_tip_at_detect,
+                 ms ? (int64_t)active_chain_height(&ms->chain_active) : -1);
     atomic_store(&g_paused_height_at_detect, paused);
     atomic_store(&g_pause_age_at_detect, age);
     return true;
@@ -114,7 +121,28 @@ static enum condition_remedy_result remedy_utxo_activation_paused(void)
 static bool witness_utxo_activation_paused(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return process_block_get_utxo_activation_paused_height() < 0;
+    /* Law 7: the remedy itself calls
+     * process_block_clear_utxo_activation_pause_range(), so reading
+     * "is the pause flag clear?" would let the remedy self-certify a clear
+     * even if the stuck block never activated. An honest post-condition
+     * requires the symptom to MOVE: the pause must be gone AND the active
+     * chain tip must have advanced past the height that was paused (the
+     * previously-wedged block actually activated and the chain moved
+     * forward). The remedy unpauses + kicks activation; only real forward
+     * progress, not the flag clear, satisfies this. */
+    if (process_block_get_utxo_activation_paused_height() >= 0)
+        return false;
+
+    struct main_state *ms = condition_engine_main_state();
+    int64_t tip = ms ? (int64_t)active_chain_height(&ms->chain_active) : -1;
+    int64_t paused_h = atomic_load(&g_paused_height_at_detect);
+    int64_t tip_at_detect = atomic_load(&g_tip_at_detect);
+    if (tip < 0)
+        return false;
+    /* Tip reached the previously-paused height, or advanced past where it
+     * was when we detected the stall — either proves the activation pipeline
+     * resumed moving rather than just flipping a flag. */
+    return tip >= paused_h || tip > tip_at_detect;
 }
 
 static struct condition c_utxo_activation_paused = {
@@ -140,6 +168,7 @@ void utxo_activation_paused_test_reset(void)
     atomic_store(&g_paused_height_at_detect, -1);
     atomic_store(&g_paused_since_unix, 0);
     atomic_store(&g_pause_age_at_detect, 0);
+    atomic_store(&g_tip_at_detect, -1);
     atomic_store(&g_test_resume_calls, 0);
     atomic_store(&g_test_repair_calls, 0);
     atomic_store(&g_test_remedy_clear_enabled, true);

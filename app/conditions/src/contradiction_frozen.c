@@ -27,14 +27,35 @@ static enum condition_remedy_result remedy_contradiction_frozen(void)
      * sources disagree and needs operator review, not a blind restore.
      * The reconstruction primitive (cec_reconstruct_active_tip_evidence,
      * app/services/src/chain_evidence_reconstruct.c) is intentionally
-     * not invoked here. */
-    LOG_WARN("condition", "[condition:contradiction_frozen] repair hook unavailable; " "operator follow-up required");
-    return COND_REMEDY_SKIP;
+     * not invoked here.
+     *
+     * Law 7 ("heal in the open, page when stuck"): because this remedy
+     * makes NO forward progress, it must report FAILED — not SKIP. A SKIP
+     * paired with a pure-inverse witness would let the engine mark the
+     * condition "cleared" the instant the contradiction flapped away for
+     * an unrelated reason, falsely crediting a no-op remedy. FAILED keeps
+     * the attempt counted so it accrues toward operator escalation. */
+    LOG_WARN("condition", "[condition:contradiction_frozen] no auto-repair; "
+             "operator follow-up required");
+    return COND_REMEDY_FAILED;
 }
 
 static bool witness_contradiction_frozen(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    // honest-witness-ok: remedy returns COND_REMEDY_FAILED (a no-op repair),
+    // so the engine can never credit this FSM read as a remedy-caused clear
+    // (the Law-7 trap). This read serves the !detected deactivation path.
+    /* Witness = "did the contradiction actually leave the frozen state?"
+     * This observes the real symptom moving, not the absence of a poison we
+     * deleted. The Law-7 honesty fix lives in remedy_contradiction_frozen():
+     * it returns FAILED (not SKIP/OK), so the no-op repair can never be
+     * credited with a clear. The engine only treats this witness as success
+     * AFTER a remedy ran (condition.c: post-remedy re-check), where FAILED
+     * means the attempt is counted toward operator escalation rather than
+     * marking ok. On the !detected path the engine also consults this witness
+     * to deactivate the condition once the contradiction genuinely resolves,
+     * so it must remain a truthful read of cec state — never a constant. */
     return current_state() != CEC_CONTRADICTION_FROZEN;
 }
 

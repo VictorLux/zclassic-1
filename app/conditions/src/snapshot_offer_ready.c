@@ -20,6 +20,7 @@
 static _Atomic int g_local_height_at_detect = -1;
 static _Atomic int g_snapshot_height_at_detect = -1;
 static _Atomic int g_peer_id_at_detect = 0;
+static _Atomic int64_t g_staged_at_detect = -1;
 
 #ifdef ZCL_TESTING
 static struct snapshot_sync_service *g_test_svc;
@@ -98,6 +99,7 @@ static bool detect_snapshot_offer_ready(void)
     atomic_store(&g_local_height_at_detect, local_h);
     atomic_store(&g_snapshot_height_at_detect, status.offered_height);
     atomic_store(&g_peer_id_at_detect, (int)status.serving_peer_id);
+    atomic_store(&g_staged_at_detect, status.staged_row_count);
     return true;
 }
 
@@ -132,7 +134,47 @@ static enum condition_remedy_result remedy_snapshot_offer_ready(void)
 static bool witness_snapshot_offer_ready(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return sync_get_state() == SYNC_SNAPSHOT_RECEIVE;
+
+    /* The remedy unconditionally drives the SYNC FSM to SYNC_SNAPSHOT_RECEIVE,
+     * so observing that state alone proves nothing — it is a remedy echo. The
+     * honest, remedy-INDEPENDENT signal is the snapsync service's OWN state:
+     * snapshot_offer_is_active(status.state) is true only when the offer the
+     * remedy acted on is genuinely NEGOTIATING/RECEIVING/VERIFYING in the
+     * snapsync FSM, which this condition's remedy never sets. We require BOTH
+     * the SYNC FSM moved AND the snapsync offer is genuinely active; if the
+     * receive has progressed (staged rows climbed past the detect baseline)
+     * that is even stronger, but an active offer is the post-condition this
+     * (offer-ready -> enter-receive) condition owns — the data-arrival symptom
+     * is witnessed by snapshot_receive_stalled. "A remedy that returns ok
+     * without moving the symptom is a LIE." */
+    if (sync_get_state() != SYNC_SNAPSHOT_RECEIVE)
+        return false;
+
+    struct snapshot_sync_service *svc = runtime_snapsync();
+    if (!svc)
+        return false;
+
+    struct snapsync_status status = {0};
+#ifdef ZCL_TESTING
+    if (svc == g_test_svc) {
+        /* The test service has no ndb; read its fields directly (matching
+         * detect_snapshot_offer_ready) instead of snapsync_get_status_snapshot,
+         * which would deref a NULL staging store. */
+        status.state = svc->state;
+        status.offered_height = svc->offered_height;
+        status.offered_count = svc->offered_count;
+        status.serving_peer_id = svc->serving_peer_id;
+    } else
+#endif
+    {
+        snapsync_get_status_snapshot(svc, &status);
+    }
+
+    if (!snapshot_offer_is_active(status.state))
+        return false;
+
+    int64_t staged_at_detect = atomic_load(&g_staged_at_detect);
+    return status.staged_row_count >= staged_at_detect;
 }
 
 static struct condition c_snapshot_offer_ready = {

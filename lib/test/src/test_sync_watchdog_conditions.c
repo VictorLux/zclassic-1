@@ -129,6 +129,11 @@ int test_sync_watchdog_conditions(void)
         reset_sync_watchdog(&cm, &dm, &ms);
         bool ok = true;
         register_sync_state_stuck();
+        /* Honest witness (Law 7) requires the tip to ACTUALLY advance, not
+         * just the FSM to flip. Stand the tip at height 100 before detect. */
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
         sync_set_state(SYNC_FINDING_PEERS, "test");
         sync_state_test_set_entered_unix(2000);
         fake_clock_set(&clock, 2601);
@@ -136,6 +141,11 @@ int test_sync_watchdog_conditions(void)
         condition_engine_tick();
         ok = ok && sync_state_stuck_test_remedy_calls() == 1;
         ok = ok && sync_get_state() == SYNC_HEADERS_DOWNLOAD;
+        /* The kicked FSM made real forward progress: the tip advanced. Only
+         * then may the witness honestly deactivate the condition. */
+        struct block_index next = {0};
+        next.nHeight = 101;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &next);
         condition_engine_tick();
         ok = ok && condition_engine_get_active_count() == 0;
         SYNC_WATCHDOG_CHECK("sync state stuck kicks FSM", ok);

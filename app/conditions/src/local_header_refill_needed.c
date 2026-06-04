@@ -86,7 +86,32 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
 static bool witness_local_header_refill_needed(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return !detect_local_header_refill_needed();
+    /* Witness the symptom MOVED, not that detect flipped. The remedy's job
+     * was to supply the missing header at g_missing_height. Verify forward
+     * progress directly: either that header child now exists (it arrived), or
+     * peers no longer reach that height (the gap closed from the other end).
+     * Re-running detect would only confirm "the poison I named is gone" — a
+     * tautology forbidden by Law 7. */
+    int missing_h = atomic_load(&g_missing_height);
+    if (missing_h < 0)
+        return false;
+
+    struct connman *cm = sync_monitor_connman();
+    struct main_state *ms = sync_monitor_main_state();
+    if (!cm || !ms)
+        return false;
+
+    int peer_max = connman_max_peer_height(cm);
+    if (peer_max < missing_h)
+        return true; /* peers retreated below the needed height */
+
+    bool arrived = false;
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    if (tip)
+        arrived = sync_monitor_active_next_child_exists(ms, tip, missing_h);
+    zcl_mutex_unlock(&ms->cs_main);
+    return arrived; /* the missing header child actually showed up */
 }
 
 static struct condition c_local_header_refill_needed = {

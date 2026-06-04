@@ -5,6 +5,7 @@
 
 #include "config/runtime.h"
 #include "net/snapshot_sync_contract.h"
+#include "sync/sync_state.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -50,12 +51,27 @@ static enum condition_remedy_result remedy_snapshot_failed_reset(void)
 static bool witness_snapshot_failed_reset(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    // honest-witness-ok: the remedy's job is a HANDOFF — abandon the dead
+    // snapshot peer and fall back to the header-sync path. The forward
+    // progress of that path is witnessed downstream (sync_state_stuck /
+    // local_header_refill_needed read active_chain_height / peer height).
+    // This witness only confirms the handoff took effect (left FAILED and
+    // left SNAPSHOT_RECEIVE); it deliberately does not re-witness the header
+    // path's tip advance, which is a different condition's responsibility.
+    /* Honest post-condition: clearing the FAILED poison flag is not progress
+     * (the remedy sets it false, so !failed alone is a tautology). The remedy's
+     * actual job is to abandon the dead snapshot peer and FALL BACK to header
+     * sync so the node keeps moving toward tip. Witness that fallback took
+     * effect: the service left FAILED AND sync is no longer wedged in
+     * SNAPSHOT_RECEIVE — it has handed off to the forward header path. */
     struct snapshot_sync_service *svc = snapsync_condition_service();
     struct snapsync_failed_status st;
     if (!svc)
         return true;
     snapsync_get_failed_status(svc, &st);
-    return !st.failed;
+    if (st.failed)
+        return false;
+    return sync_get_state() != SYNC_SNAPSHOT_RECEIVE;
 }
 
 static struct condition c_snapshot_failed_reset = {

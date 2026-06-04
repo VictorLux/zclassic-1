@@ -102,6 +102,12 @@ static enum condition_remedy_result remedy_utxo_drift_detected(void)
 static bool witness_utxo_drift_detected(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    // honest-witness-ok: remedy_utxo_drift_detected returns COND_REMEDY_FAILED
+    // and NEVER clears the drift flag — only an external repair (or operator)
+    // can. So this poison-absence read cannot be self-certified by the remedy
+    // (the Law-7 trap). It exists solely for the engine's !detected
+    // deactivation path: once drift genuinely resolves externally the
+    // condition must clear, which needs a truthful flag read, never a constant.
     return !read_drift_flag(runtime_ndb(), NULL);
 }
 

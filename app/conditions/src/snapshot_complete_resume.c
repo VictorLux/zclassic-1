@@ -113,7 +113,16 @@ static enum condition_remedy_result remedy_snapshot_complete_resume(void)
 static bool witness_snapshot_complete_resume(int64_t target_at_detect)
 {
     (void)target_at_detect;
-    return sync_get_state() != SYNC_SNAPSHOT_RECEIVE;
+    /* Law 7: a witness must observe the symptom MOVED, not just that the
+     * FSM left SYNC_SNAPSHOT_RECEIVE. The remedy activates the verified
+     * snapshot tip at g_height_at_detect; the honest post-condition is that
+     * the active chain tip actually reached that activated height. */
+    struct main_state *ms = runtime_main_state();
+    int height_at_detect = atomic_load(&g_height_at_detect);
+    if (!ms || height_at_detect <= 0)
+        return false;
+    return sync_get_state() != SYNC_SNAPSHOT_RECEIVE &&
+           active_chain_height(&ms->chain_active) >= height_at_detect;
 }
 
 static struct condition c_snapshot_complete_resume = {

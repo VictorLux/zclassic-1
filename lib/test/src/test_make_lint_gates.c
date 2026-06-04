@@ -760,6 +760,11 @@ static int run_gate_script(const char *script_rel, const char *mode)
 #define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
 /* A foreign-shape suffix (*_controller) planted under app/services/src. */
 #define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
+#define E12_SCRIPT_REL   "tools/lint/check_honest_witness.sh"
+/* A condition .c with a PURE-INVERSE witness (the canonical Law-7 lie:
+ * "return !detect_x()"), planted under app/conditions/src so the gate's
+ * scan scope sees it. */
+#define E12_FIXTURE_DST  "app/conditions/src/_e12_honest_witness_fixture_tmp.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -1063,6 +1068,42 @@ static int t_e7_no_authoritative_ram_state(void)
     return failures;
 }
 
+/* E12 — honest witness (Law 7). The live tree is clean (FAIL mode passes:
+ * every witness reads observable progress or carries a reviewed
+ * // honest-witness-ok hatch). Plant a condition .c whose witness is a
+ * PURE-INVERSE of detect ("return !detect_x()") — the canonical Law-7 lie
+ * a no-op/self-certifying remedy hides behind — and assert the gate trips;
+ * removing it restores green. This proves the gate has teeth and the
+ * baseline is honestly empty. */
+static int t_e12_honest_witness(void)
+{
+    int failures = 0;
+    unlink_rel(E12_FIXTURE_DST);
+    int baseline_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
+    char path[PATH_MAX];
+    int planted = (repo_path(path, sizeof(path), E12_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "#include <stdbool.h>\n"
+                       "#include <stdint.h>\n"
+                       "static bool detect_e12_fixture(void){ return true; }\n"
+                       "static bool witness_e12_fixture(int64_t t){\n"
+                       "    (void)t;\n"
+                       "    return !detect_e12_fixture();\n"
+                       "}\n") == 0)
+                  ? 0 : -1;
+    int trip_rc = planted == 0 ? run_gate_script(E12_SCRIPT_REL, "FAIL") : -1;
+    unlink_rel(E12_FIXTURE_DST);
+    int recover_rc = run_gate_script(E12_SCRIPT_REL, "FAIL");
+    TEST("[lint-gate] E12 honest-witness FAIL: clean tree, trips pure-inverse witness, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -1081,6 +1122,7 @@ static void unlink_lint_fixtures(void)
         E5_FIXTURE_DST,
         E6_FIXTURE_DST,
         E7_FIXTURE_DST,
+        E12_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -2693,6 +2735,7 @@ int test_make_lint_gates(void)
     failures += t_e5_stage_advances_or_blocks();
     failures += t_e6_one_write_path();
     failures += t_e7_no_authoritative_ram_state();
+    failures += t_e12_honest_witness();
     return failures;
 }
 

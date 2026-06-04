@@ -715,6 +715,28 @@ already satisfies). Tested in `lib/test/src/test_make_lint_gates.c`
   - Override: `// no-silent-ready-ok:<tag>` (on a READY transition line that
     provably cannot be a non-progress stall — e.g. a clean caught-up path).
 
+- **Gate E12: `check-honest-witness`** (HARD, FAIL mode)
+  - Path: `tools/lint/check_honest_witness.sh`
+  - Checks: Law 7 ("heal in the open, page when stuck") — a Condition's
+    `witness_<name>()` post-condition must observe the symptom MOVE, not a
+    constant, the pure inverse of `detect`, or an FSM / poison-flag the
+    remedy itself set (which lets a no-op or self-certifying remedy report
+    "cleared" while the tip stays frozen — the exact lie W2 fixed for
+    `stale_validate_headers_repair` / `peer_floor_violated` /
+    `sync_state_stuck`). A witness fails the gate if it is TRIVIAL (every
+    return is a bare `true`/`false`), PURE-INVERSE (`return !detect_x()`),
+    or NO-OBSERVABLE (references none of the observable-progress tokens:
+    `active_chain_height`, block_map iteration, a durable `SELECT`, a peer /
+    inflight / staged / received progress counter). The exemplar honest
+    witness is `app/conditions/src/block_failed_mask_at_tip.c`
+    (`current_tip_height(ms) > g_tip_at_detect` — the tip MOVED).
+  - Baseline: `tools/lint/honest_witness_baseline.txt` (EMPTY; may only
+    shrink). The gate runs in `FAIL` mode in `make lint` — the tree is
+    clean with no grandfathered entries.
+  - Override: `// honest-witness-ok:<reason>` on a line inside a witness body
+    whose remedy returns `COND_REMEDY_FAILED` (cannot self-certify) or which
+    re-verifies real structural state independently of any remedy-set flag.
+
 `check-framework-shape` (Gate #18) and `check-no-raw-sqlite-in-controllers`
 (Gate #20) were **graduated WARN → RATCHET (E10)**. Each now fails on a
 new violation while tolerating its baseline:
@@ -736,6 +758,7 @@ edit it whenever you add/remove a gate.
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`
 - `check-framework-shape`
+- `check-honest-witness`
 - `check-lag-slo-observable`
 - `check-lib-layering`
 - `check-long-functions`
