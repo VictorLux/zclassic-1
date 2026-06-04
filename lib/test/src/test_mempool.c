@@ -899,5 +899,182 @@ int test_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ================================================================
+     * outpoint map grows past the old fixed 4096 ceiling.
+     *
+     * the next_tx open-addressing map was fixed at
+     * OUTPOINT_MAP_CAP (4096) slots and outpoint_insert's return was
+     * ignored. Past ~0.7 load it would fail silently: the input was
+     * not recorded, so a later conflicting tx spending the SAME
+     * outpoint was NOT seen as a double-spend and got accepted +
+     * relayed — a mempool-integrity defect reachable by a normal tx
+     * flood (cap 50k).
+     *
+     * This adds far more than 4096 distinct outpoints, then proves
+     * (a) every add succeeded and is tracked, (b) the map actually
+     * grew beyond 4096 slots, and (c) double-spend detection STILL
+     * fires for an outpoint inserted well past the old ceiling.
+     * ================================================================ */
+    printf("txmempool outpoint map grows past 4096 + double-spend... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        const int N = 6000; /* > OUTPOINT_MAP_CAP (4096) */
+        bool ok = true;
+
+        for (int i = 0; i < N && ok; i++) {
+            struct transaction tx;
+            transaction_init(&tx);
+            transaction_alloc(&tx, 1, 1);
+            /* Distinct outpoint per tx: encode i into prevout.hash. */
+            memset(tx.vin[0].prevout.hash.data, 0, 32);
+            tx.vin[0].prevout.hash.data[0] = (unsigned char)(i & 0xFF);
+            tx.vin[0].prevout.hash.data[1] = (unsigned char)((i >> 8) & 0xFF);
+            tx.vin[0].prevout.hash.data[2] = (unsigned char)((i >> 16) & 0xFF);
+            tx.vin[0].prevout.hash.data[3] = 0x5A; /* salt away from later test hashes */
+            tx.vin[0].prevout.n = 0;
+            tx.vin[0].sequence = 0xFFFFFFFF;
+            tx.vout[0].value = COIN_VALUE;
+            transaction_compute_hash(&tx);
+
+            struct mempool_entry entry;
+            mempool_entry_init(&entry, &tx, 1000, 1700000000, 1e6, 100,
+                               true, false, 0);
+            /* add_unchecked MUST report success — a silent insert
+             * failure (the bug) would still return true here, so we
+             * also independently re-prove tracking below. */
+            bool added = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+            ok = ok && added;
+            mempool_entry_free(&entry);
+            transaction_free(&tx);
+        }
+
+        /* All N entries are present. */
+        ok = ok && (tx_mempool_size(&pool) == (size_t)N);
+
+        /* The live-occupancy counter saw every distinct outpoint and
+         * the map grew well past the old fixed 4096 ceiling. */
+        ok = ok && (pool.next_tx_used == (size_t)N);
+        ok = ok && (pool.next_tx_cap > (size_t)OUTPOINT_MAP_CAP);
+
+        /* Pick an outpoint inserted FAR past the old 4096 boundary and
+         * prove double-spend detection still fires for it. With the
+         * pre-fix silent saturation, this outpoint would never have
+         * been recorded and the conflict check below would miss it. */
+        int probe = 5000; /* > 4096 */
+        struct transaction conflict;
+        transaction_init(&conflict);
+        transaction_alloc(&conflict, 1, 1);
+        memset(conflict.vin[0].prevout.hash.data, 0, 32);
+        conflict.vin[0].prevout.hash.data[0] = (unsigned char)(probe & 0xFF);
+        conflict.vin[0].prevout.hash.data[1] = (unsigned char)((probe >> 8) & 0xFF);
+        conflict.vin[0].prevout.hash.data[2] = (unsigned char)((probe >> 16) & 0xFF);
+        conflict.vin[0].prevout.hash.data[3] = 0x5A;
+        conflict.vin[0].prevout.n = 0;
+        conflict.vin[0].sequence = 0xFFFFFFFF;
+        conflict.vout[0].value = COIN_VALUE / 2; /* different txid */
+        transaction_compute_hash(&conflict);
+
+        /* Read-only probe sees the conflict. */
+        ok = ok && tx_mempool_has_conflict(&pool, &conflict);
+
+        /* And the add path rejects it as a double-spend rather than
+         * accepting + tracking it (size must not grow). */
+        struct mempool_entry centry;
+        mempool_entry_init(&centry, &conflict, 1000, 1700000000, 1e6, 100,
+                           true, false, 0);
+        bool conflict_added = tx_mempool_add_unchecked(&pool, &conflict.hash, &centry);
+        ok = ok && !conflict_added;
+        ok = ok && (tx_mempool_size(&pool) == (size_t)N);
+
+        mempool_entry_free(&centry);
+        transaction_free(&conflict);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ================================================================
+     * After growth, removals shrink live occupancy and free the
+     * outpoint so a fresh tx may legitimately reuse it. Guards against
+     * the grow path leaking the next_tx_used counter or corrupting the
+     * probe chains during rehash.
+     * ================================================================ */
+    printf("txmempool grow then remove frees outpoints... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        const int N = 5000; /* forces at least one grow */
+        struct uint256 hashes[5000];
+        struct outpoint ops[5000];
+        bool ok = true;
+
+        for (int i = 0; i < N && ok; i++) {
+            struct transaction tx;
+            transaction_init(&tx);
+            transaction_alloc(&tx, 1, 1);
+            memset(tx.vin[0].prevout.hash.data, 0, 32);
+            tx.vin[0].prevout.hash.data[0] = (unsigned char)(i & 0xFF);
+            tx.vin[0].prevout.hash.data[1] = (unsigned char)((i >> 8) & 0xFF);
+            tx.vin[0].prevout.hash.data[2] = (unsigned char)((i >> 16) & 0xFF);
+            tx.vin[0].prevout.hash.data[3] = 0x77;
+            tx.vin[0].prevout.n = 0;
+            tx.vin[0].sequence = 0xFFFFFFFF;
+            tx.vout[0].value = COIN_VALUE;
+            transaction_compute_hash(&tx);
+
+            ops[i].hash = tx.vin[0].prevout.hash;
+            ops[i].n = 0;
+            hashes[i] = tx.hash;
+
+            struct mempool_entry entry;
+            mempool_entry_init(&entry, &tx, 1000, 1700000000, 1e6, 100,
+                               true, false, 0);
+            ok = ok && tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+            mempool_entry_free(&entry);
+            transaction_free(&tx);
+        }
+
+        ok = ok && (pool.next_tx_used == (size_t)N);
+        ok = ok && (pool.next_tx_cap > (size_t)OUTPOINT_MAP_CAP);
+
+        /* Remove every other entry; occupancy must track exactly. */
+        int removed = 0;
+        for (int i = 0; i < N; i += 2) {
+            tx_mempool_remove(&pool, &hashes[i]);
+            removed++;
+        }
+        ok = ok && (pool.next_tx_used == (size_t)(N - removed));
+        ok = ok && (tx_mempool_size(&pool) == (size_t)(N - removed));
+
+        /* A freed outpoint (i=0 was removed) is no longer a conflict. */
+        struct transaction reuse;
+        transaction_init(&reuse);
+        transaction_alloc(&reuse, 1, 1);
+        reuse.vin[0].prevout.hash = ops[0].hash;
+        reuse.vin[0].prevout.n = 0;
+        reuse.vin[0].sequence = 0xFFFFFFFF;
+        reuse.vout[0].value = COIN_VALUE;
+        transaction_compute_hash(&reuse);
+        ok = ok && !tx_mempool_has_conflict(&pool, &reuse);
+
+        /* A surviving outpoint (i=1 kept) is still a conflict. */
+        struct transaction kept;
+        transaction_init(&kept);
+        transaction_alloc(&kept, 1, 1);
+        kept.vin[0].prevout.hash = ops[1].hash;
+        kept.vin[0].prevout.n = 0;
+        kept.vin[0].sequence = 0xFFFFFFFF;
+        kept.vout[0].value = COIN_VALUE;
+        transaction_compute_hash(&kept);
+        ok = ok && tx_mempool_has_conflict(&pool, &kept);
+
+        transaction_free(&reuse);
+        transaction_free(&kept);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

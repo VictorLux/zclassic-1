@@ -93,9 +93,19 @@ static struct outpoint_map_entry *outpoint_find(struct outpoint_map_entry *map,
     return NULL;
 }
 
+/* Insert (or update) one outpoint→inpoint mapping. On a successful
+ * insert into a previously-empty slot, *added (if non-NULL) is set to
+ * true so the caller can maintain a live-occupancy counter; on an
+ * update of an existing key it is set to false. Returns false only if
+ * the table is genuinely full (no empty slot found on the probe
+ * chain) — callers MUST check the return so saturation surfaces
+ * loudly instead of silently dropping the double-spend tracking
+ * entry. With grow-before-insert maintaining load < 0.7, the full
+ * case is unreachable in normal operation. */
 static bool outpoint_insert(struct outpoint_map_entry *map, size_t cap,
                               const struct outpoint *key,
-                              const struct inpoint *value)
+                              const struct inpoint *value,
+                              bool *added)
 {
     uint32_t idx = outpoint_hash(key, cap);
     for (size_t i = 0; i < cap; i++) {
@@ -104,25 +114,65 @@ static bool outpoint_insert(struct outpoint_map_entry *map, size_t cap,
             map[pos].key = *key;
             map[pos].value = *value;
             map[pos].used = true;
+            if (added) *added = true;
             return true;
         }
         if (uint256_eq(&map[pos].key.hash, &key->hash) &&
             map[pos].key.n == key->n) {
             map[pos].value = *value;
+            if (added) *added = false;
             return true;
         }
     }
+    if (added) *added = false;
     LOG_FAIL("mempool", "outpoint_insert: hash table full (cap=%zu)", cap);
 }
 
-static void outpoint_remove(struct outpoint_map_entry *map, size_t cap,
+/* Grow the outpoint map to `newcap` slots and rehash every live entry.
+ * Allocated empty (calloc) so the open-addressing probe chains are
+ * rebuilt cleanly from scratch. Returns false (leaving the pool's map
+ * untouched) on allocation failure — the caller treats that as a hard
+ * insert failure rather than silently continuing with a saturated map. */
+static bool outpoint_map_grow(struct tx_mempool *pool, size_t newcap)
+{
+    struct outpoint_map_entry *newmap =
+        zcl_calloc(newcap, sizeof(*newmap), "mempool_next_tx_grow");
+    if (!newmap)
+        LOG_FAIL("mempool", "outpoint_map_grow: calloc failed for %zu slots", newcap);
+
+    for (size_t i = 0; i < pool->next_tx_cap; i++) {
+        if (!pool->next_tx[i].used)
+            continue;
+        if (!outpoint_insert(newmap, newcap, &pool->next_tx[i].key,
+                             &pool->next_tx[i].value, NULL)) {
+            /* Should be impossible: newcap > live count. Bail loudly
+             * without corrupting the existing map. */
+            free(newmap);
+            LOG_FAIL("mempool", "outpoint_map_grow: rehash overflow (newcap=%zu)", newcap);
+        }
+    }
+
+    free(pool->next_tx);
+    pool->next_tx = newmap;
+    pool->next_tx_cap = newcap;
+    return true;
+}
+
+/* Remove one outpoint mapping (no-op if absent). Returns true iff a
+ * live entry was actually removed, so the caller can decrement its
+ * live-occupancy counter. The reinserts that repair the linear-probe
+ * chain relocate already-live entries within the same map, so they do
+ * not change occupancy and the map can never be full during this
+ * fixup (we just freed a slot) — the insert return is therefore safe
+ * to assert rather than propagate. */
+static bool outpoint_remove(struct outpoint_map_entry *map, size_t cap,
                               const struct outpoint *key)
 {
     uint32_t idx = outpoint_hash(key, cap);
     for (size_t i = 0; i < cap; i++) {
         size_t pos = (idx + i) % cap;
         if (!map[pos].used)
-            return;
+            return false;
         if (uint256_eq(&map[pos].key.hash, &key->hash) &&
             map[pos].key.n == key->n) {
             map[pos].used = false;
@@ -131,12 +181,15 @@ static void outpoint_remove(struct outpoint_map_entry *map, size_t cap,
             while (map[next].used) {
                 struct outpoint_map_entry tmp = map[next];
                 map[next].used = false;
-                outpoint_insert(map, cap, &tmp.key, &tmp.value);
+                if (!outpoint_insert(map, cap, &tmp.key, &tmp.value, NULL))
+                    LOG_RETURN(true, "mempool",
+                               "outpoint_remove: probe-chain reinsert overflow (cap=%zu)", cap);
                 next = (next + 1) % cap;
             }
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 /* --- tx_mempool --- */
@@ -151,6 +204,7 @@ void tx_mempool_init(struct tx_mempool *pool, int64_t min_relay_fee)
     pool->entries = zcl_calloc(pool->entries_cap, sizeof(*pool->entries), "mempool_entries");
 
     pool->next_tx_cap = OUTPOINT_MAP_CAP;
+    pool->next_tx_used = 0;
     pool->next_tx = zcl_calloc(pool->next_tx_cap, sizeof(*pool->next_tx), "mempool_next_tx");
 
     pool->deltas_cap = PRIORITY_MAP_CAP;
@@ -174,6 +228,7 @@ void tx_mempool_clear(struct tx_mempool *pool)
         mempool_entry_free(&pool->entries[i]);
     pool->num_entries = 0;
     memset(pool->next_tx, 0, pool->next_tx_cap * sizeof(*pool->next_tx));
+    pool->next_tx_used = 0;
     pool->total_tx_size = 0;
     pool->txs_updated++;
     zcl_mutex_unlock(&pool->cs);
@@ -252,6 +307,27 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
         }
     }
 
+    /* Grow the outpoint map *before* inserting so live occupancy never
+     * crosses 70% — an open-addressing table degrades sharply and (at
+     * 100%) silently loses entries past full. After this tx's inputs
+     * are added, live count is at most next_tx_used + num_vin; if that
+     * would exceed 0.7*cap, rehash to ~4x the projected live count so
+     * the map stays sparse across a sustained flood (mempool cap 50k).
+     * Failure here is a hard add failure — never proceed with a
+     * saturated map, which would let a double-spend slip through. */
+    size_t projected = pool->next_tx_used + entry->tx.num_vin;
+    if (projected * 10 > pool->next_tx_cap * 7) {
+        size_t target = (projected * 4 < OUTPOINT_MAP_CAP)
+                        ? (size_t)OUTPOINT_MAP_CAP : projected * 4;
+        if (target <= pool->next_tx_cap)
+            target = pool->next_tx_cap * 2;
+        if (!outpoint_map_grow(pool, target)) {
+            zcl_mutex_unlock(&pool->cs);
+            LOG_FAIL("mempool", "outpoint map grow failed (cap=%zu, projected=%zu)",
+                     pool->next_tx_cap, projected);
+        }
+    }
+
     if (pool->num_entries >= pool->entries_cap) {
         size_t newcap = pool->entries_cap * 2;
         struct mempool_entry *tmp = zcl_realloc(pool->entries,
@@ -273,7 +349,18 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
         op.hash = e->tx.vin[i].prevout.hash;
         op.n = e->tx.vin[i].prevout.n;
         struct inpoint ip = { idx, (uint32_t)i };
-        outpoint_insert(pool->next_tx, pool->next_tx_cap, &op, &ip);
+        bool added = false;
+        /* The map was just grown to keep load < 0.7, so insert cannot
+         * fail for lack of space. Check the return regardless so any
+         * future regression surfaces loudly instead of silently
+         * dropping a double-spend-tracking entry. */
+        if (!outpoint_insert(pool->next_tx, pool->next_tx_cap, &op, &ip, &added)) {
+            LOG_WARN("mempool",
+                     "outpoint_insert unexpectedly failed (cap=%zu, used=%zu) — double-spend tracking may be incomplete",
+                     pool->next_tx_cap, pool->next_tx_used);
+        } else if (added) {
+            pool->next_tx_used++;
+        }
     }
 
     pool->txs_updated++;
@@ -324,7 +411,9 @@ static void remove_entry_at(struct tx_mempool *pool, size_t idx)
         struct outpoint op;
         op.hash = e->tx.vin[i].prevout.hash;
         op.n = e->tx.vin[i].prevout.n;
-        outpoint_remove(pool->next_tx, pool->next_tx_cap, &op);
+        if (outpoint_remove(pool->next_tx, pool->next_tx_cap, &op) &&
+            pool->next_tx_used > 0)
+            pool->next_tx_used--;
     }
 
     pool->total_tx_size -= e->tx_size;

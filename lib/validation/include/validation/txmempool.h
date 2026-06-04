@@ -70,6 +70,9 @@ struct priority_delta {
 };
 
 #define MEMPOOL_INITIAL_CAP 256
+/* Initial slot count for the open-addressing outpoint map. The map
+ * grows (rehash) whenever live occupancy crosses 70% of capacity, so
+ * this is a starting size, not a hard ceiling. */
 #define OUTPOINT_MAP_CAP 4096
 #define PRIORITY_MAP_CAP 256
 
@@ -82,6 +85,7 @@ struct tx_mempool {
 
     struct outpoint_map_entry *next_tx;
     size_t next_tx_cap;
+    size_t next_tx_used;   /* live (used) slots — drives grow trigger */
 
     struct priority_delta *deltas;
     size_t num_deltas;
