@@ -37,6 +37,14 @@
 #define RPC_HTTP_WORKERS 4
 #define RPC_HTTP_QUEUE_CAP 64
 
+/* Upper bound on a single serialized JSON-RPC response body. Generous
+ * enough for the largest legitimate responses (gettxoutsetinfo, a full
+ * listunspent / getrawmempool true) while bounding the one-shot
+ * allocation an authenticated client can drive. A response that would
+ * exceed this returns a proper RPC error envelope instead of a partial
+ * or out-of-band send. */
+#define RPC_HTTP_MAX_RESP_BYTES ((size_t)128 * 1024 * 1024)
+
 /* ── Connection abstraction for plain + TLS ───────────────────────── */
 
 struct rpc_conn {
@@ -339,6 +347,67 @@ static void conn_close(struct rpc_conn *c)
     }
 }
 
+/* Two-pass serialization of a JSON-RPC response. json_write() returns
+ * the FULL required length regardless of the buffer it is handed (it
+ * only writes where pos < buflen, and a zero-length buffer is never
+ * dereferenced), so we size first with a zero-length probe, reject
+ * anything past RPC_HTTP_MAX_RESP_BYTES, then allocate exactly len+1
+ * and write the body. This replaces the old fixed 4 MiB buffer whose
+ * unclamped length was fed straight to write() — for a response larger
+ * than the buffer that read (len - 4 MiB) bytes past the allocation and
+ * shipped adjacent heap memory to the client (crash/DoS + info-leak).
+ *
+ * On success: *out_buf owns a heap buffer the caller must free(), and
+ * *out_len is the exact body length to send. Returns false (with
+ * *out_buf == NULL) on OOM or when the response exceeds the cap; the
+ * caller sends a proper RPC error envelope instead.
+ *
+ * Exposed (non-static) so the regression test exercises the exact same
+ * sizing path the HTTP response uses — same convention as
+ * rpc_http_test_build_response_envelope above. */
+bool rpc_http_test_serialize_response(const struct json_value *response,
+                                      char **out_buf, size_t *out_len)
+{
+    if (!response || !out_buf || !out_len) {
+        if (out_buf) *out_buf = NULL;
+        if (out_len) *out_len = 0;
+        return false;
+    }
+    *out_buf = NULL;
+    *out_len = 0;
+
+    /* Pass 1: size the body without writing (zero-length buffer). */
+    size_t need = json_write(response, NULL, 0);
+    if (need > RPC_HTTP_MAX_RESP_BYTES) {
+        LOG_FAIL("rpc", "response too large: %zu > %zu bytes", need,
+                 RPC_HTTP_MAX_RESP_BYTES);
+        return false;
+    }
+
+    char *buf = zcl_malloc(need + 1, "http_resp_buf");
+    if (!buf) {
+        LOG_FAIL("rpc", "response buffer alloc failed: %zu bytes", need + 1);
+        return false;
+    }
+
+    /* Pass 2: write exactly into a buffer sized to hold the whole body.
+     * json_write writes the NUL only when pos < buflen; need+1 guarantees
+     * room for it, and the returned length is the body length to send. */
+    size_t wrote = json_write(response, buf, need + 1);
+    if (wrote != need) {
+        /* Should be impossible (the two passes serialize the same value),
+         * but never ship a length that disagrees with what we wrote. Free
+         * before logging since LOG_FAIL returns. */
+        free(buf);
+        LOG_FAIL("rpc", "response size mismatch: sized %zu wrote %zu", need,
+                 wrote);
+    }
+
+    *out_buf = buf;
+    *out_len = wrote;
+    return true;
+}
+
 static void handle_client(struct rpc_conn conn)
 {
     struct trace_span *rpc_span = trace_start("rpc.dispatch");
@@ -614,17 +683,19 @@ static void handle_client(struct rpc_conn conn)
     bool response_ok = rpc_http_test_build_response_envelope(
         rpc_ok, req.method, &result, &req.id, &response);
 
-    char *resp_buf = zcl_malloc(4 * 1024 * 1024, "http_resp_buf");
-    if (resp_buf && response_ok) {
-        size_t resp_len = json_write(&response, resp_buf, 4 * 1024 * 1024);
+    char *resp_buf = NULL;
+    size_t resp_len = 0;
+    if (response_ok &&
+        rpc_http_test_serialize_response(&response, &resp_buf, &resp_len)) {
+        /* Body sized and written by the same value: send exactly the
+         * bytes we wrote — never an unclamped length past the buffer. */
         send_response(&conn, 200, "OK", resp_buf, resp_len);
         free(resp_buf);
     } else {
         char errbuf[256];
         size_t elen = json_rpc_error_response(errbuf, sizeof(errbuf),
-            RPC_OUT_OF_MEMORY, "Internal error: out of memory",
-            req.method, NULL);
-        free(resp_buf);
+            RPC_OUT_OF_MEMORY, "Internal error: response too large or "
+            "out of memory", req.method, NULL);
         send_response(&conn, 500, "Internal Server Error",
                       errbuf, elen);
     }

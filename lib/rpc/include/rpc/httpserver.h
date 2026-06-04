@@ -33,4 +33,16 @@ bool rpc_http_test_build_response_envelope(bool rpc_ok,
                                            const struct json_value *id,
                                            struct json_value *response);
 
+/* test surface: two-pass serialization of an RPC response. Sizes the
+ * body with a zero-length json_write probe, rejects anything past the
+ * internal cap, then allocates exactly len+1 and writes the body — so
+ * the length sent to write() can never exceed the allocation (the heap
+ * OOB-read fix). Production code routes through this same helper.
+ *
+ * On true: *out_buf owns a heap buffer the caller must free() and
+ * *out_len is the exact body length. On false (OOM / over cap):
+ * *out_buf == NULL and *out_len == 0. */
+bool rpc_http_test_serialize_response(const struct json_value *response,
+                                      char **out_buf, size_t *out_len);
+
 #endif
