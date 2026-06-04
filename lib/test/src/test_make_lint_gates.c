@@ -737,6 +737,77 @@ static int run_gate_script(const char *script_rel, const char *mode)
     return -1;
 }
 
+/* Like run_gate_script but ALSO exports ZCL_SUPERVISOR_WORKER_FILES so the
+ * widened Gate #21 background-worker scan reads a planted fixture file
+ * instead of the live config/src/boot_background_workers.c. `worker_files`
+ * is a space-separated repo-relative path list; it is resolved to absolute
+ * paths before export so the gate (which runs from repo root) finds it
+ * regardless of cwd. Mirrors run_gate_script's fork/exec/redirect plumbing. */
+static int run_gate_script_with_worker_files(const char *script_rel,
+                                             const char *mode,
+                                             const char *worker_files_rel)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char worker_abs[PATH_MAX];
+    if (worker_files_rel &&
+        repo_path(worker_abs, sizeof(worker_abs), worker_files_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (mode)
+            (void)setenv("ZCL_LINT_MODE", mode, 1);
+        if (worker_files_rel)
+            (void)setenv("ZCL_SUPERVISOR_WORKER_FILES", worker_abs, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
 #define E1_SCRIPT_REL    "tools/scripts/check_file_size_ceiling.sh"
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
@@ -765,6 +836,18 @@ static int run_gate_script(const char *script_rel, const char *mode)
  * "return !detect_x()"), planted under app/conditions/src so the gate's
  * scan scope sees it. */
 #define E12_FIXTURE_DST  "app/conditions/src/_e12_honest_witness_fixture_tmp.c"
+/* Gate #21 background-worker lock-in: the widened check_supervisor_domain.sh
+ * also scans the boot worker file (config/src/boot_background_workers.c) and
+ * fails any spawn (pthread_create / thread_registry_spawn) not paired with a
+ * supervisor_register_in_domain. The fixtures are planted under test-tmp/ and
+ * fed to the gate via ZCL_SUPERVISOR_WORKER_FILES so the assertion does not
+ * depend on the live worker file's state. */
+#define SUPDOM_SCRIPT_REL     "tools/lint/check_supervisor_domain.sh"
+/* A worker that spawns a thread but registers NO domain contract — the lie
+ * the widened gate must catch (an unsupervised background worker). */
+#define SUPDOM_BAD_WORKER_REL "test-tmp/_supdom_unsupervised_worker_fixture_tmp.c"
+/* The same worker WITH a supervisor_register_in_domain pairing — passes. */
+#define SUPDOM_OK_WORKER_REL  "test-tmp/_supdom_supervised_worker_fixture_tmp.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -1104,6 +1187,70 @@ static int t_e12_honest_witness(void)
     return failures;
 }
 
+/* Gate #21 background-worker lock-in (Shape 5 — Supervisor). The widened
+ * check_supervisor_domain.sh ALSO scans the boot worker file and fails any
+ * thread spawn not paired with supervisor_register_in_domain. This self-test
+ * proves the widened scan has teeth and the (intentionally empty) baseline is
+ * honest: plant a worker that spawns a pthread with NO register and assert the
+ * gate FLAGS it (exit != 0); then a worker WITH a register and assert it
+ * PASSES (exit == 0). Fixtures are fed via ZCL_SUPERVISOR_WORKER_FILES so the
+ * result does not depend on the live boot_background_workers.c state. */
+static int t_gate21_supervisor_worker_lockin(void)
+{
+    int failures = 0;
+    char bad_path[PATH_MAX];
+    char ok_path[PATH_MAX];
+    if (repo_path(bad_path, sizeof(bad_path), SUPDOM_BAD_WORKER_REL) != 0 ||
+        repo_path(ok_path, sizeof(ok_path), SUPDOM_OK_WORKER_REL) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not resolve supervisor worker fixture paths\n");
+        return 1;
+    }
+
+    /* Unsupervised worker: spawns a thread, never registers a contract. */
+    const char *bad =
+        "/* fixture: boot background worker without a liveness contract */\n"
+        "void *worker(void *a){ return a; }\n"
+        "int boot_start_fixture_service(void){\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "    return 0;\n"
+        "}\n";
+    /* Same worker, now paired with a domain registration. */
+    const char *ok =
+        "/* fixture: boot background worker with a liveness contract */\n"
+        "void *worker(void *a){ return a; }\n"
+        "int boot_start_fixture_service(void){\n"
+        "    pthread_create(&t, 0, worker, 0);\n"
+        "    supervisor_register_in_domain(g_op_sup, &g_fixture_contract);\n"
+        "    return 0;\n"
+        "}\n";
+
+    (void)unlink(bad_path);
+    (void)unlink(ok_path);
+    int planted_bad = write_file(bad_path, bad);
+    int trip_rc = planted_bad == 0
+        ? run_gate_script_with_worker_files(SUPDOM_SCRIPT_REL, "FAIL",
+                                            SUPDOM_BAD_WORKER_REL)
+        : -1;
+    (void)unlink(bad_path);
+
+    int planted_ok = write_file(ok_path, ok);
+    int pass_rc = planted_ok == 0
+        ? run_gate_script_with_worker_files(SUPDOM_SCRIPT_REL, "FAIL",
+                                            SUPDOM_OK_WORKER_REL)
+        : -1;
+    (void)unlink(ok_path);
+
+    TEST("[lint-gate] #21 supervisor worker lock-in: unsupervised spawn trips, registered passes") {
+        ASSERT(planted_bad == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(planted_ok == 0);
+        ASSERT(pass_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void unlink_lint_fixtures(void)
 {
     const char *fixtures[] = {
@@ -1123,6 +1270,8 @@ static void unlink_lint_fixtures(void)
         E6_FIXTURE_DST,
         E7_FIXTURE_DST,
         E12_FIXTURE_DST,
+        SUPDOM_BAD_WORKER_REL,
+        SUPDOM_OK_WORKER_REL,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -2789,6 +2938,7 @@ int test_make_lint_gates(void)
     failures += t_e6_one_write_path();
     failures += t_e7_no_authoritative_ram_state();
     failures += t_e12_honest_witness();
+    failures += t_gate21_supervisor_worker_lockin();
     return failures;
 }
 
