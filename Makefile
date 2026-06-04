@@ -394,6 +394,60 @@ test-shielded-payment: test_zcl
 test-store-e2e: test_zcl
 	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e ./test_zcl
 
+# ── MVP acceptance gates: hermetic vs fixture-bound ───────────
+#
+# The MVP acceptance tests (docs/MVP.md #2..#7) all self-skip unless
+# ZCL_STRESS_TESTS=1. We split them by what a clean CI container can
+# actually provide, so `make ci` only blocks on tests that truly run:
+#
+#   ci-mvp-gates  HERMETIC — no network, no params, no oracle. Runs in
+#                 `make ci`. Each gate is invoked FOCUSED via
+#                 ZCL_TEST_ONLY so we do NOT accidentally trip the
+#                 non-hermetic onion gate by blanket-setting the env
+#                 var on the whole suite.
+#                   #3 cold_start             (in-process sync FSM, ~6-10s)
+#                   #5 store_e2e              (local SQLite + store ctrl, sub-s)
+#                   #7 kill9                  (fork+SIGKILL+SQLite, ~4-8s)
+#                      chain_advance_atomicity (fork child procs, supports #7)
+#
+#   ci-stress     NON-HERMETIC — needs external resources a clean
+#                 container lacks. NOT in `make ci`. Run where the
+#                 resource exists (params staged / Tor egress allowed):
+#                   #2 onion_bootstrap        (real Tor + dir-authority net)
+#                   #4 shielded_payment       (~/.zcash-params, params-guarded)
+#
+# Each focused run is its own process, so a failure in one gate names
+# exactly which MVP criterion regressed.
+#
+# Focused MVP gate (DRY): run ONE ZCL_TEST_ONLY selector hermetically and
+# PROVE it actually ran that focused subset. test.c returns early only on a
+# selector match, so an unknown/renamed selector silently falls through to the
+# FULL suite — which under ZCL_STRESS_TESTS=1 runs the non-hermetic onion test
+# and would hang CI while looking green. The sentinel grep converts that silent
+# fall-through into a loud failure. Redirect (not pipe) so the test's real exit
+# status survives on dash. $(1)=label $(2)=selector $(3)=unique sentinel.
+define mvp_gate
+@echo "══ $(1) ══"; l=$$(mktemp); if ! ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=$(2) ./test_zcl >"$$l" 2>&1; then cat "$$l"; rm -f "$$l"; echo "MVP GATE FAILED: $(1) (ZCL_TEST_ONLY=$(2) exited non-zero)"; exit 1; fi; cat "$$l"; if ! grep -qF "$(3)" "$$l"; then rm -f "$$l"; echo "MVP GATE FALSE-GREEN GUARD: $(1) — sentinel \"$(3)\" not printed; the ZCL_TEST_ONLY=$(2) selector likely no longer exists in lib/test/src/test.c so the full suite ran. Restore the selector or re-point this gate."; exit 1; fi; rm -f "$$l"
+endef
+
+.PHONY: ci-mvp-gates ci-stress
+ci-mvp-gates: test_zcl
+	$(call mvp_gate,MVP gate 3: cold-start sync FSM (hermetic),cold_start,=== Cold-start subset complete:)
+	$(call mvp_gate,MVP gate 5: store end-to-end (hermetic),store_e2e,=== store e2e subset complete:)
+	$(call mvp_gate,MVP gate 7: kill -9 recovery (hermetic),kill9,=== kill9 subset complete:)
+	$(call mvp_gate,MVP support: chain-advance atomicity (hermetic),chain_advance_atomicity,=== chain_advance_atomicity subset complete:)
+	@echo "══ MVP hermetic gates: ALL PASSED ══"
+
+# ci-stress: the fixture/network-bound MVP gates. Run on a worker that
+# has the resource (Tor egress for #2, ~/.zcash-params for #4). Reuses
+# the params-probe in test-shielded-payment so a host missing the params
+# SKIPs cleanly instead of failing — do NOT call this from `make ci`.
+ci-stress: test_zcl
+	@echo "══ MVP gate #2: onion bootstrap (needs Tor network) ══"
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion ./test_zcl
+	@echo "══ MVP gate #4: shielded payment (needs ~/.zcash-params) ══"
+	$(MAKE) test-shielded-payment
+
 # ── libFuzzer harnesses ───────────────────────────────────────
 #
 # Fuzz targets use clang + libFuzzer + ASan + UBSan. They compile
@@ -1110,6 +1164,9 @@ lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-c
 ci: lint bench-regress zclassic23 test_zcl
 	@echo "══ CI: test ══"
 	ulimit -s unlimited && ./test_zcl
+	@echo ""
+	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"
+	$(MAKE) ci-mvp-gates
 	@echo ""
 	@echo "══ CI: test-crash ══"
 	$(MAKE) test-crash

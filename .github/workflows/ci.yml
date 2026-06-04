@@ -13,6 +13,10 @@ name: ci
 on:
   push:
   pull_request:
+  # Manual trigger for the fixture/network-bound MVP gates (#2 onion, #4
+  # shielded). They need Tor egress / ~/.zcash-params, which the hermetic
+  # push/PR runner does not have, so they are opt-in and never block a PR.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
@@ -29,6 +33,12 @@ jobs:
   ci:
     name: lint + tests
     runs-on: ubuntu-24.04
+    # No CI step had a timeout, so a hung test could burn the 360-min job
+    # ceiling. `make ci` now also runs the hermetic MVP gates (ci-mvp-gates:
+    # #3 cold-start FSM, #5 store e2e, #7 kill -9, chain-advance atomicity);
+    # those are deterministic and fast (~tens of seconds total), so a tight
+    # cap turns any hang into a fast, loud failure instead of a silent stall.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,8 +52,43 @@ jobs:
           # probes resolve (they degrade gracefully when absent).
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc pkg-config libssl-dev openssl git
-      - name: make ci (lint then tests)
+      - name: make ci (lint, tests, hermetic MVP gates #3/#5/#7)
+        # `ci` chains: lint -> bench-regress -> test_zcl -> ci-mvp-gates
+        # (the hermetic MVP acceptance gates) -> test-crash -> fuzz -> cov.
+        # The non-hermetic MVP gates (#2 onion needs Tor egress, #4 shielded
+        # needs ~/.zcash-params) are deliberately NOT here — they live in
+        # `make ci-stress` and run on a worker that has those resources.
         run: make ci
+
+  # ---------------------------------------------------------------------------
+  # Job 1b (opt-in): the fixture/network-bound MVP gates — #2 onion bootstrap
+  # (real Tor + dir-authority egress) and #4 shielded payment (~/.zcash-params).
+  # These CANNOT run hermetically: on a network-isolated / param-less runner
+  # #2 would burn its 90s ceiling then FAIL and #4 would silently SKIP, so they
+  # are NOT in `make ci`. This job runs ONLY on manual dispatch — it never
+  # gates a push/PR — and is the documented home for `make ci-stress`. Wire a
+  # self-hosted runner with Tor egress + a staged ~/.zcash-params here to turn
+  # #2/#4 into real gates; until then it documents where they belong.
+  # ---------------------------------------------------------------------------
+  mvp-stress:
+    name: MVP stress gates (#2 onion, #4 shielded) — opt-in
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc pkg-config libssl-dev openssl git
+      # NOTE: this default GitHub-hosted runner has neither Tor egress nor
+      # ~/.zcash-params, so #2 will fail and #4 will SKIP here. Re-target this
+      # job at a runner that provides both before treating it as a gate.
+      - name: make ci-stress (#2 onion, #4 shielded)
+        run: make ci-stress
 
   # ---------------------------------------------------------------------------
   # Job 2 (matrix): build the reproducible release artifact on two distinct

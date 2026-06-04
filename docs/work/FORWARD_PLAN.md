@@ -48,20 +48,23 @@ Recovery FSM design: [`service-state-machine.md`](./service-state-machine.md).
 
 ## Honest MRS scoreboard (supersedes any stale ✅ in MVP.md)
 
-**Actually met (manual only): ~2 / 8. CI-verified: 0 / 8.** No criterion's
-acceptance test runs under `make ci` — every one gates on `ZCL_STRESS_TESTS=1`,
-which `make ci` (`Makefile:1110`) and `.github/` never set; C1/C6/C8 have no CI
-test at all.
+**Full criteria met: ~2 / 8 (manual). CI-verified full criteria: 0 / 8.**
+What landed (S1): `make ci` now runs three **hermetic slice-gates** (◐) that
+block the build — #3 sync-FSM, #5 store-proxy, #7 kill-9 SQLite-atomicity —
+each FOCUSED via `ZCL_TEST_ONLY` and false-green-guarded. They protect a *slice*
+of each criterion but do not prove the full operator claim, so they are ◐, not
+✅; the MRS is unchanged. CI? column below: `slice ◐` = hermetic gate green for
+a slice; `no` = not gated.
 
 | # | Criterion | Honest status | CI? | Note |
 |---|-----------|--------------|-----|------|
 | 1 | Single-binary install (clean Ubuntu) | met-manual | no | no clean-container install + `systemctl` CI job |
-| 2 | Tor onion bootstrap <60s | met-manual | no | onion live, but <60s timing not measured; test SKIPs in CI |
-| 3 | Cold-start sync to tip <10 min | partial | no | FSM-only test; real sync unproven; node wedged |
-| 4 | Receive shielded payment e2e | partial | no | gate exists but opt-in + needs `~/.zcash-params` |
-| 5 | List + sell file via store | partial | no | gate exists, opt-in, not in CI |
+| 2 | Tor onion bootstrap <60s | met-manual | no | onion live, but <60s timing not measured; non-hermetic → `make ci-stress` only |
+| 3 | Cold-start sync to tip <10 min | partial | slice ◐ | sync-FSM gate in `make ci`; real 3M-block sync unproven; node wedged |
+| 4 | Receive shielded payment e2e | partial | no | gate exists but opt-in + needs `~/.zcash-params` → `make ci-stress` only |
+| 5 | List + sell file via store | partial | slice ◐ | in-process store-proxy gate in `make ci`; real shielded-buy+file-transfer unproven |
 | 6 | 7-day soak, zero intervention | **regressing** | no | no soak harness; node wedged — the opposite of soak |
-| 7 | Recover from kill -9 <2 min | met-manual | no | SQLite-atomicity slice; test SKIPs in CI |
+| 7 | Recover from kill -9 <2 min | met-manual | slice ◐ | SQLite-atomicity gate in `make ci`; full-binary restart-to-peer-tip unproven |
 | 8 | Consensus parity w/ zclassicd | unmet | no | **no continuous diff service exists** — net-new build |
 
 ---
@@ -76,10 +79,15 @@ must not jump the queue.
 - [ ] **Fix the wedge** — wire the have-data window extender (see #1 above);
       copy-prove that `reorg_detected_total` stops climbing and the finalized
       tip advances monotonically past the held height. ~55 LOC, HIGH risk.
-- [ ] **Make criterion tests real CI gates** — add a CI step that runs the
-      stress tests with `ZCL_STRESS_TESTS=1` for #2/#3/#4/#5/#7 (Makefile
-      already has `test-shielded-payment` / `test-store-e2e` targets). Until
-      this lands, MVP.md must not call any criterion CI-enforced.
+- [x] **Make criterion tests real CI gates (hermetic slices)** — DONE (S1):
+      `make ci` chains `ci-mvp-gates` (#3 sync-FSM, #5 store-proxy, #7 kill-9,
+      + `chain_advance_atomicity`), each FOCUSED via `ZCL_TEST_ONLY` and
+      false-green-guarded; non-hermetic #2/#4 routed to `make ci-stress` +
+      opt-in `mvp-stress` job. These are ◐ slice-gates, not full ✅.
+- [ ] **Promote slice-gates to full ✅ gates** — replace #3/#5/#7's slice tests
+      with full-scope tests (real sync / real shielded buy / full-binary
+      restart-to-peer-tip) and add net-new CI jobs for #1 (clean-container
+      install) and #8 (parity). Only then does the CI-verified MRS move.
 - [ ] **Scope + build the consensus-parity-diff service (C8)** — net-new; none
       exists in `app/` or `lib/` (only in-process `test_reorg_parity.c` /
       `test_projection_replay_invariant.c`). A standing service that

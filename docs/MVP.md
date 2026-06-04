@@ -10,30 +10,53 @@ criteria; MVP is achieved at 8/8.
 | # | Criterion | How we verify | Status |
 |---|---|---|---|
 | 1 | **Single-binary install on clean Ubuntu/Debian** | CI: clean container, `make install && systemctl --user start zclassic23`, exit 0 | ☐ |
-| 2 | **Tor onion bootstrap in <60s** | `zcl_onion_status` returns `bootstrap_state=ready` within 60s of start — test: `lib/test/src/test_onion_bootstrap.c` (`ZCL_STRESS_TESTS=1`) | ☐ |
-| 3 | **Cold-start sync to tip in <10 min** | Fresh datadir → `zcl_syncstate.phase=ready` within 10 min on 100 Mbps link — test: `lib/test/src/test_cold_start_sync.c` (`ZCL_STRESS_TESTS=1`) | ☐ |
-| 4 | **Receive shielded payment end-to-end** | Test wallet receives 1 ZCL to a z-addr, balance reflects within 2 blocks | ☐ |
-| 5 | **List + sell file via store** | Operator lists product → buyer pays shielded → buyer receives file | ☐ |
+| 2 | **Tor onion bootstrap in <60s** | `zcl_onion_status` returns `bootstrap_state=ready` within 60s of start — test: `lib/test/src/test_onion_bootstrap.c` (`make ci-stress`; needs Tor egress) | ☐ |
+| 3 | **Cold-start sync to tip in <10 min** | Fresh datadir → `zcl_syncstate.phase=ready` within 10 min on 100 Mbps link — test: `lib/test/src/test_cold_start_sync.c` (**CI slice: `make ci-mvp-gates`** — drives the sync FSM to `at_tip` in ~7s; does **not** download/validate a real 3M-block chain) | ◐ |
+| 4 | **Receive shielded payment end-to-end** | Test wallet receives 1 ZCL to a z-addr, balance reflects within 2 blocks — test: `lib/test/src/test_shielded_payment_gate.c` (`make ci-stress`; needs `~/.zcash-params`) | ☐ |
+| 5 | **List + sell file via store** | Operator lists product → buyer pays shielded → buyer receives file — test: `lib/test/src/test_store_e2e_gate.c` (**CI slice: `make ci-mvp-gates`** — in-process store + seeded note + balance check; **not** a real shielded purchase + file transfer) | ◐ |
 | 6 | **7-day soak with zero operator intervention** | Live node + synthetic load for 168h: no manual restarts, RSS plateau | ☐ |
-| 7 | **Recover from `kill -9` in <2 min** | Chaos test: kill -9 mid-block, restart, caught up to peer-tip within 2 min — test: `lib/test/src/test_kill9_recovery.c` (`ZCL_STRESS_TESTS=1`) | ☐ |
+| 7 | **Recover from `kill -9` in <2 min** | Chaos test: kill -9 mid-block, restart, caught up to peer-tip within 2 min — test: `lib/test/src/test_kill9_recovery.c` (**CI slice: `make ci-mvp-gates`** — proves SQLite coins.db atomic recovery after SIGKILL; **not** full-binary restart-to-peer-tip) | ◐ |
 | 8 | **Consensus parity with zclassicd** | Continuous diff service: 0 mismatches over the 7-day soak window — **no such service exists yet (net-new build)** | ☐ |
 
-**Actually met (manual only): ~2 / 8** — #1 (single-binary install)
-and #7 (kill-9 recovery) are demonstrated by hand. #2's onion is live
-but the <60s timing isn't measured; #3/#4/#5 are partial (acceptance
-gates exist but are opt-in, env/param-dependent, not run); #6 is
-**regressing** (no soak — the node is wedged at tip); #8 is unmet (no
-parity service exists). **CI-verified MRS: 0 / 8.** NONE of the
-acceptance tests run under `make ci`: #2/#3/#4/#5/#7 all gate on
-`ZCL_STRESS_TESTS=1`, which `make ci` (`Makefile:1110`) and
-`.github/workflows/ci.yml` never set, and #1/#6/#8 have no CI test at
-all. The ✅ marks previously on #2/#3/#7 were wrong — a test that SKIPs
-in CI is not a green gate.
+**Legend:** ☐ unmet / not gated · ◐ a hermetic CI gate runs green for a
+**slice or proxy** of the criterion (real, automated regression protection —
+but not the full operator-acceptance claim) · ✅ the full criterion is verified
+end-to-end in CI. The MRS counts only ✅.
 
-**Update rule:** flip ☐ → ✅ ONLY when a criterion's acceptance test
-runs and passes in CI (not opt-in). To make #2/#3/#4/#5/#7 real gates,
-set `ZCL_STRESS_TESTS=1` for them in `make ci`; #1 and #8 need net-new
-CI jobs.
+**Full criteria met: ~2 / 8 (manual). CI-verified full criteria (✅): 0 / 8.**
+What the `ci-mvp-gates` wiring added: three **hermetic slice-gates** (◐) now
+run-and-pass (not SKIP) under `make ci` and block the build — **#3** cold-start
+sync FSM (~7s), **#5** store end-to-end proxy (sub-second), **#7** kill-9
+SQLite-atomicity recovery (~4-8s), plus a supporting `chain_advance_atomicity`
+fork test. Each gate runs FOCUSED via `ZCL_TEST_ONLY` under `ZCL_STRESS_TESTS=1`
+and is guarded against false-green fall-through (a vanished selector fails the
+gate loudly instead of silently running the full suite). That is real
+regression protection for a *slice* of each criterion — but none proves the
+full operator claim (a real 3M-block sync, a real shielded purchase, a
+full-binary restart to peer-tip), so they are ◐, not ✅, and the MRS is
+unchanged.
+
+The other five are not gated at all:
+- **#2 onion** and **#4 shielded** are NOT hermetic — #2 needs real Tor
+  network egress (would burn its 90s ceiling then fail on an isolated runner)
+  and #4 needs the ~770 MB `~/.zcash-params` fixture (silently SKIPs without
+  it, a false-green risk). They live in `make ci-stress` / the opt-in
+  `mvp-stress` workflow job, to run on a worker that has those resources. NOT
+  in `make ci`.
+- **#1** (single-binary install), **#6** (7-day soak), **#8** (consensus
+  parity) have no CI test at all (#8's diff service is a net-new build). #6/#8
+  also need live forward progress, blocked on the live wedge.
+
+Manual status: #1 and #7 are also demonstrated by hand; #2's onion is live but
+its <60s timing isn't measured; #6 is **regressing** (no soak — node holds at
+tip without finalizing).
+
+**Update rule:** ◐ → ✅ ONLY when a criterion's acceptance test exercises the
+**full** operator claim end-to-end and run-and-passes in the **hermetic**
+`make ci` job (not a slice, not opt-in, not SKIP). A slice test earns ◐; a test
+that SKIPs in CI earns neither. To promote #2/#4, provision their fixtures on
+the `mvp-stress` runner; #1 and #8 need net-new CI jobs; #3/#5/#7 need
+full-scope tests to replace their slice-gates.
 
 **THE plan to drive MRS to 8/8 is [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md).**
 
