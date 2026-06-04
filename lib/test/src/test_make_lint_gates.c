@@ -1846,7 +1846,6 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_request_header_activation") != NULL);
-        ASSERT(strstr(buf, "activation_request_connect") != NULL);
         ASSERT(strstr(buf, "boot_clear_header_activation_anchor") != NULL);
         ASSERT(strstr(buf, "boot_repair_header_post_activation_anchor") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_activation_hooks") != NULL);
@@ -1857,8 +1856,19 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(strstr(buf, "msg_processor_set_header_index_hooks") != NULL);
         ASSERT(strstr(buf, "boot_commit_header_tip") != NULL);
         ASSERT(strstr(buf, "boot_recommit_snapshot_anchor") != NULL);
-        ASSERT(strstr(buf, "csr_commit_tip") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_header_chainstate_hooks") != NULL);
+        free(buf);
+        buf = NULL;
+        /* The background_utxo_replay worker drives the post-snapshot activation
+         * connect + chainstate commit. It moved with the other long-lived
+         * worker threads into boot_background_workers.c, so its
+         * activation_request_connect / csr_commit_tip call sites live there —
+         * still boot-owned (config/src), never in lib/net. */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_background_workers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "activation_request_connect") != NULL);
+        ASSERT(strstr(buf, "csr_commit_tip") != NULL);
         free(buf);
         buf = NULL;
         /* Callback bodies (the activation/index/chainstate impl detail) live in
@@ -2361,6 +2371,7 @@ static int t_production_comments_do_not_carry_refactor_scaffold_labels(void)
     TEST("production comments name purpose, not refactor scaffold labels") {
         const char *files[] = {
             "config/src/boot_services.c",
+            "config/src/boot_background_workers.c",
             "config/src/boot_msg_callbacks.c",
             "config/src/boot.c",
             "lib/storage/include/storage/utxo_reimport_flag.h",

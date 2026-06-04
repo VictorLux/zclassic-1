@@ -136,6 +136,38 @@ bool app_init_services(struct app_context *ctx,
                         struct boot_svc_ctx *svc);
 void boot_stop_db_service_kernel(void);
 
+/* ── boot_services.c accessors shared with boot_background_workers.c ──
+ * The background-worker unit (config/src/boot_background_workers.c) was lifted
+ * out of boot_services.c but its worker bodies still reach the boot context
+ * through these accessors, which stay in boot_services.c (they have 30+ call
+ * sites there). Declared here so the two config/src TUs share one definition. */
+struct node_db *boot_node_db(struct boot_svc_ctx *svc);
+struct db_service *boot_db_service(struct boot_svc_ctx *svc);
+bool boot_running(const struct boot_svc_ctx *svc);
+bool boot_profile_has_file_service(const struct app_context *ctx);
+
+/* Catchup-job helpers stay in boot_services.c (the catchup job is owned beside
+ * the staying app_init/shutdown call sites); the projection-backfill worker in
+ * boot_background_workers.c drives them forward. */
+bool boot_start_catchup_service(struct boot_svc_ctx *svc, const char *datadir);
+bool boot_reap_catchup_service(struct boot_svc_ctx *svc);
+
+/* FlyClient UTXO snapshot serializer — passed by the snapshot-offer worker as a
+ * fast_sync_snapshot_serialize_fn callback; definition stays beside the other
+ * FlyClient proof helpers (boot_build_flyclient_proof) in boot_services.c. */
+int64_t boot_serialize_utxo_snapshot(void *ctx, const char *path,
+                                     uint32_t chunk_size, uint8_t sha3_out[32]);
+
+/* The single MMB leaf-hash store for FlyClient proofs. Defined (non-static) in
+ * boot_services.c because boot_build_flyclient_proof and the app_init MMB build
+ * block both read it; the snapshot-offer worker in boot_background_workers.c is
+ * the only out-of-TU reader and reaches this one instance via this extern. The
+ * legacy catchup/repair helpers that touch it stay private to boot_services.c
+ * (only the staying app_init block calls them), so this variable is the sole
+ * symbol crossing the TU boundary for the MMB cluster. */
+struct mmb_leaf_store;
+extern struct mmb_leaf_store g_mmb_leaf_store;
+
 /* The single boot service context, owned by boot.c's g_svc. The public
  * app_add_node / app_start_metrics / app_stop_metrics entry points (declared
  * in boot.h, called from main.c with no svc in scope) reach the live context
