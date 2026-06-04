@@ -391,6 +391,7 @@ int test_alerts(void);
 int test_ws_events(void);
 int test_trace(void);
 int test_phgr13_fix(void);
+int test_snark_kat(void);
 int test_unclean_shutdown_advance(void);
 int test_cookie_rotation(void);
 int test_reorg_safety(void);

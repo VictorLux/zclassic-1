@@ -822,6 +822,7 @@ int main(void)
     failures += test_ws_events();
     failures += test_trace();
     failures += test_phgr13_fix();
+    failures += test_snark_kat();
     failures += test_unclean_shutdown_advance();
     { extern int test_no_hardcoded_home(void);
       failures += test_no_hardcoded_home(); }
