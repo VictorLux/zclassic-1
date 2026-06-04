@@ -88,6 +88,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "reducer_ingest") == 0) {
+        printf("[test] ZCL_TEST_ONLY=reducer_ingest — running the MVP it-works gate only\n");
+        { extern int test_reducer_block_ingest_gate(void);
+          failures += test_reducer_block_ingest_gate(); }
+        printf("\n=== reducer-ingest subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "store_e2e") == 0) {
         printf("[test] ZCL_TEST_ONLY=store_e2e — running store e2e gate only\n");
         { extern int test_store_e2e_gate(void);
@@ -694,6 +702,8 @@ int main(void)
     { extern int test_check_block_edge(void);     failures += test_check_block_edge(); }
     { extern int test_amount_subsidy_edge(void);  failures += test_amount_subsidy_edge(); }
     { extern int test_locktime_edge(void);        failures += test_locktime_edge(); }
+    /* MVP "it works" gate: one mined block through the reducer front door */
+    { extern int test_reducer_block_ingest_gate(void); failures += test_reducer_block_ingest_gate(); }
     failures += test_event();
     failures += test_download();
     failures += test_consensus();

@@ -196,7 +196,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(zclassicd_oracle) X(oracle_policy) \
     X(script_interp_edge) X(sighash_edge) X(sigops_edge) \
     X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
-    X(locktime_edge)
+    X(locktime_edge) X(reducer_block_ingest_gate)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

@@ -518,7 +518,20 @@ ci-mvp-gates: test_zcl
 	$(call mvp_gate,MVP gate 5: store end-to-end (hermetic),store_e2e,=== store e2e subset complete:)
 	$(call mvp_gate,MVP gate 7: kill -9 recovery (hermetic),kill9,=== kill9 subset complete:)
 	$(call mvp_gate,MVP support: chain-advance atomicity (hermetic),chain_advance_atomicity,=== chain_advance_atomicity subset complete:)
+	$(call mvp_gate,MVP "it works": mined block -> reducer front door -> tip+1 (hermetic),reducer_ingest,=== reducer-ingest subset complete:)
 	@echo "══ MVP hermetic gates: ALL PASSED ══"
+
+# mvp-it-works: the single "you know your app works" proof — boots a fresh
+# in-process regtest reducer, mines one real Equihash (48,5) block, drives it
+# through reducer_ingest_block (the same front door live intake uses), and
+# asserts the authoritative tip advances by exactly 1 with the block's coinbase
+# live in the UTXO set and the commitment moved. Runs isolated (fresh process)
+# because it drives reducer process-globals; teeth-verified (fails if the
+# reducer cannot finalize forward — the live-wedge failure mode).
+.PHONY: mvp-it-works
+mvp-it-works: test_zcl
+	$(call mvp_gate,MVP "it works": one mined block through the reducer -> tip+1,reducer_ingest,=== reducer-ingest subset complete:)
+	@echo "══ MVP it-works gate: PASSED ══"
 
 # ci-stress: the fixture/network-bound MVP gates. Run on a worker that
 # has the resource (Tor egress for #2, ~/.zcash-params for #4). Reuses
