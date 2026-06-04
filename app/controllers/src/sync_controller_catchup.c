@@ -223,6 +223,14 @@ static int catchup_try_sapling_decrypt(struct node_db *ndb,
             sapling_ask_to_ak(ke->xsk.expsk.ask, ak);
             sapling_nsk_to_nk(ke->xsk.expsk.nsk, nk);
 
+            /* Position-0 placeholder nullifier. As in
+             * wallet_try_sapling_decrypt (lib/wallet/src/wallet.c), the note's
+             * absolute commitment-tree position is not available at decrypt
+             * time; the spec nf is (re)computed at witness-creation time in
+             * advance_wallet_witnesses() where position =
+             * incremental_tree_size(tree) - 1 is exact. A guessed position
+             * would be a WRONG nullifier, strictly worse than this non-blank
+             * placeholder. See BUG #7. */
             uint8_t nf[32];
             sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, nf);
 

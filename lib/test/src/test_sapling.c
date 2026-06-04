@@ -4671,6 +4671,164 @@ int test_sapling(void)
         else { failures++; }
     }
 
+    /* --- BUG #7 regression: wallet spend detection needs the REAL absolute
+     *     Sapling commitment-tree position in the nullifier.
+     *
+     * A received note's nullifier is nf = BLAKE2s("Zcash_nf", nk || rho),
+     * rho = MixingPedersenHash(cm, position) where `position` is the note's
+     * 0-indexed leaf in the global Sapling commitment tree. The wallet's
+     * spend-detection path (wallet_mark_sapling_nullifiers_spent /
+     * wallet_sapling_nullifier_is_spent) compares the note's stored nf
+     * against the on-chain spend nullifier. If the note's nf was computed at
+     * the WRONG position it can never match the real on-chain nullifier, so
+     * a spent note appears unspent and z-balance is overstated.
+     *
+     * This pins the two load-bearing invariants:
+     *   (1) sapling_compute_nf at a known NONZERO position reproduces the
+     *       spec on-chain nullifier (librustzcash test vector, position
+     *       763714296);
+     *   (2) the wallet matches a spend iff the note's nf was computed at the
+     *       correct position — it MUST match at the real position and MUST
+     *       NOT match at the placeholder position 0. */
+    printf("BUG#7 nullifier position: spec vector + wallet spend match... ");
+    {
+        bool ok = true;
+
+        /* librustzcash Sapling test vector #2 (same data as the
+         * "sapling key components" block above). 32-byte values are stored
+         * big-endian in display hex and reversed to little-endian internal. */
+        uint8_t sk_b[32];
+        test_hex_to_bytes_rev(
+            "0101010101010101010101010101010101010101010101010101010101010101",
+            sk_b, 32);
+        uint8_t d[11];
+        test_hex_to_bytes("aef180f6e34e354b888f81", d, 11);
+        uint8_t exp_pkd[32];
+        test_hex_to_bytes_rev(
+            "8bd30f0622a909ba96a2a31e831092b3cfd3e9680e9ab07ba6b7dd36a33eb1a6",
+            exp_pkd, 32);
+        uint8_t rcm[32];
+        test_hex_to_bytes_rev(
+            "064e80dd899f863802968bdfed6b55ab15708bf1266f0300b6751a6eeea08b47",
+            rcm, 32);
+        uint8_t exp_cm[32];
+        test_hex_to_bytes_rev(
+            "5069d4ca72ae539ab2311ca3cf6b260ee1892f45ac018b2edf85fb0b509378b5",
+            exp_cm, 32);
+        uint8_t exp_nf[32];
+        test_hex_to_bytes_rev(
+            "939d2e4c1763372e1dc7ad1954318883d759b21a2ab4cd83aee257a7c3b09e67",
+            exp_nf, 32);
+        const uint64_t value = 12227227834928555328ULL;
+        const uint64_t real_position = 763714296;
+
+        /* Derive ak/nk from the spending key the way a wallet does. */
+        struct uint256 sk_u, ask_u, nsk_u;
+        memcpy(sk_u.data, sk_b, 32);
+        prf_ask(&sk_u, &ask_u);
+        prf_nsk(&sk_u, &nsk_u);
+        uint8_t ak[32], nk[32], ivk[32], pk_d[32];
+        sapling_ask_to_ak(ask_u.data, ak);
+        sapling_nsk_to_nk(nsk_u.data, nk);
+        sapling_crh_ivk(ak, nk, ivk);
+        ok = ok && sapling_ivk_to_pkd(ivk, d, pk_d);
+        ok = ok && memcmp(pk_d, exp_pkd, 32) == 0;
+
+        /* Sanity: cm reproduces the vector commitment. */
+        uint8_t cm[32];
+        ok = ok && sapling_compute_cm(d, pk_d, value, rcm, cm);
+        ok = ok && memcmp(cm, exp_cm, 32) == 0;
+
+        /* Invariant (1): nf at the REAL position == on-chain nullifier. */
+        uint8_t nf_real[32];
+        ok = ok && sapling_compute_nf(d, pk_d, value, rcm, ak, nk,
+                                      real_position, nf_real);
+        ok = ok && memcmp(nf_real, exp_nf, 32) == 0;
+
+        /* The placeholder position (0) yields a DIFFERENT, non-matching nf —
+         * this is exactly why the bug overstated z-balance. */
+        uint8_t nf_zero[32];
+        ok = ok && sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, nf_zero);
+        ok = ok && memcmp(nf_zero, exp_nf, 32) != 0;
+
+        /* Build the on-chain spend transaction: one shielded spend whose
+         * nullifier is the real (spec) nullifier for this note. */
+        struct spend_description spend;
+        memset(&spend, 0, sizeof(spend));
+        memcpy(spend.nullifier.data, exp_nf, 32);
+        struct transaction spend_tx;
+        memset(&spend_tx, 0, sizeof(spend_tx));
+        spend_tx.v_shielded_spend = &spend;
+        spend_tx.num_shielded_spend = 1;
+
+        /* Invariant (2a): a wallet note whose nf was computed at the CORRECT
+         * position is detected as spent. */
+        {
+            struct wallet w;
+            wallet_init(&w);
+            struct sapling_received_note note;
+            memset(&note, 0, sizeof(note));
+            memcpy(note.diversifier, d, 11);
+            memcpy(note.pk_d, pk_d, 32);
+            note.value = value;
+            memcpy(note.rcm, rcm, 32);
+            memcpy(note.ivk, ivk, 32);
+            memcpy(note.cm, cm, 32);
+            memcpy(note.nf, nf_real, 32);     /* correct position */
+            note.spent = false;
+            note.used = true;
+            /* Insert directly (wallet_add_sapling_note is file-static). */
+            w.sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note");
+            w.sapling_notes[0] = note;
+            w.num_sapling_notes = 1;
+            w.sapling_notes_cap = 1;
+
+            int64_t bal_before = wallet_get_sapling_balance(&w);
+            wallet_mark_sapling_nullifiers_spent(&w, &spend_tx);
+            bool detected = wallet_sapling_nullifier_is_spent(&w, exp_nf);
+            int64_t bal_after = wallet_get_sapling_balance(&w);
+
+            ok = ok && bal_before == (int64_t)value;
+            ok = ok && detected;                 /* MUST match */
+            ok = ok && bal_after == 0;            /* balance no longer counts it */
+            wallet_free(&w);
+        }
+
+        /* Invariant (2b): the SAME note with the placeholder nf (position 0)
+         * is NOT detected as spent — the wallet would overstate z-balance.
+         * This is the exact failure the placeholder produced. */
+        {
+            struct wallet w;
+            wallet_init(&w);
+            struct sapling_received_note note;
+            memset(&note, 0, sizeof(note));
+            memcpy(note.diversifier, d, 11);
+            memcpy(note.pk_d, pk_d, 32);
+            note.value = value;
+            memcpy(note.rcm, rcm, 32);
+            memcpy(note.ivk, ivk, 32);
+            memcpy(note.cm, cm, 32);
+            memcpy(note.nf, nf_zero, 32);     /* WRONG (placeholder) position */
+            note.spent = false;
+            note.used = true;
+            w.sapling_notes = zcl_malloc(sizeof(note), "test_bug7_note0");
+            w.sapling_notes[0] = note;
+            w.num_sapling_notes = 1;
+            w.sapling_notes_cap = 1;
+
+            wallet_mark_sapling_nullifiers_spent(&w, &spend_tx);
+            bool detected = wallet_sapling_nullifier_is_spent(&w, exp_nf);
+            int64_t bal_after = wallet_get_sapling_balance(&w);
+
+            ok = ok && !detected;                /* MUST NOT match */
+            ok = ok && bal_after == (int64_t)value; /* note wrongly still counted */
+            wallet_free(&w);
+        }
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }
 

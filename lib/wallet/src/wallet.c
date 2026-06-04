@@ -1518,7 +1518,23 @@ int wallet_try_sapling_decrypt(struct wallet *w,
             memcpy(note.ivk, ke->ivk, 32);
             memcpy(note.cm, cm, 32);
 
-            /* nullifier needs note position (merkle tree index) — use 0 for now */
+            /* The Sapling nullifier needs the note's ABSOLUTE leaf position
+             * in the global commitment tree (rho = MixingPedersenHash(cm,
+             * position)). That position is NOT knowable here: trial-decrypt
+             * runs over a transaction during a block scan, before this note's
+             * commitment has been appended to the tree, and a later reorg can
+             * still change it. Computing nf with a guessed position would
+             * produce a WRONG nullifier that never matches the on-chain spend
+             * — strictly worse than this honest placeholder (which simply
+             * never matches, so spend detection on this in-memory path is a
+             * no-op rather than a false positive). The correct nf must be
+             * (re)computed at witness-creation time in advance_wallet_witnesses()
+             * (sync_controller_blocks.c) where position =
+             * incremental_tree_size(tree) - 1 is exact. See BUG #7 and the
+             * regression test in test_sapling.c ("BUG#7 nullifier position").
+             * Position 0 placeholder is kept (not all-zero) so the derived
+             * nullifier is non-blank and the note still persists past the
+             * ActiveRecord presence validation. */
             sapling_compute_nf(d, pk_d, value, rcm, ak, nk, 0, note.nf);
 
             note.spent = false;
