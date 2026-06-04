@@ -430,6 +430,68 @@ int test_mempool_limits(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── 13. fee/byte sort does NOT overflow at MoneyRange fees ──
+     *
+     * Regression for the integer-overflow eviction-ordering bug:
+     * the comparator cross-multiplies fee*size. With both txs the
+     * same (large) size, A's fee/byte > B's fee/byte iff A.fee >
+     * B.fee — so under count-cap=1 the lower-fee B must be evicted.
+     *
+     * We pick fees from the *measured* size so the OLD int64 product
+     * fee*size wraps past INT64_MAX: feeA*size just exceeds
+     * INT64_MAX (wraps negative) while feeB*size stays positive.
+     * Under the buggy code the sort inverts (A's negative product
+     * sorts as "worst") and A — the genuinely higher-fee tx — gets
+     * evicted instead of B. Both fees stay within MoneyRange
+     * (<= MAX_MONEY) so this is a reachable on-chain scenario. */
+    printf("mempool_limits: fee/byte no int64 overflow at MoneyRange... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 0);
+
+        /* ~600 empty vouts → serialized size well above the ~4400
+         * bytes needed for the overflow window to exist. */
+        struct transaction tx_a, tx_b;
+        mlt_build_tx(&tx_a, 0x800, 1, 600, COIN_VALUE);
+        mlt_build_tx(&tx_b, 0x801, 1, 600, COIN_VALUE);
+
+        /* Add cheaply first to measure the real serialized size,
+         * then re-derive fees from it. Sizes are equal (identical
+         * vin/vout shape), so measure once via a throwaway add. */
+        size_t size_a = mlt_add(&pool, &tx_a, 1, 1700000000);
+        bool sized = size_a >= 4400;
+        /* Remove the throwaway so we can re-add with the real fee. */
+        tx_mempool_remove(&pool, &tx_a.hash);
+
+        int64_t feeA = (INT64_MAX / (int64_t)size_a) + 1; /* feeA*size overflows */
+        int64_t feeB = (INT64_MAX / (int64_t)size_a) / 2; /* feeB*size positive */
+        bool inrange = MoneyRange(feeA) && MoneyRange(feeB) && feeA > feeB;
+
+        size_t ra = mlt_add(&pool, &tx_a, feeA, 1700000000);
+        size_t rb = mlt_add(&pool, &tx_b, feeB, 1700000000);
+        bool added = ra > 0 && rb > 0;
+
+        mempool_limits_reset_stats();
+        atomic_store(&g_ev_evict, 0);
+
+        struct mempool_limits_config cfg = {0};
+        cfg.max_tx_count = 1;
+        int evicted = mempool_limits_enforce(&pool, &cfg);
+
+        /* Correct: B (lower fee, equal size) is evicted; A survives.
+         * Buggy int64 code evicts A and keeps B. */
+        bool ok = sized && inrange && added && evicted == 1;
+        ok = ok && tx_mempool_size(&pool) == 1;
+        ok = ok &&  tx_mempool_exists(&pool, &tx_a.hash);
+        ok = ok && !tx_mempool_exists(&pool, &tx_b.hash);
+        ok = ok && atomic_load(&g_ev_evict) == 1;
+
+        transaction_free(&tx_a);
+        transaction_free(&tx_b);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     event_clear_observers(EV_MEMPOOL_EVICT);
     event_clear_observers(EV_MEMPOOL_EXPIRE);
     return failures;

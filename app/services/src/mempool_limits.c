@@ -230,16 +230,76 @@ bool mempool_limits_passes_min_relay(const struct mempool_limits_config *cfg,
 
 /* ── Fee-per-byte sort (ascending worst-first) ──────────────── */
 
+/* Compare two non-negative fractions p/q and r/s (each part a
+ * non-negative int64, denominators strictly positive) WITHOUT any
+ * multiplication, via the Euclidean / continued-fraction algorithm.
+ * Returns -1, 0 or +1 for p/q <,==,> r/s. Each step strictly shrinks
+ * the operands, so this terminates. */
+static int ml_cmp_frac(int64_t p, int64_t q, int64_t r, int64_t s)
+{
+    for (;;) {
+        int64_t fp = p / q, fr = r / s;        /* integer (floor) parts */
+        if (fp != fr) return fp < fr ? -1 : 1; // raw-return-ok:value-compare
+        int64_t rp = p - fp * q;               /* remainders (in range) */
+        int64_t rr = r - fr * s;
+        if (rp == 0 && rr == 0) return 0;      /* both integers, equal */
+        if (rp == 0) return -1;                // raw-return-ok:value-compare
+        if (rr == 0) return  1;                // raw-return-ok:value-compare
+        /* Fractional parts left: compare reciprocals (q/rp) vs (s/rr),
+         * which flips the result — recurse with operands swapped. */
+        int64_t np = s, nq = rr, nr = q, ns = rp;
+        p = np; q = nq; r = nr; s = ns;
+    }
+}
+
+/* Compare two non-negative products `a*b` and `c*d` (each operand a
+ * non-negative int64) WITHOUT 2's-complement overflow. Returns -1, 0
+ * or +1 for (a*b) <,==,> (c*d).
+ *
+ * Why this exists: the fee-per-byte comparator below cross-multiplies
+ * fee*size. fee is bounded by MAX_MONEY (~2.1e15) and size by
+ * MAX_TX_SIZE_AFTER_SAPLING (2e6), so a product can reach ~4.2e21 —
+ * far past INT64_MAX (~9.2e18). A raw int64 multiply silently wraps to
+ * a small/negative value and inverts the eviction sort, so high-fee
+ * txs get evicted while low-fee dust is retained, defeating the
+ * DoS-protection eviction policy. We compare without ever forming an
+ * out-of-range product. `__int128` would be exact but is rejected
+ * under -Werror=pedantic in app code, so this stays strict-ISO-C.
+ *
+ * Strategy: guard each multiply against overflow. If neither overflows
+ * INT64_MAX, compare the exact products. If exactly one overflows that
+ * side is the larger (all operands non-negative ⇒ its true product
+ * strictly exceeds any in-range one). If both overflow, compare the
+ * equivalent fractions a/c vs d/b with the multiplication-free helper.
+ * Callers clamp b and c (the cross denominators) to >= 1. */
+static int ml_cmp_products(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    bool lhs_of = (a != 0 && b > INT64_MAX / a);
+    bool rhs_of = (c != 0 && d > INT64_MAX / c);
+    if (!lhs_of && !rhs_of) {
+        int64_t lhs = a * b;
+        int64_t rhs = c * d;
+        if (lhs < rhs) return -1; // raw-return-ok:value-compare
+        if (lhs > rhs) return  1; // raw-return-ok:value-compare
+        return 0;
+    }
+    if (lhs_of != rhs_of) return lhs_of ? 1 : -1; // raw-return-ok:value-compare
+    /* Both overflow: a*b ? c*d  ⇔  a/c ? d/b  (c>0, b>0). */
+    return ml_cmp_frac(a, c, d, b);
+}
+
 static int ml_fpb_cmp(const void *a, const void *b)
 {
     const struct tx_mempool_entry_view *av = a;
     const struct tx_mempool_entry_view *bv = b;
-    /* Compare fee/size as cross-multiplication to avoid
-     * floating point:  (a.fee * b.size) vs (b.fee * a.size). */
-    int64_t lhs = av->fee * (int64_t)(bv->tx_size ? bv->tx_size : 1);
-    int64_t rhs = bv->fee * (int64_t)(av->tx_size ? av->tx_size : 1);
-    if (lhs < rhs) return -1; // raw-return-ok:qsort-comparator
-    if (lhs > rhs) return  1;
+    /* Compare fee/size as cross-multiplication to avoid floating
+     * point:  (a.fee * b.size) vs (b.fee * a.size). Done through an
+     * overflow-safe helper because fee*size can exceed INT64_MAX. */
+    int64_t a_size = (int64_t)(av->tx_size ? av->tx_size : 1);
+    int64_t b_size = (int64_t)(bv->tx_size ? bv->tx_size : 1);
+    int cmp = ml_cmp_products(av->fee, b_size, bv->fee, a_size);
+    if (cmp < 0) return -1; // raw-return-ok:qsort-comparator
+    if (cmp > 0) return  1;
     /* Tie-break: older first (earlier `time` ⇒ evict sooner). */
     if (av->time < bv->time) return -1; // raw-return-ok:qsort-comparator
     if (av->time > bv->time) return  1;
