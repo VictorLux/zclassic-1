@@ -1537,10 +1537,18 @@ static int t_lib_runtime_gauges_are_callback_injected(void)
     char *buf = NULL;
     TEST("lib runtime gauges and peer preference are callback injected") {
         char path[PATH_MAX];
-        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        /* The external-gauge injection moved with app_start_metrics into
+         * config/src/boot_node_utilities.c (boot composition-root unit). */
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_node_utilities.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_metrics_external_gauges") != NULL);
         ASSERT(strstr(buf, "svc->metrics->external_gauges =") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "connman_set_known_zcl23_peer_source") != NULL);
         ASSERT(strstr(buf, "db_peer_fast_zcl23") != NULL);
         free(buf);

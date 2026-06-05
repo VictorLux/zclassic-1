@@ -30,6 +30,7 @@
 #include "services/block_index_loader.h"
 #include "services/chain_state_validator.h"
 #include "kernel/service_kernel.h"
+#include "event/event.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <sqlite3.h>
@@ -197,6 +198,32 @@ struct boot_svc_ctx *boot_active_svc(void);
  * in boot_utxo_parity.c). Kept out of boot_services.c so that mega-file gains
  * only one call. Returns false on registration failure. */
 bool boot_utxo_parity_register(struct boot_svc_ctx *svc);
+
+/* ── boot_bg_verification.c ─────────────────────────────────────
+ * Runtime service-kernel start/stop adapters for the two background
+ * re-verification services. Registered by boot_register_runtime_services()
+ * (boot_services.c spec table); operate on svc->bg_validation /
+ * svc->bg_hash_verify only — no file-statics. */
+bool boot_bg_validation_start(void *ctx);   /* full proof/script re-validation */
+void boot_bg_validation_stop(void *ctx);
+bool boot_bg_hash_verify_start(void *ctx);   /* historical block hash verify */
+void boot_bg_hash_verify_stop(void *ctx);
+
+/* ── boot_sd_watchdog.c ─────────────────────────────────────────
+ * systemd watchdog heartbeat start/stop adapters (the periodic tick stays
+ * private to that TU). Registered by boot_register_runtime_services()
+ * (boot_services.c spec table). */
+bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
+void boot_sd_watchdog_stop(void *ctx);
+
+/* ── boot_node_utilities.c ──────────────────────────────────────
+ * Async observer that logs sync-pipeline transitions; wired by
+ * app_init_services (boot_services.c) via event_observe_async(). The public
+ * app_add_node / app_start_metrics / app_stop_metrics entry points (declared
+ * in boot.h) also live in this TU. */
+void boot_sync_state_logger(enum event_type type, uint32_t peer_id,
+                            const void *payload, uint32_t payload_len,
+                            void *ctx);
 
 /* Wire the process_block tip-publication hooks + gap-fill kick (defined in
  * boot_tip_hooks.c) into the validation engine. Called once from
