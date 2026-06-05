@@ -99,8 +99,14 @@ struct blocker_record {
     char     reason[BLOCKER_REASON_MAX];
 };
 
-/* Convenience initializer; zeroes the struct and fills required fields.
- * Returns false on length-overflow of id/owner/reason. */
+/* Convenience initializer; zeroes the struct and fills required fields,
+ * then defaults retry_budget (-1 for PERMANENT, else 0).
+ * Return contract:
+ *   false — `out`, `id`, or `owner` is NULL, or `id`/`owner` would not
+ *           fit (>= BLOCKER_ID_MAX / BLOCKER_OWNER_MAX). The offending
+ *           case is logged via LOG_FAIL; `out` may be partially written.
+ *   true  — fields stored. `reason` is optional (NULL leaves it empty)
+ *           and is truncated to fit BLOCKER_REASON_MAX, never rejected. */
 bool blocker_init(struct blocker_record *out,
                   const char *id,
                   const char *owner,

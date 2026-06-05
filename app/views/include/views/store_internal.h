@@ -26,15 +26,33 @@
 #include <sqlite3.h>
 
 /* ── Shared response/format helpers (defined in store_view.c) ── */
+
+/* Onion address this node serves on, or NULL before Tor publishes one. */
 const char *store_get_onion_address(void);
+
+/* Format zatoshi as a ZCL price string, trimming trailing zeros but
+ * keeping at least 2 decimal places. For product/order price display. */
 void format_zcl_price(char *out, size_t out_len, int64_t zatoshi);
+
+/* Write the opening HTML (doctype, head/style, nav header) for a store
+ * page titled `title` into `buf`. Returns bytes written (snprintf len). */
 int html_body_start(char *buf, size_t max, const char *title);
+
+/* Wrap `body` as a 200 OK HTML HTTP response (with Content-Length) into
+ * `resp`. Returns the total response length written. */
 size_t store_html_response(const char *body, size_t body_len,
                            uint8_t *resp, size_t max);
+
+/* Wrap `body` as an HTML HTTP error response with the given status line
+ * (e.g. "404 Not Found") into `resp`. Returns response length written. */
 size_t store_error_response(const char *status_code,
                             const char *body, size_t body_len,
                             uint8_t *resp, size_t max);
+
+/* Human-readable label for a STORE_ORDER_* status ("Unknown" if unknown). */
 const char *store_order_status_text(int status);
+
+/* CSS class name for a STORE_ORDER_* status (pending/failed/paid). */
 const char *store_order_status_class(int status);
 
 /* ── Read-only page renderers (defined in store_view.c) ──

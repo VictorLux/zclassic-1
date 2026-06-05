@@ -191,6 +191,12 @@ void interrupt_rpc(void)
     rpc_running = false;
 }
 
+/* Convert a JSON number to a CAmount (zatoshis). JSON_INT is taken as a raw
+ * zatoshi count; JSON_REAL is a coin value scaled by COIN with round-to-nearest.
+ * CONTRACT/CAVEAT: a non-numeric value (string/bool/null/array/object) silently
+ * returns 0, which is indistinguishable from a legitimate 0 amount. The
+ * signature is fixed (callers depend on it), so callers that must reject a
+ * malformed amount have to type-check value->type themselves before calling. */
 CAmount amount_from_value(const struct json_value *value)
 {
     if (value->type == JSON_INT)

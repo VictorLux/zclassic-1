@@ -40,6 +40,22 @@ typedef void (*ui_init_message_fn)(const char *message);
 typedef void (*ui_progress_fn)(const char *title, int nProgress);
 typedef void (*ui_block_tip_fn)(const unsigned char *hash);
 
+/* Decoupling seam between the node core and whatever front-end (if any)
+ * is presenting it. The core invokes these callbacks to surface user-
+ * facing notices without depending on a concrete UI:
+ *   ThreadSafeMessageBox — show an informational/error notice (style is
+ *                          a bitwise OR of enum ui_message_flags)
+ *   ThreadSafeQuestion   — ask a yes/no question; `noninteractive` is the
+ *                          text used when no human can answer
+ *   InitMessage          — report a startup progress message
+ *   ShowProgress         — report a titled 0..100 progress percentage
+ *   NotifyBlockTip       — signal that the active chain tip advanced
+ *
+ * Lifecycle: the global `uiInterface` is zero-initialized, so every slot
+ * is NULL until a front-end installs its handlers. The headless default
+ * is noui_connect() (util/noui.h), which wires the message/question/init
+ * slots to stderr loggers and leaves the rest NULL. Because slots may be
+ * NULL, callers MUST null-check a slot before dispatching through it. */
 struct ui_interface {
     ui_message_box_fn  ThreadSafeMessageBox;
     ui_question_fn     ThreadSafeQuestion;
@@ -48,6 +64,7 @@ struct ui_interface {
     ui_block_tip_fn    NotifyBlockTip;
 };
 
+/* Process-wide singleton vtable; zero-initialized at load. */
 extern struct ui_interface uiInterface;
 
 #endif

@@ -195,11 +195,15 @@ bool wallet_has_hd(const struct wallet *w);
 bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
                                     size_t addr_size);
 
+/* Add a private key to the wallet keystore. Returns true on success,
+ * false if the key is invalid or the keystore add fails. */
 bool wallet_import_key(struct wallet *w, const struct privkey *key);
 /* Rollback a prior wallet_import_key(). Returns true if the key was
  * found and removed. Used by the controller when persistence fails
  * after keystore add, to keep in-memory and on-disk in sync. */
 bool wallet_remove_key(struct wallet *w, const struct key_id *keyid);
+/* Look up a private key by key id. Returns true and fills key_out if
+ * the key is present in the keystore, false if it is not found. */
 bool wallet_dump_key(const struct wallet *w, const struct key_id *keyid,
                       struct privkey *key_out);
 
