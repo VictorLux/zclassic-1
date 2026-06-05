@@ -341,6 +341,13 @@ bool connect_block(const struct block *block,
         zcl_malloc(checks_cap * sizeof(*check_ptrs), "connect_check_ptrs");
     struct precomputed_tx_data *txdatas =
         zcl_malloc(txdatas_cap * sizeof(*txdatas), "connect_txdatas");
+    if (!checks || !check_ptrs || !txdatas) {
+        free(checks);
+        free(check_ptrs);
+        free(txdatas);
+        block_undo_free(&blockundo);
+        REJECT_FATAL(state, "out-of-memory");
+    }
     size_t num_checks = 0;
     size_t num_txdatas = 0;
 
@@ -486,8 +493,16 @@ bool connect_block(const struct block *block,
             if (expensive_checks) {
                 if (num_txdatas >= txdatas_cap) {
                     txdatas_cap = txdatas_cap ? txdatas_cap * 2 : 64;
-                    txdatas = zcl_realloc(txdatas,
+                    struct precomputed_tx_data *nt = zcl_realloc(txdatas,
                                       txdatas_cap * sizeof(*txdatas), "connect_txdatas");
+                    if (!nt) {
+                        free(checks);
+                        free(check_ptrs);
+                        free(txdatas);
+                        block_undo_free(&blockundo);
+                        REJECT_FATAL(state, "out-of-memory");
+                    }
+                    txdatas = nt;
                 }
                 precompute_tx_data(tx, &txdatas[num_txdatas]);
                 num_txdatas++;
@@ -519,10 +534,19 @@ bool connect_block(const struct block *block,
 
                     if (num_checks >= checks_cap) {
                         checks_cap = checks_cap ? checks_cap * 2 : 256;
-                        checks = zcl_realloc(checks,
+                        struct script_check *nc = zcl_realloc(checks,
                                          checks_cap * sizeof(*checks), "connect_checks");
-                        check_ptrs = zcl_realloc(check_ptrs,
+                        void **np = zcl_realloc(check_ptrs,
                                              checks_cap * sizeof(*check_ptrs), "connect_check_ptrs");
+                        if (!nc || !np) {
+                            free(nc ? nc : checks);
+                            free(np ? np : check_ptrs);
+                            free(txdatas);
+                            block_undo_free(&blockundo);
+                            REJECT_FATAL(state, "out-of-memory");
+                        }
+                        checks = nc;
+                        check_ptrs = np;
                     }
 
                     struct script_check *sc = &checks[num_checks];

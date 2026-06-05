@@ -181,6 +181,7 @@ struct block_index *add_to_block_index(struct main_state *ms,
     pindex->phashBlock = &pindex->hashBlock;
 
     if (!block_map_insert(&ms->map_block_index, &hash, pindex)) {
+        free(pindex->nSolution);
         free(pindex);
         return block_map_find(&ms->map_block_index, &hash);
     }
