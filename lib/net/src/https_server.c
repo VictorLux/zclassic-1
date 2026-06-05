@@ -119,12 +119,21 @@ static void client_queue_close_all(void)
 
 /* ── HTTP helpers ─────────────────────────────────────────── */
 
-static bool ssl_read_line(SSL *ssl, char *buf, size_t max)
+/* CRLF-trimming line reader shared by the TLS and plaintext request paths.
+ * The byte-at-a-time buffering, max-length termination, and \r-stripping are
+ * identical on both transports; only the single-byte read primitive differs,
+ * so it is supplied as a closure (read one byte into *c; return <=0 on EOF/error). */
+typedef int (*read_byte_fn)(void *src, char *c);
+
+static int ssl_read_byte(void *src, char *c) { return SSL_read((SSL *)src, c, 1); }
+static int fd_read_byte(void *src, char *c)  { return (int)read(*(int *)src, c, 1); }
+
+static bool read_line(void *src, read_byte_fn rb, char *buf, size_t max)
 {
     size_t pos = 0;
     while (pos < max - 1) {
         char c;
-        int r = SSL_read(ssl, &c, 1);
+        int r = rb(src, &c);
         if (r <= 0) return false;
         if (c == '\n') break;
         if (c != '\r') buf[pos++] = c;
@@ -133,18 +142,14 @@ static bool ssl_read_line(SSL *ssl, char *buf, size_t max)
     return true;
 }
 
+static bool ssl_read_line(SSL *ssl, char *buf, size_t max)
+{
+    return read_line(ssl, ssl_read_byte, buf, max);
+}
+
 static bool plain_read_line(int fd, char *buf, size_t max)
 {
-    size_t pos = 0;
-    while (pos < max - 1) {
-        char c;
-        ssize_t r = read(fd, &c, 1);
-        if (r <= 0) return false;
-        if (c == '\n') break;
-        if (c != '\r') buf[pos++] = c;
-    }
-    buf[pos] = '\0';
-    return true;
+    return read_line(&fd, fd_read_byte, buf, max);
 }
 
 /* ── HTTPS handler ────────────────────────────────────────── */
