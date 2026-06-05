@@ -565,3 +565,11 @@ error codes are MODULE-SCOPED (interpreted per call site), so numeric overlap ac
 is by design, not a contract violation. No renumber (that would change API values). DEFERRED (consensus
 -sensitive, repro-on-copy): the few consensus_sensitive findings the audit flagged. **This was the last
 unswept surface — the whole codebase is now audited.**
+
+### §12 update_coins OOM — FIXED (2026-06-05, repro-on-copy proven)
+coins_from_transaction is now bool (false on OOM/over-cap); update_coins fails the connect on
+false instead of silently accepting a block whose outputs were dropped from the UTXO set +
+commitment. Behavior-neutral for valid blocks (returns true, identical path). Proven: full suite
+0/371 + repro-on-copy boot-smoke floored to the documented 3132299 (no crash, no lower floor =
+identical to HEAD). This clears the last actionable §12 consensus-decision item; remainder is
+owner-gated (boot.c nChainTx via frozen boot.c, shutdown TU, peer-scoring enum).
