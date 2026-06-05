@@ -73,6 +73,23 @@ int scan_block_files_mark_data(struct main_state *ms, const char *datadir,
  * BLOCK_HAVE_DATA. Returns count of blocks updated. */
 int propagate_nchaintx(struct main_state *ms);
 
+/* ── boot_block_index_ancestry.c ────────────────────────────── */
+/* Block-index ancestry repair, called only by the block-file scan
+ * (boot_block_file_scan.c). Shared across those two config/src TUs. */
+
+/* Recompute every reachable block's height + cumulative metadata from the
+ * genesis pprev chain, ignoring existing (possibly stale) height labels.
+ * Returns the number of fields fixed (heights + chain_work + chain_tx). */
+int recompute_index_from_genesis(struct main_state *ms,
+                                 const struct chain_params *params);
+
+/* After all block files are scanned and every block is in the map, resolve
+ * orphan pprev links by reading hashPrevBlock from disk, then propagate
+ * heights from genesis outward. Returns the number of pprev links resolved. */
+int resolve_orphan_pprev_from_disk(struct main_state *ms,
+                                   const char *datadir,
+                                   const struct chain_params *params);
+
 /* ── boot_services.c ────────────────────────────────────────── */
 
 struct boot_svc_ctx {
