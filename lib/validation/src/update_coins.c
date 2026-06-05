@@ -95,7 +95,13 @@ bool update_coins_with_undo(const struct transaction *tx,
         coins_view_cache_modify_new(inputs, &tx->hash);
     if (!new_entry)
         LOG_FAIL("update_coins", "modify_new failed at h=%d", nHeight);
-    coins_from_transaction(&new_entry->coins, tx, nHeight);
+    /* Treat a false return (OOM / over-cap) as a hard failure: an empty
+     * record would otherwise drop this tx's outputs from the UTXO set and
+     * the commitment while the block is accepted — a silent consensus
+     * divergence. Fail the connect instead. */
+    if (!coins_from_transaction(&new_entry->coins, tx, nHeight))
+        LOG_FAIL("update_coins",
+                 "coins_from_transaction failed (OOM/over-cap) at h=%d", nHeight);
 
     /* Validate new output values before adding to commitment */
     for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {

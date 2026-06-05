@@ -52,7 +52,7 @@ bool coins_alloc(struct coins *c, size_t num_outputs)
     return true;
 }
 
-void coins_from_transaction(struct coins *c, const struct transaction *tx, int height)
+bool coins_from_transaction(struct coins *c, const struct transaction *tx, int height)
 {
     c->is_coinbase = transaction_is_coinbase(tx);
     c->height = height;
@@ -62,9 +62,9 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
     /* Validate output count before allocating. MAX_TX_OUTPUTS (65536)
      * is already enforced at deserialization, but defense-in-depth. */
     if (tx->num_vout > 65536) {
-        fprintf(stderr, "coins_from_transaction: num_vout=%zu exceeds max "
+        fprintf(stderr, "coins_from_transaction: num_vout=%zu exceeds max "  // obs-ok:over-cap-terminal-return
                 "at h=%d\n", tx->num_vout, height);
-        return;
+        return false;
     }
     if (!coins_alloc(c, tx->num_vout)) {
         /* coins_alloc already logged the OOM.  The caller now sees
@@ -73,10 +73,10 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
          * extra line here names the construction site so an operator
          * staring at the log can correlate the allocation failure
          * with a specific tx height. */
-        fprintf(stderr, "[coins] %s:%d %s(): coins_from_transaction "
+        fprintf(stderr, "[coins] %s:%d %s(): coins_from_transaction "  // obs-ok:oom-terminal-return
                 "dropped tx with num_vout=%zu at height=%d due to OOM\n",
                 __FILE__, __LINE__, __func__, tx->num_vout, height);
-        return;
+        return false;
     }
 
     for (size_t i = 0; i < tx->num_vout; i++) {
@@ -90,6 +90,7 @@ void coins_from_transaction(struct coins *c, const struct transaction *tx, int h
     }
 
     coins_cleanup(c);
+    return true;
 }
 
 bool coins_spend(struct coins *c, uint32_t pos)

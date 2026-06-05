@@ -42,9 +42,12 @@ void coins_copy(struct coins *dst, const struct coins *src);
  * (vout=NULL, num_vout=0) record on OOM — never a partial/NULL-deref. */
 bool coins_alloc(struct coins *c, size_t num_outputs);
 /* Build a record from tx: skips OP_RETURN/unspendable outputs and caps at
- * 65536 outputs. On OOM (or over-cap) it leaves an empty (num_vout=0)
- * record, which callers MUST treat as failure — never as "fully pruned". */
-void coins_from_transaction(struct coins *c, const struct transaction *tx, int height);
+ * 65536 outputs. Returns true on success (including a legitimately-empty
+ * record). Returns false on OOM or over-cap, leaving an empty (num_vout=0)
+ * record — callers MUST treat false as failure (a num_vout==0 record alone
+ * is ambiguous with an all-unspendable tx, so the bool is the only reliable
+ * signal). */
+bool coins_from_transaction(struct coins *c, const struct transaction *tx, int height);
 
 /* Mark output `pos` spent by nulling it in place. Returns false if pos is
  * out of range or the output is already null (already spent) — the only two
