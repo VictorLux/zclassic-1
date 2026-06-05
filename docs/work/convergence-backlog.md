@@ -321,3 +321,30 @@ fs_send_frame transmission errors, header docs + a dead fs_send_chunk decl remov
   2 rpc NULL guards, https ssl/plain read-line fold, ~24 documented wallet/storage APIs.
 - DEFERRED: wallet_key.c:562 "incomplete script data loading" — labeled DRY but may
   change wallet spend-path data loading; not batched, needs its own look.
+
+## Round 11 (2026-06-05) — un-audited controller surface (wallet/feature/display)
+12 read-only audit clusters over ~45 un-audited controllers → 50 findings; vetted,
+fixed in 6 commits (`128b25981..c607eba6f`):
+- **Post-broadcast flush correctness bug**: rpc_sendtoaddress / direct / sendmany used
+  LOG_FAIL for a wallet-flush failure AFTER the tx was broadcast+relayed → reported
+  failure (no txid) for a sent tx (resend risk). Made the flush non-fatal (the comment
+  already said so).
+- 5 db_wallet_utxo script leaks (rescan/replay/sync/coinanalysis), 3 unchecked
+  signature_hash returns on shielded signing paths, swap/blog/mining/dashboard NULL
+  guards, unchecked keystore_add_cscript + parse_hash_str, missing RPC error bodies
+  (nodelog/dbquery/diagnostics/transaction), memo decode/encode unified (3 divergent
+  strategies → 1 helper).
+- **Vetting REJECTED** wallet_diagnostic_controller.c:32/40 ("lying return true" — the
+  `if(...) LOG_FAIL` already returns false; the `return true` is the success path).
+- DEFERRED: the success-path wtx->tx ownership leak — being resolved by a dedicated
+  prove-then-fix workflow (the mempool/wallet hold independent deep copies per the
+  mempool test, so wallet_commit_transaction also leaks its local mempool_entry).
+
+### Round-11 deferred (low / needs-own-look)
+- wallet_key.c:562 "incomplete script data loading" (may change wallet spend-path).
+- blog_controller.c:363 silent hex truncation at boundary; wallet_view_shield.c:184
+  fragile opid NULL deref; the 4th inline memo block in wallet_shielded_keys.c:259
+  (needs a shared public helper to fold — out of single-file scope).
+- Consensus-adjacent controllers NOT autonomously fixed: sync_controller*,
+  repair_controller*, snapshot_controller*, legacy_import_scan (defensive/doc only,
+  repro-on-copy for any behavior change). app/services largely consensus-adjacent too.
