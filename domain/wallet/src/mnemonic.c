@@ -19,6 +19,7 @@
 
 #include "crypto/pbkdf2_sha512.h"
 #include "crypto/sha256.h"
+#include "support/cleanse.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -2179,6 +2180,7 @@ struct zcl_result domain_wallet_mnemonic_from_entropy(
     combined[entropy_len] = hash[0];
 
     /* Pack 11-bit groups into words. */
+    struct zcl_result result = ZCL_OK;
     size_t offset = 0;
     for (size_t w = 0; w < word_count; w++) {
         int index = 0;
@@ -2189,22 +2191,34 @@ struct zcl_result domain_wallet_mnemonic_from_entropy(
         size_t wlen = strlen(word);
 
         if (w > 0) {
-            if (offset + 1 >= phrase_size)
-                return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
-                               "mnemonic_from_entropy: phrase_size=%zu too small",
-                               phrase_size);
+            if (offset + 1 >= phrase_size) {
+                result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
+                                 "mnemonic_from_entropy: phrase_size=%zu too small",
+                                 phrase_size);
+                goto cleanup;
+            }
             phrase_out[offset++] = ' ';
         }
-        if (offset + wlen >= phrase_size)
-            return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
-                           "mnemonic_from_entropy: phrase_size=%zu too small",
-                           phrase_size);
+        if (offset + wlen >= phrase_size) {
+            result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BUF_TOO_SMALL,
+                             "mnemonic_from_entropy: phrase_size=%zu too small",
+                             phrase_size);
+            goto cleanup;
+        }
         memcpy(phrase_out + offset, word, wlen);
         offset += wlen;
     }
     phrase_out[offset] = '\0';
     *written_out = offset;
-    return ZCL_OK;
+
+cleanup:
+    /* Wipe the SHA-256 checksum hash and the entropy||checksum buffer —
+     * both hold secret material derived from the input entropy. The
+     * phrase has already been emitted by this point (success path) or
+     * is incomplete (error path); neither buffer is read after here. */
+    memory_cleanse(hash, sizeof(hash));
+    memory_cleanse(combined, sizeof(combined));
+    return result;
 }
 
 /* ── Mnemonic → entropy (with checksum validation) ────────────────── */
@@ -2220,14 +2234,29 @@ static struct zcl_result mnemonic_decode_core(
         return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_NULL_PHRASE,
                        "mnemonic decode: null phrase");
 
+    /* Secret-bearing buffers, declared up front and zero-initialised so
+     * every error path can route through `cleanup` and wipe them, even
+     * when an early return leaves some of them unpopulated. */
+    char buf[DOMAIN_WALLET_BIP39_PHRASE_MAX];   /* mutable phrase copy   */
+    uint8_t data[33];                            /* packed 11-bit groups  */
+    uint8_t entropy[32];                         /* recovered entropy     */
+    uint8_t hash[32];                            /* checksum SHA-256       */
+    memset(buf, 0, sizeof(buf));
+    memset(data, 0, sizeof(data));
+    memset(entropy, 0, sizeof(entropy));
+    memset(hash, 0, sizeof(hash));
+
+    struct zcl_result result = ZCL_OK;
+
     /* Internal mutable copy for strtok_r. Cap at phrase max to avoid
      * unbounded stacks; matches the legacy wrapper's behaviour. */
-    char buf[DOMAIN_WALLET_BIP39_PHRASE_MAX];
     size_t len = strlen(phrase);
-    if (len >= sizeof(buf))
-        return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
-                       "mnemonic decode: phrase too long: %zu (cap %zu)",
-                       len, sizeof(buf));
+    if (len >= sizeof(buf)) {
+        result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_PHRASE_LEN,
+                         "mnemonic decode: phrase too long: %zu (cap %zu)",
+                         len, sizeof(buf));
+        goto cleanup;
+    }
     memcpy(buf, phrase, len + 1);
 
     int indices[DOMAIN_WALLET_BIP39_MAX_WORDS];
@@ -2236,22 +2265,28 @@ static struct zcl_result mnemonic_decode_core(
     char *saveptr = NULL;
     char *token = strtok_r(buf, " ", &saveptr);
     while (token) {
-        if (word_count >= DOMAIN_WALLET_BIP39_MAX_WORDS)
-            return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BAD_WORD_COUNT,
-                           "mnemonic decode: more than %d words",
-                           DOMAIN_WALLET_BIP39_MAX_WORDS);
+        if (word_count >= DOMAIN_WALLET_BIP39_MAX_WORDS) {
+            result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BAD_WORD_COUNT,
+                             "mnemonic decode: more than %d words",
+                             DOMAIN_WALLET_BIP39_MAX_WORDS);
+            goto cleanup;
+        }
         int idx = domain_wallet_mnemonic_wordlist_find(token);
-        if (idx < 0)
-            return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_UNKNOWN_WORD,
-                           "mnemonic decode: unknown word: %s", token);
+        if (idx < 0) {
+            result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_UNKNOWN_WORD,
+                             "mnemonic decode: unknown word: %s", token);
+            goto cleanup;
+        }
         indices[word_count++] = idx;
         token = strtok_r(NULL, " ", &saveptr);
     }
 
     if (word_count != 12 && word_count != 15 && word_count != 18
-        && word_count != 21 && word_count != 24)
-        return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BAD_WORD_COUNT,
-                       "mnemonic decode: bad word count: %d", word_count);
+        && word_count != 21 && word_count != 24) {
+        result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_BAD_WORD_COUNT,
+                         "mnemonic decode: bad word count: %d", word_count);
+        goto cleanup;
+    }
 
     size_t total_bits = (size_t)word_count * 11;
     size_t cs_bits = (size_t)word_count / 3;
@@ -2259,8 +2294,6 @@ static struct zcl_result mnemonic_decode_core(
     size_t entropy_len = ent_bits / 8;
 
     /* Pack 11-bit indices into a byte array. */
-    uint8_t data[33];
-    memset(data, 0, sizeof(data));
     for (int w = 0; w < word_count; w++) {
         for (int b = 0; b < 11; b++) {
             int bit_pos = w * 11 + b;
@@ -2271,10 +2304,8 @@ static struct zcl_result mnemonic_decode_core(
 
     /* Verify checksum: SHA-256 prefix over the entropy bytes equals
      * the trailing cs_bits in `data`. */
-    uint8_t entropy[32];
     memcpy(entropy, data, entropy_len);
 
-    uint8_t hash[32];
     struct sha256_ctx ctx;
     sha256_init(&ctx);
     sha256_write(&ctx, entropy, entropy_len);
@@ -2283,15 +2314,26 @@ static struct zcl_result mnemonic_decode_core(
     uint8_t actual_cs = data[entropy_len];
     uint8_t expected_cs = hash[0];
     uint8_t mask = (uint8_t)(0xFF << (8 - cs_bits));
-    if ((actual_cs & mask) != (expected_cs & mask))
-        return ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_CHECKSUM,
-                       "mnemonic decode: checksum mismatch");
+    if ((actual_cs & mask) != (expected_cs & mask)) {
+        result = ZCL_ERR(DOMAIN_WALLET_MNEMONIC_ERR_CHECKSUM,
+                         "mnemonic decode: checksum mismatch");
+        goto cleanup;
+    }
 
     if (entropy_out)
         memcpy(entropy_out, entropy, entropy_len);
     if (entropy_len_out)
         *entropy_len_out = entropy_len;
-    return ZCL_OK;
+
+cleanup:
+    /* Wipe every secret-bearing buffer on all exit paths. The entropy
+     * has already been copied to entropy_out (success path) before this
+     * point; on error paths nothing was emitted. */
+    memory_cleanse(buf, sizeof(buf));
+    memory_cleanse(data, sizeof(data));
+    memory_cleanse(entropy, sizeof(entropy));
+    memory_cleanse(hash, sizeof(hash));
+    return result;
 }
 
 struct zcl_result domain_wallet_mnemonic_to_entropy(
@@ -2360,5 +2402,9 @@ struct zcl_result domain_wallet_mnemonic_to_seed(
                        salt, salt_len,
                        DOMAIN_WALLET_BIP39_PBKDF2_ROUNDS,
                        seed_out, DOMAIN_WALLET_BIP39_SEED_BYTES);
+
+    /* Wipe the salt — it embeds the secret passphrase. PBKDF2 has
+     * already consumed it into seed_out, so it is dead after this. */
+    memory_cleanse(salt, sizeof(salt));
     return ZCL_OK;
 }
