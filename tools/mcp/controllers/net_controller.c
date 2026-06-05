@@ -99,6 +99,7 @@ static int h_zcl_onion_health(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for onion health response");
         LOG_ERR("mcp.net", "malloc failed for onion_health body (512 bytes)");
+        return 0;
     }
 
     if (!addr) {

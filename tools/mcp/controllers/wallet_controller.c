@@ -125,6 +125,7 @@ static int h_zcl_listaddresses(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for listaddresses response");
         LOG_ERR("mcp.wallet", "malloc failed for listaddresses (%zu bytes)", cap);
+        return 0;
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos, "{\"t_addresses\":[");

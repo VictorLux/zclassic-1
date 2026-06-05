@@ -86,6 +86,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
     cbs = contact_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)c)) {
         LOG_FAIL("model", "contact save vetoed by before_save");
+        return false;
     }
     AR_VALIDATE_RECORD(cbs, "contact", c, db_contact_validate);
 

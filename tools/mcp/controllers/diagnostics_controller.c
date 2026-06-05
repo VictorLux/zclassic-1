@@ -329,6 +329,7 @@ static int h_zcl_profile(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "malloc failed for profile response");
         LOG_ERR("mcp.diag", "malloc failed for profile body (%zu bytes)", cap);
+        return 0;
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,
