@@ -11,6 +11,42 @@
 
 #include "controllers/wallet_shielded_internal.h"
 
+/* Decode a 512-byte Sapling memo into a JSON field on `entry`, matching the
+ * three former inline copies in z_listunspent / z_listreceivedbyaddress /
+ * z_listallnotes. 0x00 and 0xf6 are padding/sentinel bytes (0xf6 marks an
+ * empty memo). If no meaningful byte is present, nothing is added. If the
+ * first byte is printable ASCII the memo is emitted as text under "memo"
+ * (bytes up to the first 0x00 or 0xf6, the canonical text terminator);
+ * otherwise it is hex-encoded under "memo_hex" with trailing padding stripped.
+ * memo_len bounds the scan (callers without a length pass 512). */
+static void wallet_memo_to_json(struct json_value *entry,
+                                const uint8_t *memo, size_t memo_len)
+{
+    size_t bound = memo_len < 512 ? memo_len : 512;
+    size_t end = 0; /* one past the last meaningful (non-padding) byte */
+    for (size_t j = 0; j < bound; j++)
+        if (memo[j] != 0 && memo[j] != 0xf6)
+            end = j + 1;
+    if (end == 0)
+        return; /* empty / all-padding memo */
+
+    if (memo[0] >= 0x20 && memo[0] < 0x7f) {
+        size_t len = 0;
+        while (len < bound && memo[len] != 0 && memo[len] != 0xf6)
+            len++;
+        char memo_str[513];
+        memcpy(memo_str, memo, len);
+        memo_str[len] = '\0';
+        json_push_kv_str(entry, "memo", memo_str);
+    } else {
+        char hex[1025];
+        for (size_t j = 0; j < end; j++)
+            snprintf(hex + j * 2, 3, "%02x", memo[j]);
+        hex[end * 2] = '\0';
+        json_push_kv_str(entry, "memo_hex", hex);
+    }
+}
+
 bool rpc_z_getnewaddress(const struct json_value *params, bool help,
                                   struct json_value *result)
 {
@@ -247,35 +283,7 @@ bool rpc_z_listunspent(const struct json_value *params, bool help,
             json_push_kv_int(&entry, "confirmations", (int64_t)confirms);
             json_push_kv_int(&entry, "block_height", (int64_t)n->block_height);
 
-            /* Memo — show if non-empty */
-            bool has_memo = false;
-            for (size_t j = 0; j < n->memo_len && j < 512; j++) {
-                if (n->memo[j] != 0 && n->memo[j] != 0xf6) {
-                    has_memo = true;
-                    break;
-                }
-            }
-            if (has_memo) {
-                if (n->memo[0] >= 0x20 && n->memo[0] < 0x7f) {
-                    size_t len = 0;
-                    while (len < n->memo_len && len < 512 &&
-                           n->memo[len] != 0 && n->memo[len] != 0xf6)
-                        len++;
-                    char memo_str[513];
-                    memcpy(memo_str, n->memo, len);
-                    memo_str[len] = '\0';
-                    json_push_kv_str(&entry, "memo", memo_str);
-                } else {
-                    char hex[1025];
-                    size_t last = 0;
-                    for (size_t j = 0; j < n->memo_len && j < 512; j++)
-                        if (n->memo[j]) last = j;
-                    for (size_t j = 0; j <= last; j++)
-                        snprintf(hex + j * 2, 3, "%02x", n->memo[j]);
-                    hex[(last + 1) * 2] = '\0';
-                    json_push_kv_str(&entry, "memo_hex", hex);
-                }
-            }
+            wallet_memo_to_json(&entry, n->memo, n->memo_len);
 
             json_push_back(result, &entry);
         }
@@ -378,36 +386,8 @@ bool rpc_z_listreceivedbyaddress(const struct json_value *params,
         json_push_kv_bool(&entry, "change", false);
         json_push_kv_bool(&entry, "spent", n->spent);
 
-        /* Memo — show as hex if non-empty, or as text */
-        bool has_memo = false;
-        for (int j = 0; j < 512; j++) {
-            if (n->memo[j] != 0 && n->memo[j] != 0xf6) {
-                has_memo = true;
-                break;
-            }
-        }
-        if (has_memo) {
-            /* If starts with printable text, show as string */
-            if (n->memo[0] >= 0x20 && n->memo[0] < 0x7f) {
-                size_t len = 0;
-                while (len < 512 && n->memo[len] != 0)
-                    len++;
-                char memo_str[513];
-                memcpy(memo_str, n->memo, len);
-                memo_str[len] = '\0';
-                json_push_kv_str(&entry, "memo", memo_str);
-            } else {
-                /* Hex-encode */
-                char hex[1025];
-                size_t last_nonzero = 0;
-                for (size_t j = 0; j < 512; j++)
-                    if (n->memo[j]) last_nonzero = j;
-                for (size_t j = 0; j <= last_nonzero; j++)
-                    snprintf(hex + j * 2, 3, "%02x", n->memo[j]);
-                hex[(last_nonzero + 1) * 2] = '\0';
-                json_push_kv_str(&entry, "memo", hex);
-            }
-        }
+        /* sapling_received_note has a fixed 512-byte memo (no memo_len). */
+        wallet_memo_to_json(&entry, n->memo, 512);
 
         json_push_back(result, &entry);
         json_free(&entry);
@@ -472,32 +452,7 @@ bool rpc_z_listallnotes(const struct json_value *params, bool help,
             json_push_kv_str(&entry, "spent_by", spent_hex);
         }
 
-        /* Memo */
-        bool has_memo = false;
-        size_t memo_end = 0;
-        for (size_t j = 0; j < n->memo_len && j < 512; j++) {
-            if (n->memo[j] != 0 && n->memo[j] != 0xf6) {
-                memo_end = j + 1;
-                has_memo = true;
-            }
-        }
-        if (has_memo) {
-            if (n->memo[0] >= 0x20 && n->memo[0] < 0x7f) {
-                size_t len = 0;
-                while (len < memo_end && n->memo[len] >= 0x20)
-                    len++;
-                char memo_str[513];
-                memcpy(memo_str, n->memo, len);
-                memo_str[len] = '\0';
-                json_push_kv_str(&entry, "memo", memo_str);
-            } else {
-                char hex[1025];
-                for (size_t j = 0; j < memo_end; j++)
-                    snprintf(hex + j * 2, 3, "%02x", n->memo[j]);
-                hex[memo_end * 2] = '\0';
-                json_push_kv_str(&entry, "memo_hex", hex);
-            }
-        }
+        wallet_memo_to_json(&entry, n->memo, n->memo_len);
 
         json_push_back(result, &entry);
         json_free(&entry);
