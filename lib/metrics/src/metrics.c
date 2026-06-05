@@ -25,6 +25,11 @@ _Atomic uint64_t g_eh_solver_runs = 0;
 
 static int64_t g_start_time = 0;
 static pthread_t g_metrics_thread;
+/* Single-spawn guard for the module-level g_metrics_thread. Two concurrent
+ * metrics_start() calls must not both spawn and overwrite the handle (which
+ * would orphan one thread); the winner of this CAS is the only spawner, and
+ * metrics_stop() pairs with it so only the matching join runs. */
+static _Atomic bool g_metrics_started = false;
 
 void metrics_print_art(void)
 {
@@ -402,14 +407,19 @@ bool metrics_start(struct metrics_context *ctx)
 {
     if (!ctx)
         return false;
-    if (ctx->thread_started)
-        return true;
+
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_metrics_started, &expected, true)) {
+        ctx->thread_started = true;
+        return true; /* another caller already won the spawn */
+    }
 
     atomic_store(&ctx->running, true);
     if (thread_registry_spawn_ex("zcl_metrics", metrics_thread_fn, ctx,
                                   &g_metrics_thread) != 0) {
         perror("metrics_start: thread_registry_spawn_ex");
         atomic_store(&ctx->running, false);
+        atomic_store(&g_metrics_started, false);
         return false;
     }
     ctx->thread_started = true;
@@ -418,8 +428,11 @@ bool metrics_start(struct metrics_context *ctx)
 
 void metrics_stop(struct metrics_context *ctx)
 {
-    if (!ctx || !ctx->thread_started)
+    if (!ctx)
         return;
+    bool expected = true;
+    if (!atomic_compare_exchange_strong(&g_metrics_started, &expected, false))
+        return; /* not running */
     atomic_store(&ctx->running, false);
     pthread_join(g_metrics_thread, NULL);
     ctx->thread_started = false;

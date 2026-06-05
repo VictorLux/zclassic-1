@@ -14,6 +14,11 @@
 static struct main_state *g_ms;
 static struct liveness_contract g_contract;
 static _Atomic supervisor_child_id g_id = SUPERVISOR_INVALID_ID;
+/* Claimed once by the registering caller. g_id is only published at the end of
+ * registration, so an atomic_load(&g_id) check-then-init still lets a second
+ * concurrent call double-initialize (g_ms, the condition engine main state,
+ * the contract). This CAS lets exactly one caller run the init body. */
+static _Atomic bool g_registered = false;
 
 static void self_heal_tick(struct liveness_contract *c)
 {
@@ -31,7 +36,9 @@ static void self_heal_tick(struct liveness_contract *c)
 void self_heal_register(struct main_state *ms)
 {
     if (!ms) return;
-    if (atomic_load(&g_id) != SUPERVISOR_INVALID_ID) return;
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_registered, &expected, true))
+        return; /* another caller already initialized */
     g_ms = ms;
     condition_engine_set_main_state(ms);
     liveness_contract_init(&g_contract, "self_heal.engine");
