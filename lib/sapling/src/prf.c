@@ -30,6 +30,7 @@ static void sprout_prf(bool a, bool b, bool c, bool d,
     sha256_init(&hasher);
     sha256_write(&hasher, blob, 64);
     sha256_finalize_no_padding(&hasher, out->data, 0);
+    memory_cleanse(&hasher, sizeof(hasher));
     memory_cleanse(blob, sizeof(blob));
 }
 
@@ -87,6 +88,7 @@ void prf_expand(const struct uint256 *sk, unsigned char t,
                                EXPAND_SEED_PERSONAL);
     blake2b_update(&state, blob, 33);
     blake2b_final(&state, out, 64);
+    memory_cleanse(&state, sizeof(state));
     memory_cleanse(blob, sizeof(blob));
 }
 

@@ -5,6 +5,7 @@
 #include "sapling/sprout.h"
 #include "sapling/bls12_381.h"
 #include "crypto/blake2b.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include <string.h>
 
@@ -32,6 +33,7 @@ void sprout_h_sig(const uint8_t random_seed[32],
     blake2b_update(&state, nf1, 32);
     blake2b_update(&state, joinsplit_pubkey, 32);
     blake2b_final(&state, h_sig, 32);
+    memory_cleanse(&state, sizeof(state));
 }
 
 bool sprout_verify_groth16(const uint8_t proof[192],

@@ -9,6 +9,7 @@
 #include "sapling/prf.h"
 #include "core/hash.h"
 #include "core/serialize.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 void sprout_payment_address_get_hash(const struct sprout_payment_address *addr,
@@ -66,6 +67,7 @@ void sprout_spending_key_to_address(const struct sprout_spending_key *sk,
     struct sprout_viewing_key vk;
     sprout_spending_key_to_viewing_key(sk, &vk);
     sprout_viewing_key_to_address(&vk, addr);
+    memory_cleanse(&vk, sizeof(vk));
 }
 
 void sapling_spending_key_to_expanded(const struct sapling_spending_key *sk,
