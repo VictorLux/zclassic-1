@@ -88,7 +88,7 @@ bool db_store_product_find_active(struct node_db *ndb, int64_t id,
 int db_store_product_list_active(struct node_db *ndb,
                                  struct db_store_product *out, size_t max);
 int db_store_product_count(struct node_db *ndb);
-bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o);
+bool db_store_order_save(struct node_db *ndb, struct db_store_order *o);
 bool db_store_order_find_view(struct node_db *ndb, int64_t id,
                               struct db_store_order_view *out);
 int db_store_order_list_recent(struct node_db *ndb,

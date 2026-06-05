@@ -227,6 +227,23 @@ static void on_uri_scheme_request(WebKitURISchemeRequest *request,
 
     /* Copy body — g_memdup2 handles binary data (no strlen truncation) */
     char *body_copy = g_malloc(blen);
+    if (!body_copy && blen > 0) {
+        /* Allocation failed for a non-empty body: never hand GLib a NULL
+         * pointer with non-zero length (undefined behaviour). Return the
+         * not-found page the same way as above instead. */
+        const char *html =
+            "<html><body style='background:#0c0c0c;color:#e8e8e8;"
+            "font-family:-apple-system,monospace;padding:60px;"
+            "text-align:center'>"
+            "<h2 style='color:#666;font-weight:400'>Out of memory</h2>"
+            "</body></html>";
+        GInputStream *s = g_memory_input_stream_new_from_data(
+            g_strdup(html), (gssize)strlen(html), g_free);
+        webkit_uri_scheme_request_finish(request, s,
+            (gint64)strlen(html), "text/html");
+        g_object_unref(s);
+        return;
+    }
     if (body_copy) memcpy(body_copy, body, blen);
     GInputStream *stream = g_memory_input_stream_new_from_data(
         body_copy, (gssize)blen, g_free);

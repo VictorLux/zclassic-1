@@ -276,14 +276,19 @@ size_t explorer_view_token_detail(const char *token_id_hex,
                 "FROM zslp_tokens WHERE token_id = ?",
                 -1, &s, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(s, 1, token_id, 32, SQLITE_STATIC);
-            if (AR_STEP_ROW_READONLY(s) != SQLITE_ROW) {
+            bool have_row = (AR_STEP_ROW_READONLY(s) == SQLITE_ROW);
+            if (!have_row) {
                 /* Try reversed */
                 sqlite3_reset(s);
                 sqlite3_bind_blob(s, 1, token_id_rev, 32, SQLITE_STATIC);
-                if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+                if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+                    have_row = true;
                     lookup_id = token_id_rev;
+                }
             }
-            if (sqlite3_column_text(s, 0)) {
+            /* Only read columns when a row is actually current: with no
+             * SQLITE_ROW the column accessors return NULL/garbage. */
+            if (have_row && sqlite3_column_text(s, 0)) {
                 const char *t = (const char *)sqlite3_column_text(s, 0);
                 const char *n = (const char *)sqlite3_column_text(s, 1);
                 const char *u = (const char *)sqlite3_column_text(s, 3);

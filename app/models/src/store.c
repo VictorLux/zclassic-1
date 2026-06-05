@@ -201,7 +201,7 @@ int db_store_product_count(struct node_db *ndb)
     AR_QUERY_COUNT_BOUND(ndb, s, "SELECT count(*) FROM products", (void)0);
 }
 
-bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
+bool db_store_order_save(struct node_db *ndb, struct db_store_order *o)
 {
     sqlite3_stmt *s = NULL;
     struct ar_callbacks *cbs;
@@ -209,7 +209,7 @@ bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
     if (!ndb || !ndb->open || !o)
         return false;
     if (o->created_at == 0)
-        ((struct db_store_order *)o)->created_at = (int64_t)platform_time_wall_time_t();
+        o->created_at = (int64_t)platform_time_wall_time_t();
 
     cbs = store_order_callbacks_ready();
     if (!ar_run_before_save(cbs, (void *)o)) {
@@ -241,7 +241,7 @@ bool db_store_order_save(struct node_db *ndb, const struct db_store_order *o)
         fprintf(stderr, "store_order save failed: %s\n", sqlite3_errmsg(ndb->db));
         return false;
     }
-    ((struct db_store_order *)o)->id = sqlite3_last_insert_rowid(ndb->db);
+    o->id = sqlite3_last_insert_rowid(ndb->db);
     AR_FINISH_SAVE(cbs, o, true);
 }
 

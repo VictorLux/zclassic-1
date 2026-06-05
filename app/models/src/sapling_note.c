@@ -307,8 +307,8 @@ int db_sapling_note_list_all(struct node_db *ndb,
 }
 
 /* Read one coinanalysis row. The z-address is derived only when both
- * diversifier and pk_d are present; malformed NULL-blob rows leave the
- * emitted address empty. */
+ * diversifier and pk_d are present AND correctly sized; malformed rows
+ * (NULL or truncated blobs) leave the emitted address empty. */
 static void sapling_note_read_analysis_row(sqlite3_stmt *s,
                                             struct db_sapling_note *n)
 {
@@ -323,7 +323,8 @@ static void sapling_note_read_analysis_row(sqlite3_stmt *s,
     AR_READ_BLOB(s, 5, n->diversifier, 11);
     AR_READ_BLOB(s, 6, n->pk_d, 32);
     n->witness_height = (int)AR_COL_INT(s, 7);
-    if (ndiv && npkd)
+    if (ndiv && npkd &&
+        sqlite3_column_bytes(s, 5) == 11 && sqlite3_column_bytes(s, 6) == 32)
         sapling_encode_payment_address(n->diversifier, n->pk_d,
                                        "zs", n->address, sizeof(n->address));
 }
