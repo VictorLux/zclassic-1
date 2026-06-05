@@ -58,19 +58,47 @@ static inline void coins_map_free(struct coins_map *m)
     m->size = 0;
 }
 
+/* Open-addressed (linear-probe) hash map from txid -> coins cache entry.
+ * coins_map_hash uses the first 8 bytes of the txid as the bucket key. */
+
+/* Find the entry for txid, or NULL if absent. */
 struct coins_cache_entry *coins_map_find(struct coins_map *m,
                                           const struct uint256 *txid);
+
+/* Return the existing entry for txid, or insert a fresh one (coins_init'd,
+ * flags=0) and return it. Grows + rehashes when the load factor (3/4) is
+ * reached. Returns NULL only if a rehash allocation fails and the table is
+ * full. The returned pointer is invalidated by any later insert that triggers
+ * a rehash — do not hold it across inserts. */
 struct coins_cache_entry *coins_map_insert(struct coins_map *m,
                                             const struct uint256 *txid);
+
+/* Erase txid's entry (freeing its coins) and back-shift the probe run so no
+ * lookup is stranded. Returns false if txid was not present. */
 bool coins_map_erase(struct coins_map *m, const struct uint256 *txid);
+
+/* Number of occupied entries. */
 size_t coins_map_count(const struct coins_map *m);
 
+/* Backing-store interface for a UTXO view (a LevelDB/SQLite store, or
+ * another cache). All hooks may be NULL on a given impl; the
+ * coins_view_* inline wrappers below treat a NULL hook as "false". */
 struct coins_view_vtable {
+    /* Fill *coins for txid; return false (coins left as-is) if absent. */
     bool (*get_coins)(void *self, const struct uint256 *txid, struct coins *coins);
+    /* True iff txid has at least one unspent output. */
     bool (*have_coins)(void *self, const struct uint256 *txid);
+    /* Best-block hash this view is synced to. */
     bool (*get_best_block)(void *self, struct uint256 *hash);
+    /* Flush a batch of cached entries downward. Only DIRTY entries are
+     * applied; each is moved (ownership transferred), so map_coins is
+     * consumed. hash_block updates the store's best block unless it is
+     * null. Returning false means the flush did NOT persist — the caller
+     * MUST retain the dirty entries and retry (clearing them on failure
+     * loses UTXOs). */
     bool (*batch_write)(void *self, struct coins_map *map_coins,
                         const struct uint256 *hash_block);
+    /* Aggregate UTXO-set stats; may be NULL when unsupported. */
     bool (*get_stats)(void *self, struct coins_stats *stats);
 };
 
@@ -112,8 +140,16 @@ struct coins_view_cache {
     struct utxo_commitment commitment;  /* incremental UTXO set hash */
 };
 
+/* Initialize a cache layered over `backing` (copied by value into c->base):
+ * empty coin map, null hash_block, zeroed incremental commitment. */
 void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backing);
+
+/* Free the cached coin map. Does NOT free the backing view. */
 void coins_view_cache_free(struct coins_view_cache *c);
+
+/* Wrap this cache as a coins_view (vtable + impl=cache) so it can itself be
+ * the backing store of another coins_view_cache (cache stacking). Its
+ * batch_write only applies DIRTY entries and transfers ownership upward. */
 void coins_view_cache_as_view(struct coins_view *out,
                                struct coins_view_cache *cache);
 
@@ -147,17 +183,37 @@ void coins_view_cache_as_view(struct coins_view *out,
 void coins_view_cache_recompute_commitment(const struct coins_view_cache *c,
                                             struct utxo_commitment *out);
 
+/* Copy txid's coins into *out. Checks the cache first; on a miss it loads
+ * from the backing view and caches the result. Returns false (out untouched)
+ * if absent OR if the record is pruned (a pruned cache entry reads as
+ * "not present"). *out receives a deep copy the caller owns. */
 bool coins_view_cache_get_coins(struct coins_view_cache *c,
                                 const struct uint256 *txid,
                                 struct coins *out);
+
+/* True iff txid has a live (non-pruned) record, consulting the cache then
+ * the backing view. */
 bool coins_view_cache_have_coins(struct coins_view_cache *c,
                                  const struct uint256 *txid);
+
+/* Best block this cache is synced to. Lazily pulls it from the backing view
+ * the first time while hash_block is still null, then returns the cached
+ * value. */
 void coins_view_cache_get_best_block(struct coins_view_cache *c,
                                      struct uint256 *out);
 void coins_view_cache_set_best_block(struct coins_view_cache *c,
                                      const struct uint256 *hash);
+
+/* Get a MUTABLE, DIRTY-marked entry for txid for an existing coin: on a
+ * cache miss it is loaded from the backing view first, so the returned entry
+ * already holds the current coins. Returns NULL only if the map is full.
+ * Use for SPENDING/modifying an existing UTXO. */
 struct coins_cache_entry *coins_view_cache_modify(struct coins_view_cache *c,
                                                    const struct uint256 *txid);
+
+/* Get a MUTABLE entry for a BRAND-NEW coin, marked DIRTY|FRESH (no backing
+ * load — the caller is creating outputs that do not yet exist downstream).
+ * Returns NULL only if the map is full. Use for ADDING a new tx's outputs. */
 struct coins_cache_entry *coins_view_cache_modify_new(struct coins_view_cache *c,
                                                        const struct uint256 *txid);
 #ifdef ZCL_TESTING
@@ -169,15 +225,33 @@ bool coins_view_cache_flush_for_testing(struct coins_view_cache *c);
  * Does NOT touch hash_block — caller must set it explicitly. */
 void coins_view_cache_clear(struct coins_view_cache *c);
 
+/* Resolve the txout an input spends: looks up in->prevout.hash (loading from
+ * the backing view and caching it on a miss), then indexes prevout.n.
+ * Returns NULL if the parent coin is absent, the index is out of range, or
+ * that output is already spent (null). The returned pointer aliases the
+ * cache entry and is invalidated by any later insert that rehashes the map. */
 const struct tx_out *coins_view_cache_get_output_for(
     struct coins_view_cache *c, const struct tx_in *in);
 
+/* True iff every transparent input of tx resolves to an available output
+ * (coinbase trivially true — it has no real inputs). Does not validate
+ * amounts; see coins_view_cache_get_value_in. */
 bool coins_view_cache_have_inputs(struct coins_view_cache *c,
                                    const struct transaction *tx);
 
+/* Total value entering tx: transparent inputs + positive value_balance
+ * (value from the Sapling pool) + every joinsplit vpub_new (value from the
+ * Sprout pool). Returns -1 (consensus reject sentinel, NOT a valid amount)
+ * if any input is missing, an input value or any running total leaves
+ * MoneyRange. Coinbase returns 0. Caller should have confirmed have_inputs
+ * first. */
 int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
                                        const struct transaction *tx);
 
+/* Sprout JoinSplit anchor/nullifier availability check. Currently a
+ * structural stub that always returns true (Sprout anchor/nullifier
+ * enforcement lives elsewhere on the validation path); kept for interface
+ * symmetry with the input-availability checks. */
 bool coins_view_cache_have_joinsplit_requirements(
     struct coins_view_cache *c, const struct transaction *tx);
 

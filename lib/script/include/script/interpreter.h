@@ -137,6 +137,33 @@ static inline bool cast_to_bool(const struct stack_item *item)
     return false;
 }
 
+/* Caller-supplied signature/locktime oracle — the ONLY impure surface of
+ * the otherwise pure script VM (see lib/script/src/interpreter.c header).
+ * The interpreter never verifies a signature or reads a clock itself; it
+ * calls back through this table. lib/validation typically pairs it with
+ * the sigcache + the ECDSA verifier.
+ *
+ * Each callback may be NULL. When a hook the interpreter needs is NULL,
+ * the corresponding check is treated as FAILING, never as passing:
+ *   - check_sig NULL    -> OP_CHECKSIG / OP_CHECKMULTISIG see fSuccess=false
+ *                          (the signature is treated as invalid, not skipped)
+ *   - check_lock_time NULL -> an enabled OP_CHECKLOCKTIMEVERIFY does NOT call
+ *                          back and the locktime constraint is not enforced;
+ *                          only pass a NULL check_lock_time when CLTV is not a
+ *                          concern for the caller
+ *   - verify_signature NULL -> OP_CHECKDATASIG(VERIFY) sees fSuccess=false
+ * This fail-closed convention is verified in
+ * domain/consensus/src/script_interp.c — do not assume a missing hook means
+ * "skip the check".
+ *
+ * check_sig: verify `sig` (DER + 1 trailing hashtype byte) against `pubkey`
+ *   over `script_code` (the subscript being executed) for the network
+ *   identified by `consensus_branch_id`. Returns true iff valid.
+ * check_lock_time: return true iff the transaction's nLockTime/sequence
+ *   permits spending at the BIP65 threshold `lock_time` (used by CLTV).
+ * verify_signature: raw "message + sig + pubkey" verify against a precomputed
+ *   `sighash` (used by OP_CHECKDATASIG, which hashes the message itself).
+ * ctx: opaque per-checker state owned by the caller. */
 struct sig_checker {
     bool (*check_sig)(const struct sig_checker *self,
                       const unsigned char *sig, size_t siglen,
@@ -151,6 +178,36 @@ struct sig_checker {
     void *ctx;
 };
 
+/* Execute one script against `stack` (the OP_* dispatch loop). CONSENSUS
+ * surface — must never fork. Forwards to domain_consensus_eval_script
+ * (domain/consensus/src/script_interp.c), where the byte-exact behavior is
+ * defined.
+ *
+ * `stack` must already be stack_init'd (.items non-NULL) and carries the
+ * running stack across script_sig -> script_pub_key when called by
+ * verify_script; eval_script does NOT clear it on entry. The altstack is
+ * allocated/freed internally.
+ *
+ * `flags` is a bitmask of SCRIPT_VERIFY_* (see script/script_flags.h). It
+ * only ever ADDS checks: SCRIPT_VERIFY_NONE (0) runs the base consensus
+ * rules, and each bit set tightens acceptance. A bit that is CLEAR disables
+ * exactly that one rule (e.g. clearing SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY
+ * makes OP_CLTV a no-op NOP; clearing SCRIPT_VERIFY_MINIMALDATA accepts
+ * non-minimal pushes; clearing SCRIPT_VERIFY_NULLFAIL accepts a non-empty
+ * signature on a failed checksig). Never relax a flag on the block-validation
+ * path to "make a block connect" — that is a consensus split.
+ *
+ * `consensus_branch_id` selects the network upgrade epoch and is passed
+ * verbatim to checker->check_sig (it changes the sighash). `serror` (may be
+ * NULL) receives a SCRIPT_ERR_* code; it is reset before evaluation.
+ *
+ * Returns true iff the script ran to completion without error. true does
+ * NOT mean the top stack item is truthy — that final-result test is applied
+ * only by verify_script. A few opcodes are always-fail regardless of flags:
+ * the disabled opcodes (OP_CAT, OP_SUBSTR, OP_2MUL, OP_LSHIFT,
+ * OP_CODESEPARATOR, ...) -> SCRIPT_ERR_DISABLED_OPCODE, executed OP_RETURN
+ * -> SCRIPT_ERR_OP_RETURN, >201 non-push opcodes -> SCRIPT_ERR_OP_COUNT,
+ * and stack+altstack > 1000 items -> SCRIPT_ERR_STACK_SIZE. */
 bool eval_script(struct script_stack *stack,
                  const struct script *script,
                  unsigned int flags,
@@ -158,6 +215,32 @@ bool eval_script(struct script_stack *stack,
                  uint32_t consensus_branch_id,
                  ScriptError *serror);
 
+/* Verify that `script_sig` satisfies `script_pub_key` — the per-input
+ * consensus entry point. CONSENSUS surface — must never fork. Forwards to
+ * domain_consensus_verify_script (domain/consensus/src/script_interp.c).
+ *
+ * Pipeline (verified against the implementation):
+ *   1. If SCRIPT_VERIFY_SIGPUSHONLY is set and script_sig is not push-only,
+ *      fail SCRIPT_ERR_SIG_PUSHONLY up front.
+ *   2. eval_script(script_sig) into a fresh stack. If SCRIPT_VERIFY_P2SH is
+ *      set, snapshot the post-scriptSig stack for the redeem-script step.
+ *   3. eval_script(script_pub_key) continuing on the SAME stack.
+ *   4. Require a non-empty stack whose top item is truthy
+ *      (cast_to_bool), else SCRIPT_ERR_EVAL_FALSE.
+ *   5. P2SH (only when SCRIPT_VERIFY_P2SH is set AND script_pub_key is the
+ *      23-byte HASH160 template): re-require script_sig push-only, pop the
+ *      serialized redeem script from the snapshot, eval it, and again require
+ *      a truthy top item.
+ *   6. SCRIPT_VERIFY_CLEANSTACK (asserts P2SH is also set): require EXACTLY
+ *      one item remains, else SCRIPT_ERR_CLEANSTACK.
+ *
+ * Clearing SCRIPT_VERIFY_P2SH disables BIP16 redeem-script execution
+ * entirely (the P2SH output is then satisfied by the bare HASH160 EQUAL,
+ * which is a hard consensus difference). `flags`, `consensus_branch_id`,
+ * `checker`, and `serror` carry the same meaning as in eval_script.
+ *
+ * Returns true iff the input is fully satisfied; on false, `serror` (if
+ * non-NULL) holds the first SCRIPT_ERR_* reason. */
 bool verify_script(const struct script *script_sig,
                    const struct script *script_pub_key,
                    unsigned int flags,

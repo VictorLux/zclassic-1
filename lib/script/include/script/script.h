@@ -213,6 +213,23 @@ static inline struct script_num script_num_from_int(int64_t n)
     return (struct script_num){n};
 }
 
+/* Decode a little-endian, sign-magnitude CScriptNum from raw stack bytes.
+ * CONSENSUS-relevant: this is how the VM interprets a stack element as a
+ * number (OP_ADD, OP_PICK count, CLTV locktime, multisig key/sig counts, ...).
+ *
+ * Returns false (rejecting the element) when:
+ *   - len > max_size — the magnitude is too wide. Callers pass
+ *     SCRIPT_NUM_DEFAULT_MAX_SIZE (4) for ordinary arithmetic and a larger
+ *     bound (e.g. 5) only where the protocol permits it, such as the CLTV
+ *     locktime operand. Never widen max_size to "make a script parse".
+ *   - `require_minimal` is true AND the bytes are non-minimally encoded
+ *     (a redundant trailing 0x00/0x80 sign byte). This is the BIP62 rule 4
+ *     minimal-encoding check. The interpreter passes
+ *     require_minimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0, so clearing
+ *     SCRIPT_VERIFY_MINIMALDATA in the verify flags DISABLES this check and
+ *     accepts non-minimal numbers — a consensus-visible relaxation.
+ * On success `out->value` is the decoded int64 (high bit of the top byte is
+ * the sign). A zero-length element decodes to 0. */
 static inline bool script_num_from_bytes(struct script_num *out,
                                          const unsigned char *data, size_t len,
                                          bool require_minimal,
@@ -294,6 +311,28 @@ static inline int script_num_get_int(const struct script_num *sn)
 
 const char *script_get_op_name(enum opcodetype opcode);
 
+/* Count signature operations in a single script. Feeds the block-level
+ * MAX_BLOCK_SIGOPS consensus limit (see lib/validation/src/sigops.c) and
+ * the per-tx standardness check — so the count is consensus-relevant; do
+ * not change it casually. Mirrors zclassicd CScript::GetSigOpCount.
+ *
+ * Counting rules (verified against script.c):
+ *   - OP_CHECKSIG / OP_CHECKSIGVERIFY                 -> +1 each
+ *   - OP_CHECKMULTISIG / OP_CHECKMULTISIGVERIFY:
+ *       `accurate` true AND the immediately preceding opcode is a small
+ *       int OP_1..OP_16 -> +N (that literal key count);
+ *       otherwise -> +20 (the worst-case maximum).
+ *   - OP_CHECKDATASIG / OP_CHECKDATASIGVERIFY         -> +1 each ONLY if
+ *       SCRIPT_VERIFY_CHECKDATASIG_SIGOPS (bit 11) is set in `flags`;
+ *       when that flag is clear these opcodes count as ZERO sigops.
+ * Parsing stops silently at the first malformed/over-long push (a partial
+ * count is returned, never an error) — matching upstream.
+ *
+ * `accurate` only affects multisig: false always charges 20 per multisig
+ * (the upper bound used where the redeem script is unknown); true reads the
+ * literal key count. This is NOT a security toggle — `false` over-counts,
+ * never under-counts. For a P2SH prevout use
+ * script_get_sig_op_count_p2sh instead, which unwraps the redeem script. */
 uint32_t script_get_sig_op_count(const struct script *s, uint32_t flags,
                                   bool accurate);
 

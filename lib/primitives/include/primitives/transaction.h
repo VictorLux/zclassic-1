@@ -147,32 +147,122 @@ static inline bool transaction_is_coinbase(const struct transaction *tx)
 
 void transaction_init(struct transaction *tx);
 void transaction_free(struct transaction *tx);
+
+/* Allocate vin/vout arrays of null entries. Returns false (and leaves an
+ * empty, NULL-array record) when num_vin > MAX_TX_INPUTS or
+ * num_vout > MAX_TX_OUTPUTS, or on OOM. A zero count allocates NOTHING and
+ * leaves that pointer NULL (no 1-byte stub), so transaction_free stays a
+ * no-op — callers that later swap in a fresh array do not leak. */
 bool transaction_alloc(struct transaction *tx, size_t num_vin, size_t num_vout);
+
+/* Deep copy: dst is re-initialized, then vin/vout/shielded/joinsplit arrays
+ * are freshly allocated and copied (scripts copied by their .size only).
+ * Returns false on any allocation failure with dst already freed to an empty
+ * record. dst->hash is copied verbatim (NOT recomputed). */
 bool transaction_copy(struct transaction *dst, const struct transaction *src);
+
+/* Sum of transparent + Sprout outbound value: all vout values, plus
+ * (-value_balance) when value_balance <= 0 (value sent INTO the Sapling
+ * pool), plus every joinsplit vpub_old. Returns -1 if any term or running
+ * total leaves the MoneyRange [0, MAX_MONEY] (logged) — a consensus
+ * overflow guard, so -1 means "reject", not a valid amount. */
 int64_t transaction_get_value_out(const struct transaction *tx);
 void outpoint_to_string(const struct outpoint *op, char *buf, size_t buflen);
 
 struct byte_stream;
 
+/* outpoint wire form: hash(32) || n(u32 LE). Fixed 36 bytes. */
 bool outpoint_serialize(const struct outpoint *op, struct byte_stream *s);
 bool outpoint_deserialize(struct outpoint *op, struct byte_stream *s);
+
+/* tx_in wire form: prevout(36) || compact-size scriptSig len || scriptSig
+ * bytes || sequence(u32 LE). DESERIALIZATION INVARIANT: a scriptSig length
+ * above MAX_SCRIPT_SIZE is rejected with a logged failure (returns false).
+ * The script bytes are read into the fixed in-line script buffer. */
 bool tx_in_serialize(const struct tx_in *in, struct byte_stream *s);
 bool tx_in_deserialize(struct tx_in *in, struct byte_stream *s);
+
+/* tx_out wire form: value(i64 LE) || compact-size scriptPubKey len ||
+ * scriptPubKey bytes. DESERIALIZATION INVARIANT: a scriptPubKey length above
+ * MAX_SCRIPT_SIZE is rejected with a logged failure (returns false). */
 bool tx_out_serialize(const struct tx_out *out, struct byte_stream *s);
 bool tx_out_deserialize(struct tx_out *out, struct byte_stream *s);
+
+/* Recompute tx->hash = HASH256 (double-SHA256) over the canonical
+ * transaction serialization. The hash binds EXACTLY the bytes
+ * transaction_serialize emits for the current version/group/flags, so it
+ * covers the version-gated fields that are actually written (see
+ * transaction_serialize). Called automatically at the end of
+ * transaction_deserialize; call manually after mutating a tx in place. */
 void transaction_compute_hash(struct transaction *tx);
 
+/* Sapling spend description: cv(32) || anchor(32) || nullifier(32) ||
+ * rk(32) || zkproof(GROTH_PROOF_SIZE) || spendAuthSig(64). Fixed length,
+ * no embedded counts. */
 bool spend_description_serialize(const struct spend_description *sd, struct byte_stream *s);
 bool spend_description_deserialize(struct spend_description *sd, struct byte_stream *s);
+
+/* Sapling output description: cv(32) || cm(32) || ephemeralKey(32) ||
+ * encCiphertext(ZC_SAPLING_ENCCIPHERTEXT_SIZE) ||
+ * outCiphertext(ZC_SAPLING_OUTCIPHERTEXT_SIZE) || zkproof(GROTH_PROOF_SIZE).
+ * Fixed length. */
 bool output_description_serialize(const struct output_description *od, struct byte_stream *s);
 bool output_description_deserialize(struct output_description *od, struct byte_stream *s);
+
+/* Sprout JoinSplit description. The proof field is the ONLY length-variant:
+ * GROTH_PROOF_SIZE when use_groth, else PHGR_PROOF_SIZE. The serializer keys
+ * off jsd->use_groth; the deserializer is TOLD which form to expect via the
+ * `use_groth` argument (it cannot be inferred from the stream) and stores it
+ * back into jsd->use_groth. On the PHGR path the deserializer zero-fills the
+ * full proof buffer before reading the shorter proof. Layout: vpub_old(i64
+ * LE) || vpub_new(i64 LE) || anchor(32) || nullifiers[ZC_NUM_JS_INPUTS](32
+ * each) || commitments[ZC_NUM_JS_OUTPUTS](32 each) || ephemeralKey(32) ||
+ * randomSeed(32) || macs[ZC_NUM_JS_INPUTS](32 each) || proof(variable) ||
+ * ciphertexts[ZC_NUM_JS_OUTPUTS](ZC_SPROUT_CIPHERTEXT_SIZE each). */
 bool js_description_serialize(const struct js_description *jsd, struct byte_stream *s);
 bool js_description_deserialize(struct js_description *jsd, bool use_groth, struct byte_stream *s);
 
+/* Canonical ZClassic transaction serialization. The wire layout is gated by
+ * the version/overwinter/group-id flags (consensus, must-never-fork):
+ *   - First word is version with bit 31 = the overwintered flag; when
+ *     overwintered, version_group_id(u32 LE) follows.
+ *   - The Overwinter-v3 path (overwintered && group==OVERWINTER_VERSION_GROUP_ID
+ *     && version==3) and the Sapling-v4 path (group==SAPLING_VERSION_GROUP_ID
+ *     && version==4) are the only recognized overwintered shapes.
+ *   - vin/vout (each a compact-size count + entries), then lock_time.
+ *   - expiry_height is emitted only on the Overwinter-v3 OR Sapling-v4 path.
+ *   - value_balance + the shielded-spend and shielded-output vectors are
+ *     emitted only on the Sapling-v4 path.
+ *   - JoinSplits (vector + joinsplit_pubkey(32) + joinsplit_sig(64), the
+ *     last two only when count>0) are emitted only when version >= 2; the
+ *     JoinSplit proof form uses Groth iff overwintered && version >= 4.
+ *   - binding_sig(64) is emitted only on Sapling-v4 when there is at least
+ *     one shielded spend or output.
+ * Appends to `s`; returns false on the first stream failure. */
 bool transaction_serialize(const struct transaction *tx, struct byte_stream *s);
+
+/* Inverse of transaction_serialize, decoding the same version-gated layout.
+ * DESERIALIZATION INVARIANTS (consensus, must-never-fork) — each rejected
+ * with a logged failure (returns false): an overwintered tx whose
+ * version/group-id is neither Overwinter-v3 nor Sapling-v4; counts above
+ * MAX_TX_INPUTS / MAX_TX_OUTPUTS / MAX_SHIELDED_SPENDS / MAX_SHIELDED_OUTPUTS
+ * / MAX_JOINSPLITS; per-script bounds inside tx_in/tx_out; OOM. The shielded
+ * spend/output and joinsplit arrays are read only when the version gate
+ * enables them, so a v1/v2 tx never touches those fields. tx->hash is
+ * recomputed via transaction_compute_hash before returning true. `tx` is
+ * re-initialized at entry; on false it may be partially built — safe to
+ * transaction_free. */
 bool transaction_deserialize(struct transaction *tx, struct byte_stream *s);
+
+/* Byte length of transaction_serialize(tx) without keeping the bytes
+ * (serializes into a scratch stream and returns its size). */
 size_t transaction_serialize_size(const struct transaction *tx);
 
+/* Shielded value flowing INTO the tx (the value side opposite
+ * transaction_get_value_out): +value_balance when value_balance >= 0 (value
+ * taken FROM the Sapling pool), plus every joinsplit vpub_new (value FROM the
+ * Sprout pool). Returns -1 on a MoneyRange violation of any term or the
+ * running total (logged) — a reject sentinel, not a valid amount. */
 int64_t transaction_get_shielded_value_in(const struct transaction *tx);
 
 #endif
