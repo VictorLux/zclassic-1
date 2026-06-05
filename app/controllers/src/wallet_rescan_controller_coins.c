@@ -199,5 +199,8 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
     json_push_kv(result, "shielded_notes_detail", &z_arr);
     json_free(&z_arr);
 
+    for (int i = 0; i < tracked_count; i++)
+        db_wallet_utxo_free(&tracked[i]);
+
     return true;
 }

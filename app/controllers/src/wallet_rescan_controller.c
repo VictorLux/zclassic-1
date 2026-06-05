@@ -111,6 +111,8 @@ static bool rpc_replaywalletfromchain(const struct json_value *params,
     {
         struct db_wallet_utxo tmp[4096];
         utxo_count = db_wallet_utxo_list_unspent(ctx->node_db, tmp, 4096);
+        for (int i = 0; i < utxo_count; i++)
+            db_wallet_utxo_free(&tmp[i]);
     }
 
     wallet_view_replay_summary(result, utxo_count,
@@ -292,6 +294,9 @@ static bool rpc_syncwalletfromdb(const struct json_value *params, bool help,
 
     int64_t balance_after = wallet_get_balance(ctx->wallet);
 
+    for (int i = 0; i < count; i++)
+        db_wallet_utxo_free(&unspent[i]);
+
     wallet_view_sync_summary(result, synced, already_correct, marked_spent,
                               balance_before, balance_after);
     return true;
@@ -336,6 +341,8 @@ static bool rpc_rescanwallet(const struct json_value *params, bool help,
     {
         struct db_wallet_utxo tmp[4096];
         utxos_before = db_wallet_utxo_list_unspent(ctx->node_db, tmp, 4096);
+        for (int i = 0; i < utxos_before; i++)
+            db_wallet_utxo_free(&tmp[i]);
     }
 
     /* Full rescan from block 0 */
@@ -401,6 +408,9 @@ static bool rpc_rescanwallet(const struct json_value *params, bool help,
     json_push_kv_str(result, "balance_before", amt);
     format_amount(balance_after, amt, sizeof(amt));
     json_push_kv_str(result, "balance_after", amt);
+
+    for (int i = 0; i < count; i++)
+        db_wallet_utxo_free(&unspent[i]);
 
     return true;
 }
