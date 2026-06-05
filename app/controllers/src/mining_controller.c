@@ -27,6 +27,7 @@
 #include <time.h>
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"  /* LogPrintf */
 
 struct mining_context {
     struct main_state *main_state;
@@ -45,8 +46,23 @@ static bool mining_submit_mined_block(struct block *block)
 {
     struct validation_state state;
     validation_state_init(&state);
-    return reducer_ingest_block(boot_activation_controller(), block,
-                                REDUCER_SRC_MINED, true, &state);
+    bool ok = reducer_ingest_block(boot_activation_controller(), block,
+                                   REDUCER_SRC_MINED, true, &state);
+    if (!ok) {
+        /* Surface WHY the reducer rejected a locally-mined block. Without
+         * this, `generate` returns an empty result array with no clue why
+         * the tip didn't advance (the validation_state was dropped on the
+         * floor). Log the reject reason + the block hash for the operator. */
+        char msg[MAX_REJECT_REASON + 64];
+        format_state_message(&state, msg, sizeof(msg));
+        struct uint256 h;
+        block_get_hash(block, &h);
+        char hex[65];
+        uint256_get_hex(&h, hex);
+        LogPrintf("[mining] submit of mined block %s REJECTED by reducer: %s\n",
+                  hex, msg[0] ? msg : "(no reason set)");
+    }
+    return ok;
 }
 
 void rpc_mining_set_state(struct main_state *ms, struct tx_mempool *mp,
