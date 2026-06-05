@@ -84,6 +84,30 @@ weaken a gate, never touch `config/src/boot.c`.
   carefully. (Surfaced by the Wave-1 `coins_alloc` review; the live NULL-deref
   sibling at `coins_db.c:133` was fixed in Wave 1.)
 
+## Deferred — peer_scoring typed-API adoption (needs enum extension, owner-gated)
+
+Round-3 #1 (adopt typed `peer_scoring_record()` across ~34 raw
+`peer_misbehaving(...,N,...)` sites in `lib/net/src/msgprocessor*.c`,
+`msg_compact.c`) was ATTEMPTED and REVERTED. Two naive approaches both fail:
+- **Map by meaning** → silently changes ban WEIGHTS (raw 20→INVALID_MESSAGE=10
+  halved; raw 50→INVALID_BLOCK=100 doubled). A behavior change to a
+  security-relevant DoS surface — must not land silently. (Caught by review.)
+- **Map by weight (1:1)** → preserves behavior but mis-NAMES: a weight-20
+  snapshot *parse* error becomes `PEER_OFFENCE_FLOOD` (the only weight-20 enum),
+  which is a worse lie than the raw number.
+
+Root cause: the enum has only 4 weight buckets (INVALID_MESSAGE/UNREQUESTED=10,
+FLOOD=20, INVALID_HEADER=50, INVALID_BLOCK=100), with no name for the
+snapshot/transport/proof rejection classes the snapshot path uses at weights
+20/50/100. **The right fix EXTENDS `peer_scoring.h`** with semantically-accurate
+offences at the SAME weights (e.g. `INVALID_SNAPSHOT=20`, a 50-weight
+swarm-chunk class, `INVALID_PROOF=100` for flyclient/SHA3/merkle verification),
+then maps each site to the enum that is BOTH weight-preserving AND honestly
+named. That is enum design on a DoS-policy surface → owner-gated; the
+`msg_blocks.c:540` dynamic-`dos` site (graded 1..49) needs a parametric record,
+not a constant enum. Until then the raw `peer_misbehaving` calls stay — they do
+not misrepresent the category.
+
 ## boot_services.c decomposition plan (2513 LOC → target the shutdown TU last)
 
 Seam map (read-only audit `w6755v1wu`). Extract order by risk:
