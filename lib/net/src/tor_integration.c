@@ -396,8 +396,8 @@ static void blocking_fetch_cb(int status, const uint8_t *body,
         if (r->body) {
             memcpy(r->body, body, body_len);
             r->body[body_len] = '\0';
+            r->body_len = body_len;
         }
-        r->body_len = body_len;
     }
     atomic_store(&r->complete, status >= 200 ? 1 : -1);
 }

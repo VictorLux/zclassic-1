@@ -476,11 +476,14 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
     if (n > 0) off = (size_t)n;
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, services, height, last_seen, "
         "version, self, clearnet_ip, clearnet_port FROM peer_directory "
         "ORDER BY self DESC, last_seen DESC LIMIT 500",
-        -1, &s, NULL);
+        -1, &s, NULL) != SQLITE_OK || !s) {
+        sqlite3_close(db);
+        return 0;
+    }
 
     int count = 0;
     while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
@@ -573,10 +576,13 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         "<th>Height</th><th>Last Seen</th><th>Version</th></tr>");
 
     sqlite3_stmt *s = NULL;
-    sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(db,
         "SELECT onion_address, port, height, last_seen, version, self "
         "FROM peer_directory ORDER BY self DESC, last_seen DESC LIMIT 500",
-        -1, &s, NULL);
+        -1, &s, NULL) != SQLITE_OK || !s) {
+        sqlite3_close(db);
+        return 0;
+    }
 
     int count = 0;
     while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 512 < sizeof(body)) {
