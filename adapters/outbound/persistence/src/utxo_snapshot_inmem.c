@@ -154,6 +154,7 @@ static struct zcl_result inmem_lookup(void *self_v,
                                       struct utxo_coin *coin_out)
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return ZCL_ERR(UTXO_ERR_IO, "lookup: null self");
     pthread_mutex_lock(&h->mu);
     ssize_t i = coins_find(h, op);
     if (i < 0) {
@@ -176,6 +177,7 @@ static struct zcl_result inmem_apply_diff(void *self_v,
                                           const struct utxo_diff *diff)
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return ZCL_ERR(UTXO_ERR_IO, "apply_diff: null self");
     if (!diff || !diff->target_block)
         return ZCL_ERR(UTXO_ERR_IO, "apply_diff: null arg(s)");
 
@@ -336,6 +338,7 @@ static struct zcl_result inmem_revert_tip(void *self_v,
                                           uint32_t expected_height)
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return ZCL_ERR(UTXO_ERR_IO, "revert_tip: null self");
     pthread_mutex_lock(&h->mu);
     if (!h->has_tip) {
         pthread_mutex_unlock(&h->mu);
@@ -387,6 +390,7 @@ static struct zcl_result inmem_revert_tip(void *self_v,
 static uint32_t inmem_tip_height(void *self_v)
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return UINT32_MAX;
     pthread_mutex_lock(&h->mu);
     uint32_t r = h->has_tip ? h->tip_height : UINT32_MAX;
     pthread_mutex_unlock(&h->mu);
@@ -396,6 +400,7 @@ static uint32_t inmem_tip_height(void *self_v)
 static void inmem_tip_hash(void *self_v, struct block_hash *out)
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return;
     pthread_mutex_lock(&h->mu);
     if (out) *out = h->tip_hash;
     pthread_mutex_unlock(&h->mu);
@@ -413,6 +418,7 @@ static struct zcl_result inmem_sha3_commitment(void *self_v,
                                                uint8_t out_digest[32])
 {
     struct utxo_snapshot_inmem *h = self_v;
+    if (!h) return ZCL_ERR(UTXO_ERR_IO, "sha3: null self");
     if (!out_digest) return ZCL_ERR(UTXO_ERR_IO, "sha3: null out");
     pthread_mutex_lock(&h->mu);
 
