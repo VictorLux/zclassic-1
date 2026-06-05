@@ -24,6 +24,9 @@ struct db_wrapper {
     void *filter_policy;
     void *cache;
     const void *snapshot;  /* leveldb_snapshot_t for atomic iteration */
+    /* XOR key parsed (length-prefix stripped) from the compact-size-prefixed
+     * obfuscate_key entry the DB stores.  db_read/db_iter_value undo the XOR
+     * before returning, so callers always see plaintext values. */
     uint8_t obfuscate_key[32];
     size_t obfuscate_key_len;
 };

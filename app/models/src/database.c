@@ -86,47 +86,43 @@ int db_exec_tolerant(sqlite3 *db, const char *sql, const char *where,
     return rc;
 }
 
-void node_db_note_activity(struct node_db *ndb, const char *op, int rc)
+/*
+ * Stamp the activity/rc/op snapshot fields under state_mutex. When
+ * flag_field is non-NULL it is assigned flag_value inside the same lock
+ * acquisition so the mode change and the activity stamp stay atomic.
+ */
+static void node_db_stamp_activity(struct node_db *ndb, bool *flag_field,
+                                   bool flag_value, const char *op, int rc)
 {
     if (!ndb || !ndb->state_mutex_init)
         return;
     zcl_mutex_lock(&ndb->state_mutex);
+    if (flag_field)
+        *flag_field = flag_value;
     ndb->last_activity_time = db_now_seconds();
     ndb->last_sqlite_rc = rc;
     if (op && op[0]) {
         snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
     }
     zcl_mutex_unlock(&ndb->state_mutex);
+}
+
+void node_db_note_activity(struct node_db *ndb, const char *op, int rc)
+{
+    node_db_stamp_activity(ndb, NULL, false, op, rc);
 }
 
 static void node_db_note_tx_state(struct node_db *ndb, bool tx_open,
                                   const char *op, int rc)
 {
-    if (!ndb || !ndb->state_mutex_init)
-        return;
-    zcl_mutex_lock(&ndb->state_mutex);
-    ndb->tx_open = tx_open;
-    ndb->last_activity_time = db_now_seconds();
-    ndb->last_sqlite_rc = rc;
-    if (op && op[0]) {
-        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
-    }
-    zcl_mutex_unlock(&ndb->state_mutex);
+    node_db_stamp_activity(ndb, ndb ? &ndb->tx_open : NULL, tx_open, op, rc);
 }
 
 void node_db_note_turbo_mode(struct node_db *ndb, bool turbo_mode,
                              const char *op, int rc)
 {
-    if (!ndb || !ndb->state_mutex_init)
-        return;
-    zcl_mutex_lock(&ndb->state_mutex);
-    ndb->turbo_mode = turbo_mode;
-    ndb->last_activity_time = db_now_seconds();
-    ndb->last_sqlite_rc = rc;
-    if (op && op[0]) {
-        snprintf(ndb->last_op, sizeof(ndb->last_op), "%s", op);
-    }
-    zcl_mutex_unlock(&ndb->state_mutex);
+    node_db_stamp_activity(ndb, ndb ? &ndb->turbo_mode : NULL, turbo_mode,
+                           op, rc);
 }
 
 

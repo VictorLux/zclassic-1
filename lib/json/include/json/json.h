@@ -63,7 +63,14 @@ int64_t json_get_int(const struct json_value *v);
 double json_get_real(const struct json_value *v);
 const char *json_get_str(const struct json_value *v);
 
+/* Serialize v into buf. Returns the number of bytes the full output WOULD
+ * occupy, excluding the NUL terminator. A return >= buflen means the output
+ * was TRUNCATED. Pass buf=NULL/buflen=0 as a sizing probe to learn the
+ * required length. The result is NUL-terminated iff it is < buflen. */
 size_t json_write(const struct json_value *v, char *buf, size_t buflen);
+
+/* Parse raw[0..len) into v. On parse failure, returns false and leaves v a
+ * fresh JSON_NULL (safe to json_free or reuse). */
 bool json_read(struct json_value *v, const char *raw, size_t len);
 
 #endif

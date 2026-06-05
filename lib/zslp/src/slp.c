@@ -174,56 +174,63 @@ size_t slp_build_genesis(uint8_t *out, size_t out_len,
                           uint8_t decimals, uint8_t mint_baton_vout,
                           uint64_t initial_quantity)
 {
-    (void)out_len;
+    if (out_len < 1) return 0;
     size_t off = 0;
     out[off++] = 0x6a; /* OP_RETURN */
 
-    off += push_data(out + off, (const uint8_t *)SLP_LOKAD_BYTES, 4);
+    bool ok = true;
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
 
     uint8_t tt = 1;
-    off += push_data(out + off, &tt, 1);
+    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
 
-    off += push_data(out + off, (const uint8_t *)"GENESIS", 7);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)"GENESIS", 7);
 
     /* ticker */
     if (ticker && ticker[0])
-        off += push_data(out + off, (const uint8_t *)ticker, strlen(ticker));
+        ok = ok && push_data_checked(out, &off, out_len,
+                                     (const uint8_t *)ticker, strlen(ticker));
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     /* name */
     if (name && name[0])
-        off += push_data(out + off, (const uint8_t *)name, strlen(name));
+        ok = ok && push_data_checked(out, &off, out_len,
+                                     (const uint8_t *)name, strlen(name));
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     /* document_url */
     if (document_url && document_url[0])
-        off += push_data(out + off, (const uint8_t *)document_url, strlen(document_url));
+        ok = ok && push_data_checked(out, &off, out_len,
+                                     (const uint8_t *)document_url,
+                                     strlen(document_url));
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     /* document_hash */
     if (document_hash)
-        off += push_data(out + off, document_hash, 32);
+        ok = ok && push_data_checked(out, &off, out_len, document_hash, 32);
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     /* decimals */
-    off += push_data(out + off, &decimals, 1);
+    ok = ok && push_data_checked(out, &off, out_len, &decimals, 1);
 
     /* mint_baton_vout */
     if (mint_baton_vout >= 2)
-        off += push_data(out + off, &mint_baton_vout, 1);
+        ok = ok && push_data_checked(out, &off, out_len, &mint_baton_vout, 1);
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     /* initial_quantity */
     uint8_t qty[8];
     u64_to_be(qty, initial_quantity);
-    off += push_data(out + off, qty, 8);
+    ok = ok && push_data_checked(out, &off, out_len, qty, 8);
 
-    return off;
+    return ok ? off : 0;
 }
 
 size_t slp_build_mint(uint8_t *out, size_t out_len,
@@ -231,49 +238,55 @@ size_t slp_build_mint(uint8_t *out, size_t out_len,
                        uint8_t mint_baton_vout,
                        uint64_t additional_quantity)
 {
-    (void)out_len;
+    if (out_len < 1) return 0;
     size_t off = 0;
     out[off++] = 0x6a;
 
-    off += push_data(out + off, (const uint8_t *)SLP_LOKAD_BYTES, 4);
+    bool ok = true;
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
     uint8_t tt = 1;
-    off += push_data(out + off, &tt, 1);
-    off += push_data(out + off, (const uint8_t *)"MINT", 4);
-    off += push_data(out + off, token_id->data, 32);
+    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)"MINT", 4);
+    ok = ok && push_data_checked(out, &off, out_len, token_id->data, 32);
 
     if (mint_baton_vout >= 2)
-        off += push_data(out + off, &mint_baton_vout, 1);
+        ok = ok && push_data_checked(out, &off, out_len, &mint_baton_vout, 1);
     else
-        off += push_empty(out + off);
+        ok = ok && push_empty_checked(out, &off, out_len);
 
     uint8_t qty[8];
     u64_to_be(qty, additional_quantity);
-    off += push_data(out + off, qty, 8);
+    ok = ok && push_data_checked(out, &off, out_len, qty, 8);
 
-    return off;
+    return ok ? off : 0;
 }
 
 size_t slp_build_send(uint8_t *out, size_t out_len,
                        const struct uint256 *token_id,
                        const uint64_t *quantities, int num_outputs)
 {
-    (void)out_len;
     if (num_outputs < 1 || num_outputs > 19) return 0;
+    if (out_len < 1) return 0;
 
     size_t off = 0;
     out[off++] = 0x6a;
 
-    off += push_data(out + off, (const uint8_t *)SLP_LOKAD_BYTES, 4);
+    bool ok = true;
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)SLP_LOKAD_BYTES, 4);
     uint8_t tt = 1;
-    off += push_data(out + off, &tt, 1);
-    off += push_data(out + off, (const uint8_t *)"SEND", 4);
-    off += push_data(out + off, token_id->data, 32);
+    ok = ok && push_data_checked(out, &off, out_len, &tt, 1);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)"SEND", 4);
+    ok = ok && push_data_checked(out, &off, out_len, token_id->data, 32);
 
     for (int i = 0; i < num_outputs; i++) {
         uint8_t qty[8];
         u64_to_be(qty, quantities[i]);
-        off += push_data(out + off, qty, 8);
+        ok = ok && push_data_checked(out, &off, out_len, qty, 8);
     }
 
-    return off;
+    return ok ? off : 0;
 }

@@ -113,7 +113,10 @@ void peer_scoring_on_good_interaction(struct p2p_node *node, int64_t now_ms);
  * (e.g. verack, a block that connected). */
 void peer_scoring_reset(struct p2p_node *node);
 
-/* Human-readable name for an offence — for logs and events. */
+/* Human-readable name for an offence — for logs and events.
+ * Caveat: UNREQUESTED and INVALID_MESSAGE share weight 10, so the name
+ * lookup (keyed on the integer value) cannot tell them apart and returns
+ * "invalid_message" for both. Pass the distinction in the context string. */
 const char *peer_offence_name(enum peer_offence offence);
 
 /* Convenience: milliseconds since the UNIX epoch for decay math.

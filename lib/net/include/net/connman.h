@@ -169,12 +169,25 @@ bool connman_pick_next_outbound_target(
     enum connman_outbound_target_source *source,
     size_t *addnode_index);
 
+/* addnode reconnection backoff trio. All three stamp
+ * addnode_last_attempt[i] with wall time so the dialer's cooldown can
+ * pace retries.
+ *
+ * record_addnode_attempt(success=true) clears addnode_backoff_sec[i] to
+ * 0; success=false forwards to record_addnode_failure with a TCP kind. */
 void connman_record_addnode_attempt(struct connman *cm,
                                     size_t addnode_index,
                                     bool success);
+/* Bumps the per-kind failure counter (addnode_tcp_failures[i] or
+ * addnode_protocol_failures[i]) and grows addnode_backoff_sec[i]: from 0
+ * it seeds 120s (TCP) or 900s (PROTOCOL), otherwise doubles, capped at
+ * 1800s. */
 void connman_record_addnode_failure(struct connman *cm,
                                     size_t addnode_index,
                                     enum connman_addnode_failure_kind kind);
+/* Charges a PROTOCOL failure (the 900s seed / doubling-to-1800s backoff)
+ * when an addnode peer drops before the handshake completes. No-op for
+ * inbound, already-handshaked, or non-addnode nodes. */
 void connman_note_addnode_prehandshake_disconnect(
     struct connman *cm,
     const struct p2p_node *node,

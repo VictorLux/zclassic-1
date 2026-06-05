@@ -9,6 +9,7 @@
 #ifndef SCRIPT_OP_RETURN_PUSH_H
 #define SCRIPT_OP_RETURN_PUSH_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -40,6 +41,13 @@ static inline const uint8_t *read_push(const uint8_t *p, const uint8_t *end,
     return p + *len;
 }
 
+/* Encoded byte count of a PUSH field (prefix + payload), without writing. */
+static inline size_t push_data_size(size_t len)
+{
+    size_t prefix = (len <= 0x4b) ? 1 : (len <= 0xff) ? 2 : 3;
+    return prefix + len;
+}
+
 /* Encode a PUSH data field into out, returning the bytes written. */
 static inline size_t push_data(uint8_t *out, const uint8_t *data, size_t len)
 {
@@ -64,6 +72,27 @@ static inline size_t push_empty(uint8_t *out)
     out[0] = 0x4c;
     out[1] = 0x00;
     return 2;
+}
+
+/* Bounded PUSH encode. Writes at *off only if the field fits within cap;
+ * advances *off and returns true on success, returns false (leaving *off
+ * untouched) when the field would overflow the caller's buffer. Produces
+ * the same bytes as push_data for every in-bounds field. */
+static inline bool push_data_checked(uint8_t *out, size_t *off, size_t cap,
+                                     const uint8_t *data, size_t len)
+{
+    size_t need = push_data_size(len);
+    if (need > cap - *off) return false;
+    *off += push_data(out + *off, data, len);
+    return true;
+}
+
+/* Bounded empty-PUSH encode. Same contract as push_data_checked. */
+static inline bool push_empty_checked(uint8_t *out, size_t *off, size_t cap)
+{
+    if (2 > cap - *off) return false;
+    *off += push_empty(out + *off);
+    return true;
 }
 
 #endif /* SCRIPT_OP_RETURN_PUSH_H */

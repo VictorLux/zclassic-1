@@ -122,21 +122,26 @@ bool znam_parse(const uint8_t *script, size_t script_len,
 
 /* ── Builders ───────────────────────────────────────────────────── */
 
-static size_t znam_build_header(uint8_t *out, uint8_t command,
-                                const char *name)
+/* Emit the shared ZNAM OP_RETURN framing (lokad + version + command + name)
+ * into out within the cap. Advances *off and returns true on success;
+ * returns false (offset untouched at the failing push) on buffer overflow. */
+static bool znam_build_header(uint8_t *out, size_t *off, size_t cap,
+                              uint8_t command, const char *name)
 {
-    size_t off = 0;
-    out[off++] = 0x6a; /* OP_RETURN */
+    if (cap < 1) return false;
+    out[(*off)++] = 0x6a; /* OP_RETURN */
 
-    off += push_data(out + off, (const uint8_t *)ZNAM_LOKAD_BYTES, 4);
+    if (!push_data_checked(out, off, cap,
+                           (const uint8_t *)ZNAM_LOKAD_BYTES, 4))
+        return false;
 
     uint8_t version = 1;
-    off += push_data(out + off, &version, 1);
+    if (!push_data_checked(out, off, cap, &version, 1)) return false;
 
-    off += push_data(out + off, &command, 1);
+    if (!push_data_checked(out, off, cap, &command, 1)) return false;
 
-    off += push_data(out + off, (const uint8_t *)name, strlen(name));
-    return off;
+    return push_data_checked(out, off, cap,
+                             (const uint8_t *)name, strlen(name));
 }
 
 size_t znam_build_register(uint8_t *out, size_t out_len,
@@ -148,13 +153,14 @@ size_t znam_build_register(uint8_t *out, size_t out_len,
      * accepts the multi-coin types (BTC/LTC/DOGE) and CONTENT hash
      * that the parser and znam_build_set_record already round-trip. */
     if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
-    (void)out_len;
 
-    size_t off = znam_build_header(out, ZNAM_CMD_REGISTER, name);
-    off += push_data(out + off, &target_type, 1);
-    off += push_data(out + off, (const uint8_t *)target_value,
-                     strlen(target_value));
-    return off;
+    size_t off = 0;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_REGISTER, name);
+    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)target_value,
+                                 strlen(target_value));
+    return ok ? off : 0;
 }
 
 size_t znam_build_update(uint8_t *out, size_t out_len,
@@ -164,34 +170,38 @@ size_t znam_build_update(uint8_t *out, size_t out_len,
     if (!znam_validate_name(name) || !target_value) return 0;
     /* lift the literal-3 cap to ZNAM_TYPE_CONTENT (parser parity). */
     if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
-    (void)out_len;
 
-    size_t off = znam_build_header(out, ZNAM_CMD_UPDATE, name);
-    off += push_data(out + off, &target_type, 1);
-    off += push_data(out + off, (const uint8_t *)target_value,
-                     strlen(target_value));
-    return off;
+    size_t off = 0;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_UPDATE, name);
+    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)target_value,
+                                 strlen(target_value));
+    return ok ? off : 0;
 }
 
 size_t znam_build_transfer(uint8_t *out, size_t out_len,
                            const char *name, const char *new_owner)
 {
     if (!znam_validate_name(name) || !new_owner) return 0;
-    (void)out_len;
 
-    size_t off = znam_build_header(out, ZNAM_CMD_TRANSFER, name);
-    off += push_data(out + off, (const uint8_t *)new_owner,
-                     strlen(new_owner));
-    return off;
+    size_t off = 0;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_TRANSFER, name);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)new_owner,
+                                 strlen(new_owner));
+    return ok ? off : 0;
 }
 
 size_t znam_build_renew(uint8_t *out, size_t out_len,
                         const char *name)
 {
     if (!znam_validate_name(name)) return 0;
-    (void)out_len;
 
-    return znam_build_header(out, ZNAM_CMD_RENEW, name);
+    size_t off = 0;
+    if (!znam_build_header(out, &off, out_len, ZNAM_CMD_RENEW, name))
+        return 0;
+    return off;
 }
 
 /* ENS-inspired: set additional address record for a coin type */
@@ -201,13 +211,14 @@ size_t znam_build_set_record(uint8_t *out, size_t out_len,
 {
     if (!znam_validate_name(name) || !target_value) return 0;
     if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
-    (void)out_len;
 
-    size_t off = znam_build_header(out, ZNAM_CMD_SET_RECORD, name);
-    off += push_data(out + off, &target_type, 1);
-    off += push_data(out + off, (const uint8_t *)target_value,
-                     strlen(target_value));
-    return off;
+    size_t off = 0;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_SET_RECORD, name);
+    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)target_value,
+                                 strlen(target_value));
+    return ok ? off : 0;
 }
 
 /* ENS-inspired: set arbitrary text record (key-value) */
@@ -218,11 +229,13 @@ size_t znam_build_set_text(uint8_t *out, size_t out_len,
     if (!znam_validate_name(name) || !key || !key[0]) return 0;
     if (strlen(key) > ZNAM_TEXT_KEY_MAX) return 0;
     if (value && strlen(value) > ZNAM_TEXT_VAL_MAX) return 0;
-    (void)out_len;
 
-    size_t off = znam_build_header(out, ZNAM_CMD_SET_TEXT, name);
-    off += push_data(out + off, (const uint8_t *)key, strlen(key));
-    off += push_data(out + off, (const uint8_t *)(value ? value : ""),
-                     value ? strlen(value) : 0);
-    return off;
+    size_t off = 0;
+    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_SET_TEXT, name);
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)key, strlen(key));
+    ok = ok && push_data_checked(out, &off, out_len,
+                                 (const uint8_t *)(value ? value : ""),
+                                 value ? strlen(value) : 0);
+    return ok ? off : 0;
 }

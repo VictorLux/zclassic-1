@@ -165,14 +165,22 @@ bool json_push_kv(struct json_value *obj, const char *key,
     return true;
 }
 
+/* Append a prepared scalar under key, then release its temporary storage.
+ * Takes ownership of *v's resources (always frees v before returning). */
+static bool json_push_kv_owned(struct json_value *obj, const char *key,
+                               struct json_value *v)
+{
+    bool ok = json_push_kv(obj, key, v);
+    json_free(v);
+    return ok;
+}
+
 bool json_push_kv_str(struct json_value *obj, const char *key, const char *s)
 {
     struct json_value v;
     json_init(&v);
     json_set_str(&v, s);
-    bool ok = json_push_kv(obj, key, &v);
-    json_free(&v);
-    return ok;
+    return json_push_kv_owned(obj, key, &v);
 }
 
 bool json_push_kv_int(struct json_value *obj, const char *key, int64_t i)
@@ -180,9 +188,7 @@ bool json_push_kv_int(struct json_value *obj, const char *key, int64_t i)
     struct json_value v;
     json_init(&v);
     json_set_int(&v, i);
-    bool ok = json_push_kv(obj, key, &v);
-    json_free(&v);
-    return ok;
+    return json_push_kv_owned(obj, key, &v);
 }
 
 bool json_push_kv_real(struct json_value *obj, const char *key, double d)
@@ -190,9 +196,7 @@ bool json_push_kv_real(struct json_value *obj, const char *key, double d)
     struct json_value v;
     json_init(&v);
     json_set_real(&v, d);
-    bool ok = json_push_kv(obj, key, &v);
-    json_free(&v);
-    return ok;
+    return json_push_kv_owned(obj, key, &v);
 }
 
 bool json_push_kv_bool(struct json_value *obj, const char *key, bool b)
@@ -200,9 +204,7 @@ bool json_push_kv_bool(struct json_value *obj, const char *key, bool b)
     struct json_value v;
     json_init(&v);
     json_set_bool(&v, b);
-    bool ok = json_push_kv(obj, key, &v);
-    json_free(&v);
-    return ok;
+    return json_push_kv_owned(obj, key, &v);
 }
 
 size_t json_size(const struct json_value *v)

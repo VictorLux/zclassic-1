@@ -61,8 +61,7 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
     char *err = NULL;
     w->db = leveldb_open(w->options, path, &err);
     if (err) {
-        printf("LevelDB open failure at %s: %s\n", path, err);
-        LogPrintf("LevelDB open failure: %s\n", err);
+        LogPrintf("LevelDB open failure at %s: %s\n", path, err);
         leveldb_free(err);
         db_wrapper_close(w);
         return false;
@@ -89,7 +88,7 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
     if (!verify_on) {
         static bool warned_once = false;
         if (!warned_once) {
-            fprintf(stderr,
+            LogPrintf(
                 "[leveldb] WARN: verify_checksums=OFF "
                 "(ZCL_LEVELDB_NO_VERIFY_CHECKSUMS set) — silent block "
                 "corruption will truncate iterators.  Use only for "
@@ -139,31 +138,40 @@ bool db_wrapper_open(struct db_wrapper *w, const char *path,
         }
 
         if (val && vlen > 0) {
-            printf("DB obfuscate_key raw value (%zu bytes):", vlen);
+            /* Hex-dump diagnostics into one line each so they land in the
+             * log alongside the read/write failure paths.  Buffer holds up
+             * to 32 key bytes (3 hex chars apiece) plus a label. */
+            char hex[128];
+            size_t off = 0;
             for (size_t i = 0; i < vlen && i < 16; i++)
-                printf(" %02x", (unsigned char)val[i]);
-            printf("\n");
+                off += (size_t)snprintf(hex + off, sizeof(hex) - off,
+                                        " %02x", (unsigned char)val[i]);
+            LogPrintf("DB obfuscate_key raw value (%zu bytes):%s\n", vlen, hex);
 
             /* Value format: compact_size(n) + n bytes of key */
             uint8_t klen = (uint8_t)val[0];
             if (klen > 0 && klen <= 32 && (size_t)(klen + 1) <= vlen) {
                 memcpy(w->obfuscate_key, val + 1, klen);
                 w->obfuscate_key_len = klen;
-                printf("DB obfuscation key (%zu bytes):", w->obfuscate_key_len);
+                off = 0;
                 for (size_t i = 0; i < w->obfuscate_key_len; i++)
-                    printf(" %02x", w->obfuscate_key[i]);
-                printf("\n");
+                    off += (size_t)snprintf(hex + off, sizeof(hex) - off,
+                                            " %02x", w->obfuscate_key[i]);
+                LogPrintf("DB obfuscation key (%zu bytes):%s\n",
+                          w->obfuscate_key_len, hex);
             } else if (vlen <= 32) {
                 /* Maybe value is the raw key without length prefix */
                 memcpy(w->obfuscate_key, val, vlen);
                 w->obfuscate_key_len = vlen;
-                printf("DB obfuscation key (raw, %zu bytes):", w->obfuscate_key_len);
+                off = 0;
                 for (size_t i = 0; i < w->obfuscate_key_len; i++)
-                    printf(" %02x", w->obfuscate_key[i]);
-                printf("\n");
+                    off += (size_t)snprintf(hex + off, sizeof(hex) - off,
+                                            " %02x", w->obfuscate_key[i]);
+                LogPrintf("DB obfuscation key (raw, %zu bytes):%s\n",
+                          w->obfuscate_key_len, hex);
             }
         } else {
-            printf("DB: no obfuscation key found\n");
+            LogPrintf("DB: no obfuscation key found\n");
         }
         if (val) leveldb_free(val);
     }
@@ -215,6 +223,17 @@ void db_wrapper_close(struct db_wrapper *w)
     memset(w, 0, sizeof(*w));
 }
 
+/* Reverse the LevelDB XOR obfuscation: dst[i] = src[i] ^ key[i % key_len].
+ * Bitcoin Core stores chainstate values XOR'd with a per-DB key; reads must
+ * undo it before the bytes mean anything.  Safe to call in place (dst == src)
+ * since each byte is consumed before it is overwritten. */
+static void db_deobfuscate(char *dst, const char *src, size_t len,
+                           const uint8_t *key, size_t key_len)
+{
+    for (size_t i = 0; i < len; i++)
+        dst[i] = src[i] ^ (char)key[i % key_len];
+}
+
 bool db_read(struct db_wrapper *w, const char *key, size_t keylen,
              char **val, size_t *vallen)
 {
@@ -225,10 +244,9 @@ bool db_read(struct db_wrapper *w, const char *key, size_t keylen,
         leveldb_free(err);
         return false;
     }
-    if (*val && w->obfuscate_key_len > 0) {
-        for (size_t i = 0; i < *vallen; i++)
-            (*val)[i] ^= (char)w->obfuscate_key[i % w->obfuscate_key_len];
-    }
+    if (*val && w->obfuscate_key_len > 0)
+        db_deobfuscate(*val, *val, *vallen,
+                       w->obfuscate_key, w->obfuscate_key_len);
     return *val != NULL;
 }
 
@@ -341,7 +359,7 @@ void db_iter_check_error(struct db_iterator *it)
     char *err = NULL;
     leveldb_iter_get_error(it->iter, &err);
     if (err) {
-        fprintf(stderr, "LevelDB iterator error: %s\n", err);
+        LogPrintf("LevelDB iterator error: %s\n", err);
         leveldb_free(err);
     }
 }
@@ -392,8 +410,7 @@ const char *db_iter_value(struct db_iterator *it, size_t *vallen)
         it->deobf_cap = *vallen + 256;
         it->deobf_buf = zcl_malloc(it->deobf_cap, "dbwrapper_deobf_buf");
     }
-    for (size_t i = 0; i < *vallen; i++)
-        it->deobf_buf[i] = raw[i] ^
-            (char)it->obfuscate_key[i % it->obfuscate_key_len];
+    db_deobfuscate(it->deobf_buf, raw, *vallen,
+                   it->obfuscate_key, it->obfuscate_key_len);
     return it->deobf_buf;
 }
