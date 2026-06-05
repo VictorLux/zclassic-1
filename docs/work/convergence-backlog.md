@@ -471,3 +471,12 @@ NONE of the 4 is a live consensus hazard:
   produced). DEFERRED: the clean DRY fix (call block_index_forward_pass instead of the 3 hand-rolled
   recomputes at loader.c:376 + boot.c:2138-2143) touches the NEVER-TOUCH frozen config/src/boot.c, so
   it needs an owner decision on how to fix without editing boot.c. Run boot-smoke on a copy before deploy.
+
+### Round 16 (2026-06-05) — outbound persistence adapters (unswept infra)
+Defensive+doc audit of adapters/outbound/persistence (11 findings). FIXED: 6 NULL self-guards
+in utxo_snapshot_inmem port callbacks, unchecked CREATE TABLE exec in zslp_store_sqlite (port
+contract), 3 NULL-after-prepare guards in wallet_backup_store_sqlite. Also pushed the
+block_index_db nFile>INT_MAX deserialize guard. **Vetting REJECTED** utxo_snapshot_inmem:370
+"script_pubkey leak" — FALSE: revert_tip MOVES the coin_entries (incl. script_pubkey ptrs) into
+h->coins then frees only the array; the auditor's coin_entry_release-before-free would be a UAF
+when h->coins is later closed. The comment ("now owned by h->coins, don't free") is correct.
