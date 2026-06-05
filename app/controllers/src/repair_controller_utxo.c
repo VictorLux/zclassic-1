@@ -417,8 +417,13 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
                 while (*vn == ' ' || *vn == ':') vn++;
                 uint32_t prev_vout = (uint32_t)strtoul(vn, NULL, 10);
 
-                /* Skip coinbase inputs */
-                if (ti2 == 0) { vp = tid; continue; }
+                /* Skip coinbase inputs (ti2==0) and reject malformed
+                 * txids whose length != 64 hex chars — a short txid
+                 * would otherwise feed uninitialized stack bytes into
+                 * the hex->byte loop below (prev_txid_hex[bi*2] past
+                 * the '\0'). Defensive only: valid 64-char txids are
+                 * unaffected. */
+                if (ti2 == 0 || ti2 != 64) { vp = tid; continue; }
                 const char *cb = strstr(vp, "\"coinbase\"");
                 if (cb && (!arr_end || cb < arr_end) && cb < tid) {
                     vp = tid;
