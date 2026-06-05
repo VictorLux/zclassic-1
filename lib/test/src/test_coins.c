@@ -202,13 +202,38 @@ int test_coins(void)
         tx.vout[2].value = 300;
         struct coins c;
         coins_init(&c);
-        coins_from_transaction(&c, &tx, 500);
-        if (c.height == 500 && c.version == 4 &&
+        bool ok = coins_from_transaction(&c, &tx, 500);
+        if (ok && c.height == 500 && c.version == 4 &&
             coins_is_available(&c, 0) && coins_is_available(&c, 1) &&
             coins_is_available(&c, 2) &&
             c.vout[0].value == 100 && c.vout[2].value == 300)
             printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
+        else { printf("FAIL (ok=%d)\n", (int)ok); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
+    }
+
+    /* Round-23 contract: coins_from_transaction returns false (not a silent
+     * empty record) when num_vout exceeds the 65536 cap. The cap check fires
+     * before any vout deref, so we override num_vout past the cap on a tx that
+     * really allocated only 1 output — restoring it before free. A false
+     * return with an empty record is what update_coins relies on to fail the
+     * connect instead of dropping the tx's outputs. */
+    printf("coins_from_transaction over-cap returns false... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 1);
+        tx.version = 4;
+        size_t real_vout = tx.num_vout;
+        tx.num_vout = 65537;              /* over the 65536 cap */
+        struct coins c;
+        coins_init(&c);
+        bool ok = coins_from_transaction(&c, &tx, 500);
+        tx.num_vout = real_vout;          /* restore for a clean free */
+        if (!ok && c.num_vout == 0 && c.vout == NULL)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d num_vout=%zu)\n", (int)ok, c.num_vout); failures++; }
         coins_free(&c);
         transaction_free(&tx);
     }
