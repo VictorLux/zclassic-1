@@ -348,3 +348,13 @@ fixed in 6 commits (`128b25981..c607eba6f`):
 - Consensus-adjacent controllers NOT autonomously fixed: sync_controller*,
   repair_controller*, snapshot_controller*, legacy_import_scan (defensive/doc only,
   repro-on-copy for any behavior change). app/services largely consensus-adjacent too.
+
+### Round-11b — wallet send-path tx-ownership leaks FIXED + a nested-mutex note
+Prove-then-fix workflow proved (file:line) that mempool_entry_init / tx_mempool_add_unchecked
+/ wallet_add_to_wallet each deep-copy, so freeing the originals is UAF-safe. Fixed
+(`...`): wallet_commit_transaction now mempool_entry_free's its local entry, and the three
+send handlers transaction_free wtx.tx on success. DEFERRED (pre-existing, unrelated):
+wallet_commit_transaction locks mempool->cs (wallet.c:1116) and then tx_mempool_add_unchecked
+also locks pool->cs (txmempool.c:281) — a nested acquire of the SAME mempool mutex. The
+shipped binary runs, so cs is recursive or this path is uncontended; verify whether cs is a
+recursive mutex and, if not, restructure to avoid the re-acquire.
