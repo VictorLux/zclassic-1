@@ -384,17 +384,36 @@ bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)
     if (target_size > MAX_KEY_POOL)
         target_size = MAX_KEY_POOL;
 
-    zcl_mutex_lock(&w->cs);
-    while (w->key_pool_size < target_size) {
+    /* wallet_generate_new_key locks w->cs itself, so the key must be
+     * generated with w->cs released; only the key_pool bookkeeping is
+     * guarded by a brief lock. w->cs is non-recursive, so holding it
+     * across the generate call would self-deadlock.
+     *
+     * The bound is re-checked under the SAME lock that performs the write
+     * (not just at the top of the loop): w->cs is dropped across the
+     * generate call, so a concurrent top-up could raise key_pool_size in
+     * the window. Re-checking under the write lock keeps the index in
+     * [0, MAX_KEY_POOL) and prevents overshoot past target_size. A surplus
+     * generated key simply stays in the keystore (harmless), as in the
+     * original (which also discarded pk). */
+    for (;;) {
+        zcl_mutex_lock(&w->cs);
+        bool need = w->key_pool_size < target_size;
+        zcl_mutex_unlock(&w->cs);
+        if (!need)
+            break;
+
         struct pubkey pk;
-        if (!wallet_generate_new_key(w, &pk)) {
-            zcl_mutex_unlock(&w->cs);
+        if (!wallet_generate_new_key(w, &pk))
             return false;
+
+        zcl_mutex_lock(&w->cs);
+        if (w->key_pool_size < target_size) {
+            w->key_pool[w->key_pool_size] = w->next_key_pool_index++;
+            w->key_pool_size++;
         }
-        w->key_pool[w->key_pool_size] = w->next_key_pool_index++;
-        w->key_pool_size++;
+        zcl_mutex_unlock(&w->cs);
     }
-    zcl_mutex_unlock(&w->cs);
     return true;
 }
 
@@ -854,7 +873,13 @@ bool wallet_create_transaction(struct wallet *w,
     }
 
     const struct chain_params *cp = chain_params_get();
+    /* Snapshot default_fee under a brief w->cs hold so the read is atomic
+     * w.r.t. concurrent wallet mutation; do not hold w->cs across coin
+     * selection below, which locks w->cs itself (would self-deadlock as
+     * w->cs is non-recursive). */
+    zcl_mutex_lock(&w->cs);
     int64_t fee = w->default_fee;
+    zcl_mutex_unlock(&w->cs);
 
     struct coin_entry available[4096];
     size_t num_available = 0;
@@ -873,7 +898,11 @@ bool wallet_create_transaction(struct wallet *w,
     memset(wtx_out, 0, sizeof(*wtx_out));
     transaction_init(&wtx_out->tx);
 
+    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
+     * w->cs hold for an atomic read; never held across coin selection. */
+    zcl_mutex_lock(&w->cs);
     int height = w->best_block_height;
+    zcl_mutex_unlock(&w->cs);
     int epoch = consensus_current_epoch(height, &cp->consensus);
 
     if (epoch >= UPGRADE_SAPLING) {
@@ -960,7 +989,13 @@ bool wallet_create_transaction_multi(struct wallet *w,
     }
 
     const struct chain_params *cp = chain_params_get();
+    /* Snapshot default_fee under a brief w->cs hold so the read is atomic
+     * w.r.t. concurrent wallet mutation; do not hold w->cs across coin
+     * selection below, which locks w->cs itself (would self-deadlock as
+     * w->cs is non-recursive). */
+    zcl_mutex_lock(&w->cs);
     int64_t fee = w->default_fee;
+    zcl_mutex_unlock(&w->cs);
 
     struct coin_entry available[4096];
     size_t num_available = 0;
@@ -979,7 +1014,11 @@ bool wallet_create_transaction_multi(struct wallet *w,
     memset(wtx_out, 0, sizeof(*wtx_out));
     transaction_init(&wtx_out->tx);
 
+    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
+     * w->cs hold for an atomic read; never held across coin selection. */
+    zcl_mutex_lock(&w->cs);
     int height = w->best_block_height;
+    zcl_mutex_unlock(&w->cs);
     int epoch = consensus_current_epoch(height, &cp->consensus);
 
     if (epoch >= UPGRADE_SAPLING) {
