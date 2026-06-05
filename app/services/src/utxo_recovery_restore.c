@@ -65,6 +65,23 @@ struct utxo_import_result utxo_recovery_import_ldb(
         return res;
     }
 
+    /* Defensive: ctx->datadir is interpolated into shell commands below
+     * (the "rm -rf '%s' && cp -a ..." copy at the zclassicd-LOCK branch
+     * and the "rm -rf '%s'" cleanup). A single quote or other shell
+     * metacharacter in the path would break the quoting and allow command
+     * injection. datadir is operator-controlled (CLI -datadir= / $HOME),
+     * never network/RPC, so a clean reject is the correct response.
+     * Reject any path containing characters meaningful to the shell;
+     * all filesystem-valid paths without these rarely-needed characters
+     * are unaffected. */
+    if (strcspn(ctx->datadir, "\"'$`|&;<>()") != strlen(ctx->datadir)) {
+        res.status = ZCL_ERR(-5,
+            "utxo_recovery_import_ldb: datadir contains shell "
+            "metacharacters datadir=%s", ctx->datadir);
+        LOG_WARN("utxo_recovery", "%s", res.status.message);
+        return res;
+    }
+
     uint8_t mig_buf[8];
     size_t mig_len = 0;
     bool migration_done = node_db_state_get(ctx->ndb,
