@@ -199,6 +199,24 @@ struct boot_svc_ctx *boot_active_svc(void);
  * only one call. Returns false on registration failure. */
 bool boot_utxo_parity_register(struct boot_svc_ctx *svc);
 
+/* ── boot_runtime_sync_services.c ───────────────────────────────
+ * Runtime service-kernel start/stop adapters for the sync-adjacent services
+ * that influence the tip / header path (header_probe, legacy_mirror, gap_fill,
+ * zclassicd_oracle, rolling_anchor). Registered by
+ * boot_register_runtime_services() (boot_services.c spec table); they operate
+ * only on the boot_svc_ctx passed as ctx — no file-statics — and are NOT part
+ * of the SIGTERM shutdown sequence. */
+bool boot_header_probe_start(void *ctx);     /* init probe + register poll Job */
+void boot_header_probe_stop(void *ctx);      /* header_probe runtime stop */
+bool boot_legacy_mirror_start(void *ctx);    /* always-on legacy mirror sync */
+void boot_legacy_mirror_stop(void *ctx);     /* legacy mirror sync stop */
+bool boot_gap_fill_start(void *ctx);         /* background body gap-fill */
+void boot_gap_fill_stop(void *ctx);          /* body gap-fill stop */
+bool boot_zclassicd_oracle_start(void *ctx); /* external zclassicd height oracle */
+void boot_zclassicd_oracle_stop(void *ctx);  /* zclassicd oracle stop */
+bool boot_rolling_anchor_start(void *ctx);   /* rolling SHA3 anchor contract */
+void boot_rolling_anchor_stop(void *ctx);    /* rolling SHA3 anchor stop */
+
 /* ── boot_bg_verification.c ─────────────────────────────────────
  * Runtime service-kernel start/stop adapters for the two background
  * re-verification services. Registered by boot_register_runtime_services()

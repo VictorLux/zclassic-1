@@ -13,4 +13,4 @@
 
 # config/ composition root — boot mega-files, decomposed wave-by-wave.
 config/src/boot.c 3618
-config/src/boot_services.c 2207
+config/src/boot_services.c 2089

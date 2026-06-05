@@ -15,11 +15,8 @@
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
-#include "services/gap_fill_service.h"
 #include "services/hodl_history_service.h"
-#include "services/rolling_anchor_service.h"
 #include "services/quorum_oracle_service.h"
-#include "services/zclassicd_oracle_service.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -35,9 +32,6 @@
 #include "supervisors/net_supervisor.h"
 #include "supervisors/chain_supervisor.h"
 #include "supervisors/staged_sync_supervisor.h"
-#include "services/header_probe.h"
-#include "jobs/header_probe_poll.h"
-#include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "health/heartbeat.h"
 #include "util/sd_notify.h"
@@ -264,118 +258,6 @@ static void boot_connman_stop(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (svc && svc->connman)
         connman_signal_stop(svc->connman);
-}
-
-static bool boot_header_probe_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc)
-        return false;
-    struct header_probe_config cfg = {0};
-    /* Keep header_probe initialized/running for diagnostics and manual
-     * use, but leave lockstep catch-up ownership with legacy_mirror. */
-    cfg.lag_threshold = 1000000000;
-    {
-        struct zcl_result hpr = header_probe_init(&cfg, svc->state, svc->params);
-        if (!hpr.ok) {
-            fprintf(stderr,  // obs-ok:header-probe-init-fail
-                    "[header-probe] init failed: %s\n", hpr.message);
-            return false;
-        }
-    }
-    /* Register the polling cadence as a supervised Job in the network
-     * domain. Same 30 s cadence, same RPC, same accept_block_header path;
-     * the supervisor owns liveness so `zcl_state subsystem=supervisor`
-     * exposes last_tick_age_us and ticks_run for the poll. */
-    header_probe_poll_register();
-    if (header_probe_poll_is_registered()) {
-        printf("[header-probe] poll Job registered with net supervisor\n");
-        return true;
-    }
-    fprintf(stderr,  // obs-ok:header-probe-poll-fallback
-            "[header-probe] WARN poll Job register failed; "
-            "header_probe RPC + state introspection still available\n");
-    return true;  /* non-fatal — manual MCP calls still work */
-}
-
-static void boot_header_probe_stop(void *ctx)
-{
-    (void)ctx;
-    /* No-op: supervisor unregister happens at supervisor_stop(). */
-}
-
-static bool boot_legacy_mirror_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc)
-        return false;
-    struct legacy_mirror_sync_config cfg = {0};
-    cfg.enabled = true;
-    if (!legacy_mirror_sync_init(&cfg, svc->state, svc->coins_tip,
-                                 svc->params, svc->datadir).ok)
-        return false;
-    if (legacy_mirror_sync_start().ok) {
-        printf("[legacy-mirror] always-on mirror sync started\n");
-        return true;
-    }
-    return false;
-}
-
-static void boot_legacy_mirror_stop(void *ctx)
-{
-    (void)ctx;
-    legacy_mirror_sync_stop();
-}
-
-static bool boot_gap_fill_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc)
-        return false;
-    struct zcl_result gr = gap_fill_start(svc->state, msg_get_download_mgr());
-    if (gr.ok) {
-        printf("[gap-fill] background gap-fill service started\n");
-        return true;
-    }
-    fprintf(stderr, "WARNING: gap_fill_start failed: %s:%d code=%d %s\n",
-            gr.source_file, gr.source_line, gr.code, gr.message);
-    return false;
-}
-
-static void boot_gap_fill_stop(void *ctx)
-{
-    (void)ctx;
-    gap_fill_stop();
-}
-
-static bool boot_zclassicd_oracle_start(void *ctx)
-{
-    (void)ctx;
-    if (zclassicd_oracle_start().ok)
-        printf("[oracle] zclassicd oracle service started\n");
-    return true;
-}
-
-static void boot_zclassicd_oracle_stop(void *ctx)
-{
-    (void)ctx;
-    zclassicd_oracle_stop();
-}
-
-static bool boot_rolling_anchor_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc)
-        return false;
-    if (rolling_anchor_start(svc->state, svc->datadir).ok)
-        printf("[rolling-anchor] supervisor contract registered\n");
-    return true;
-}
-
-static void boot_rolling_anchor_stop(void *ctx)
-{
-    (void)ctx;
-    rolling_anchor_stop();
 }
 
 static bool boot_file_service_start(void *ctx)
