@@ -100,8 +100,10 @@ static uint32_t fvk_tag(const struct zip32_fvk *fvk)
 {
     uint8_t fp[32];
     fvk_fingerprint(fp, fvk);
-    return (uint32_t)fp[0] | ((uint32_t)fp[1] << 8) |
-           ((uint32_t)fp[2] << 16) | ((uint32_t)fp[3] << 24);
+    uint32_t tag = (uint32_t)fp[0] | ((uint32_t)fp[1] << 8) |
+                   ((uint32_t)fp[2] << 16) | ((uint32_t)fp[3] << 24);
+    memory_cleanse(fp, sizeof(fp));
+    return tag;
 }
 
 /* Derive child expanded spending key: ask_child = ask_parent + to_uniform(prf(i_l, 0x13))
@@ -240,6 +242,7 @@ void zip32_xsk_derive(struct zip32_xsk *child,
         const uint8_t *parts[] = { &tag, fvk_bytes, parent->dk, le_i };
         size_t lens[] = { 1, 96, 32, 4 };
         prf_expand_vec(tmp, parent->chain_code, 32, parts, lens, 4);
+        memory_cleanse(fvk_bytes, sizeof(fvk_bytes));
     }
 
     const uint8_t *i_l = tmp;
@@ -352,6 +355,7 @@ bool zip32_xfvk_derive(struct zip32_xfvk *child,
     fvk_derive_child(&child->fvk, &parent->fvk, i_l);
     dk_derive_child(child->dk, i_l, parent->dk);
     memory_cleanse(tmp, sizeof(tmp));
+    memory_cleanse(fvk_bytes, sizeof(fvk_bytes));
 
     return true;
 }
