@@ -296,3 +296,28 @@ Seam map (read-only audit `w6755v1wu`). Extract order by risk:
 `zcashconsensus.h` / coins-decode docs. The `sprout_viewing_key_to_address`
 placeholder: doc-only edit is safe; defer the `pk_enc = scalarmult_base(sk_enc)`
 wiring as a separately-scoped change (derivation semantics).
+
+## Round 8 (2026-06-05) — lib/net feature transports (UNswept until now)
+8 read-only audit agents over the P2P feature/infra surface → 22 findings, 16 real
+after vetting (rejected peer_lifecycle:507 — two same-condition ifs feed two
+intentionally-distinct counters, a metrics behavior-change not a bug). Fixed in 4
+commits (`4d60fc49d..436252ddb`): 5 public-fn NULL-deref guards (zmsg/protocol inv),
+3 unchecked byte_stream writes (pong reply, getaddr) that could send a NULL/malformed
+frame on OOM, 2 unchecked sqlite3_prepare_v2 in onion directory handlers (stepping
+NULL), a torn onion-fetch record (body_len set on malloc fail), 5 ignored
+fs_send_frame transmission errors, header docs + a dead fs_send_chunk decl removed.
+
+## Round 9 (2026-06-05) — wide app/ + lib/ non-consensus sweep
+16 read-only audit clusters → 47 findings; vetted, fixed in 7 commits
+(`2867eb1ee..83ce1dece`):
+- **Projection event-skip CLASS BUG** (highest value): wallet/mempool/peers/contacts
+  projection catch_up advances last_consumed_offset in-flight but on COMMIT/ROLLBACK
+  failure returned without restoring it from persisted meta → next catch_up skips the
+  failed events. Fixed to match the correct utxo_projection sibling.
+- 1-byte stack overflow (chain_inspect saplingtreeinfo hbuf[hlen]), favicon NULL
+  datadir, unbounded strchr→memchr in tx vout parse, uninit health struct ×2,
+  unchecked fread/fwrite in file manifest, GLib NULL+nonzero-size UB in wallet_gui,
+  no-current-row sqlite read, truncated-blob z-addr encode, store.c const-cast-away,
+  2 rpc NULL guards, https ssl/plain read-line fold, ~24 documented wallet/storage APIs.
+- DEFERRED: wallet_key.c:562 "incomplete script data loading" — labeled DRY but may
+  change wallet spend-path data loading; not batched, needs its own look.
