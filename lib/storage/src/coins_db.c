@@ -111,7 +111,16 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
         LOG_FAIL("coins_db", "get_coins: nMaskCode %u exceeds limit", nMaskCode);
     }
 
-    /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes */
+    /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes.
+     *
+     * This decode shares the CCoins on-disk mask format with
+     * chainstate_legacy_reader.c, but the two MUST NOT be folded into one
+     * helper: this live read path is hardened (nMaskCode > 10000 reject above,
+     * plus the fixed 4096-vout bound below) so a malformed node.db row cannot
+     * amplify memory; the legacy reader grows its buffer unbounded by design
+     * for trusted external-chainstate import. Unifying them would either strip
+     * this DoS bound or impose truncation on the import path. Keep them
+     * separate. */
     size_t num_avail = 2;
     bool avail_stack[4096];
     avail_stack[0] = vout0_present;

@@ -116,7 +116,15 @@ static bool decode_record(struct chainstate_legacy_handle *h,
 
     /* Scan mask bytes: vAvail starts with [avail0, avail1].  Each mask
      * byte contributes 8 more avail bits (LSB-first).  Loop continues
-     * until nMaskCode non-zero mask bytes have been consumed. */
+     * until nMaskCode non-zero mask bytes have been consumed.
+     *
+     * This shares the CCoins mask format with coins_db.c but is deliberately
+     * NOT the same routine: this import path reads a trusted, locally-produced
+     * zclassicd chainstate and grows avail_buf without a fixed cap so it never
+     * truncates a legitimately large record; the live node.db read path in
+     * coins_db.c instead caps at 4096 vouts and rejects nMaskCode > 10000 to
+     * bound untrusted-row memory. Do not merge the two — see the matching note
+     * there. */
     if (!ensure_avail_cap(h, 2))
         LOG_FAIL("chainstate_legacy", "alloc avail scratch");
     size_t num_avail = 0;

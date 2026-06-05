@@ -68,9 +68,16 @@ weaken a gate, never touch `config/src/boot.c`.
 - **`connect_block` 16× duplicated cleanup** — consolidate the `free(checks)/…/
   block_undo_free` sites into one `goto cleanup:`. Reject reasons + DoS scores
   must stay byte-identical.
-- **CCoins avail-mask decode duplicated** (`coins_db.c:104-131`,
-  `chainstate_legacy_reader.c:109-136`) — extract one
-  `ccoins_decode_avail_mask(...)`. On-disk format parse.
+- **CCoins avail-mask decode — DIVERGED, do NOT merge** (`coins_db.c:104-131`,
+  `chainstate_legacy_reader.c:109-136`) — RESOLVED 2026-06-05: read both. They
+  share the CCoins mask format but are deliberately distinct: `coins_db.c` (live
+  node.db read) is hardened — fixed `avail_stack[4096]` cap + `nMaskCode > 10000`
+  reject — to bound untrusted-row memory; `chainstate_legacy_reader.c` (trusted
+  external-chainstate import) grows its buffer unbounded so it never truncates a
+  legitimately large record. A naive "extract one helper" would either strip the
+  live path's DoS guard (a safety gate — forbidden) or impose truncation on the
+  import path. Closed as NOT-a-dedup; both sites now carry a matching
+  do-not-merge note. No code change beyond the warnings.
 - **`legacy_mirror_sync_request_catchup` dual surface** — invert so the worker
   returns `zcl_result` directly (Law 2); keep `bool` as a thin adapter.
 - **`update_coins` silently accepts an empty coins record on OOM**
