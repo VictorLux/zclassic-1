@@ -18,6 +18,7 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
+#include "chain/pow.h"
 #include "consensus/upgrades.h"
 #include "consensus/params.h"
 #include "chain/mmr.h"
@@ -86,7 +87,7 @@ bool rpc_getblockchaininfo(const struct json_value *params, bool help,
         json_push_kv_int(result, "mediantime",
                          block_index_get_median_time_past(tip));
 
-    json_push_kv_real(result, "difficulty", get_difficulty(tip));
+    json_push_kv_real(result, "difficulty", difficulty_from_index(tip));
 
     /* Cumulative PoW at tip, big-endian hex (zclassicd format). */
     if (tip) {

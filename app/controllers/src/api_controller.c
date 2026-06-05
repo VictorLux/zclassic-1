@@ -206,22 +206,8 @@ int api_rpc_call(const char *method, const char *params_json,
 }
 
 /* JSON extraction and validation: delegated to shared format_helpers.
- * The int/real wrappers adapt the (out-param, bool-return) helper API to
- * the old (return-value, default) call-site convention. The string variant
- * had an identical signature, so call sites use zcl_json_extract_str directly. */
-int64_t api_json_extract_int(const char *json, const char *key)
-{
-    int64_t v = -1;
-    zcl_json_extract_int(json, key, &v);
-    return v;
-}
-
-double api_json_extract_real(const char *json, const char *key)
-{
-    double v = 0.0;
-    zcl_json_extract_real(json, key, &v);
-    return v;
-}
+ * Call sites use zcl_json_int/zcl_json_real (return-value wrappers with the
+ * -1 int / 0.0 real defaults) and zcl_json_extract_str directly. */
 
 /* Validate address/param is safe to embed in JSON (alphanumeric only).
  * Prevents JSON injection via crafted params. */

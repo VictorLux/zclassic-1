@@ -54,4 +54,13 @@ static inline double difficulty_from_bits(uint32_t bits)
     return diff;
 }
 
+/* Difficulty for a block index, NULL-safe (returns 1.0 for a NULL/genesis
+ * baseline). Single source for the RPC + explorer "difficulty" surfaces,
+ * replacing the per-controller get_difficulty / explorer_get_difficulty
+ * duplicates. */
+static inline double difficulty_from_index(const struct block_index *bi)
+{
+    return bi ? difficulty_from_bits(bi->nBits) : 1.0;
+}
+
 #endif

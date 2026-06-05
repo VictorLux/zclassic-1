@@ -47,13 +47,11 @@ struct explorer_context *explorer_ctx(void);
 
 int rpc_call(const char *method, const char *params_json,
              char *out, size_t outmax);
-int64_t json_extract_int(const char *json, const char *key);
-double json_extract_real(const char *json, const char *key);
 bool use_rpc_proxy(void);
 
-/* ── Formatting helpers (defined in explorer_controller.c) ── */
+/* ── Formatting helpers (defined in explorer_controller.c) ──
+ * Block difficulty: use difficulty_from_index() from chain/pow.h. */
 
-double explorer_get_difficulty(const struct block_index *bi);
 bool explorer_param_is_printable_ascii(const char *s);
 void format_time(char *buf, size_t max, uint32_t t);
 void format_time_ago(char *buf, size_t max, uint32_t t);

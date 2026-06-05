@@ -330,23 +330,9 @@ int rpc_call(const char *method, const char *params_json,
     return (int)total;
 }
 
-/* JSON extraction: use shared zcl_json_extract_* from format_helpers.h.
- * The int/real wrappers adapt the (out-param, bool-return) helper API to
- * the old (return-value, default) call-site convention. The string variant
- * had an identical signature, so call sites use zcl_json_extract_str directly. */
-int64_t json_extract_int(const char *json, const char *key)
-{
-    int64_t v = -1;
-    zcl_json_extract_int(json, key, &v);
-    return v;
-}
-
-double json_extract_real(const char *json, const char *key)
-{
-    double v = 0.0;
-    zcl_json_extract_real(json, key, &v);
-    return v;
-}
+/* JSON extraction: use shared zcl_json_int/zcl_json_real (return-value
+ * wrappers with the -1 int / 0.0 real defaults) and zcl_json_extract_str
+ * directly, all from format_helpers.h. */
 
 void explorer_set_rpc(const char *user, const char *pass, int port)
 {
@@ -380,14 +366,8 @@ bool use_rpc_proxy(void)
 
 /* html_escape provided by util/template.h (included above) */
 
-/* difficulty_from_bits() now in chain/pow.h */
+/* difficulty_from_bits() / difficulty_from_index() in chain/pow.h */
 #include "chain/pow.h"
-
-double explorer_get_difficulty(const struct block_index *bi)
-{
-    if (!bi) return 1.0;
-    return difficulty_from_bits(bi->nBits);
-}
 
 bool explorer_param_is_printable_ascii(const char *s)
 {

@@ -59,10 +59,10 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
 
     struct explorer_block_rpc_view_data d;
     memset(&d, 0, sizeof(d));
-    d.height = (int)json_extract_int(buf, "height");
-    int64_t blk_time = json_extract_int(buf, "time");
-    d.difficulty = json_extract_real(buf, "difficulty");
-    (void)json_extract_int(buf, "size");
+    d.height = (int)zcl_json_int(buf, "height");
+    int64_t blk_time = zcl_json_int(buf, "time");
+    d.difficulty = zcl_json_real(buf, "difficulty");
+    (void)zcl_json_int(buf, "size");
 
     zcl_json_extract_str(buf, "merkleroot", d.merkle, sizeof(d.merkle));
     zcl_json_extract_str(buf, "previousblockhash", d.prev, sizeof(d.prev));
@@ -182,7 +182,7 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
     zcl_format_zcl(d.sapling_val, sizeof(d.sapling_val), bi->nSaplingValue);
     zcl_format_zcl(d.sprout_val, sizeof(d.sprout_val), bi->nSproutValue);
     d.n_tx = bi->nTx;
-    d.difficulty = explorer_get_difficulty(bi);
+    d.difficulty = difficulty_from_index(bi);
     d.n_bits = bi->nBits;
 
     /* Pack the transaction rows the view will render. */

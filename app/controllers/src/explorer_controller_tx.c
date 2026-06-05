@@ -61,17 +61,17 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
     struct explorer_tx_rpc_view_data d;
     memset(&d, 0, sizeof(d));
     snprintf(d.txid, sizeof(d.txid), "%s", param);
-    d.confirmations = json_extract_int(result, "confirmations");
-    d.block_height = json_extract_int(result, "height");
-    d.size = json_extract_int(result, "size");
-    d.version = json_extract_int(result, "version");
-    d.locktime = json_extract_int(result, "locktime");
+    d.confirmations = zcl_json_int(result, "confirmations");
+    d.block_height = zcl_json_int(result, "height");
+    d.size = zcl_json_int(result, "size");
+    d.version = zcl_json_int(result, "version");
+    d.locktime = zcl_json_int(result, "locktime");
 
-    int64_t expiry = json_extract_int(result, "expiryheight");
+    int64_t expiry = zcl_json_int(result, "expiryheight");
     d.has_expiry = expiry > 0;
     d.expiry = expiry;
 
-    double value_balance = json_extract_real(result, "valuebalance");
+    double value_balance = zcl_json_real(result, "valuebalance");
     if (value_balance != 0.0) {
         d.has_value_balance = true;
         zcl_format_zcl(d.value_balance, sizeof(d.value_balance),

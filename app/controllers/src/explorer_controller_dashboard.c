@@ -11,6 +11,7 @@
 #include "platform/time_compat.h"
 #include "controllers/explorer_controller.h"
 #include "chain/chain.h"
+#include "chain/pow.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "validation/main_state.h"
@@ -31,13 +32,13 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
 
     /* Get blockchain info */
     rpc_call("getblockchaininfo", "[]", buf, sizeof(buf));
-    int tip = (int)json_extract_int(buf, "blocks");
-    double diff = json_extract_real(buf, "difficulty");
+    int tip = (int)zcl_json_int(buf, "blocks");
+    double diff = zcl_json_real(buf, "difficulty");
 
     /* Get mempool info */
     rpc_call("getmempoolinfo", "[]", buf, sizeof(buf));
-    int64_t mp_count = json_extract_int(buf, "size");
-    int64_t mp_bytes = json_extract_int(buf, "bytes");
+    int64_t mp_count = zcl_json_int(buf, "size");
+    int64_t mp_bytes = zcl_json_int(buf, "bytes");
 
     int show = 25;
     static struct explorer_dashboard_rpc_row rows[25];
@@ -58,9 +59,9 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         snprintf(params2, sizeof(params2), "[\"%s\"]", hash);
         rpc_call("getblock", params2, buf, sizeof(buf));
 
-        int64_t blk_time = json_extract_int(buf, "time");
-        int64_t ntx = json_extract_int(buf, "tx");  /* this is actually array, use size */
-        double blk_diff = json_extract_real(buf, "difficulty");
+        int64_t blk_time = zcl_json_int(buf, "time");
+        int64_t ntx = zcl_json_int(buf, "tx");  /* this is actually array, use size */
+        double blk_diff = zcl_json_real(buf, "difficulty");
 
         /* Count txs by counting "tx":[ array elements */
         const char *txarr = strstr(buf, "\"tx\":[");
@@ -144,12 +145,12 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
             zcl_format_zcl(row->sapling, sizeof(row->sapling), bi->nSaplingValue);
         format_with_commas(row->h_fmt, sizeof(row->h_fmt), h);
         row->ntx = bi->nTx;
-        row->difficulty = explorer_get_difficulty(bi);
+        row->difficulty = difficulty_from_index(bi);
     }
 
     struct explorer_dashboard_native_view v = {
         .tip = tip,
-        .difficulty = explorer_get_difficulty(tip_bi),
+        .difficulty = difficulty_from_index(tip_bi),
         .mempool_count = mp_count,
         .mempool_bytes = mp_bytes,
         .rows = rows,

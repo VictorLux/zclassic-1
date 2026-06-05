@@ -5,8 +5,9 @@
 
 /* Block accessor RPCs: getblockcount, getbestblockhash, getdifficulty,
  * getblockhash, getblockheader, getblock. Also defines the shared
- * block_header_to_json and get_difficulty helpers used by the chain
- * controller siblings. See blockchain_controller_internal.h. */
+ * block_header_to_json helper used by the chain controller siblings.
+ * (Block difficulty now comes from difficulty_from_index() in chain/pow.h.)
+ * See blockchain_controller_internal.h. */
 
 #include "platform/time_compat.h"
 #include "controllers/blockchain_controller.h"
@@ -24,11 +25,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
-
-double get_difficulty(const struct block_index *bi)
-{
-    return bi ? difficulty_from_bits(bi->nBits) : 1.0;
-}
 
 bool rpc_getblockcount(const struct json_value *params, bool help,
                                struct json_value *result)
@@ -101,7 +97,7 @@ bool rpc_getchaintip(const struct json_value *params, bool help,
     json_push_kv_int(result, "age_seconds", now - tip_time);
     json_push_kv_str(result, "work", work_hex);
     json_push_kv_int(result, "bits", (int64_t)tip->nBits);
-    json_push_kv_real(result, "difficulty", get_difficulty(tip));
+    json_push_kv_real(result, "difficulty", difficulty_from_index(tip));
     return true;
 }
 
@@ -116,7 +112,7 @@ bool rpc_getdifficulty(const struct json_value *params, bool help,
         LOG_FAIL("blockchain", "getdifficulty: main_state not initialized");
     }
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
-    json_set_real(result, get_difficulty(tip));
+    json_set_real(result, difficulty_from_index(tip));
     return true;
 }
 
@@ -159,7 +155,17 @@ void block_header_to_json(const struct block_index *bi,
     char hex[65];
     uint256_get_hex(bi->phashBlock, hex);
     json_push_kv_str(result, "hash", hex);
-    json_push_kv_int(result, "confirmations", 1);
+
+    /* confirmations = 1 + (tip height - this block's height), floored at 0.
+     * Default to 1 when main_state isn't available (pre-init). */
+    struct blockchain_context *ctx = blockchain_ctx();
+    int64_t confirmations = 1;
+    if (ctx->main_state) {
+        int tip_height = active_chain_height(&ctx->main_state->chain_active);
+        int64_t c = 1 + (int64_t)tip_height - (int64_t)bi->nHeight;
+        confirmations = c > 0 ? c : 0;
+    }
+    json_push_kv_int(result, "confirmations", confirmations);
     json_push_kv_int(result, "height", bi->nHeight);
     json_push_kv_int(result, "version", bi->nVersion);
 
@@ -167,13 +173,14 @@ void block_header_to_json(const struct block_index *bi,
     json_push_kv_str(result, "merkleroot", hex);
 
     json_push_kv_int(result, "time", (int64_t)bi->nTime);
-    json_push_kv_int(result, "nonce", 0);
+    uint256_get_hex(&bi->nNonce, hex);
+    json_push_kv_str(result, "nonce", hex);
 
     char bits_hex[9];
     snprintf(bits_hex, sizeof(bits_hex), "%08x", bi->nBits);
     json_push_kv_str(result, "bits", bits_hex);
 
-    json_push_kv_real(result, "difficulty", get_difficulty(bi));
+    json_push_kv_real(result, "difficulty", difficulty_from_index(bi));
 
     if (bi->pprev && bi->pprev->phashBlock) {
         uint256_get_hex(bi->pprev->phashBlock, hex);

@@ -67,7 +67,7 @@ size_t compute_blocks(uint8_t *r, size_t max)
     if (api_rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
         return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
 
-    int64_t height = api_json_extract_int(buf, "result");
+    int64_t height = zcl_json_int(buf, "result");
     if (height < 0)
         return api_json_error(r, max, JSON_500_HEADERS, "Cannot get block count");
 
@@ -92,8 +92,8 @@ size_t compute_blocks(uint8_t *r, size_t max)
         if (api_rpc_call("getblock", params2, buf, sizeof(buf)) <= 0)
             continue;
 
-        int64_t blk_time = api_json_extract_int(buf, "time");
-        double diff = api_json_extract_real(buf, "difficulty");
+        int64_t blk_time = zcl_json_int(buf, "time");
+        double diff = zcl_json_real(buf, "difficulty");
 
         /* Count transactions */
         int tx_count = 0;
@@ -126,8 +126,8 @@ size_t compute_stats(uint8_t *r, size_t max)
     if (api_rpc_call("getblockchaininfo", "[]", buf, sizeof(buf)) <= 0)
         return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
 
-    int64_t height = api_json_extract_int(buf, "blocks");
-    double diff = api_json_extract_real(buf, "difficulty");
+    int64_t height = zcl_json_int(buf, "blocks");
+    double diff = zcl_json_real(buf, "difficulty");
 
     char chain[32] = "";
     zcl_json_extract_str(buf, "chain", chain, sizeof(chain));
@@ -136,7 +136,7 @@ size_t compute_stats(uint8_t *r, size_t max)
     char mbuf[8192];
     double hashrate = 0.0;
     if (api_rpc_call("getmininginfo", "[]", mbuf, sizeof(mbuf)) > 0)
-        hashrate = api_json_extract_real(mbuf, "networkhashps");
+        hashrate = zcl_json_real(mbuf, "networkhashps");
 
     double supply = (double)zcl_total_supply_zatoshi(height) / (double)ZATOSHI_PER_ZCL;
 
@@ -144,7 +144,7 @@ size_t compute_stats(uint8_t *r, size_t max)
     int64_t utxo_count = -1;
     char ubuf[8192];
     if (api_rpc_call("gettxoutsetinfo", "[]", ubuf, sizeof(ubuf)) > 0)
-        utxo_count = api_json_extract_int(ubuf, "txouts");
+        utxo_count = zcl_json_int(ubuf, "txouts");
 
     size_t off = 0;
     off += (size_t)snprintf((char *)r + off, max - off,
@@ -171,7 +171,7 @@ size_t compute_supply(uint8_t *r, size_t max)
     if (api_rpc_call("getblockcount", "[]", buf, sizeof(buf)) <= 0)
         return api_json_error(r, max, JSON_500_HEADERS, "RPC unavailable");
 
-    int64_t height = api_json_extract_int(buf, "result");
+    int64_t height = zcl_json_int(buf, "result");
     if (height < 0)
         return api_json_error(r, max, JSON_500_HEADERS, "Cannot get height");
 

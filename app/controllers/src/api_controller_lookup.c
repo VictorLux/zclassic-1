@@ -90,10 +90,10 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     if (strstr(buf, "\"error\":null") == NULL)
         return api_json_error(r, max, JSON_404_HEADERS, "Block not found");
 
-    int64_t height = api_json_extract_int(buf, "height");
-    int64_t blk_time = api_json_extract_int(buf, "time");
-    int64_t blk_size = api_json_extract_int(buf, "size");
-    double diff = api_json_extract_real(buf, "difficulty");
+    int64_t height = zcl_json_int(buf, "height");
+    int64_t blk_time = zcl_json_int(buf, "time");
+    int64_t blk_size = zcl_json_int(buf, "size");
+    double diff = zcl_json_real(buf, "difficulty");
 
     char merkle[65] = "", prev[65] = "", next_hash[65] = "", nonce[65] = "";
     zcl_json_extract_str(buf, "merkleroot", merkle, sizeof(merkle));
@@ -101,7 +101,7 @@ size_t compute_block(const char *param, uint8_t *r, size_t max)
     zcl_json_extract_str(buf, "nextblockhash", next_hash, sizeof(next_hash));
     zcl_json_extract_str(buf, "nonce", nonce, sizeof(nonce));
 
-    int64_t confirmations = api_json_extract_int(buf, "confirmations");
+    int64_t confirmations = zcl_json_int(buf, "confirmations");
 
     /* Count and collect transaction IDs */
     int tx_count = 0;
@@ -180,12 +180,12 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
     const char *result = strstr(buf, "\"result\":{");
     if (!result) result = buf;
 
-    int64_t confirmations = api_json_extract_int(result, "confirmations");
-    int64_t blk_height = api_json_extract_int(result, "height");
-    int64_t tx_size = api_json_extract_int(result, "size");
-    int64_t version = api_json_extract_int(result, "version");
-    int64_t locktime = api_json_extract_int(result, "locktime");
-    double value_balance = api_json_extract_real(result, "valuebalance");
+    int64_t confirmations = zcl_json_int(result, "confirmations");
+    int64_t blk_height = zcl_json_int(result, "height");
+    int64_t tx_size = zcl_json_int(result, "size");
+    int64_t version = zcl_json_int(result, "version");
+    int64_t locktime = zcl_json_int(result, "locktime");
+    double value_balance = zcl_json_real(result, "valuebalance");
 
     char blockhash[65] = "";
     zcl_json_extract_str(result, "blockhash", blockhash, sizeof(blockhash));
@@ -224,8 +224,8 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
                     }
                     if (!entry_end) break;
 
-                    double val = api_json_extract_real(entry, "value");
-                    int64_t vn = api_json_extract_int(entry, "n");
+                    double val = zcl_json_real(entry, "value");
+                    int64_t vn = zcl_json_int(entry, "n");
 
                     char addr[64] = "";
                     const char *addrs = strstr(entry, "\"addresses\":[\"");
@@ -280,7 +280,7 @@ size_t compute_tx(const char *param, uint8_t *r, size_t max)
 
                     char prev_txid[65] = "";
                     zcl_json_extract_str(entry, "txid", prev_txid, sizeof(prev_txid));
-                    int64_t vout_n = api_json_extract_int(entry, "vout");
+                    int64_t vout_n = zcl_json_int(entry, "vout");
 
                     if (idx > 0)
                         off += (size_t)snprintf((char *)r + off, max - off, ",");
@@ -333,7 +333,7 @@ size_t compute_address(const char *param, uint8_t *r, size_t max)
     bool got_balance = false;
 
     if (n > 0 && strstr(buf, "\"error\":null")) {
-        balance_sat = api_json_extract_int(buf, "balance");
+        balance_sat = zcl_json_int(buf, "balance");
         got_balance = true;
     }
 
@@ -374,9 +374,9 @@ size_t compute_address(const char *param, uint8_t *r, size_t max)
 
                         char txid[65] = "";
                         zcl_json_extract_str(entry, "txid", txid, sizeof(txid));
-                        int64_t output_idx = api_json_extract_int(entry, "outputIndex");
-                        int64_t satoshis = api_json_extract_int(entry, "satoshis");
-                        int64_t utxo_height = api_json_extract_int(entry, "height");
+                        int64_t output_idx = zcl_json_int(entry, "outputIndex");
+                        int64_t satoshis = zcl_json_int(entry, "satoshis");
+                        int64_t utxo_height = zcl_json_int(entry, "height");
 
                         if (idx > 0)
                             off += (size_t)snprintf((char *)r + off, max - off, ",");

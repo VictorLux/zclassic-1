@@ -46,4 +46,21 @@ bool zcl_json_extract_int(const char *json, const char *key, int64_t *out);
 /* Naive JSON real extraction. Returns false if key not found. */
 bool zcl_json_extract_real(const char *json, const char *key, double *out);
 
+/* Return-value convenience wrappers over the out-param zcl_json_extract_*
+ * helpers, for call sites that prefer a default on a missing key.
+ * int wrapper returns -1 on miss; real wrapper returns 0.0 on miss. */
+static inline int64_t zcl_json_int(const char *json, const char *key)
+{
+    int64_t v = -1;
+    zcl_json_extract_int(json, key, &v);
+    return v;
+}
+
+static inline double zcl_json_real(const char *json, const char *key)
+{
+    double v = 0.0;
+    zcl_json_extract_real(json, key, &v);
+    return v;
+}
+
 #endif
