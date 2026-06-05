@@ -206,6 +206,7 @@ char *mcp_node_rpc(const char *method, const char *params_json)
         const struct json_value *err = json_get(&v, "error");
         if (err && err->type != JSON_NULL) {
             char *out = zcl_malloc(4096, "mcp rpc error json");
+            if (!out) { json_free(&v); free(buf); return NULL; }
             json_write(err, out, 4096);
             json_free(&v);
             free(buf);
@@ -213,6 +214,7 @@ char *mcp_node_rpc(const char *method, const char *params_json)
         }
         if (res) {
             char *out = zcl_malloc(cap, "mcp rpc result json");
+            if (!out) { json_free(&v); free(buf); return NULL; }
             json_write(res, out, cap);
             json_free(&v);
             free(buf);

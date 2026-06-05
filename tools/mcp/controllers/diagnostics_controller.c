@@ -382,6 +382,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
                  "index is required");
         res->error = MCP_ERR_MISSING_PARAM;
         LOG_ERR("mcp.diag", "replay_exec: index param missing");
+        return 0;
     }
     int64_t idx = json_get_int(idx_v);
     size_t total = mcp_replay_count();
@@ -392,6 +393,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         res->error = MCP_ERR_OUT_OF_RANGE;
         LOG_ERR("mcp.diag", "replay_exec: index %lld out of range [0, %zu)",
                 (long long)idx, total);
+        return 0;
     }
 
     char *dump = mcp_replay_dump(0);
@@ -400,6 +402,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         snprintf(res->error_message, sizeof(res->error_message),
                  "replay dump failed during exec");
         LOG_ERR("mcp.diag", "replay_exec: mcp_replay_dump returned null");
+        return 0;
     }
 
     struct json_value arr;
@@ -411,6 +414,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         res->error = MCP_ERR_INTERNAL;
         LOG_ERR("mcp.diag", "replay_exec: json parse failed for index %lld",
                 (long long)idx);
+        return 0;
     }
 
     const struct json_value *entry = &arr.children[idx];
@@ -424,6 +428,7 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         res->error = MCP_ERR_INTERNAL;
         LOG_ERR("mcp.diag", "replay_exec: entry %lld has no tool name",
                 (long long)idx);
+        return 0;
     }
 
     char *result = mcp_router_dispatch(tool, NULL);
