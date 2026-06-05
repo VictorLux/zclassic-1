@@ -125,6 +125,8 @@ void cs_free(struct constraint_system *cs)
         lc_free(&cs->constraints[i].c);
     }
     free(cs->constraints);
+    if (cs->witness)
+        memory_cleanse(cs->witness, cs->cap_vars * sizeof(struct fr));
     free(cs->witness);
     memset(cs, 0, sizeof(*cs));
 }
@@ -394,6 +396,7 @@ void g1_msm(struct g1_point *result,
         g1_add(result, result, &window_sum);
     }
 
+    memory_cleanse(raw_scalars, n * sizeof(uint64_t[4]));
     free(raw_scalars);
     free(buckets);
 }
@@ -452,6 +455,7 @@ void g2_msm(struct g2_point *result,
         g2_add(result, result, &window_sum);
     }
 
+    memory_cleanse(raw_scalars, n * sizeof(uint64_t[4]));
     free(raw_scalars);
     free(buckets);
 }
@@ -802,6 +806,9 @@ bool groth16_prove(const struct groth16_pk *pk,
     if (!fr_fft(a_eval, domain, false) ||
         !fr_fft(b_eval, domain, false) ||
         !fr_fft(c_eval, domain, false)) {
+        memory_cleanse(a_eval, domain * sizeof(struct fr));
+        memory_cleanse(b_eval, domain * sizeof(struct fr));
+        memory_cleanse(c_eval, domain * sizeof(struct fr));
         free(a_eval); free(b_eval); free(c_eval);
         memset(proof_out, 0, sizeof(*proof_out));
         memory_cleanse(&r_blind, sizeof(r_blind));
@@ -814,6 +821,9 @@ bool groth16_prove(const struct groth16_pk *pk,
     /* Compute (a*b - c) pointwise on coset */
     struct fr *h_eval = zcl_calloc(domain, sizeof(struct fr), "groth16_h_eval");
     if (!h_eval) {
+        memory_cleanse(a_eval, domain * sizeof(struct fr));
+        memory_cleanse(b_eval, domain * sizeof(struct fr));
+        memory_cleanse(c_eval, domain * sizeof(struct fr));
         free(a_eval); free(b_eval); free(c_eval);
         LOG_FAIL("groth16",
                  "prove: OOM allocating h eval buffer (domain=%zu x %zu)",
@@ -845,6 +855,10 @@ bool groth16_prove(const struct groth16_pk *pk,
      * anomalous — but the guard is cheap and keeps the call sites
      * symmetric. */
     if (!fr_fft(h_eval, domain, true)) {
+        memory_cleanse(a_eval, domain * sizeof(struct fr));
+        memory_cleanse(b_eval, domain * sizeof(struct fr));
+        memory_cleanse(c_eval, domain * sizeof(struct fr));
+        memory_cleanse(h_eval, domain * sizeof(struct fr));
         free(a_eval); free(b_eval); free(c_eval); free(h_eval);
         memset(proof_out, 0, sizeof(*proof_out));
         memory_cleanse(&r_blind, sizeof(r_blind));
@@ -866,6 +880,9 @@ bool groth16_prove(const struct groth16_pk *pk,
         }
     }
 
+    memory_cleanse(a_eval, domain * sizeof(struct fr));
+    memory_cleanse(b_eval, domain * sizeof(struct fr));
+    memory_cleanse(c_eval, domain * sizeof(struct fr));
     free(a_eval);
     free(b_eval);
     free(c_eval);
@@ -962,6 +979,7 @@ bool groth16_prove(const struct groth16_pk *pk,
         }
     }
 
+    memory_cleanse(h_eval, domain * sizeof(struct fr));
     free(h_eval);
 
     proof_out->a = A;
