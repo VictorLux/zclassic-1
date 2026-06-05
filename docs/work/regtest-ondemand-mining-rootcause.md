@@ -162,9 +162,52 @@ Option 1 is the architecturally-correct fix (consensus init independent of
 network reachability). Both touch the LIVE boot sequence → prove on a datadir
 COPY that mainnet boot + sync are unchanged before deploy.
 
-Next focused session order: **L0 (boot reorder/timeout) → re-test that the
-stages init on the isolated node → L1 (header staging) → L2 (finalize) → the 3
-required proofs.** Each layer is dead until the one above it is fixed.
+### L0 FIXED (2026-06-05, commit `06ae18c26`)
+
+`peer_strategy_discover_self` now early-returns on `fMineBlocksOnDemand`
+(regtest only; main/testnet byte-identical) so boot no longer wedges on the
+UPnP probe. Placed inside `lib/net/src/peer_strategy.c` (NOT the frozen
+`boot_services.c`, which is at its size ceiling). Proven: isolated regtest node
+boots past discovery and initialises the reducer stages (`header_admit g_stage`
+non-NULL, "stage initialised" logs appear — was NULL); lint 35/35;
+test_parallel 0/371; repro-on-copy boots the real mainnet datadir to the
+documented light-copy floor with no crash.
+
+### L1 + L2 VERIFIED on a throwaway build, then reverted (dead until L2.5)
+
+With L0 in place, applying L1 (stage carried header before the `height<0` guard)
++ L2 (regtest-gated `set_authoritative_tip`) and probing showed:
+- **L1 works:** the carried header is now staged (`[L1-DIAG] inbox msg
+  has_header=1 height=-1 staged`) and `produce_block_index` creates the
+  block_index at height 1 (`staged_hdr` non-NULL) — the mined block is admitted.
+- **L2 gate is reached** (`ingested` non-NULL, `have_data=1 failed=0`) but does
+  NOT fire because of L2.5 below.
+
+### L2.5 — NEW blocker: the downstream stage pipeline does not flow a successor-less synchronously-ingested block
+
+After L0+L1, the mined block at height 1 is admitted, but EVERY downstream stage
+cursor stays at 1 (`[L2-DIAG] ... utxo_ok=0 | cursors: vh=1 bf=1 bp=1 sv=1 pv=1
+ua=1 tf=1`). So `utxo_apply` never applies block 1 → `utxo_apply_stage_succeeded_at(1)`
+is false → the L2 finalize gate's validation witness fails → still
+`block-not-finalized-by-reducer`. `validate_headers` floors at
+`header_admit cursor - 1` (`app/jobs/src/validate_headers_stage.c:446-451`);
+despite `header_admit` producing block 1 and advancing its cursor to 2, nothing
+downstream advances within the synchronous `reducer_drain_to_convergence` pass.
+This is the deepest layer: the staged reducer pipeline — designed for continuous
+supervisor-ticked, network-fed operation — does not drive a single successor-less
+mined block through validate→script→proof→utxo→finalize when driven synchronously
+from `reducer_ingest_block`. Likely a cursor-visibility / persisted-cursor-read
+timing issue across the per-stage `progress_store` transactions within one drain,
+or a downstream active-chain-membership gate. **Investigate next.**
+
+### Next session order
+
+L0 is done. Next: **L2.5** — instrument each downstream stage's advance gate on
+the isolated node (why `validate_headers` at cursor 1 does not advance when
+`header_admit` cursor is 2 within the same synchronous drain). Once the pipeline
+flows, re-apply L1 + L2 (both verified above), then the 3 required proofs (e2e +
+negative-gate twin + `generate 3 → getblockcount==3`). L1 + L2 are reverted on
+disk but their exact diffs are captured in git history and this doc.
 
 ## Method
 
