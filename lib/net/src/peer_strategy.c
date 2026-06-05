@@ -7,6 +7,7 @@
 #include "net/peer_strategy.h"
 #include "net/nat.h"
 #include "net/tor_integration.h"
+#include "chain/chainparams.h"
 #include "util/log_macros.h"
 
 #include <string.h>
@@ -33,6 +34,19 @@ bool peer_strategy_discover_self(struct node_profile *profile,
 
     memset(profile, 0, sizeof(*profile));
     profile->public_port = listen_port;
+
+    /* Regtest (fMineBlocksOnDemand) is a local, connect-only test chain that
+     * never needs NAT-PMP/UPnP port mapping or public-reachability discovery.
+     * Skip it: this runs SYNCHRONOUSLY during boot (config/src/boot_services.c)
+     * ahead of the reducer stage-pipeline init, and the UPnP SSDP/SOAP probe
+     * blocks for tens of seconds on a host whose gateway ignores it — wedging
+     * boot so the consensus engine never starts (the node answers RPC because
+     * the frontend already started, masking the stall). Gated on
+     * fMineBlocksOnDemand: true ONLY for regtest, false on main/testnet
+     * (lib/chain/src/chainparams.c), so live-network discovery is unchanged. */
+    const struct chain_params *cp = chain_params_get();
+    if (cp && cp->fMineBlocksOnDemand)
+        return false;
 
     /* 1. Try NAT-PMP port mapping (nat.h tries NAT-PMP first). */
     uint8_t mapped_ip[4] = {0};
