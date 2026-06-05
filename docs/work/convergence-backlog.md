@@ -84,6 +84,48 @@ weaken a gate, never touch `config/src/boot.c`.
   carefully. (Surfaced by the Wave-1 `coins_alloc` review; the live NULL-deref
   sibling at `coins_db.c:133` was fixed in Wave 1.)
 
+## Round 4 (2026-06-05) — under-swept subsystems audited + fixed
+
+Read-only audit (7 agents: tools/mcp, app/views, lib/wallet, lib/rpc,
+app/models, domain, lib/util) → 22 safe findings, executed as a 6-group
+edit→adversarial-review workflow on DISJOINT files. Union gate green
+(build 0err / lint 35 / test_parallel 0/371). Landed `cf7bbf05f..525ca1ccc`:
+
+- **Build regression fixed** — `crypto/blake2b.h` had `update*/final` whose `*/`
+  closed the doc comment early, spilling text into code; clean build was broken
+  (a cached build masked it). (`cf7bbf05f`.)
+- **3 MCP NULL-deref crashes** — `onion_health`/`listaddresses`/`profile`
+  handlers set `res->error` on malloc-fail but fell through to `snprintf` on the
+  NULL body; added the early `return 0`. (`b4b77819d`.)
+- **contact.c before_save veto-bypass** — logged the veto then persisted anyway;
+  now returns false like every other model. (`b4b77819d`.)
+- **views DRY** — `format_zcl_price` + `zcl_format_zcl_short` folded onto one
+  exact-integer `zcl_format_zcl_trimmed(…,min_decimals)`; output proven identical
+  over a 200M-sample sweep. (`7aabb943c`.)
+- **~14 public headers documented** (rpc/util/wallet/models/views). (`525ca1ccc`.)
+
+Adversarial review EARNED its keep again: the audit's "lying `return true` in
+hd_keychain/bip44" finding was WRONG — `LOG_FAIL` already expands to
+`return false`, so those were success/unreachable paths. Review declined the
+`.c` edits; only the accurate doc comments landed. `domain/` returned 0 findings
+(already clean) — the safe axis on these subsystems is now harvested.
+
+### New deferred items (surfaced in round 4, not executed)
+
+- **`wallet_generate_hd_key` HD-counter race** (`lib/wallet/src/wallet.c:217-246`,
+  *medium risk*) — the internal/external counter is read and used for BIP44
+  derivation OUTSIDE the mutex and only incremented inside it; two concurrent
+  callers can derive the same key index → address collision. Real fix: read the
+  counter (and ideally derive) under the lock. Wallet-threading change — scope and
+  test deliberately (not a one-liner; verify no caller holds the lock already).
+- **model hook-init DRY** (3 patterns across ~7 models: manual `_init_hooks` +
+  static bool, manual `_callbacks_ready`, and the `DEFINE_MODEL_BEFORE_SAVE_READY`
+  macro) — consolidate onto one macro. SHAPE, low value, touches many files +
+  risks the model-callback lint scaffold; do as its own wave if at all.
+- **`mcp minconf` param-spec triplicate** (`wallet_controller.c:283/321/328`) —
+  identical INT spec defined 3×; low value, each spec is arguably tied to its
+  route entry. Leave unless a wider MCP param-spec table lands.
+
 ## Deferred — peer_scoring typed-API adoption (needs enum extension, owner-gated)
 
 Round-3 #1 (adopt typed `peer_scoring_record()` across ~34 raw
