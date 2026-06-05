@@ -57,7 +57,7 @@ static bool wbs_store_count_rows(void *self, const char *table, int64_t *out)
     snprintf(sql, sizeof(sql), "SELECT count(*) FROM %s", table);
     sqlite3_stmt *st = NULL;
     bool ok = false;
-    if (sqlite3_prepare_v2(c->src_db, sql, -1, &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(c->src_db, sql, -1, &st, NULL) == SQLITE_OK && st) {
         if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
             *out = sqlite3_column_int64(st, 0);
             ok = true;
@@ -130,7 +130,7 @@ static enum wallet_backup_store_status wbs_store_write_snapshot(
             "WHERE type='table' AND name='%s'", table);
         sqlite3_stmt *chk = NULL;
         bool src_has = false;
-        if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK) {
+        if (sqlite3_prepare_v2(dst, exists_sql, -1, &chk, NULL) == SQLITE_OK && chk) {
             src_has = AR_STEP_ROW_READONLY(chk) == SQLITE_ROW;
             sqlite3_finalize(chk);
         }
@@ -173,7 +173,7 @@ static int64_t wbs_store_count_rows_in_file(void *self,
         char sql[128];
         snprintf(sql, sizeof(sql), "SELECT count(*) FROM %s", table);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK && st) {
             if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW)
                 n = sqlite3_column_int64(st, 0);
             sqlite3_finalize(st);
