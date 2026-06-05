@@ -244,7 +244,11 @@ struct zcl_result quorum_oracle_probe(int height, struct quorum_oracle_result *o
     qo_probe_zclassicd(height, &out->by_source[QO_SRC_ZCLASSICD]);
     qo_probe_peer     (height, &out->by_source[QO_SRC_PEER]);
 
-    /* Count occurrences of each non-error hash. */
+    /* For each source, count how many sources (incl. itself) report the same
+     * hash, so counts[i] is the size of source i's agreement group. The matrix
+     * is symmetric (every group member carries the full group size), so
+     * max(counts) is the largest agreeing group regardless of source order —
+     * the property the min_agree gate below relies on. */
     int counts[QO_SRC_NUM] = {0};
     int total_with_hash = 0;
     for (int i = 0; i < QO_SRC_NUM; i++) {
@@ -252,13 +256,13 @@ struct zcl_result quorum_oracle_probe(int height, struct quorum_oracle_result *o
         if (out->by_source[i].error) continue;
         if (out->by_source[i].hash_hex[0] == '\0') continue;
         total_with_hash++;
-        for (int j = 0; j <= i; j++) {
+        for (int j = 0; j < QO_SRC_NUM; j++) {
             if (!out->by_source[j].present || out->by_source[j].error)
                 continue;
             if (out->by_source[j].hash_hex[0] == '\0') continue;
             if (strcasecmp(out->by_source[i].hash_hex,
                            out->by_source[j].hash_hex) == 0) {
-                counts[j]++;
+                counts[i]++;
             }
         }
     }
