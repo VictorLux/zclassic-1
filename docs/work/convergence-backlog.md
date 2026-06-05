@@ -480,3 +480,21 @@ block_index_db nFile>INT_MAX deserialize guard. **Vetting REJECTED** utxo_snapsh
 "script_pubkey leak" — FALSE: revert_tip MOVES the coin_entries (incl. script_pubkey ptrs) into
 h->coins then frees only the array; the auditor's coin_entry_release-before-free would be a UAF
 when h->coins is later closed. The comment ("now owned by h->coins, don't free") is correct.
+
+### Round 17 (2026-06-05) — crypto/key-derivation frontier (secret-material hygiene)
+Defensive audit of domain/wallet (BIP39/derivation), domain/encoding (base58/bech32), lib/crypto
+(35 findings). FIXED (output-neutral, KAT-gated, per-cluster adversarial review — test_parallel
+0/371 confirms no digest/sig/key/encode value changed): memory_cleanse of secret buffers in
+mnemonic (entropy/seed/phrase/salt), base58check decode/encode (xprv/privkey + work buffers),
+key_derivation (intermediate private ext_key), HMAC-SHA256/512 (key block + key-hash ctx + inner
+digest — backs PBKDF2/BIP39), and ChaCha20-Poly1305 + curve25519 (one-time key, keystream, tag,
+ladder state). Public buffers (SHA256d checksum, ext_pubkey, verification intermediates) correctly
+NOT cleansed.
+**REJECTED — NOT a bug**: sha512.c:114-115 "missing += in message schedule". The last TWO rounds
+(K[78]/K[79]) use `w14 +`/`w15 +` instead of `+=`; the expression VALUE passed to Round() is
+identical, and those schedule words are never read again (final rounds), so the dead writeback is
+harmless — SHA-512 output is correct (KATs pass). Do NOT "fix" it.
+DEFERRED (lower-value defensive, not this round): aes256 state cleanse, blake2s_final/sha3 hmac
+cleanse, ed25519:277 (signature VERIFICATION — public, no secret, skip), the bech32/base58
+attacker-length VLA-stack-exhaustion findings (separate class — needs a length cap that must not
+reject valid bounded addresses), mnemonic checksum-bit DRY + buffer-cleansing API doc.
