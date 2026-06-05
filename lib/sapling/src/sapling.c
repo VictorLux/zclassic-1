@@ -196,6 +196,8 @@ void sapling_crh_ivk(const uint8_t ak[32], const uint8_t nk[32], uint8_t ivk[32]
     blake2s_update(&ctx, ak, 32);
     blake2s_update(&ctx, nk, 32);
     blake2s_final(&ctx, ivk, 32);
+    /* ctx absorbed ak||nk — cleanse the spent hash context */
+    memory_cleanse(&ctx, sizeof(ctx));
     /* Drop top 5 bits so it can be interpreted as Fs scalar */
     ivk[31] &= 0x07;
 }
@@ -384,6 +386,9 @@ static void h_star(const uint8_t *a, size_t a_len,
         blake2b_update(&ctx, c, c_len);
     blake2b_final(&ctx, digest, 64);
     jubjub_to_scalar(digest, scalar);
+    /* Cleanse the spent hash context and digest (absorbed signing inputs) */
+    memory_cleanse(&ctx, sizeof(ctx));
+    memory_cleanse(digest, sizeof(digest));
 }
 
 /* Check if point has small order: [8]*p == identity */
@@ -717,6 +722,8 @@ bool redjubjub_sign(const uint8_t sk[32],
     blake2b_update(&bctx, vk_bytes, 32);
     blake2b_update(&bctx, msg, msg_len);
     blake2b_final(&bctx, digest, 64);
+    /* bctx absorbed T (nonce seed) || vk || msg — cleanse the spent context */
+    memory_cleanse(&bctx, sizeof(bctx));
 
     uint8_t r_scalar[32];
     jubjub_to_scalar(digest, r_scalar);
@@ -925,8 +932,11 @@ bool sapling_build_spend_with_ctx(
 
     /* Compute nullifier */
     if (!sapling_compute_nf(diversifier, pk_d, value, rcm,
-                             ak, nk, position, sd_nullifier))
+                             ak, nk, position, sd_nullifier)) {
+        memory_cleanse(ak, sizeof(ak));
+        memory_cleanse(nk, sizeof(nk));
         LOG_FAIL("sapling", "build_spend_with_ctx: sapling_compute_nf failed");
+    }
 
     /* Call native C23 prover for spend proof (cv, rk, zkproof). The
      * `witness_len` passed through here gates the merkle-path parse
@@ -944,11 +954,16 @@ bool sapling_build_spend_with_ctx(
             value, anchor, witness_path, witness_len,
             sd_cv, sd_rk, sd_zkproof)) {
         memset(ar_out, 0, 32);
+        memory_cleanse(ak, sizeof(ak));
+        memory_cleanse(nk, sizeof(nk));
         LOG_FAIL("sapling",
                  "build_spend_with_ctx: zclassic_sapling_spend_proof failed (value=%" PRIu64 " position=%" PRIu64 ")",
                  value, position);
     }
 
+    /* Derived ak/nk fully consumed by the prover — cleanse before return */
+    memory_cleanse(ak, sizeof(ak));
+    memory_cleanse(nk, sizeof(nk));
     return true;
 }
 
