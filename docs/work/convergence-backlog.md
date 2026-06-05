@@ -454,3 +454,20 @@ Every remaining §12-EXT item is a genuine CONSENSUS-DECISION change → needs r
 Next step for each: read-only prove-or-refute triage (skeptical analysts + adjudicator) FIRST
 (header_sync:575 proved this catches false positives), THEN repro-on-copy design only for the
 confirmed-real ones.
+
+### Round 15 (2026-06-05) — consensus-DECISION triage (read-only, 2 skeptical analysts + adjudicator each)
+NONE of the 4 is a live consensus hazard:
+- coins_view_sqlite.c:1056 commitment no-rollback — **REFUTED** (commitment is derivative/optional;
+  canonical coins+best_block writes DO roll back; boot coins_reconcile_stale_anchor recomputes the
+  commitment from the UTXO set). Optional nit: emit a low-sev event instead of stderr-only. No fix.
+- block_index_db.c:406 nFile cast — **REFUTED** (nFile<0 fails closed at every file-open guard
+  disk_block_io/process_block_index/blocks_mmap_reader; the ==0 usage harmlessly skips negatives).
+  Optional: reject v>INT_MAX at deserialize. No fix.
+- quorum_oracle_service.c:255 asymmetric tally — NOT a bug (max() correct for 3 sources) but real
+  latent/clarity → **FIXED** (symmetric matrix, value-preserving).
+- block_index_loader.c:376 incomplete nChainTx recompute — **REAL but latent/low-impact**: error is in
+  the SAFE direction (stale-nonzero nChainTx with HAVE_DATA stays eligible at process_block_core.c:59,
+  and connect_block re-validates before commit; the dangerous wrongly-excluded direction is NOT
+  produced). DEFERRED: the clean DRY fix (call block_index_forward_pass instead of the 3 hand-rolled
+  recomputes at loader.c:376 + boot.c:2138-2143) touches the NEVER-TOUCH frozen config/src/boot.c, so
+  it needs an owner decision on how to fix without editing boot.c. Run boot-smoke on a copy before deploy.
