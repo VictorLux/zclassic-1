@@ -16,23 +16,27 @@ as you go, make the server amazing."* This is the **architecture/quality** axis
 this one). Full state + gotchas: memory
 `project_convergence_axis_2026-06-05.md`; ranked work: `docs/work/convergence-backlog.md`.
 
-**Where it stands** (≈22 commits landed this run, all green):
-- 8/8 framework shapes real; `framework_shape_allowlist`=0; 5 lint ratchets at 0.
-- `boot_index.c` 1539→381; **`boot_services.c` 3517→1767** (decomposed into 7
-  byte-identical units). File-size debt board: **2 files left** — `boot.c` (3618,
-  FROZEN, never touch) + `boot_services.c` (1767).
-- Real bugs killed: `coins_alloc` OOM NULL-deref; 2 MCP crashes; an `_Atomic` UB.
-- 31 consensus/crypto public headers documented (accuracy-reviewed).
-- **Rounds 4+5 (`cf7bbf05f..030f16a0e`)** swept the under-audited subsystems
-  (tools/mcp, app/views, lib/wallet, lib/rpc, app/models, lib/util,
-  app/controllers, service glue). Fixed a **build regression** (`blake2b.h` doc
-  comment closed early, broke clean compile), **3 MCP + 2 explorer NULL-deref
-  crashes**, a `contact.c` `before_save` veto-bypass, NULL-safe `sqlite3_errmsg`,
-  2 local DRY folds, and ~16 documented public headers. Adversarial review
-  declined 2 false findings (LOG_FAIL/LOG_ERR already return). **The
-  non-consensus safe axis is now harvested** — audits over it return mostly
-  self-rejected noise; see `docs/work/convergence-backlog.md` rounds 4/5 +
-  deferred lists. Stop fanning safe audits over swept subsystems.
+**Where it stands — the autonomous-safe convergence drive is COMPLETE** (rounds
+2–15, all green build0/lint35/test_parallel 0/371, all pushed; latest run
+`88349b39d`→`ea7542cda` fixed ~52 real bugs + ~40 docs):
+- 8/8 framework shapes real; `framework_shape_allowlist`=0; lint ratchets at 0.
+  File-size debt board: `boot.c` (3618, FROZEN — **never touch**) + `boot_services.c`.
+- **The whole non-consensus surface is harvested** (lib/net feature transports,
+  every app/ controller/view/model, lib/wallet, lib/rpc, lib/storage projections,
+  supervisors, metrics). Real bugs killed this session: a wallet keypool concurrent
+  OOB + data-race snapshots, 2 key-material `memory_cleanse` leaks, a 1-byte stack
+  overflow, a 4-projection event-skip class bug, a post-broadcast send-failure bug,
+  a proven send-path tx/entry leak, 11 P2P-transport NULL-derefs/unchecked writes,
+  3 shielded signing-path `signature_hash` checks, 5 UTXO script leaks, 2 realloc-OOM
+  NULL-derefs, a double-free, a snapshot-anchor UAF race, a malformed-txid uninit read.
+- **Consensus-adjacent layer handled the careful way** (rounds 12–15): strict-bar
+  audit → read-only prove-or-refute (skeptical analysts + adjudicator) BEFORE any
+  edit. Fixed: bg-validation honesty (no false "verified" when script checks skipped
+  for missing undo; surfaces `verification_incomplete`), quorum symmetric tally.
+  Refuted with evidence: `header_sync:575` (sanity gate; connect_block is the arbiter),
+  coins-commitment no-rollback (derivative), `block_index_db` nFile cast (fails closed).
+- **CORRECTION recorded**: `zcl_mutex` is RECURSIVE — two earlier "deadlock" calls
+  were overclaims (code stands; framing corrected in git + backlog).
 
 **The proven method (repeat it):** read-only audit Workflow → ranked backlog →
 parallel **edit-only** adversarially-reviewed Workflows on **DISJOINT** file sets
@@ -42,21 +46,22 @@ gates] + `./test_parallel` [expect `0/371`] + boot-smoke if the boot path change
 `error:|warning:` to save context. Mutating workflows on disjoint files may run
 concurrently; verify the union together.
 
-**Next targets, in priority order:**
-1. **`boot_services.c` shutdown TU** (finishes the boot decomposition, →~1520).
-   HIGH RISK: it carries the `coins.db` COMMIT-before-`block_index` fsync
-   invariant. Boot-smoke CANNOT validate it — needs a real **SIGTERM stop +
-   restart** cycle on a datadir COPY. Do it ALONE. See
-   `[[feedback_at_tip_kill9_ordering_invariant]]`.
-2. **flyclient/MMB block** out of `boot_services.c` — consensus-adjacent, shares
-   the `g_mmb_leaf_store` extern + a lint-gate owner assertion; extract with the
-   MMB-build block.
-3. **peer-scoring enum extension** (OWNER-GATED — changes DoS-ban policy; design
-   noted in `docs/work/convergence-backlog.md`). Do NOT do a naive
-   `peer_misbehaving`→`peer_scoring_record` swap: mapping by meaning changes ban
-   weights, mapping by weight mis-names. Extend the enum first.
-4. More DRY/doc waves only if an audit returns real findings — the safe axis is
-   nearly harvested; **STOP fanning out when sweeps return 0–1 findings.**
+**What remains is owner-gated / repro-on-copy ONLY** (the autonomous-safe drive is
+done — do NOT re-audit the swept surface, it's harvested; see
+`docs/work/convergence-backlog.md` §12, §12-EXT, Round 8–15):
+1. **`block_index_loader.c:376` nChainTx DRY** — real but latent (safe error
+   direction; `connect_block` re-validates). The clean fix (call
+   `block_index_forward_pass` instead of 3 hand-rolled recomputes) touches the
+   **never-touch** `config/src/boot.c:2138` — needs an owner call on how to fix
+   without editing boot.c. Boot-smoke on a COPY before deploy.
+2. **`boot_services.c` shutdown TU** + **flyclient/MMB block** — boot decomposition
+   tail; HIGH RISK (coins.db COMMIT-before-`block_index` fsync), needs a real
+   SIGTERM stop+restart on a datadir COPY. Do ALONE.
+3. **peer-scoring enum extension** (OWNER-GATED — changes DoS-ban policy). Extend
+   the enum first; do NOT do a naive `peer_misbehaving`→`peer_scoring_record` swap.
+4. **§12 consensus-DECISION items** (coins_view rollback nit, nFile>INT_MAX reject,
+   plus the originals) — each repro-on-copy; most already triaged/refuted.
+5. More audits ONLY if a NEW subsystem appears — **STOP fanning over swept code.**
 
 **Gotchas that cost time this run (don't relearn):**
 - **Boot-smoke light-copy floor is NOT a regression.** `repro_on_copy.sh`
