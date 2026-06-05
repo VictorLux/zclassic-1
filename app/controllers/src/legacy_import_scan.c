@@ -332,9 +332,17 @@ void *legacy_import_sapling_filter_thread(void *arg)
 
         if (ctx->hit_count >= ctx->hit_cap) {
             ctx->hit_cap *= 2;
-            ctx->hits = zcl_realloc(ctx->hits,
+            struct legacy_import_block_pos *tmp = zcl_realloc(ctx->hits,
                 (size_t)ctx->hit_cap * sizeof(struct legacy_import_block_pos),
                 "legacy scan hits grow");
+            if (!tmp) {
+                /* OOM: keep the old buffer (zcl_realloc leaves it intact),
+                 * restore the cap to match it, skip this hit and keep scanning. */
+                ctx->hit_cap /= 2;
+                pos += 8 + blk_size;
+                continue;
+            }
+            ctx->hits = tmp;
         }
         ctx->hits[ctx->hit_count++] = (struct legacy_import_block_pos){
             .file_num = ctx->file_num,
@@ -400,10 +408,20 @@ void *legacy_import_decrypt_thread(void *arg)
                         continue;
                     if (c->result_count >= c->result_cap) {
                         c->result_cap *= 2;
-                        c->results = zcl_realloc(c->results,
+                        struct db_sapling_note *tmp = zcl_realloc(
+                            c->results,
                             (size_t)c->result_cap *
                             sizeof(struct db_sapling_note),
                             "sapling decrypt results grow");
+                        if (!tmp) {
+                            /* OOM: keep the old buffer (zcl_realloc does
+                             * not free on failure) and skip appending this
+                             * note rather than NULL-deref. Partial results
+                             * are tolerated by the caller. */
+                            c->result_cap /= 2;
+                            continue;
+                        }
+                        c->results = tmp;
                     }
                     struct db_sapling_note *dn =
                         &c->results[c->result_count++];
