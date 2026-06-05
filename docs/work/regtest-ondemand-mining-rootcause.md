@@ -118,9 +118,53 @@ re-probing showed the block was **still not admitted** (`ingested==nil`, no
 So the lane is broken at **≥3 layers** (L0 stage-pipeline-inactive → L1
 header-staging-height-guard → L2 finalize-lookahead/read-back), plus the
 RPC-unresponsive symptom. The L1+L2 changes were reverted (unproven, and a no-op
-without L0). Next focused session: start at L0 — prove whether the reducer
-stages are live for an at-tip regtest node, on a COPY/isolated node, before
-touching the shared header-admission handler.
+without L0).
+
+### L0 root cause CONFIRMED (2026-06-05) — boot blocks before reducer-stage init
+
+Instrumented `header_admit_stage_step_once` and `staged_sync_supervisor_register`
+and probed the isolated node:
+
+- `header_admit` `g_stage == (nil)` — the stage is **never initialized**.
+- `staged_sync_supervisor_register`'s entry log **never fires** — the register
+  (which calls every stage's `init(ms)` synchronously) is never reached.
+- Boot-marker trace: `app_init_services` (`config/src/boot_services.c:565`,
+  called from `config/src/boot.c:3582`) logs `svc.frontend_tor_start` (line
+  1342) then prints `NAT: gateway 74.50.74.101 via enp1s0f0` — emitted *inside*
+  `peer_strategy_discover_self` (line 1349) → `nat_add_port_mapping`
+  (`lib/net/src/peer_strategy.c:39`) — but **never** prints `Reachability:`
+  (line 1359, immediately after the call) and never reaches
+  `staged_sync_supervisor_register` (line 1455) or `svc.peers_supervisors_runtime`
+  (line 1522).
+
+**Bottom line: boot HANGS in `nat_add_port_mapping` (a NAT-PMP/UPnP probe to an
+unresponsive datacenter gateway), which is sequenced BEFORE the reducer-stage
+init. The frontend/RPC thread already started (line 1342), so the node answers
+RPC while `app_init_services` is wedged — masking the stall.** Because the
+stages never init, every block (network or mined) that routes through
+`reducer_drain_to_convergence` does nothing; the mined block is never admitted.
+
+This is a **boot-robustness bug**: core consensus-engine initialization must not
+be sequenced behind an optional, unbounded network reachability probe. The live
+mainnet node boots past this (its gateway answers / times out fast); this
+datacenter host's isolated harness hangs.
+
+**Candidate fixes (live-boot — owner-gated, needs a mainnet boot proof on a
+COPY):**
+1. **Reorder:** run `staged_sync_supervisor_register` (+ the reducer-stage init)
+   BEFORE `peer_strategy_discover_self`, so the consensus engine is always live
+   regardless of NAT latency. Move the optional reachability/announce block
+   (boot_services.c:1346-1403) to after the register, OR
+2. **Bound/background** `nat_add_port_mapping` (a hard timeout, or run discovery
+   on a detached thread) so it can never block boot.
+
+Option 1 is the architecturally-correct fix (consensus init independent of
+network reachability). Both touch the LIVE boot sequence → prove on a datadir
+COPY that mainnet boot + sync are unchanged before deploy.
+
+Next focused session order: **L0 (boot reorder/timeout) → re-test that the
+stages init on the isolated node → L1 (header staging) → L2 (finalize) → the 3
+required proofs.** Each layer is dead until the one above it is fixed.
 
 ## Method
 
