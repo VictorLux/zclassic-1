@@ -421,3 +421,19 @@ datadir-copy repro before any edit; do NOT batch:
   BG_VALIDATION_FAILED" contract. Honest fix (in progress): do not claim full verification when script
   checks were skipped for missing undo; surface a skipped-count via validationstatus; never stall the
   validator (post-snapshot blocks legitimately lack rev files, so do NOT hard-fail).
+
+### Round 13 (2026-06-05) — memory-safety subset of §12-EXT, prove-then-fix
+Prove-then-fix on 3 deferred memory-safety findings (each proven real + pure-memory-safety +
+consensus-neutral + deadlock-free BEFORE editing):
+- FIXED legacy_import_service.c double-free on the sapling-note import error path (null after free).
+- FIXED snapshot_sync_service.c g_snapshot_anchor UAF race (lock both accessors; non-recursive
+  service mutex, no caller holds it → no deadlock).
+- SKIPPED disk_block_io.c:231 — proven real but NOT pure-memory-safety (the real issue is in
+  callers' cached-FILE* fseek usage, e.g. transaction_controller.c:85); needs a broader caller fix,
+  deferred. Prove-gate correctly declined to blind-edit.
+NEW latent finding (separate, deferred): legacy_import_scan.c:403 overwrites c->results with
+zcl_realloc's return directly — leaks the old buffer on realloc failure and then derefs NULL at :409.
+Still-deferred consensus-DECISION §12-EXT items (repro-on-copy/owner): coins_view_sqlite.c:1056
+rollback, block_index_db.c:406 nFile guard, quorum_oracle_service.c:255 tally, block_index_loader.c:376
+nChainTx recompute, sync_controller_blocks.c:287 batch cleanup, repair_controller_utxo.c:432 uninit read,
+utxo_recovery_restore.c:126 system() hardening.
