@@ -9,6 +9,7 @@
 
 #include "domain/encoding/base58.h"
 #include "core/hash.h"
+#include "support/cleanse.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -51,14 +52,20 @@ bool domain_encoding_base58_encode(const unsigned char *data, size_t data_len,
     size_t result_len = zeroes + (b58_size - skip);
     if (out_len)
         *out_len = result_len;
-    if (result_len + 1 > out_size)
+    if (result_len + 1 > out_size) {
+        /* b58 may hold secret-derived digits (base58check_encode of a
+         * private key); wipe the intermediate before the error return. */
+        memory_cleanse(b58, b58_size);
         return false;
+    }
 
     for (int i = 0; i < zeroes; i++)
         out[i] = '1';
     for (size_t i = skip; i < b58_size; i++)
         out[zeroes + (i - skip)] = base58_chars[b58[i]];
     out[result_len] = '\0';
+    /* b58's last read is the loop above; wipe the secret-derived digits. */
+    memory_cleanse(b58, b58_size);
     return true;
 }
 
@@ -82,8 +89,12 @@ bool domain_encoding_base58_decode(const char *psz,
     const char *p = psz;
     while (*p && !isspace((unsigned char)*p)) {
         const char *ch = strchr(base58_chars, *p);
-        if (ch == NULL)
+        if (ch == NULL) {
+            /* b256 may already hold partial secret-derived bytes
+             * (base58check_decode of an xprv/privkey). */
+            memory_cleanse(b256, b256_size);
             return false;
+        }
         int carry = (int)(ch - base58_chars);
         for (size_t i = b256_size; i > 0; i--) {
             carry += 58 * b256[i - 1];
@@ -96,8 +107,10 @@ bool domain_encoding_base58_decode(const char *psz,
 
     while (isspace((unsigned char)*p))
         p++;
-    if (*p != 0)
+    if (*p != 0) {
+        memory_cleanse(b256, b256_size);
         return false;
+    }
 
     size_t skip = 0;
     while (skip < b256_size && b256[skip] == 0)
@@ -106,11 +119,15 @@ bool domain_encoding_base58_decode(const char *psz,
     size_t result_len = zeroes + (b256_size - skip);
     if (out_len)
         *out_len = result_len;
-    if (result_len > out_size)
+    if (result_len > out_size) {
+        memory_cleanse(b256, b256_size);
         return false;
+    }
 
     memset(out, 0, zeroes);
     memcpy(out + zeroes, b256 + skip, b256_size - skip);
+    /* b256's last read is the memcpy above; wipe the decoded payload. */
+    memory_cleanse(b256, b256_size);
     return true;
 }
 
@@ -122,7 +139,11 @@ bool domain_encoding_base58check_encode(const unsigned char *data, size_t data_l
     unsigned char hash[32];
     hash256(data, data_len, hash);
     memcpy(buf + data_len, hash, 4);
-    return domain_encoding_base58_encode(buf, data_len + 4, out, out_size, out_len);
+    bool ok = domain_encoding_base58_encode(buf, data_len + 4, out, out_size, out_len);
+    /* buf holds the secret payload (e.g. a WIF private key); its last
+     * read is the encode call above. Wipe on both success and error. */
+    memory_cleanse(buf, data_len + 4);
+    return ok;
 }
 
 bool domain_encoding_base58check_decode(const char *str,
@@ -130,22 +151,33 @@ bool domain_encoding_base58check_decode(const char *str,
 {
     unsigned char tmp[256];
     size_t tmp_len = 0;
-    if (!domain_encoding_base58_decode(str, tmp, sizeof(tmp), &tmp_len))
+    if (!domain_encoding_base58_decode(str, tmp, sizeof(tmp), &tmp_len)) {
+        /* tmp may hold a decoded secret payload (xprv/privkey). */
+        memory_cleanse(tmp, sizeof(tmp));
         return false;
-    if (tmp_len < 4)
+    }
+    if (tmp_len < 4) {
+        memory_cleanse(tmp, sizeof(tmp));
         return false;
+    }
 
     unsigned char hash[32];
     hash256(tmp, tmp_len - 4, hash);
-    if (memcmp(hash, tmp + tmp_len - 4, 4) != 0)
+    if (memcmp(hash, tmp + tmp_len - 4, 4) != 0) {
+        memory_cleanse(tmp, sizeof(tmp));
         return false;
+    }
 
     size_t result_len = tmp_len - 4;
     if (out_len)
         *out_len = result_len;
-    if (result_len > out_size)
+    if (result_len > out_size) {
+        memory_cleanse(tmp, sizeof(tmp));
         return false;
+    }
 
     memcpy(out, tmp, result_len);
+    /* tmp's last read is the memcpy above; wipe the decoded payload. */
+    memory_cleanse(tmp, sizeof(tmp));
     return true;
 }

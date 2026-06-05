@@ -13,6 +13,8 @@
 
 #include "domain/wallet/key_derivation.h"
 
+#include "support/cleanse.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,14 +78,22 @@ struct zcl_result domain_wallet_derive_path(
     struct ext_key current = *parent;
     for (int i = 0; i < num_indices; i++) {
         struct ext_key next;
-        if (!ext_key_derive(&current, &next, indices[i]))
+        if (!ext_key_derive(&current, &next, indices[i])) {
+            /* current/next hold derived BIP32 private scalars + chain
+             * codes; wipe both secret intermediates on the error path. */
+            memory_cleanse(&next, sizeof(next));
+            memory_cleanse(&current, sizeof(current));
             return ZCL_ERR(DOMAIN_WALLET_KEY_DERIVATION_ERR_DERIVE_FAIL,
                            "derive_path: ext_key_derive failed at depth %d index 0x%08x",
                            i, indices[i]);
+        }
         current = next;
+        memory_cleanse(&next, sizeof(next));
     }
 
     *child_out = current;
+    /* current's last read is the copy above; wipe the secret intermediate. */
+    memory_cleanse(&current, sizeof(current));
     return ZCL_OK;
 }
 
