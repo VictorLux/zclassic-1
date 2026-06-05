@@ -1,5 +1,20 @@
 # Regtest on-demand mining (`generate N`) — layered root cause
 
+> **STATUS 2026-06-05:** L0 shipped (`06ae18c26`). L1 + L2.5 + drain-ordering +
+> L2 LANDED (`2cf7fa215`, union-gate + repro-on-copy green, network-safe). The
+> pipeline now flows (validate_headers passes, body-absent cascade gone).
+> **REMAINING red blocker:** `utxo_apply` still records ok=0 NONDETERMINISTICALLY
+> — the failing upstream stage varies run-to-run (body_persist / proof_validate)
+> — caused by active-chain WINDOW extend/collapse timing across the synchronous
+> drain (`active_chain_at(next_h)` resolves or returns NULL depending on whether
+> `reducer_extend_window_to_candidate` has run / been collapsed when a given
+> stage executes). Next: make the window stable for the height under ingest
+> across the whole synchronous drain (e.g. extend once before the full drain and
+> keep it covering the candidate, or have the body/script/proof/utxo stages
+> resolve via the same above-window path validate_headers uses). Deep
+> reducer-internals; prove on the isolated node + union gate + repro-on-copy.
+
+
 **Status:** root-caused 2026-06-05 on an isolated regtest node (empirical, not
 theoretical). The fix touches the **live shared header-admission path** →
 owner-gated, prove-on-copy. Do NOT land it as a drive-by.
