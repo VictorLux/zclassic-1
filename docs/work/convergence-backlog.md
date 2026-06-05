@@ -405,3 +405,19 @@ datadir-copy repro before any edit; do NOT batch:
 - quorum_oracle_service.c:255 — asymmetric agreement counts in the quorum vote tally.
 - sync_controller_blocks.c:287 — db_tx_save failure early-returns, skipping batch-state cleanup.
 - repair_controller_utxo.c:432 — uninitialized prev_txid_hex read on malformed JSON txid.
+
+### §12-EXT triage (round-12b, read-only, 2 skeptical analysts + adjudicator per finding)
+- **header_sync_service.c:575 — REFUTED, NOT a consensus bug** (high confidence, both analysts +
+  adjudicator). It is an explicit "sanity gate" for queuing block downloads; the real consensus
+  arbiter is connect_block.c:150-163 (block->hashPrevBlock must equal coins_view best, else
+  REJECT_FATAL), and syncsvc_collect_needed_blocks skips BLOCK_FAILED_MASK forks. A competing
+  same-height fork cannot connect. The "a test would fail" claim was a misread (test_sync_service.c:985
+  doesn't exercise line 575). Optional low-priority tidy-up only (require hash eq / delete the tier);
+  NOT a v1 item. No repro needed.
+- **bg_validation_service.c:312 — CONFIRMED REAL** (high confidence). The BACKGROUND validator
+  (-nobgvalidation, advisory — NOT the consensus connect_block path) skips ALL script-sig verification
+  for every non-coinbase tx when read_block_undo fails, yet returns ok=true and the caller marks the
+  height fully "verified" — violating its documented "verifies all script sigs / failure surfaces as
+  BG_VALIDATION_FAILED" contract. Honest fix (in progress): do not claim full verification when script
+  checks were skipped for missing undo; surface a skipped-count via validationstatus; never stall the
+  validator (post-snapshot blocks legitimately lack rev files, so do NOT hard-fail).
