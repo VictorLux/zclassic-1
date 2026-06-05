@@ -536,3 +536,18 @@ surface NOT audited: the zk-SNARK proof-math (bn254/bls12_381/circuit_gadgets/gr
 sapling_circuit/fr/pedersen/msm/jubjub) — huge, the strictest must-never-fork consensus bar, and the
 proving witness/intermediates are the most consensus-critical code. Defer to an owner-gated, repro/KAT
 -heavy pass; do NOT churn it for marginal hygiene.
+
+### Round 20 (2026-06-05) — zk-SNARK proving-witness secret hygiene (KAT-gated, capstone)
+Audited the proving path (groth16_prover/sapling_prover_c23/sapling_circuit/circuit_gadgets) under the
+STRICTEST cleanse-only bar — 16 findings, ALL secret-witness cleanse, ZERO formula/constant findings
+(the strict guard held). FIXED (output-neutral; snark_kat/groth16/proof_validate/test_sapling_crypto
+all PASS / 0/371): spend+output witness structs (ak/nsk/ar/rcm/rcv/esk), derived nk/ivk, value-commit
+randomness rcv, binding signing key, FFT/MSM heap buffers (raw_scalars, a/b/c/h_eval, R1CS witness),
+circuit synthesis + gadget bit/byte buffers, AND the witness realloc-grow leak (replaced realloc with
+hook-aware alloc+copy+cleanse+free — the gate caught my first attempt bypassing the test OOM hook,
+fixed by routing through g_cs_realloc(NULL,...)). The error-diagnostic fprintfs are obs-ok (terminate
+via goto cleanup). **The crypto/secret-hygiene sweep (R17–20) is now COMPLETE** across lib/crypto,
+domain/wallet+encoding, and all of lib/sapling incl. the prover. bn254/bls12_381/fr field-arithmetic
+inner-loop temps deliberately NOT cleansed (not the key; churn). g_esk_ring rejected (disabled-by-default
+debug ring). The proof-math FIELD files (bn254/bls12_381/fr) hold only transient field elements — no
+standing secret buffer — so no further cleanse target remains.
