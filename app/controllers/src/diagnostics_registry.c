@@ -567,6 +567,7 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
     }
 
     if (!sub || !sub[0]) {
+        json_set_str(result, "dumpstate: missing subsystem");
         LOG_FAIL("diag", "dumpstate: missing subsystem");
     }
 
@@ -583,6 +584,7 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
         domain_key = sub + strlen("supervisor.");
     }
     if (!e) {
+        json_set_str(result, "dumpstate: unknown subsystem");
         LOG_FAIL("diag",
                  "dumpstate: unknown subsystem '%s' (try watchdog/boot/block_index)",
                  sub);
@@ -598,6 +600,7 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
     bool ok = e->fn(&state, domain_key ? domain_key : key);
     if (!ok) {
         json_free(&state);
+        json_set_str(result, "dumpstate: dump function returned false");
         LOG_FAIL("diag", "dumpstate: %s dump function returned false", sub);
     }
     json_push_kv(result, "state", &state);

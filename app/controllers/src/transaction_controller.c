@@ -146,6 +146,7 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
         char *hex = zcl_malloc(2 * 1024 * 1024, "tx_hex_buf");
         if (!hex) {
             transaction_free(&tx);
+            json_set_str(result, "Out of memory");
             LOG_FAIL("tx", "getrawtransaction: malloc failed for hex buffer");
         }
         size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
@@ -333,7 +334,11 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
 
         struct tx_in vin;
         tx_in_init(&vin);
-        parse_hash_str(json_get_str(txid_v), &vin.prevout.hash);
+        if (!parse_hash_str(json_get_str(txid_v), &vin.prevout.hash)) {
+            transaction_free(&tx);
+            json_set_str(result, "Invalid txid format in inputs");
+            LOG_FAIL("tx", "createrawtransaction: invalid txid at input %zu", i);
+        }
         vin.prevout.n = (uint32_t)json_get_int(vout_v);
 
         const struct json_value *seq_v = json_get(inp, "sequence");
@@ -341,7 +346,7 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
 
         size_t new_count = tx.num_vin + 1;
         struct tx_in *new_vin = zcl_realloc(tx.vin, new_count * sizeof(struct tx_in), "tx_vin");
-        if (!new_vin) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: realloc vin failed at input %zu", i); }
+        if (!new_vin) { transaction_free(&tx); json_set_str(result, "Out of memory"); LOG_FAIL("tx", "createrawtransaction: realloc vin failed at input %zu", i); }
         tx.vin = new_vin;
         tx.vin[tx.num_vin] = vin;
         tx.num_vin = new_count;
@@ -389,14 +394,14 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         size_t new_count = tx.num_vout + 1;
         struct tx_out *new_vout = zcl_realloc(tx.vout,
                                           new_count * sizeof(struct tx_out), "tx_vout");
-        if (!new_vout) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: realloc vout failed at output %zu", i); }
+        if (!new_vout) { transaction_free(&tx); json_set_str(result, "Out of memory"); LOG_FAIL("tx", "createrawtransaction: realloc vout failed at output %zu", i); }
         tx.vout = new_vout;
         tx.vout[tx.num_vout] = vout;
         tx.num_vout = new_count;
     }
 
     char *hex = zcl_malloc(2 * 1024 * 1024, "tx_hex_buf");
-    if (!hex) { transaction_free(&tx); LOG_FAIL("tx", "createrawtransaction: malloc failed for hex buffer"); }
+    if (!hex) { transaction_free(&tx); json_set_str(result, "Out of memory"); LOG_FAIL("tx", "createrawtransaction: malloc failed for hex buffer"); }
     size_t hex_len = encode_hex_tx(&tx, hex, 2 * 1024 * 1024);
     hex[hex_len] = '\0';
     json_set_str(result, hex);

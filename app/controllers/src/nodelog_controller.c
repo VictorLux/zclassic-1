@@ -82,12 +82,16 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
         "\nResult: { lines: [...], scanned_bytes, truncated, log_path }");
 
     const char *pattern = json_get_str(json_at(params, 0));
-    if (!pattern || !pattern[0])
+    if (!pattern || !pattern[0]) {
+        json_set_str(result, "getnodelog: missing pattern");
         LOG_FAIL("diag", "getnodelog: missing pattern");
+    }
     size_t plen = strlen(pattern);
-    if (plen > NODELOG_MAX_PATTERN_LEN)
+    if (plen > NODELOG_MAX_PATTERN_LEN) {
+        json_set_str(result, "getnodelog: pattern too long");
         LOG_FAIL("diag", "getnodelog: pattern too long (%zu > %d)",
                  plen, NODELOG_MAX_PATTERN_LEN);
+    }
 
     int64_t since_secs = json_at(params, 1) ?
         json_get_int(json_at(params, 1)) : NODELOG_DEFAULT_SINCE_SECS;
@@ -105,19 +109,24 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
         json_at(params, 3) ? json_get_str(json_at(params, 3)) : NULL);
 
     const char *datadir = diag_datadir();
-    if (!datadir[0])
+    if (!datadir[0]) {
+        json_set_str(result, "getnodelog: datadir not configured");
         LOG_FAIL("diag", "getnodelog: datadir not configured");
+    }
 
     char log_path[1280];
     snprintf(log_path, sizeof(log_path), "%s/node.log", datadir);
 
     int fd = open(log_path, O_RDONLY);
-    if (fd < 0)
+    if (fd < 0) {
+        json_set_str(result, "getnodelog: cannot open node.log");
         LOG_FAIL("diag", "getnodelog: cannot open %s", log_path);
+    }
 
     struct stat st;
     if (fstat(fd, &st) != 0) {
         close(fd);
+        json_set_str(result, "getnodelog: fstat failed on node.log");
         LOG_FAIL("diag", "getnodelog: fstat failed on %s", log_path);
     }
 
@@ -127,6 +136,7 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
         char errbuf[128];
         regerror(rc, &re, errbuf, sizeof(errbuf));
         close(fd);
+        json_set_str(result, "getnodelog: bad regex");
         LOG_FAIL("diag", "getnodelog: bad regex '%s': %s",
                  pattern, errbuf);
     }

@@ -97,23 +97,31 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
     if (limit < 1) limit = 1;
     if (limit > DBQUERY_HARD_ROW_CAP) limit = DBQUERY_HARD_ROW_CAP;
 
-    if (!sql_in || !sql_in[0])
+    if (!sql_in || !sql_in[0]) {
+        json_set_str(result, "dbquery: missing sql");
         LOG_FAIL("diag", "dbquery: missing sql");
+    }
     size_t slen = strlen(sql_in);
-    if (slen > DBQUERY_MAX_SQL_LEN)
+    if (slen > DBQUERY_MAX_SQL_LEN) {
+        json_set_str(result, "dbquery: sql too long");
         LOG_FAIL("diag", "dbquery: sql too long (%zu > %d)",
                  slen, DBQUERY_MAX_SQL_LEN);
+    }
 
     /* Skip leading whitespace. */
     const char *sql = sql_in;
     while (*sql && isspace((unsigned char)*sql)) sql++;
 
     if (strncasecmp(sql, "SELECT", 6) != 0 ||
-        !(sql[6] == ' ' || sql[6] == '\t' || sql[6] == '\n'))
+        !(sql[6] == ' ' || sql[6] == '\t' || sql[6] == '\n')) {
+        json_set_str(result, "dbquery: query must start with SELECT");
         LOG_FAIL("diag", "dbquery: query must start with SELECT");
+    }
 
-    if (strchr(sql, ';'))
+    if (strchr(sql, ';')) {
+        json_set_str(result, "dbquery: semicolons not allowed");
         LOG_FAIL("diag", "dbquery: semicolons not allowed");
+    }
 
     static const char *blocked[] = {
         "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
@@ -121,14 +129,18 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
         "TRIGGER", "TRUNCATE",
     };
     for (size_t i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
-        if (sql_has_word(sql, blocked[i]))
+        if (sql_has_word(sql, blocked[i])) {
+            json_set_str(result, "dbquery: blocked keyword not allowed");
             LOG_FAIL("diag", "dbquery: keyword '%s' not allowed",
                      blocked[i]);
+        }
     }
 
     struct node_db *ndb = app_runtime_node_db();
-    if (!ndb || !ndb->db)
+    if (!ndb || !ndb->db) {
+        json_set_str(result, "dbquery: node_db not available");
         LOG_FAIL("diag", "dbquery: node_db not available");
+    }
 
     /* Build the executed SQL: append LIMIT if not present. */
     char executed[DBQUERY_MAX_SQL_LEN + 64];
@@ -149,6 +161,7 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
     sqlite3_stmt *stmt = NULL;
     if (!node_db_prepare_readonly_query(ndb, executed, &stmt)) {
         sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+        json_set_str(result, "dbquery: prepare failed");
         LOG_FAIL("diag", "dbquery: prepare failed");
     }
     int rc = SQLITE_OK;
@@ -182,6 +195,7 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
             const char *err = sqlite3_errmsg(ndb->db);
             sqlite3_finalize(stmt);
             sqlite3_progress_handler(ndb->db, 0, NULL, NULL);
+            json_set_str(result, "dbquery: step failed");
             LOG_FAIL("diag", "dbquery: step failed (rc=%d): %s",
                      rc, err ? err : "(null)");
         }
