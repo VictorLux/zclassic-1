@@ -507,9 +507,17 @@ contexts, address sprout viewing-key intermediate, sprout_h_sig context, ff1 AES
 intermediates (pq/R/S/c) incl. an early-return path. Public verification keys and the returned
 re-randomizer correctly left intact. (The negative-test logs — "validation FAILED", "Poly1305 tag
 mismatch", "jub_from_bytes failed" — are EXPECTED reject-path output, not failures.)
-DEFERRED (the agent flagged these note/encryption ones consensus-sensitive — cleanse is likely
+DEFERRED: g_esk_ring ephemeral-secret-ring lifecycle wipe (note_encryption.c:54 — needs care about ring usage); the note KDF/value cleanse items below were DONE in round 19.
 still output-neutral but re-verify before fixing): note.c value_le buffers (4×, note value),
 note_encryption sprout_kdf/sapling_kdf/sapling_prf_ock dhsecret/ovk blocks (3×), g_esk_ring
 ephemeral-secret lifecycle wipe, redjubjub_sign digest[64] parity cleanse, sapling_generate_r
 memset→memory_cleanse (non-elidable). bn254/bls12_381/circuit/groth16 proof-math files NOT audited
 (huge, strictest consensus bar).
+
+### Round 19 (2026-06-05) — remaining note/sapling secret cleanse (prove-then-fix, KAT-gated)
+FIXED (each proven output-neutral before edit; test_sapling PASS / 0/371): note_encryption sprout_kdf
+/ sapling_kdf / sapling_prf_ock DH-secret/ovk block buffers; note.c value_le note-value buffers in all
+5 sprout/sapling plaintext serialize/deserialize paths; redjubjub_sign digest[64] parity cleanse;
+sapling_generate_r RNG-buffer cleanse on the failure path. STILL DEFERRED: g_esk_ring global
+ephemeral-secret lifecycle wipe (needs ring-usage analysis); the bn254/bls12_381/circuit_gadgets/
+groth16 proof-math files (huge, strictest consensus bar — not audited).
