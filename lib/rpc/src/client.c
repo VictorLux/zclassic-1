@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "encoding/utilstrencodings.h"
 #include "util/safe_alloc.h"
 
 struct convert_param {
@@ -199,21 +200,10 @@ int rpc_call_local(int port, const char *creds,
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
         method, params_json);
 
-    /* Base64 encode credentials */
-    static const char b64[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    /* HTTP Basic auth: base64("user:pass") */
     char auth_b64[256];
-    size_t alen = strlen(creds), bo = 0;
-    for (size_t i = 0; i < alen; i += 3) {
-        uint32_t n = ((uint32_t)(uint8_t)creds[i]) << 16;
-        if (i + 1 < alen) n |= ((uint32_t)(uint8_t)creds[i+1]) << 8;
-        if (i + 2 < alen) n |= (uint32_t)(uint8_t)creds[i+2];
-        auth_b64[bo++] = b64[(n >> 18) & 63];
-        auth_b64[bo++] = b64[(n >> 12) & 63];
-        auth_b64[bo++] = (i + 1 < alen) ? b64[(n >> 6) & 63] : '=';
-        auth_b64[bo++] = (i + 2 < alen) ? b64[n & 63] : '=';
-    }
-    auth_b64[bo] = '\0';
+    EncodeBase64((const unsigned char *)creds, strlen(creds),
+                 auth_b64, sizeof(auth_b64));
 
     char req[8192];
     int rlen = snprintf(req, sizeof(req),

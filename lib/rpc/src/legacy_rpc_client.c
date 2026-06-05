@@ -2,13 +2,14 @@
  *
  * Legacy-node JSON-RPC client. See header for the contract.
  *
- * The implementation mirrors the private helpers that lived in
- * header_probe.c (hp_parse_zclassic_conf,
- * hp_http_rpc_call_dyn, hp_base64_encode). Centralizing them here
- * lets legacy_body_pull share the wire path without forking. */
+ * The conf parser and HTTP/1.1 wire path were unified here from
+ * header_probe.c (hp_parse_zclassic_conf, hp_http_rpc_call_dyn) so
+ * legacy_body_pull shares one transport. Base64 for the Basic-auth
+ * header comes from the canonical EncodeBase64. */
 
 #include "rpc/legacy_rpc_client.h"
 
+#include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "util/safe_alloc.h"
 
@@ -79,35 +80,6 @@ bool legacy_rpc_parse_conf(char *out_user, size_t user_sz,
     return got_user && got_pass;
 }
 
-/* ── Base64 ─────────────────────────────────────────────────────── */
-
-static const char lrc_b64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static void lrc_base64_encode(const unsigned char *in, size_t inlen,
-                              char *out, size_t outsz)
-{
-    size_t i = 0, o = 0;
-    while (i + 3 <= inlen && o + 4 < outsz) {
-        unsigned v = (unsigned)((in[i] << 16) | (in[i+1] << 8) | in[i+2]);
-        out[o++] = lrc_b64_chars[(v >> 18) & 0x3f];
-        out[o++] = lrc_b64_chars[(v >> 12) & 0x3f];
-        out[o++] = lrc_b64_chars[(v >>  6) & 0x3f];
-        out[o++] = lrc_b64_chars[ v        & 0x3f];
-        i += 3;
-    }
-    if (i < inlen && o + 4 < outsz) {
-        unsigned v = (unsigned)(in[i] << 16);
-        if (i + 1 < inlen) v |= (unsigned)(in[i+1] << 8);
-        out[o++] = lrc_b64_chars[(v >> 18) & 0x3f];
-        out[o++] = lrc_b64_chars[(v >> 12) & 0x3f];
-        out[o++] = (i + 1 < inlen) ? lrc_b64_chars[(v >> 6) & 0x3f] : '=';
-        out[o++] = '=';
-    }
-    if (o < outsz) out[o] = '\0';
-    else if (outsz > 0) out[outsz - 1] = '\0';
-}
-
 /* ── HTTP/1.1 JSON-RPC call ────────────────────────────────────── */
 
 bool legacy_rpc_call(const char *host, int port,
@@ -150,8 +122,8 @@ bool legacy_rpc_call(const char *host, int port,
     snprintf(userpass, sizeof(userpass), "%s:%s",
              user ? user : "", pass ? pass : "");
     char b64[384];
-    lrc_base64_encode((const unsigned char *)userpass, strlen(userpass),
-                      b64, sizeof(b64));
+    EncodeBase64((const unsigned char *)userpass, strlen(userpass),
+                 b64, sizeof(b64));
 
     size_t body_len = strlen(body_json);
     size_t req_cap  = 768 + body_len;

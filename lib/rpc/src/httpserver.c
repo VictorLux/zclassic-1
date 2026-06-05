@@ -106,33 +106,6 @@ static pthread_t g_tls_listen_thread;
 static bool g_tls_listen_thread_started = false;
 static uint16_t g_tls_port = 0;
 
-static const char base64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static size_t base64_decode(const char *in, size_t inlen,
-                             unsigned char *out, size_t outmax)
-{
-    unsigned char table[256];
-    memset(table, 64, sizeof(table));
-    for (int i = 0; i < 64; i++)
-        table[(unsigned char)base64_chars[i]] = (unsigned char)i;
-
-    size_t olen = 0;
-    uint32_t buf = 0;
-    int bits = 0;
-    for (size_t i = 0; i < inlen && olen < outmax; i++) {
-        unsigned char c = table[(unsigned char)in[i]];
-        if (c == 64) continue;
-        buf = (buf << 6) | c;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out[olen++] = (unsigned char)(buf >> bits);
-        }
-    }
-    return olen;
-}
-
 bool rpc_http_test_build_response_envelope(bool rpc_ok,
                                            const char *method,
                                            struct json_value *rpc_result,
@@ -191,7 +164,7 @@ static bool check_auth(const char *auth_header)
     while (*b64 == ' ') b64++;
 
     unsigned char decoded[512];
-    size_t dlen = base64_decode(b64, strlen(b64), decoded, sizeof(decoded) - 1);
+    size_t dlen = DecodeBase64(b64, decoded, sizeof(decoded) - 1, NULL);
     decoded[dlen] = '\0';
 
     char expected[512];

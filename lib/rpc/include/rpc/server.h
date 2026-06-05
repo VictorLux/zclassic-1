@@ -51,6 +51,11 @@ bool rpc_table_append(struct rpc_table *t, const struct rpc_command *cmd);
 void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd);
 const struct rpc_command *rpc_table_find(const struct rpc_table *t,
                                          const char *name);
+/* Execute a method by name. Returns true on success with the handler's
+ * value in *result. On failure (server still in warmup, method not found,
+ * or the handler itself failing) it returns false AND writes a structured
+ * error object into *result — callers must build their response from
+ * *result, not merely branch on the bool. */
 bool rpc_table_execute(const struct rpc_table *t, const char *method,
                        const struct json_value *params,
                        struct json_value *result);
