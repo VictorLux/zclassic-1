@@ -220,20 +220,21 @@ static bool wallet_generate_hd_key(struct wallet *w, uint32_t change,
     uint32_t *counter = (change == BIP44_INTERNAL)
                         ? &w->hd_internal_counter
                         : &w->hd_external_counter;
-    uint32_t index = *counter;
 
     struct privkey priv;
     struct pubkey pub;
     privkey_init(&priv);
 
-    if (!bip44_derive_keypair(&w->master_key, &priv, &pub,
-                              w->hd_account, change, index)) {
-        memory_cleanse(priv.vch, 32);
-        return false;
-    }
-
+    /* Read counter, derive, add, and increment as one atomic step under
+     * w->cs. Two concurrent callers would otherwise read the same index,
+     * derive an identical key/address, and bump the counter twice. The
+     * derivation runs no wallet code and keystore_add_key takes only its
+     * own keystore.cs, so holding w->cs across them cannot self-deadlock. */
     zcl_mutex_lock(&w->cs);
-    bool ok = keystore_add_key(&w->keystore, &priv);
+    uint32_t index = *counter;
+    bool ok = bip44_derive_keypair(&w->master_key, &priv, &pub,
+                                   w->hd_account, change, index)
+              && keystore_add_key(&w->keystore, &priv);
     if (ok)
         (*counter)++;
     zcl_mutex_unlock(&w->cs);
