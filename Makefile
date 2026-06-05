@@ -94,7 +94,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap chaos chaos-clean
 
-CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c
+CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli
 
 TEST_SRCS = $(wildcard lib/test/src/*.c)
