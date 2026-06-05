@@ -115,6 +115,8 @@ bool async_queue_add_worker(struct async_rpc_queue *q)
 
 size_t async_queue_num_workers(const struct async_rpc_queue *q)
 {
+    if (!q)
+        return 0;
     zcl_mutex_lock((zcl_mutex_t *)&q->lock);
     size_t n = q->num_workers;
     zcl_mutex_unlock((zcl_mutex_t *)&q->lock);

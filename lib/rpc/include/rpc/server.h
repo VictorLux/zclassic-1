@@ -20,6 +20,8 @@ struct json_request {
 
 void json_request_init(struct json_request *req);
 void json_request_free(struct json_request *req);
+/* Parse a JSON-RPC request object into req. Returns false on a NULL
+ * argument or a malformed request (non-object, missing/invalid method). */
 bool json_request_parse(struct json_request *req,
                         const struct json_value *val_request);
 

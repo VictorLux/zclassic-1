@@ -44,6 +44,8 @@ void json_request_free(struct json_request *req)
 bool json_request_parse(struct json_request *req,
                         const struct json_value *val_request)
 {
+    if (!req || !val_request)
+        return false;
     if (val_request->type != JSON_OBJ)
         return false;
 
