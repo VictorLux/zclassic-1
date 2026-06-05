@@ -285,9 +285,8 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
         db_tx.is_coinbase = (i == 0);
 
         if (!db_tx_save(ndb, &db_tx)) {
-            node_db_rollback(ndb);
-            LOG_FAIL("sync", "connect_block: db_tx_save failed at height %d tx %zu",
-                     pindex->nHeight, i);
+            fail_reason = "db_tx_save";
+            goto fail;
         }
 
         /* UTXOs are managed by coins_view_sqlite (the canonical UTXO store).
