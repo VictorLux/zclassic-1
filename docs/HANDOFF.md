@@ -101,23 +101,51 @@ are open.
 
 ## ⛔ #1 priority — the live wedge
 
-The node holds at tip but does **not finalize forward**: `tip_finalize` shows
-`reorg_detected_total` climbing while `finalized_total=0`, and the boot
-self-heal `tip_stall_oracle_rebuild` is exhausted. No v1 criterion that needs
-live forward progress (C3 real cold-sync, C6 soak, C8 parity) can pass until
-this clears.
+**ROOT CAUSE (verified live 2026-06-05, multi-agent dx + direct probing) — it is
+NOT a consensus code bug; the code is behaving CORRECTLY.** The node holds at
+tip 3,134,303 because block body **3,134,304 is missing** (`legacy_mirror`
+`stuck_reason:"missing-have-data"`) and there is **no eligible body source**:
+- **Native P2P is correctly gated out by the anti-eclipse floor.** The node's
+  ONLY reachable peer is one local MagicBean on `127.0.0.1:8033` that **flaps**
+  (`disconnected=748`, `blocks_received=0`, stuck `syncing_headers`); external
+  mainnet peers are TCP-unreachable from this box (`addnode_tcp_failures=1765`).
+  A single localhost peer can never satisfy `p2p_minimum_viable`
+  (`block_source_policy_runtime.c:161` — needs ≥2 healthy on ≥2 distinct IPv4
+  groups, or ≥3). This gate is a **safety invariant — do NOT lower it.** A
+  diagnosis workflow proposed lowering the floor to 2; that is **WRONG** (the
+  effective floor is already 2 + eclipse checks, and the node has only 1 peer)
+  and would weaken eclipse defense. Rejected.
+- **The co-located zclassicd is healthy and readable but advisory-only.**
+  zclassicd (PID 2273227, up 2 days) serves RPC on `127.0.0.1:8232`
+  (`getblockcount`→3,136,562 verified) and `legacy_mirror` reads it fine
+  (`reachable:true`). But the mirror is `bounded_advisory_fallback` trust and is
+  in **"observing" mode** (`last_error:"local sync primary; mirror observing"`)
+  — by design it will NOT authoritatively supply consensus blocks. The
+  `rpc-unreachable` blocker label is **stale** (mirror actually reads zclassicd).
 
-- Diagnose on a datadir **COPY**, never live: `tools/diagnose_gap.sh`, then
-  follow `docs/work/fast-path.md` (diagnose → design+critique → reset-safe
-  test → repro-on-copy → commit).
-- Leading autonomous fix: wire the safe have-data window extender
-  (`app/jobs/include/jobs/stage_helpers.h` →
-  `active_chain_extend_window_have_data` at `lib/validation/src/chainstate.c`).
-  A prior naïve wiring was reverted (`481c520b9`) for churning `tip_finalize`
-  — validate on a copy before any deploy.
-- Owner-gated companion: the coins-commitment-persist keystone
-  (`docs/work/coins-commitment-persist-plan.md`).
-- Recovery FSM design: `docs/work/service-state-machine.md`.
+So `reorg_detected_total` climbing / `finalized_total=0` / the
+"no-header-solution-backfill-required" rejections are all **downstream
+symptoms** of the body-source starvation, not independent bugs.
+
+**The two real resolutions are OPERATIONAL / OWNER-GATED (no consensus edit):**
+1. **Native peer diversity** — get ≥2 honest, reachable, distinct-IP-group
+   native peers so P2P clears the eclipse floor and bodies flow. Blocked here by
+   the environment (only one flapping localhost peer is reachable). This is the
+   trust-preserving fix.
+2. **(Owner-gated policy)** Decide whether a fully-validated, co-located
+   zclassicd may *authoritatively* supply bodies when native P2P is
+   eclipse-starved — the long-standing advisory→authoritative mirror trust
+   decision (see the cutover/single-engine history). Do NOT flip unilaterally.
+
+Housekeeping: the `zclassicd-rhett` **systemd unit is crash-looping**
+(`NRestarts=3990`, "Cannot obtain a lock on data directory" — it is a duplicate
+fighting PID 2273227 for the datadir lock). Harmless to the oracle but pure
+wasted CPU; mask/stop it. It is NOT the running oracle — do not confuse them.
+
+Older notes (still valid as background): diagnose on a datadir **COPY**, never
+live (`tools/diagnose_gap.sh`, `docs/work/fast-path.md`); the prior have-data
+window-extender wiring was reverted (`481c520b9`) for churning `tip_finalize`;
+recovery FSM design in `docs/work/service-state-machine.md`.
 
 ---
 
