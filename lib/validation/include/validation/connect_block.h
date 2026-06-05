@@ -20,6 +20,14 @@
  * Must be called before connect_block. Set to NULL for just_check mode. */
 void connect_block_set_sapling_tree(struct incremental_merkle_tree *tree);
 
+/* Connect `block` at `pindex` against `view`, applying its inputs/outputs.
+ * just_check — when true, run full validation (all script/proof/conservation
+ *   checks and the coins-view updates against the scratch `view`) but commit
+ *   NO persistent state: connect_block returns as soon as validation succeeds
+ *   without writing the best-block/tip. Used for dry-run checks of a candidate
+ *   before committing. When false, the block is connected for real and its
+ *   state changes are applied. Returns false (with `state` populated) on any
+ *   validation failure or internal error. */
 bool connect_block(const struct block *block,
                    struct validation_state *state,
                    struct block_index *pindex,

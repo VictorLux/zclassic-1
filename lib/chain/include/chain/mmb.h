@@ -78,11 +78,14 @@ struct mmb {
 void mmb_init(struct mmb *m);
 
 /* Append a rich leaf. O(1) guaranteed: at most 1 merge.
- * Returns the number of merges (0 or 1). */
+ * Returns the number of merges (0 or 1) on success, or -1 on failure —
+ * the mountain count is already at MMB_MAX_MOUNTAINS, or a merge would push
+ * a peak past MMB_MAX_HEIGHT (refused to avoid corrupting the root). */
 int mmb_append(struct mmb *m, const struct mmb_leaf *leaf);
 
 /* Append a pre-computed leaf hash (from mmb_hash_leaf or leaf store).
- * Same merge logic as mmb_append, skips the hash step. */
+ * Same merge logic as mmb_append, skips the hash step. Returns 0 or 1
+ * merges on success, or -1 on the same overflow conditions as mmb_append. */
 int mmb_append_hash(struct mmb *m, const uint8_t leaf_hash[32]);
 
 /* Compute the MMB root from current peaks.
