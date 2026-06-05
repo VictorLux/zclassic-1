@@ -109,6 +109,7 @@ bool inv_item_is_known_type(const struct inv_item *inv)
 
 const char *inv_item_get_command(const struct inv_item *inv)
 {
+    if (!inv) return "UNKNOWN";
     if (!inv_item_is_known_type(inv))
         return "UNKNOWN";
     return ppszTypeName[inv->type];
@@ -116,6 +117,7 @@ const char *inv_item_get_command(const struct inv_item *inv)
 
 int inv_item_to_string(const struct inv_item *inv, char *out, size_t out_size)
 {
+    if (!inv || !out) return -1;
     char hash_str[65];
     uint256_get_hex(&inv->hash, hash_str);
     return snprintf(out, out_size, "%s %s",

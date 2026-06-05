@@ -80,6 +80,7 @@ bool zmsg_deserialize(struct zmsg_message *msg, struct byte_stream *s)
 
 void zmsg_compute_id(const struct zmsg_message *msg, uint8_t out[32])
 {
+    if (!msg || !out) return;
     struct sha3_256_ctx sha3;
     sha3_256_init(&sha3);
     sha3_256_write(&sha3, (const unsigned char *)&msg->timestamp, 8);
@@ -98,6 +99,7 @@ static pthread_mutex_t g_zmsg_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool zmsg_store_add(const struct zmsg_message *msg)
 {
+    if (!msg) LOG_FAIL("zmsg", "store_add: msg is NULL");
     pthread_mutex_lock(&g_zmsg_mutex);
 
     /* Check for duplicate */
@@ -124,6 +126,7 @@ bool zmsg_store_add(const struct zmsg_message *msg)
 int zmsg_store_list(struct zmsg_message *out, size_t max,
                     bool unread_only)
 {
+    if (!out) LOG_ERR("zmsg", "store_list: out is NULL");
     pthread_mutex_lock(&g_zmsg_mutex);
     int count = 0;
     /* Return newest first */

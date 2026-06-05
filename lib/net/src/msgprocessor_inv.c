@@ -116,9 +116,18 @@ static bool process_getaddr(struct msg_processor *mp, struct p2p_node *node)
     if (num > 0) {
         struct byte_stream addr_msg;
         stream_init(&addr_msg, num * 30 + 8);
-        stream_write_compact_size(&addr_msg, (uint64_t)num);
-        for (size_t i = 0; i < num; i++)
-            net_address_serialize(&addrs[i], &addr_msg, true);
+        if (!stream_write_compact_size(&addr_msg, (uint64_t)num)) {
+            /* allocation failed (addr_msg.data NULL); skip sending the
+             * addr message rather than emit a malformed one. */
+            stream_free(&addr_msg);
+            return true;
+        }
+        for (size_t i = 0; i < num; i++) {
+            if (!net_address_serialize(&addrs[i], &addr_msg, true)) {
+                stream_free(&addr_msg);
+                return true;
+            }
+        }
 
         p2p_node_begin_message(node, "addr", mp->params->pchMessageStart);
         p2p_node_write_message_data(node, addr_msg.data, addr_msg.size);

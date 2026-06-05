@@ -27,7 +27,12 @@ static bool process_ping(struct msg_processor *mp, struct p2p_node *node,
     if (node->version >= BIP0031_VERSION) {
         struct byte_stream reply;
         stream_init(&reply, 8);
-        stream_write_u64_le(&reply, nonce);
+        if (!stream_write_u64_le(&reply, nonce)) {
+            /* allocation failed (reply.data NULL); drop the pong rather
+             * than emit a malformed/empty message. */
+            stream_free(&reply);
+            return true;
+        }
 
         p2p_node_begin_message(node, "pong", mp->params->pchMessageStart);
         p2p_node_write_message_data(node, reply.data, reply.size);
