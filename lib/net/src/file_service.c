@@ -655,9 +655,11 @@ static void fs_handle_client_fd(int client_fd)
                 entry[35] = (uint8_t)(manifest.chunks[i].size >> 24);
                 entry[36] = manifest.chunks[i].file_index;
                 memcpy(entry + 37, &manifest.chunks[i].offset, 8);
-                fs_send_frame(&session, FS_MANIFEST, entry, 45);
+                if (!fs_send_frame(&session, FS_MANIFEST, entry, 45))
+                    break;
             }
-            fs_send_frame(&session, FS_DONE, NULL, 0);
+            if (!fs_send_frame(&session, FS_DONE, NULL, 0))
+                break;
         } else if (type == FS_DONE) {
             break;
         }
@@ -918,7 +920,9 @@ static void *range_worker_fn(void *arg)
     rng[4] = (uint8_t)(w->start >> 8);
     rng[5] = (uint8_t)(w->end);
     rng[6] = (uint8_t)(w->end >> 8);
-    fs_send_frame(&ws, FS_REQUEST, rng, 8);
+    if (!fs_send_frame(&ws, FS_REQUEST, rng, 8)) {
+        close(wfd); LOG_NULL("filesvc", "worker %d: range request send failed", w->id);
+    }
 
     for (uint32_t i = w->start; i < w->end; i++) {
         if (atomic_load(&w->cancel)) { close(wfd); LOG_NULL("filesvc", "worker %d: cancelled", w->id); }
@@ -1048,7 +1052,10 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
     mtv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &mtv, sizeof(mtv));
 
-    fs_send_frame(&session, FS_MANIFEST, NULL, 0);
+    if (!fs_send_frame(&session, FS_MANIFEST, NULL, 0)) {
+        close(fd);
+        LOG_FAIL("filesvc", "client_sync: manifest request send failed to %s:%d", peer_addr, port);
+    }
 
     struct file_chunk chunks[FILE_MAX_CHUNKS];
     uint32_t num_chunks = 0;
@@ -1353,8 +1360,11 @@ bool fs_client_sync(const char *peer_addr, uint16_t port,
         uint32_t recovered = 0;
         for (uint32_t r = 0; r < nretry; r++) {
             uint32_t ci = retry_idx[r];
-            /* Request individual chunk by hash */
-            fs_send_frame(&rs, FS_REQUEST, chunks[ci].sha3, 32);
+            /* Request individual chunk by hash. A send failure means the
+             * retry connection is dead — stop and let the post-loop cleanup
+             * close rfd and free retry_idx. */
+            if (!fs_send_frame(&rs, FS_REQUEST, chunks[ci].sha3, 32))
+                break;
 
             uint8_t *buf = NULL;
             uint32_t sz = 0;
