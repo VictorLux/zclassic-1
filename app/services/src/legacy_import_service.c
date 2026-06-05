@@ -553,8 +553,11 @@ pass2_db_done:
                     }
                 }
                 free(dctxs[f].results);
+                dctxs[f].results = NULL;
                 free(fctxs[f].hits);
+                fctxs[f].hits = NULL;
                 free(dctxs[f].tw.sapling_notes);
+                dctxs[f].tw.sapling_notes = NULL;
             }
             if (!legacy_import_commit_checked(ndb, "pass 3 commit")) {
                 sapling_tx_open = false;
