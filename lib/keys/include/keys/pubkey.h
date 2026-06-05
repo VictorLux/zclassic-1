@@ -73,26 +73,48 @@ static inline struct key_id pubkey_get_id(const struct pubkey *pk)
 bool pubkey_verify(const struct pubkey *pk, const struct uint256 *hash,
                    const unsigned char *sig, size_t siglen);
 
+/* Recover the public key that signed hash from a 65-byte compact recoverable
+ * signature (as produced by privkey_sign_compact), writing it into pk with the
+ * compression encoded in the header byte. Returns false if the signature does
+ * not parse or no key recovers. */
 bool pubkey_recover_compact(struct pubkey *pk, const struct uint256 *hash,
                             const unsigned char sig[COMPACT_SIGNATURE_SIZE]);
 
+/* True only if pk is a well-formed point on secp256k1 (stricter than
+ * pubkey_is_valid, which merely checks the stored length is non-zero). */
 bool pubkey_is_fully_valid(const struct pubkey *pk);
 
+/* Re-serialize pk in uncompressed form in place. Returns false if pk is empty
+ * or does not parse as a valid curve point. */
 bool pubkey_decompress(struct pubkey *pk);
 
+/* BIP32 non-hardened public child derivation: produce child and its chaincode
+ * from parent pk, chaincode cc, and non-hardened index nChild. Requires
+ * (asserts) a valid compressed parent and an unhardened index. Returns false
+ * if parsing or the EC point tweak fails. */
 bool pubkey_derive(const struct pubkey *pk, struct pubkey *child,
                    struct uint256 *cc_child, unsigned int nChild,
                    const struct uint256 *cc);
 
+/* True if the DER signature parses and its s value is already in the canonical
+ * low-S half-order range (BIP62 malleability rule). */
 bool pubkey_check_low_s(const unsigned char *sig, size_t siglen);
 
+/* Serialize / parse the 74-byte BIP32 extended-public-key body (depth, parent
+ * fingerprint, child index, chaincode, and the 33-byte compressed key).
+ * ext_pubkey_encode asserts the key is compressed. */
 void ext_pubkey_encode(const struct ext_pubkey *epk,
                        unsigned char code[BIP32_EXTKEY_SIZE]);
 void ext_pubkey_decode(struct ext_pubkey *epk,
                        const unsigned char code[BIP32_EXTKEY_SIZE]);
+/* Derive the nChild extended public child of epk (incrementing depth and
+ * stamping the parent fingerprint). Returns false on a derivation failure;
+ * only non-hardened indices are derivable from a public key. */
 bool ext_pubkey_derive(const struct ext_pubkey *epk,
                        struct ext_pubkey *out, unsigned int nChild);
 
+/* Create / destroy the process-wide secp256k1 verification context. Call
+ * ecc_verify_init once at startup before any pubkey verify/recover/parse. */
 void ecc_verify_init(void);
 void ecc_verify_destroy(void);
 

@@ -80,27 +80,41 @@ bool znam_parse(const uint8_t *script, size_t script_len,
 bool znam_validate_name(const char *name);
 
 /* Build OP_RETURN scripts for each command.
- * Returns bytes written, or 0 on error. */
+ * Caller provides the output buffer; all builders return the number of
+ * bytes written, or 0 on invalid input or if the buffer is too small. */
+
+/* REGISTER: name + primary target. Requires znam_validate_name(name),
+ * non-NULL target_value, and target_type in 1..ZNAM_TYPE_CONTENT (the
+ * full multi-coin/onion/content range the parser round-trips). */
 size_t znam_build_register(uint8_t *out, size_t out_len,
                            const char *name, uint8_t target_type,
                            const char *target_value);
 
+/* UPDATE: replace the primary target. Same constraints as REGISTER. */
 size_t znam_build_update(uint8_t *out, size_t out_len,
                          const char *name, uint8_t target_type,
                          const char *target_value);
 
+/* TRANSFER: hand ownership to new_owner. Requires a valid name and a
+ * non-NULL new_owner string. */
 size_t znam_build_transfer(uint8_t *out, size_t out_len,
                            const char *name, const char *new_owner);
 
+/* RENEW: extend the registration. Requires only a valid name. */
 size_t znam_build_renew(uint8_t *out, size_t out_len,
                         const char *name);
 
-/* ENS-inspired multi-record: set additional address for a coin type */
+/* SET_RECORD (ENS-inspired): set an additional address for a coin type.
+ * Same constraints as REGISTER (valid name, non-NULL target_value,
+ * target_type in 1..ZNAM_TYPE_CONTENT). */
 size_t znam_build_set_record(uint8_t *out, size_t out_len,
                              const char *name, uint8_t target_type,
                              const char *target_value);
 
-/* ENS-inspired text records: arbitrary key-value data */
+/* SET_TEXT (ENS-inspired): set an arbitrary key-value text record.
+ * Requires a valid name and a non-empty key of at most ZNAM_TEXT_KEY_MAX
+ * bytes; value may be NULL/empty (record deletion) but if present must be
+ * at most ZNAM_TEXT_VAL_MAX bytes. */
 size_t znam_build_set_text(uint8_t *out, size_t out_len,
                            const char *name, const char *key,
                            const char *value);

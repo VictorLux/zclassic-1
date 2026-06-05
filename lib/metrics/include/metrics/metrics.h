@@ -48,11 +48,13 @@ void metrics_print_art(void);
 bool metrics_start(struct metrics_context *ctx);
 void metrics_stop(struct metrics_context *ctx);
 
+/* O(1) atomic counter bump; thread-safe, callable from any thread. */
 static inline void metrics_increment_tx_validated(void)
 {
     atomic_fetch_add(&g_transactions_validated, 1);
 }
 
+/* O(1) atomic counter bump; thread-safe, callable from any thread. */
 static inline void metrics_increment_eh_solver_runs(void)
 {
     atomic_fetch_add(&g_eh_solver_runs, 1);

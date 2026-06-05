@@ -63,7 +63,13 @@ bool slp_parse(const uint8_t *script, size_t script_len,
                struct slp_message *msg);
 
 /* Build OP_RETURN scripts for each transaction type.
- * Caller provides output buffer. Returns bytes written, or 0 on error. */
+ * Caller provides the output buffer; all builders return the number of
+ * bytes written, or 0 if the buffer is too small (or, where noted, on
+ * invalid input). Token type is always 1. */
+
+/* GENESIS: create a token. ticker/name/document_url may be NULL/empty
+ * (encoded as empty pushes); document_hash, if non-NULL, is 32 bytes.
+ * mint_baton_vout is emitted only when >= 2 (0/1 mean no baton). */
 size_t slp_build_genesis(uint8_t *out, size_t out_len,
                           const char *ticker, const char *name,
                           const char *document_url,
@@ -71,11 +77,15 @@ size_t slp_build_genesis(uint8_t *out, size_t out_len,
                           uint8_t decimals, uint8_t mint_baton_vout,
                           uint64_t initial_quantity);
 
+/* MINT: issue more of an existing token. token_id is required (32 bytes).
+ * mint_baton_vout is emitted only when >= 2 (0/1 mean no baton). */
 size_t slp_build_mint(uint8_t *out, size_t out_len,
                        const struct uint256 *token_id,
                        uint8_t mint_baton_vout,
                        uint64_t additional_quantity);
 
+/* SEND: transfer token amounts. token_id and the quantities array are
+ * required; num_outputs must be in 1..19 (returns 0 otherwise). */
 size_t slp_build_send(uint8_t *out, size_t out_len,
                        const struct uint256 *token_id,
                        const uint64_t *quantities, int num_outputs);
