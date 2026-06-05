@@ -38,7 +38,7 @@ struct blake2b_ctx {
 };
 
 /* BLAKE2b (RFC 7693), streaming. init* selects the digest length and any
- * key/salt/personalization, then update*/final produce the digest. All
+ * key/salt/personalization, then update and final produce the digest. All
  * variants return 0 on success and a negative value on failure, but NOT all
  * validate their parameters: blake2b_init and blake2b_init_key reject
  * outlen out of [1,64] (and init_key rejects keylen > 64); blake2b_init_param
