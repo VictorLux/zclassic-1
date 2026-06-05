@@ -513,6 +513,8 @@ bool sapling_generate_r(uint8_t result[32])
     uint8_t buf[64];
     if (!zcl_random_secret_bytes(buf, 64, "sapling_r")) {
         memset(result, 0, 32);
+        /* buf holds partial/full RNG output unused on error — cleanse like the success path */
+        memory_cleanse(buf, 64);
         return false;
     }
     struct fs r;
@@ -727,6 +729,9 @@ bool redjubjub_sign(const uint8_t sk[32],
 
     uint8_t r_scalar[32];
     jubjub_to_scalar(digest, r_scalar);
+    /* digest held BLAKE2b-512(T(nonce seed) || vk || msg); last read above —
+     * cleanse to keep intermediate nonce material from leaking */
+    memory_cleanse(digest, sizeof(digest));
 
     /* R = r * G */
     struct jub_point R_point;

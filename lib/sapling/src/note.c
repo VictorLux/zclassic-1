@@ -10,6 +10,7 @@
 #include "crypto/sha256.h"
 #include "core/serialize.h"
 #include "util/log_macros.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 void sprout_note_cm(const struct sprout_note *note, struct uint256 *out)
@@ -24,6 +25,7 @@ void sprout_note_cm(const struct sprout_note *note, struct uint256 *out)
     for (int i = 0; i < 8; i++)
         value_le[i] = (unsigned char)(note->value >> (8 * i));
     sha256_write(&hasher, value_le, 8);
+    memory_cleanse(value_le, sizeof(value_le));
 
     sha256_write(&hasher, note->rho.data, 32);
     sha256_write(&hasher, note->r.data, 32);
@@ -51,7 +53,9 @@ bool sprout_note_plaintext_serialize(const struct sprout_note_plaintext *np,
     unsigned char value_le[8];
     for (int i = 0; i < 8; i++)
         value_le[i] = (unsigned char)(np->value >> (8 * i));
-    if (!stream_write_bytes(s, value_le, 8))
+    bool value_ok = stream_write_bytes(s, value_le, 8);
+    memory_cleanse(value_le, sizeof(value_le));
+    if (!value_ok)
         NOTE_IO_FAIL("sprout_note", "write", "value");
     if (!stream_write_bytes(s, np->rho.data, 32))
         NOTE_IO_FAIL("sprout_note", "write", "rho");
@@ -79,6 +83,7 @@ bool sprout_note_plaintext_deserialize(struct sprout_note_plaintext *np,
     np->value = 0;
     for (int i = 0; i < 8; i++)
         np->value |= (uint64_t)value_le[i] << (8 * i);
+    memory_cleanse(value_le, sizeof(value_le));
     if (!stream_read_bytes(s, np->rho.data, 32))
         NOTE_IO_FAIL("sprout_note", "read", "rho");
     if (!stream_read_bytes(s, np->r.data, 32))
@@ -100,7 +105,9 @@ bool sapling_note_plaintext_serialize(const struct sapling_note_plaintext *np,
     unsigned char value_le[8];
     for (int i = 0; i < 8; i++)
         value_le[i] = (unsigned char)(np->value >> (8 * i));
-    if (!stream_write_bytes(s, value_le, 8))
+    bool value_ok = stream_write_bytes(s, value_le, 8);
+    memory_cleanse(value_le, sizeof(value_le));
+    if (!value_ok)
         NOTE_IO_FAIL("sapling_note", "write", "value");
     if (!stream_write_bytes(s, np->rcm.data, 32))
         NOTE_IO_FAIL("sapling_note", "write", "rcm");
@@ -129,6 +136,7 @@ bool sapling_note_plaintext_deserialize(struct sapling_note_plaintext *np,
     np->value = 0;
     for (int i = 0; i < 8; i++)
         np->value |= (uint64_t)value_le[i] << (8 * i);
+    memory_cleanse(value_le, sizeof(value_le));
     if (!stream_read_bytes(s, np->rcm.data, 32))
         NOTE_IO_FAIL("sapling_note", "read", "rcm");
     if (!stream_read_bytes(s, np->memo, ZC_MEMO_SIZE))

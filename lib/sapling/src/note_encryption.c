@@ -23,6 +23,7 @@
 #include "crypto/curve25519.h"
 #include "crypto/random_secret.h"
 #include "core/random.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -109,6 +110,7 @@ bool sprout_kdf(uint8_t key[32],
                  (unsigned)nonce);
     blake2b_update(&ctx, block, 128);
     blake2b_final(&ctx, key, 32);
+    memory_cleanse(block, sizeof(block));
     return true;
 }
 
@@ -128,6 +130,7 @@ bool sapling_kdf(uint8_t key[32],
         LOG_FAIL("sapling", "sapling_kdf: blake2b_init_salt_personal failed");
     blake2b_update(&ctx, block, 64);
     blake2b_final(&ctx, key, 32);
+    memory_cleanse(block, sizeof(block));
     return true;
 }
 
@@ -151,6 +154,7 @@ bool sapling_prf_ock(uint8_t key[32],
         LOG_FAIL("sapling", "sapling_prf_ock: blake2b_init_salt_personal failed");
     blake2b_update(&ctx, block, 128);
     blake2b_final(&ctx, key, 32);
+    memory_cleanse(block, sizeof(block));
     return true;
 }
 
