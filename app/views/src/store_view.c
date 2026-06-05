@@ -11,6 +11,7 @@
  * controller / service layer. */
 
 #include "views/store_internal.h"
+#include "views/format_helpers.h"
 #include "controllers/zslp_controller.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,15 +26,7 @@ void store_csrf_context(char *out, size_t outmax, int64_t product_id);
 /* Format ZCL price: trim trailing zeros but keep at least 2 decimals. */
 void format_zcl_price(char *out, size_t out_len, int64_t zatoshi)
 {
-    snprintf(out, out_len, "%.8f", (double)zatoshi / 1e8);
-    /* Find decimal point */
-    char *dot = strchr(out, '.');
-    if (!dot) return;
-    /* Trim trailing zeros, but keep at least 2 decimal places */
-    char *end = out + strlen(out) - 1;
-    char *min_pos = dot + 2; /* keep at least ".XX" */
-    while (end > min_pos && *end == '0') end--;
-    *(end + 1) = '\0';
+    zcl_format_zcl_trimmed(out, out_len, zatoshi, 2);
 }
 
 const char *store_get_onion_address(void)

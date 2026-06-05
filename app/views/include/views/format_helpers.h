@@ -20,6 +20,12 @@ void zcl_format_time(char *buf, size_t max, int64_t timestamp);
 /* Format zatoshi amount as "X.YYYYYYYY" ZCL string (8 decimals). */
 void zcl_format_zcl(char *buf, size_t max, int64_t zatoshi);
 
+/* Format zatoshi as "X.Y…" ZCL, dropping trailing zeros but never below
+ * min_decimals places. Exact integer arithmetic (no double rounding).
+ * Backs zcl_format_zcl_short (min 4) and the store price display (min 2). */
+void zcl_format_zcl_trimmed(char *buf, size_t max, int64_t zatoshi,
+                            int min_decimals);
+
 /* Format zatoshi as short "X.YYYY" (4 decimals, trailing zeros trimmed).
  * Use for dashboard/history display. Full precision on detail pages. */
 void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi);

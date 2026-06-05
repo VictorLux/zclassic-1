@@ -32,19 +32,25 @@ void zcl_format_zcl(char *buf, size_t max, int64_t zatoshi)
     }
 }
 
-void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi)
+void zcl_format_zcl_trimmed(char *buf, size_t max, int64_t zatoshi,
+                            int min_decimals)
 {
     char full[32];
     zcl_format_zcl(full, sizeof(full), zatoshi);
     char *dot = strchr(full, '.');
-    if (dot && strlen(dot) > 5) {
-        /* Trim to the last significant digit, minimum 4 places */
-        int last_nonzero = 4;
-        for (int i = 8; i > 4; i--)
+    if (dot && strlen(dot) > (size_t)(min_decimals + 1)) {
+        /* Drop trailing zeros, but never below min_decimals places. */
+        int last_nonzero = min_decimals;
+        for (int i = 8; i > min_decimals; i--)
             if (dot[i] != '0') { last_nonzero = i; break; }
         dot[last_nonzero + 1] = '\0';
     }
     snprintf(buf, max, "%s", full);
+}
+
+void zcl_format_zcl_short(char *buf, size_t max, int64_t zatoshi)
+{
+    zcl_format_zcl_trimmed(buf, max, zatoshi, 4);
 }
 
 bool zcl_is_all_hex(const char *s, size_t len)
