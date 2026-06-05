@@ -450,6 +450,7 @@ size_t explorer_handle_request(const char *method, const char *path,
     if (strcmp(path, "/explorer/favicon.png") == 0 ||
         strcmp(path, "/favicon.ico") == 0) {
         struct explorer_context *ctx = explorer_ctx();
+        if (!ctx->datadir) return 0; /* no datadir → no favicon to serve */
         char fpath[1200];
         snprintf(fpath, sizeof(fpath), "%s/explorer/favicon.png", ctx->datadir);
         FILE *f = fopen(fpath, "rb");

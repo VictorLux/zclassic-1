@@ -161,7 +161,7 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
 /* Health check — lightweight, machine-readable */
 size_t api_serve_health(uint8_t *response, size_t response_max)
 {
-    struct node_health_snapshot health;
+    struct node_health_snapshot health = {0};
     node_health_collect(&health, g_api_ctx.node_db ?
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);
@@ -361,7 +361,7 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
     if (snap_init) snapsync_get_progress(svc, &snap_received, &snap_total, &snap_rate);
 
     /* Collect health for peer/network data */
-    struct node_health_snapshot health;
+    struct node_health_snapshot health = {0};
     node_health_collect(&health, g_api_ctx.node_db ?
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);

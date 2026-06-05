@@ -130,7 +130,12 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
                 const char *addr_start = strstr(val_str, "\"addresses\":[\"");
                 if (addr_start && addr_start < vout_end && addr_start - val_str < 500) {
                     addr_start += 14;
-                    const char *addr_end = strchr(addr_start, '"');
+                    /* Bound the closing-quote search to the known JSON span so
+                     * it cannot read past the end of an unterminated buffer. */
+                    const char *addr_end =
+                        (addr_start <= vout_end)
+                            ? memchr(addr_start, '"', (size_t)(vout_end - addr_start))
+                            : NULL;
                     if (addr_end && (size_t)(addr_end - addr_start) < sizeof(addr)) {
                         memcpy(addr, addr_start, (size_t)(addr_end - addr_start));
                         addr[(size_t)(addr_end - addr_start)] = '\0';
