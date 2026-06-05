@@ -11,6 +11,7 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
+#include "core/arith_uint256.h"
 #include "event/event.h"
 #include "json/json.h"
 #include "jobs/stage_helpers.h"
@@ -173,16 +174,19 @@ static void handle_header_admit_msg(const struct header_admit_msg *m)
 
     atomic_fetch_add(&g_inbox_drained_total, 1);
 
+    /* L1: stage carried header BEFORE the height<0 guard. Self-mined /
+     * submitblock / rebuild pushes carry height=-1 (no peer height hint);
+     * dropping them here starved the producer path so a regtest-mined block
+     * never created a block_index. Network-safe: step_admit only produces when
+     * active_chain_at(next_h) is NULL, never true for an existing network
+     * block. */
+    if (m->has_header)
+        pending_header_stage(&m->header);
+
     struct main_state *ms = g_ms;
     sqlite3 *db = progress_store_db();
     if (!ms || !db || m->height < 0 || m->height > INT32_MAX)
         return;
-
-    /* Reducer producer path: stage any carried raw header so step_admit
-     * can CREATE the block_index entry. Hash-hint pushers leave
-     * has_header false. */
-    if (m->has_header)
-        pending_header_stage(&m->header);
 
     struct block_index *bi = active_chain_at(&ms->chain_active,
                                              (int)m->height);
@@ -404,6 +408,27 @@ static job_result_t step_admit(struct stage_step_ctx *c)
                  next_h);
         return JOB_FATAL;
     }
+
+    /* L2.5: advance the best-header frontier to this admitted block when it is
+     * the most-WORK header. The network path does this in msg_headers.c; the
+     * reducer PRODUCER path (self-mined / submitblock / rebuild) has no other
+     * writer of pindex_best_header, and the downstream stages resolve a block
+     * above the finalized window ONLY via pindex_best_header (vh_resolve_bi),
+     * so without this the pipeline stalls. Chainwork-ranked, advance-only;
+     * idempotent for the network path (best_header already at/past bi). */
+    {
+        struct block_index *cb = ms->pindex_best_header;
+        bool adv = (cb == NULL);
+        if (cb && bi != cb) {
+            if (!arith_uint256_is_zero(&bi->nChainWork) &&
+                !arith_uint256_is_zero(&cb->nChainWork))
+                adv = arith_uint256_compare(&bi->nChainWork, &cb->nChainWork) > 0;
+            else
+                adv = bi->nHeight > cb->nHeight;
+        }
+        if (adv) ms->pindex_best_header = bi;
+    }
+
     /* Idempotent block-index projection update; best-effort, never fatal.
      * Emit after the VALID_TREE promotion so the persisted nStatus reflects
      * it. */

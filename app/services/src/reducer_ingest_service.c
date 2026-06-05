@@ -289,15 +289,54 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
         tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight + 1u)
         (void)tip_finalize_stage_seed_anchor(anchor_tip->nHeight,
                                              anchor_tip->phashBlock->data);
-    (void)reducer_drain_to_convergence();
+
+    /* Body-INDEPENDENT prefix drain: run ONLY header_admit + validate_headers
+     * to convergence so the block_index is created and the header is validated
+     * BEFORE the body is persisted below. Draining the full pipeline here
+     * (while the body is still absent) made the body-dependent stages record a
+     * permanent failure row for this height — body_fetch turns a transient
+     * validate_headers verdict into "skipped_invalid" and advances its cursor,
+     * and the forward-only cursor never re-processes the height in the second
+     * drain (where the body IS present), so the stale ok=0 propagated downstream
+     * as upstream_failed and the block was rejected. Bounds match
+     * reducer_drain_to_convergence (4096 rounds, 100/stage). */
+    for (int _r = 0; _r < 4096; _r++) {
+        int _adv = header_admit_stage_drain(100) +
+                   validate_headers_stage_drain(100);
+        if (_adv == 0)
+            break;
+    }
     if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out)) {
         zcl_mutex_unlock(&ctl->mutex);
         return false;
     }
+    /* Full drain now that BLOCK_HAVE_DATA is set: body_fetch .. tip_finalize
+     * each process this height exactly once, with the body present. */
     (void)reducer_drain_to_convergence();
 
     struct block_index *ingested =
         block_map_find(&ctl->ms->map_block_index, &block_hash);
+
+    /* Regtest on-demand mining (fMineBlocksOnDemand) has no successor header to
+     * drive tip_finalize's one-block lookahead, so a self-mined block would
+     * never finalize and `generate` would loop forever re-mining the same block
+     * (the tip never leaves genesis). Publish the just-mined, fully-validated
+     * at-tip block as the authoritative tip via the documented trusted-tip
+     * primitive. set_authoritative_tip routes through anchor_cursor_to_authority
+     * (monotonic guard: cannot lower the finalize cursor) and writes the own-hash
+     * anchor row reducer_read_back_verdict reads. Gated on fMineBlocksOnDemand
+     * (true ONLY for regtest; false on main/testnet, lib/chain/src/chainparams.c
+     * — so byte-identical on a real network) AND on the same consensus witness
+     * reducer_pending_body_is_accepted trusts (HAVE_DATA && !FAILED && utxo_apply
+     * succeeded). Inlined, not the helper, so it never validation_state_init's
+     * the caller's `out`. Under the held mutex. */
+    if (ctl->params && ctl->params->fMineBlocksOnDemand && ingested &&
+        (ingested->nStatus & BLOCK_HAVE_DATA) &&
+        !(ingested->nStatus & BLOCK_FAILED_MASK) &&
+        utxo_apply_stage_succeeded_at(ingested->nHeight)) {
+        tip_finalize_stage_set_authoritative_tip(ingested->nHeight,
+                                                 block_hash.data);
+    }
 
     /* Prefer the just-ingested height for the read-back. The active tip may
      * still be one block behind while tip_finalize waits for lookahead, but
