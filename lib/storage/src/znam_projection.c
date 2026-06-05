@@ -178,6 +178,24 @@ void znam_projection_close(znam_projection_t *p)
 
 /* ── Apply helpers (used by catch_up replay) ───────────────────── */
 
+/* Record the most recent update txid on a name's parent row. Best-effort:
+   the addr/text record write is the authoritative change, so a failure to
+   prepare this secondary UPDATE is non-fatal and silently ignored. */
+static void bump_last_update_txid(znam_projection_t *p,
+                                  const char *name,
+                                  const uint8_t update_txid[32])
+{
+    sqlite3_stmt *s = NULL;
+    int rc = sqlite3_prepare_v2(p->db,
+        "UPDATE znam_names SET last_update_txid=? WHERE name=?",
+        -1, &s, NULL);
+    if (rc != SQLITE_OK) return;
+    sqlite3_bind_blob(s, 1, update_txid, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_text(s, 2, name, -1, SQLITE_TRANSIENT);
+    sqlite3_step(s);  // raw-sql-ok:projection-primitive
+    sqlite3_finalize(s);
+}
+
 static bool apply_register(znam_projection_t *p,
                            const struct ev_znam_register *ev)
 {
@@ -239,15 +257,7 @@ static bool apply_update_addr(znam_projection_t *p,
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) return false;
 
-    /* Bump last_update_txid on the parent record (best-effort). */
-    rc = sqlite3_prepare_v2(p->db,
-        "UPDATE znam_names SET last_update_txid=? WHERE name=?",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return true;
-    sqlite3_bind_blob(s, 1, ev->update_txid, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_text(s, 2, name, -1, SQLITE_TRANSIENT);
-    sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    sqlite3_finalize(s);
+    bump_last_update_txid(p, name, ev->update_txid);
     return true;
 }
 
@@ -279,14 +289,7 @@ static bool apply_update_text(znam_projection_t *p,
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) return false;
 
-    rc = sqlite3_prepare_v2(p->db,
-        "UPDATE znam_names SET last_update_txid=? WHERE name=?",
-        -1, &s, NULL);
-    if (rc != SQLITE_OK) return true;
-    sqlite3_bind_blob(s, 1, ev->update_txid, 32, SQLITE_TRANSIENT);
-    sqlite3_bind_text(s, 2, name, -1, SQLITE_TRANSIENT);
-    sqlite3_step(s);  // raw-sql-ok:projection-primitive
-    sqlite3_finalize(s);
+    bump_last_update_txid(p, name, ev->update_txid);
     return true;
 }
 

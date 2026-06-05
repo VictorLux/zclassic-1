@@ -19,9 +19,18 @@ uint64_t znam_projection_catch_up(znam_projection_t *p);
 
 /* Read accessors — Read-only; safe under concurrent readers. */
 
-/* Look up a registered name. owner_out / target_value_out are caller
- * supplied buffers of at least 65 / 129 bytes. Returns true on hit.
- */
+/* Look up a registered name. On a hit, fills the caller-supplied output
+ * parameters (each optional — pass NULL / cap 0 to skip):
+ *   owner_out (owner_cap, recommend >=65): owner address, NUL-terminated.
+ *   target_type_out: primary target's coin/record type byte.
+ *   target_value_out (target_cap, recommend >=129): primary target
+ *     value, NUL-terminated.
+ *   reg_height_out: block height the name was registered at.
+ *   expiry_height_out: block height the registration expires at.
+ * Text outputs are always NUL-terminated (truncated to fit the cap).
+ * Returns true if `name` is found, false otherwise — including when
+ * `p`, its db, or `name` is NULL, or the query fails. On false no
+ * output parameter is written. */
 bool znam_projection_find(znam_projection_t *p, const char *name,
                           char *owner_out, size_t owner_cap,
                           uint8_t *target_type_out,

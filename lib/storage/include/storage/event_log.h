@@ -102,7 +102,9 @@ enum event_log_type {
 
 /* Open or create the event log at `path`. On open, the file is scanned
  * from the tail to detect and TRUNCATE any partial trailing event
- * (recovery from torn writes). Returns NULL on error. */
+ * (recovery from torn writes). Returns NULL if `path` is NULL or empty,
+ * if the file cannot be opened, if recovery fails, or on allocation
+ * failure. */
 event_log_t *event_log_open(const char *path);
 
 /* Close the log. Flushes any pending data. NULL-safe. */
@@ -111,16 +113,25 @@ void event_log_close(event_log_t *log);
 /* Append one event. Returns the absolute byte offset at which the
  * event was written (suitable as a stable event id) on success, or
  * UINT64_MAX on error. The on-disk format is fully durable (fsync x2)
- * before this call returns. */
+ * before this call returns. Errors (all return UINT64_MAX): `log` NULL;
+ * `payload` NULL with `payload_len > 0`; `payload_len` exceeds
+ * EVENT_LOG_MAX_PAYLOAD; or any pwrite/fsync failure (the lock is
+ * released before returning). `payload_len == 0` is valid. */
 uint64_t event_log_append(event_log_t *log,
                           enum event_log_type type,
                           const void *payload, size_t payload_len);
 
 /* Read one event at `offset` (which must have been returned by a prior
- * append or stream callback). Copies up to `buf_cap` bytes of payload
- * into `buf`; the true length is always written to `*out_len`.
- * Returns 0 on success, -1 on error. If `buf_cap < *out_len`, returns
- * -1 (caller must size the buffer correctly). */
+ * append or stream callback). The payload CRC and fsync sentinel are
+ * always verified. On a verified event the true payload length is
+ * written to `*out_len` and the type to `*type_out` (both optional —
+ * pass NULL to skip), then the payload is copied into `buf` only if
+ * `buf` is non-NULL and `buf_cap >= payload_len`. Returns 0 on success,
+ * -1 on error: `log` NULL; `offset` out of range or the framed event
+ * extends past end-of-log; corrupt length; pread failure; CRC mismatch;
+ * bad sentinel; allocation failure; or `buf_cap < payload_len` (caller
+ * must size the buffer correctly — note `*out_len`/`*type_out` may have
+ * been set before this -1). */
 int event_log_read(event_log_t *log, uint64_t offset,
                    enum event_log_type *type_out,
                    void *buf, size_t buf_cap, size_t *out_len);

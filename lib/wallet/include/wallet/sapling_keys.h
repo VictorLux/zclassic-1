@@ -38,10 +38,26 @@ struct sapling_keystore {
 void sapling_keystore_init(struct sapling_keystore *sks);
 void sapling_keystore_free(struct sapling_keystore *sks);
 
+/* Draw a fresh random 32-byte seed, mark the keystore as seeded, and
+ * derive the master extended spending key from it; resets the child
+ * derivation counter to 0. Holds `sks->cs` for the update. Always
+ * returns true. */
 bool sapling_keystore_generate_seed(struct sapling_keystore *sks);
+
+/* Install a caller-supplied 32-byte `seed`, mark the keystore as
+ * seeded, derive the master extended spending key, and reset the child
+ * counter to 0. Holds `sks->cs`. Use for restoring a known wallet seed.
+ * Always returns true. */
 bool sapling_keystore_set_seed(struct sapling_keystore *sks,
                                 const uint8_t seed[32]);
 
+/* Derive the next sequential Sapling payment address (path
+ * m/32'/147'/index') and append it to the keystore. If the keystore is
+ * unseeded a random seed is generated first. Writes the new address's
+ * diversifier (11 bytes) to `diversifier_out` and pk_d (32 bytes) to
+ * `pk_d_out`. Holds `sks->cs`. Returns false if the keystore is full
+ * (MAX_SAPLING_KEYS) or address derivation fails; on those paths
+ * intermediate key material is cleansed before return. */
 bool sapling_keystore_new_address(struct sapling_keystore *sks,
                                    uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
                                    uint8_t pk_d_out[32]);
