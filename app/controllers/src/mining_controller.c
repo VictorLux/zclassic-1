@@ -67,6 +67,11 @@ static bool rpc_getmininginfo(const struct json_value *params, bool help,
         "getmininginfo\n"
         "Returns mining-related information.");
 
+    if (!ctx->main_state) {
+        json_set_str(result, "Mining state not initialized");
+        LOG_FAIL("mining", "getmininginfo: ctx->main_state is NULL");
+    }
+
     const struct chain_params *cp = chain_params_get();
     struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
 

@@ -82,8 +82,9 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         if (txarr) {
             const char *end = strchr(txarr, ']');
             tx_count = 1;
-            for (const char *p = txarr; p && p < end; p++)
-                if (*p == ',') tx_count++;
+            if (end)
+                for (const char *p = txarr; p < end; p++)
+                    if (*p == ',') tx_count++;
         }
         (void)ntx;
 

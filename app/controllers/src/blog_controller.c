@@ -77,6 +77,16 @@ size_t blog_serve(const char *datadir, const char *path,
                   char *out, size_t out_len)
 {
     if (!path || !out || out_len < 256) return 0;
+    if (!datadir) {
+        const char *body =
+            "<html><head><style>body{background:#0a0a0a;color:#e0e0e0;"
+            "font-family:monospace;text-align:center;padding:80px 20px}"
+            "</style></head><body><h1>404 Not Found</h1>"
+            "<p><a href='/' style='color:#00ff88'>Return home</a></p>"
+            "</body></html>";
+        return http_response(out, out_len, 404, "text/html",
+                             body, strlen(body));
+    }
 
     /* Default to index.html */
     const char *rel = path;

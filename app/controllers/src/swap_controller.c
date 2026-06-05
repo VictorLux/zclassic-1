@@ -275,6 +275,10 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
 
     uint8_t script[256];
     size_t script_len = htlc_build_script(&hp, script, sizeof(script));
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build HTLC script");
+        LOG_FAIL("swap", "swap_participate: htlc_build_script failed");
+    }
 
     char p2sh_addr[64];
     htlc_p2sh_address(script, script_len, chain, p2sh_addr, sizeof(p2sh_addr));
