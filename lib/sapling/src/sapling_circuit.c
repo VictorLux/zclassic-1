@@ -126,6 +126,10 @@ bool sapling_spend_synthesize(struct constraint_system *cs,
     struct fr ar_fr;
     bytes_to_fr(&ar_fr, wit->ar);
     cs_alloc_aux(cs, &ar_fr);
+    /* ar is a secret re-randomization scalar; its value has now been
+     * copied into the witness vector — wipe the stack copy after this
+     * last read (output-neutral: the constraint already holds it). */
+    memory_cleanse(&ar_fr, sizeof(ar_fr));
 
     /* Nullifier private key nsk */
     struct fr nsk_fr;
@@ -457,6 +461,10 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     /* Inputize cm.x only (public input 5) */
     gadget_scalar_inputize(cs, cm_x);
 
+    /* note_contents holds the boolean-variable layout of the secret note
+     * (value/g_d/pk_d bit witnesses) — wipe before free; it is fully
+     * consumed by gadget_pedersen_hash above (output-neutral). */
+    memory_cleanse(note_contents, 576 * sizeof(size_t));
     free(note_contents);
 
     printf("Output circuit synthesized: %zu vars, %zu constraints, "
@@ -531,6 +539,8 @@ bool sapling_create_spend_proof(const uint8_t *pk_data, size_t pk_len,
     cs_init(&cs);
 
     if (!sapling_spend_synthesize(&cs, wit, pub)) {
+        if (cs.witness)
+            memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
         cs_free(&cs);
         groth16_pk_free(&pk);
         LOG_FAIL("sapling_circuit",
@@ -540,6 +550,8 @@ bool sapling_create_spend_proof(const uint8_t *pk_data, size_t pk_len,
     /* Generate proof */
     struct groth16_proof proof;
     if (!groth16_prove(&pk, &cs, &proof)) {
+        if (cs.witness)
+            memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
         cs_free(&cs);
         groth16_pk_free(&pk);
         LOG_FAIL("sapling_circuit",
@@ -549,6 +561,11 @@ bool sapling_create_spend_proof(const uint8_t *pk_data, size_t pk_len,
     /* Serialize */
     serialize_proof(proof_out, &proof);
 
+    /* The constraint witness vector holds the secret spend assignments
+     * (ar, nsk, value, rcm, rcv, auth path). The proof is now produced;
+     * wipe the witness scalars before freeing (output-neutral). */
+    if (cs.witness)
+        memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
     cs_free(&cs);
     groth16_pk_free(&pk);
     return true;
@@ -568,6 +585,8 @@ bool sapling_create_output_proof(const uint8_t *pk_data, size_t pk_len,
     cs_init(&cs);
 
     if (!sapling_output_synthesize(&cs, wit, pub)) {
+        if (cs.witness)
+            memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
         cs_free(&cs);
         groth16_pk_free(&pk);
         LOG_FAIL("sapling_circuit",
@@ -576,6 +595,8 @@ bool sapling_create_output_proof(const uint8_t *pk_data, size_t pk_len,
 
     struct groth16_proof proof;
     if (!groth16_prove(&pk, &cs, &proof)) {
+        if (cs.witness)
+            memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
         cs_free(&cs);
         groth16_pk_free(&pk);
         LOG_FAIL("sapling_circuit",
@@ -584,6 +605,11 @@ bool sapling_create_output_proof(const uint8_t *pk_data, size_t pk_len,
 
     serialize_proof(proof_out, &proof);
 
+    /* The constraint witness vector holds the secret output assignments
+     * (value, rcv, esk, rcm). The proof is now produced; wipe the witness
+     * scalars before freeing (output-neutral). */
+    if (cs.witness)
+        memory_cleanse(cs.witness, cs.cap_vars * sizeof(struct fr));
     cs_free(&cs);
     groth16_pk_free(&pk);
     return true;

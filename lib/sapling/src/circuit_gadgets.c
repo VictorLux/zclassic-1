@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
+#include "support/cleanse.h"
 
 #define CS_ONE 0
 
@@ -1312,6 +1313,10 @@ void gadget_blake2s(struct constraint_system *cs,
     blake2s_update(&bctx, input_bytes, n_bytes);
     blake2s_final(&bctx, hash_out, 32);
 
+    /* input_bytes holds a witness-derived byte decomposition; it has been
+     * fully consumed by blake2s_update above and is never read again. */
+    memory_cleanse(input_bytes, sizeof(input_bytes));
+
     for (size_t i = 0; i < 256; i++) {
         bool bit = (hash_out[i / 8] >> (i % 8)) & 1;
         output_bits[i] = gadget_alloc_boolean(cs, bit);
@@ -1361,6 +1366,9 @@ size_t gadget_note_commitment(struct constraint_system *cs,
     memcpy(all_bits + offset, rcm_bits, 256 * sizeof(size_t));
     size_t cm_x, cm_y;
     gadget_pedersen_hash(cs, all_bits, total_bits, "Zcash_PH", &cm_x, &cm_y);
+    /* all_bits holds a witness-derived bit decomposition; consumed by the
+     * pedersen hash above. Cleanse before free (value already consumed). */
+    memory_cleanse(all_bits, total_bits * sizeof(size_t));
     free(all_bits);
     return cm_x;
 }
