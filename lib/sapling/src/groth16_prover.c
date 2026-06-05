@@ -135,15 +135,23 @@ static size_t cs_alloc_var(struct constraint_system *cs, const struct fr *value)
 {
     if (cs->num_vars >= cs->cap_vars) {
         size_t new_cap = cs->cap_vars * 2;
-        size_t bytes = new_cap * sizeof(struct fr);
-        struct fr *new_w = g_cs_realloc(cs->witness, bytes, "cs_witness");
+        /* Grow by hand instead of realloc: the witness holds secret field
+         * assignments, so the old buffer must be cleansed before release —
+         * realloc would free it with the secret elements intact. */
+        /* Allocate the new buffer through g_cs_realloc(NULL, ...) so the
+         * test realloc hook (OOM injection) still fires. */
+        struct fr *new_w = g_cs_realloc(NULL, new_cap * sizeof(struct fr),
+                                        "cs_witness");
         if (!new_w) {
             cs->oom_error = true;
             LOG_RETURN(0, "groth16",
-                       "cs_alloc_var: realloc failed (new_cap=%zu bytes=%zu); "
+                       "cs_alloc_var: alloc failed (new_cap=%zu); "
                        "returning 0 which aliases CS_ONE, CS marked oom_error",
-                       new_cap, bytes);
+                       new_cap);
         }
+        memcpy(new_w, cs->witness, cs->num_vars * sizeof(struct fr));
+        memory_cleanse(cs->witness, cs->cap_vars * sizeof(struct fr));
+        free(cs->witness);
         cs->witness = new_w;
         cs->cap_vars = new_cap;
     }
