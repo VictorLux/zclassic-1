@@ -104,6 +104,13 @@ void wallet_rpc_context_set_coins_tip(struct coins_view_cache *coins_tip);
 
 /* Amount formatting/parsing */
 void format_amount(int64_t satoshis, char *out, size_t out_size);
+/* Parse a JSON amount expressed in ZCL into zatoshi (1 ZCL =
+ * ZATOSHI_PER_ZCL zatoshi, 8 fractional digits). Accepts a JSON int
+ * (whole ZCL), real, or decimal string; fractional digits past the 8th
+ * are truncated, and a leading '-' is honoured. Returns the amount in
+ * zatoshi. Returns -1 (via LOG_ERR) if v is NULL or of an unsupported
+ * JSON type; note -1 is indistinguishable from a parsed amount of -1
+ * zatoshi, so reject negative/invalid amounts at the call site. */
 int64_t parse_amount(const struct json_value *v);
 
 /* Address codec wrappers — look up the active chain's base58 pubkey

@@ -14,6 +14,10 @@ contacts_projection_t *contacts_projection_open(const char *path,
                                                 event_log_t *log);
 void contacts_projection_close(contacts_projection_t *p);
 uint64_t contacts_projection_catch_up(contacts_projection_t *p);
+/* Return the number of rows in the contacts table (0 when empty).
+ * Returns UINT64_MAX on error — p or its db is NULL, the COUNT(*)
+ * statement fails to prepare, or no row is returned. Callers must treat
+ * UINT64_MAX as a failure sentinel, not a count. */
 uint64_t contacts_projection_count(contacts_projection_t *p);
 void contacts_projection_set_event_log(event_log_t *log);
 bool contacts_projection_emit_set(const char *address, const char *name);

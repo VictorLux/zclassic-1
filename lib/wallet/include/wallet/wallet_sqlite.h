@@ -115,20 +115,62 @@ struct wallet_sqlite {
  * spend fails.  Reset only by process restart. */
 int wallet_sqlite_read_keys_corrupt_count(void);
 
+/* Zero *ws, adopt the borrowed db handle, and prepare every cached
+ * statement. To reopen, wallet_sqlite_close() first. Returns ZCL_OK on
+ * success; WSQL_NULL_ARG if ws or db is NULL; on a prepare failure the
+ * partially-opened handle is closed and the prepare error is returned
+ * (and recorded in ws->last_error). */
 struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db);
+/* Round-trip a unique probe blob through node_state under the canary key
+ * (INSERT, SELECT-back, then DELETE) to prove the DB is writable and
+ * readable. On success sets ws->canary_ok/canary_last_ok_ts and returns
+ * ZCL_OK. Returns WSQL_NULL_ARG if ws is NULL, WSQL_DB_NOT_OPEN if not
+ * open, or a prepare/write/read-mismatch error (recorded in
+ * ws->last_error). */
 struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws);
+/* Load every row of wallet_keys into w->keystore (decrypting WKS1
+ * envelopes). Malformed or undecryptable rows are skipped, counted via
+ * wallet_sqlite_read_keys_corrupt_count(), and do not fail the call.
+ * Returns ZCL_OK once all rows are consumed; WSQL_NULL_ARG if ws or w is
+ * NULL, WSQL_DB_NOT_OPEN if not open, or WSQL_READ_FAIL on a step error. */
 struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
                                             struct wallet *w);
+/* Read the single wallet_keys row whose pubkey_hash matches pk and
+ * decode/decrypt its private key into *out_key. Returns ZCL_OK and fills
+ * out_key on success; WSQL_NULL_ARG if ws/pk/out_key is NULL,
+ * WSQL_DB_NOT_OPEN if not open, or WSQL_READ_FAIL if the key is absent,
+ * the privkey column is too short, or decryption fails. */
 struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
                                                 const struct pubkey *pk,
                                                 struct privkey *out_key);
+/* Upsert one wallet_keys row (pubkey_hash, pubkey, privkey, compressed),
+ * encrypting the privkey blob when wallet encryption is active. Returns
+ * ZCL_OK on success; WSQL_NULL_ARG if ws is NULL, WSQL_DB_NOT_OPEN if not
+ * open, a WSQL_INVARIANT_* error if pk/key fail validation, or
+ * WSQL_WRITE_FAIL on a step error (recorded in ws->last_error). */
 struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
                                             const struct pubkey *pk,
                                             const struct privkey *key);
+/* Delete the wallet_keys row whose pubkey_hash matches pk. Succeeds
+ * (ZCL_OK) even if no row matched. Returns WSQL_NULL_ARG if ws or pk is
+ * NULL, WSQL_DB_NOT_OPEN if not open, or WSQL_WRITE_FAIL on a step error. */
 struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
                                              const struct pubkey *pk);
+/* Persist the in-memory wallet to node.db inside one transaction: all
+ * keystore keys, wallet transactions, the Sapling seed and keys, redeem
+ * scripts, and the scan height. Holds w->cs across the writes. On the
+ * first writer failure the whole transaction is rolled back and a
+ * WSQL_WRITE_FAIL result describing the first failure is returned (so
+ * persistence is all-or-nothing). Also returns WSQL_NULL_ARG if ws or w
+ * is NULL, WSQL_DB_NOT_OPEN if not open, or WSQL_TXN_*_FAIL on
+ * BEGIN/COMMIT failure. */
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
+/* Return a non-destructive health snapshot: open/canary state, the live
+ * SELECT COUNT(*) FROM wallet_keys row_count, the caller-supplied
+ * keystore_count, their mismatch flag, and the last recorded error. If
+ * ws is NULL the snapshot is zeroed with last_error set to a NULL-pointer
+ * message. Safe to call from any thread that holds a published ws. */
 struct wallet_sqlite_health
     wallet_sqlite_get_health(struct wallet_sqlite *ws, int keystore_count);
 
