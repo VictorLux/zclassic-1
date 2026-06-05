@@ -1,9 +1,73 @@
 # HANDOFF — read this first
 
-**Restart command:** type **`continue zclassic23 development`**.
+**Restart command:** type **`continue the zclassic23-way convergence drive — use workflows, commit + push as you go`**.
 
-State at handoff: main worktree. Verify with `git status --short --branch`
-before editing.
+State at handoff: main worktree, HEAD `80e991608`. Verify with
+`git status --short --branch` before editing.
+
+---
+
+## ACTIVE AXIS (2026-06-05): convergence — "everything the zclassic23 way"
+
+Owner directive this run: *"do EVERYTHING the zclassic23 way — dig into every
+file, DRY, good API, document everything, use multiple workflows, commit + push
+as you go, make the server amazing."* This is the **architecture/quality** axis
+(distinct from the v1/live-wedge mission below — both are real; the owner chose
+this one). Full state + gotchas: memory
+`project_convergence_axis_2026-06-05.md`; ranked work: `docs/work/convergence-backlog.md`.
+
+**Where it stands** (≈22 commits landed this run, all green):
+- 8/8 framework shapes real; `framework_shape_allowlist`=0; 5 lint ratchets at 0.
+- `boot_index.c` 1539→381; **`boot_services.c` 3517→1767** (decomposed into 7
+  byte-identical units). File-size debt board: **2 files left** — `boot.c` (3618,
+  FROZEN, never touch) + `boot_services.c` (1767).
+- Real bugs killed: `coins_alloc` OOM NULL-deref; 2 MCP crashes; an `_Atomic` UB.
+- 31 consensus/crypto public headers documented (accuracy-reviewed).
+
+**The proven method (repeat it):** read-only audit Workflow → ranked backlog →
+parallel **edit-only** adversarially-reviewed Workflows on **DISJOINT** file sets
+→ ONE union gate I run myself (`make -j$(nproc) zclassic23` + `make lint` [35
+gates] + `./test_parallel` [expect `0/371`] + boot-smoke if the boot path changed)
+→ commit per logical group → push. Redirect `make` output to a file and grep
+`error:|warning:` to save context. Mutating workflows on disjoint files may run
+concurrently; verify the union together.
+
+**Next targets, in priority order:**
+1. **`boot_services.c` shutdown TU** (finishes the boot decomposition, →~1520).
+   HIGH RISK: it carries the `coins.db` COMMIT-before-`block_index` fsync
+   invariant. Boot-smoke CANNOT validate it — needs a real **SIGTERM stop +
+   restart** cycle on a datadir COPY. Do it ALONE. See
+   `[[feedback_at_tip_kill9_ordering_invariant]]`.
+2. **flyclient/MMB block** out of `boot_services.c` — consensus-adjacent, shares
+   the `g_mmb_leaf_store` extern + a lint-gate owner assertion; extract with the
+   MMB-build block.
+3. **peer-scoring enum extension** (OWNER-GATED — changes DoS-ban policy; design
+   noted in `docs/work/convergence-backlog.md`). Do NOT do a naive
+   `peer_misbehaving`→`peer_scoring_record` swap: mapping by meaning changes ban
+   weights, mapping by weight mis-names. Extend the enum first.
+4. More DRY/doc waves only if an audit returns real findings — the safe axis is
+   nearly harvested; **STOP fanning out when sweeps return 0–1 findings.**
+
+**Gotchas that cost time this run (don't relearn):**
+- **Boot-smoke light-copy floor is NOT a regression.** `repro_on_copy.sh`
+  (default `--light`, no `blocks/`) rewinds tip 3134303→**3132299** given ≥~90s
+  (DEGRADED_SERVING, "Not fatal"). PROVE innocence by running HEAD's binary on the
+  same window — it floors identically. A crash or a LOWER floor = real regression.
+- `test_make_lint_gates.c` BANS ~90 refactor-scaffold substrings in production
+  comments ("byte-for-byte", "verbatim", "extracted from", "code motion", …).
+  Name the PURPOSE, not the refactor. Renaming a symbol's home also needs the
+  gauges/owner-file asserts in that test repointed.
+- `check-observability-pairing` is a compiled tool: a raw `fprintf(stderr,…)`
+  must be paired (−3/+6 lines) by `event_emit`/terminal `return`/`// obs-ok:`,
+  ELSE route it through `LogPrintf` (not flagged). Editing a file can line-shift a
+  PRE-EXISTING fprintf out of its window → newly fails.
+- Gate #15/#21 (supervisor) now scope `config/src/`; a moved boot worker that
+  spawns a thread must keep its `supervisor_register_in_domain`/contract or carry
+  `// supervisor-ok:<tag>`.
+- `config/src/*.c` is globbed (`CONFIG_SRCS = $(wildcard …)`) — new boot units
+  build with NO Makefile edit.
+- Adversarial review EARNS its keep (caught the `coins_alloc` 4th caller, a silent
+  peer-ban weight change, an over-broad blake2b doc). Always run it; respect FAILs.
 
 ---
 
