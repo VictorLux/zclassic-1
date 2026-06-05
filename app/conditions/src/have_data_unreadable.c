@@ -122,14 +122,11 @@ void register_have_data_unreadable(void)
 #ifdef ZCL_TESTING
 void have_data_unreadable_test_reset(void)
 {
-    struct condition_state *s = &c_have_data_unreadable.state;
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_file_at_detect, -1);
     atomic_store(&g_pos_at_detect, 0);
     atomic_store(&g_remedy_calls, 0);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_have_data_unreadable);
 }
 
 int have_data_unreadable_test_remedy_calls(void)

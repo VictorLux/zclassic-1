@@ -363,6 +363,17 @@ bool condition_engine_dump_state_json(struct json_value *out, const char *key)
 }
 
 #ifdef ZCL_TESTING
+void condition_reset_state(struct condition *c)
+{
+    if (!c)
+        return;
+    struct condition_state *s = &c->state;
+    atomic_store(&s->attempts, 0);
+    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
+    atomic_store(&s->currently_active, false);
+    atomic_store(&s->operator_needed_emitted, false);
+}
+
 void condition_engine_reset_for_testing(void)
 {
     pthread_mutex_lock(&g_condition_mu);

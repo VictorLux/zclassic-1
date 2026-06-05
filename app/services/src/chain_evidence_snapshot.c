@@ -10,21 +10,14 @@
 #include "services/chain_evidence_persistence_service.h"
 
 #include "models/database.h"
+#include "validation/sync_evidence_policy.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static bool bytes32_nonzero(const uint8_t b[32])
-{
-    uint8_t acc = 0;
-    for (int i = 0; i < 32; i++)
-        acc |= b[i];
-    return acc != 0;
-}
-
 static bool u256_nonzero(const struct uint256 *u)
 {
-    return u && bytes32_nonzero(u->data);
+    return u && !zcl_chainwork_is_zero(u->data);
 }
 
 static bool u256_equal(const struct uint256 *a, const struct uint256 *b)

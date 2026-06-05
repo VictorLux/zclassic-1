@@ -15,11 +15,61 @@
 
 #define MIN_BLOCK_VERSION 4
 
+/* CheckBlockHeader — 4 context-free header checks (matches zclassicd
+ * main.cpp CheckBlockHeader). Looks only at the header's own bytes,
+ * never at the surrounding chain:
+ *   1. nVersion >= MIN_BLOCK_VERSION                     (version-too-low)
+ *   2. Equihash(200,9) solution verifies                (invalid-solution)
+ *   3. PoW: header hash satisfies nBits                  (high-hash)
+ *   4. nTime <= GetAdjustedTime() + 2h                   (time-too-new)
+ *
+ * MUST-NEVER-FORK consensus entry point. Every full node must agree on
+ * the accept/reject result for a given (header, params).
+ *
+ * Parameter:
+ *   check_pow — when false, disables checks 2 and 3 ONLY (the Equihash
+ *     solution verify and the proof-of-work hash-vs-nBits test). The
+ *     version and timestamp checks still run. The ONLY legitimate reason
+ *     to pass false is fast-sync of headers whose PoW is already trusted
+ *     by another mechanism (a checkpoint / MMB-proved FlyClient snapshot
+ *     tail), so re-verifying Equihash here is redundant work. Full
+ *     validation MUST pass true; the full Equihash + PoW are re-checked
+ *     later in connect_block() for any header admitted with check_pow
+ *     false. */
 bool check_block_header(const struct block_header *header,
                         struct validation_state *state,
                         const struct chain_params *params,
                         bool check_pow);
 
+/* CheckBlock — 8 context-free block checks (matches zclassicd main.cpp
+ * CheckBlock). Runs check_block_header first, then the block's own
+ * structural checks (merkle root, size/coinbase bounds, per-tx checks,
+ * aggregate sigops). All look only at the block's own bytes, never at
+ * the surrounding chain.
+ *
+ * MUST-NEVER-FORK consensus entry point. Every full node must agree on
+ * the accept/reject result for a given (block, params).
+ *
+ * Parameters:
+ *   check_pow — forwarded verbatim to check_block_header; see its doc.
+ *     When false, disables the Equihash-solution and PoW-hash checks
+ *     ONLY. Pass false only when fast-syncing a block whose PoW is
+ *     already trusted via a checkpoint / MMB-proved snapshot; full
+ *     validation MUST pass true.
+ *   check_merkle_root — when false, disables ONLY the merkle-root
+ *     consistency check (the transaction merkle root recomputed from
+ *     vtx must equal header->hashMerkleRoot, plus the mutation guard).
+ *     The only legitimate reason to pass false is when the caller has
+ *     already verified the merkle root by another path and is
+ *     re-checking the same block object (avoiding redundant recompute).
+ *     Full validation of an untrusted block MUST pass true.
+ *   check_size_limits — when false, disables ONLY the size/coinbase
+ *     bounds, the per-transaction structural checks (check_transaction
+ *     over every vtx), and the aggregate sigop-count limit. The only
+ *     legitimate reason to pass false is fast-sync of a block whose body
+ *     is trusted via a checkpoint / SHA3 snapshot, where these
+ *     structural limits are re-verified later. Full validation MUST pass
+ *     true. */
 bool check_block(const struct block *block,
                  struct validation_state *state,
                  const struct chain_params *params,
@@ -27,12 +77,72 @@ bool check_block(const struct block *block,
                  bool check_merkle_root,
                  bool check_size_limits);
 
+/* ContextualCheckBlockHeader — 6 context-dependent header checks
+ * (matches zclassicd main.cpp ContextualCheckBlockHeader). Unlike
+ * check_block_header, these need the local ancestry (pindex_prev):
+ *   1. Genesis short-circuit (all checks skipped for the genesis hash)
+ *   2. Equihash solution size matches this height's (N,K) params
+ *                                              (bad-equihash-solution-size)
+ *   3. Difficulty: nBits == GetNextWorkRequired (bad-diffbits)
+ *   4. Timestamp > median-time-past of prev 11  (time-too-old)
+ *   5. Checkpoint enforcement                   (bad-fork-at-checkpoint)
+ *   6. nVersion >= 4                             (bad-version)
+ *
+ * MUST-NEVER-FORK consensus entry point. Every full node must agree on
+ * the accept/reject result for a given (header, pindex_prev, params).
+ *
+ * Parameter:
+ *   checkpoints_enabled — when false, disables ONLY check 5 (the
+ *     hardcoded-checkpoint enforcement: at a known checkpoint height the
+ *     header's hash must match the embedded checkpoint, see
+ *     checkpoints.h). The only legitimate reason to pass false is when
+ *     checkpoint enforcement is intentionally disabled for the run
+ *     (e.g. a test or a chain with no checkpoint data); full validation
+ *     on the production chain MUST pass true. The difficulty and
+ *     timestamp checks always run regardless.
+ *
+ * Note on the difficulty check (3): it is NOT individually skippable via
+ * a parameter — it always runs here. GetNextWorkRequired returns
+ * nProofOfWorkLimit (the weakest permissible difficulty) when its own
+ * 17-block averaging window cannot be fully walked, so incomplete-window
+ * nodes compare against the weakest-allowed difficulty instead of
+ * blindly accepting the header.
+ *
+ * Note on skip_contextual (the only sanctioned way to bypass this whole
+ * function): callers that legitimately accept headers without local-
+ * window validation (fast-sync snapshot tail, MMB-proved headers) MUST
+ * bypass this function entirely — see process_block.c's `skip_contextual`
+ * gate (process_block_should_skip_contextual_header). That gate fires
+ * for the post-FlyClient-snapshot tail: "If the PoW averaging window
+ * cannot be walked contiguously, GetNextWorkRequired would return
+ * nProofOfWorkLimit (weakest-allowed) and every honest peer's real nBits
+ * would mismatch. Skip contextual check in that case; full validation
+ * runs later in connect_block()." Genesis is already short-circuited
+ * inside this function with an early return. */
 bool contextual_check_block_header(const struct block_header *header,
                                    struct validation_state *state,
                                    const struct chain_params *params,
                                    const struct block_index *pindex_prev,
                                    bool checkpoints_enabled);
 
+/* ContextualCheckBlock — 3 context-dependent block checks (matches
+ * zclassicd main.cpp ContextualCheckBlock). Needs the local ancestry
+ * (pindex_prev) to derive nHeight and the BIP113 median-time cutoff:
+ *   1. contextual_check_transaction for every vtx (height-gated tx rules)
+ *   2. BIP113 final-tx: each tx final at median-time-past, not the
+ *      block's wall-clock timestamp     (bad-txns-nonfinal)
+ *   3. BIP34 coinbase encodes nHeight   (bad-cb-height)
+ *
+ * MUST-NEVER-FORK consensus entry point. Every full node must agree on
+ * the accept/reject result for a given (block, pindex_prev, params).
+ *
+ * Takes no bool parameters: there is nothing here that may be safely
+ * disabled. These checks always run when this function is called. As
+ * with the contextual header check, the only sanctioned bypass is for
+ * callers that defer the whole contextual pass to connect_block() during
+ * a trusted fast-sync (see process_block.c's `skip_contextual` gate);
+ * those callers do not invoke this function at all rather than passing a
+ * flag to weaken it. */
 bool contextual_check_block(const struct block *block,
                             struct validation_state *state,
                             const struct chain_params *params,

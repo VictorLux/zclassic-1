@@ -11,6 +11,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/utxo_apply_delta.h"
+#include "jobs/stage_helpers.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
@@ -69,23 +70,6 @@ static bool blob_get_i64(const uint8_t **p, const uint8_t *end, int64_t *out)
  * coin -> SPEND), delete the now-invalid log+delta rows, and rewind the
  * stage cursor to the fork boundary so step_apply re-applies the winning
  * branch forward. Bounded by ZCL_FINALITY_DEPTH (legacy's floor). */
-
-static uint64_t cursor_persisted(sqlite3 *db, const char *name)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT cursor FROM stage_cursor WHERE name = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("utxo_apply", "[utxo_apply] unwind cursor read prepare failed: %s", sqlite3_errmsg(db));
-        return 0;
-    }
-    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-    uint64_t out = 0;
-    if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
-        out = (uint64_t)sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return out;
-}
 
 /* Load the persisted branch_hash for a delta row. Returns 1 if found
  * (out filled), 0 if absent, -1 on error. */
@@ -251,7 +235,7 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
     if (!stage || !ms)
         return true;
 
-    uint64_t cursor = cursor_persisted(db, STAGE_NAME);
+    uint64_t cursor = stage_cursor_persisted(db, STAGE_NAME, "utxo_apply");
     if (cursor == 0)
         return true;
     if (cursor > (uint64_t)INT32_MAX) {

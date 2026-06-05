@@ -5,6 +5,15 @@
 
 #include <stdbool.h>
 
+/* SYMPTOM: process_block_get_utxo_activation_paused_height() reports a paused
+ *   height for >= 300s (UTXO activation wedged at that block).
+ * REMEDY: action=resume (or =repair when reason contains utxo_audit_drift) —
+ *   process_block_clear_utxo_activation_pause_range() then kick activation
+ *   (gap_fill_kick + activation_request_connect).
+ * WITNESSED: the pause flag is clear AND the active tip advanced (reached the
+ *   previously-paused height or past the tip recorded at detect) — real
+ *   forward progress, not just the flag clearing.
+ * COND_CRITICAL; poll_secs=5 (backoff 30s, max_attempts 2). */
 void register_utxo_activation_paused(void);
 
 #ifdef ZCL_TESTING

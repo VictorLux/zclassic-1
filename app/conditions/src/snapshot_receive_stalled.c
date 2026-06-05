@@ -87,15 +87,12 @@ void register_snapshot_receive_stalled(void)
 #ifdef ZCL_TESTING
 void snapshot_receive_stalled_test_reset(void)
 {
-    struct condition_state *s = &c_snapshot_receive_stalled.state;
     atomic_store(&g_elapsed_at_detect, 0);
     atomic_store(&g_received_at_detect, 0);
     atomic_store(&g_offered_at_detect, 0);
     atomic_store(&g_peer_at_detect, 0);
     atomic_store(&g_test_remedy_calls, 0);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_snapshot_receive_stalled);
 }
 
 int snapshot_receive_stalled_test_remedy_calls(void)

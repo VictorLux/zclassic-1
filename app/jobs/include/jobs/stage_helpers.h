@@ -59,10 +59,21 @@ static inline uint64_t stage_cursor_persisted(sqlite3 *db, const char *name,
     return out;
 }
 
+/* Shared block-body reader function-pointer type. Every stage that pulls a
+ * block body off disk (body_persist, script_validate, proof_validate,
+ * utxo_apply) injects a reader of this exact signature; stage_default_block_reader
+ * below is the production implementation. The per-stage `*_reader_fn` typedefs
+ * in the stage headers alias onto this single type so the four stages share one
+ * setter shape without changing their public setter names. */
+typedef bool (*stage_block_reader_fn)(struct block *out,
+                                      const struct block_index *bi,
+                                      const char *datadir,
+                                      void *user);
+
 /* Default block-body reader used by stages whose injectable reader is
  * NULL. Guards on out/bi/HAVE_DATA and reads via pread from the block's
- * (nFile, nDataPos) on-disk position. Matches the *_reader_fn signature
- * of every consuming stage. */
+ * (nFile, nDataPos) on-disk position. Matches the stage_block_reader_fn
+ * signature of every consuming stage. */
 static inline bool stage_default_block_reader(struct block *out,
                                               const struct block_index *bi,
                                               const char *datadir, void *user)

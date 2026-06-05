@@ -16,11 +16,6 @@
 
 #include <string.h>
 
-static bool bytes32_nonzero(const uint8_t bytes[32])
-{
-    return !zcl_chainwork_is_zero(bytes);
-}
-
 /* Local error-code band for this file: -1..-3 (one per failure path).
  * The typed enum out-param still travels with every failure (the
  * wire-level rejection reason callers switch on, per the file header);
@@ -85,9 +80,9 @@ static enum snapshot_manifest_result snapshot_manifest_validate_common(
         return SNAPSHOT_MANIFEST_UNFINAL;
     if (zcl_chainwork_is_zero(m->chain_work))
         return SNAPSHOT_MANIFEST_WEAK_WORK;
-    if (!bytes32_nonzero(m->mmr_root))
+    if (zcl_chainwork_is_zero(m->mmr_root))
         return SNAPSHOT_MANIFEST_NO_MMR;
-    if (!bytes32_nonzero(m->mmb_root))
+    if (zcl_chainwork_is_zero(m->mmb_root))
         return SNAPSHOT_MANIFEST_NO_MMB;
     return SNAPSHOT_MANIFEST_OK;
 }

@@ -3,6 +3,14 @@
 #ifndef ZCL_CONDITIONS_SNAPSHOT_OFFER_READY_H
 #define ZCL_CONDITIONS_SNAPSHOT_OFFER_READY_H
 
+/* SYMPTOM: a snapsync offer is active (NEGOTIATING/RECEIVING/VERIFYING) with
+ *   offered_height/offered_count set, our local height is >= SNAPSHOT_OFFER_
+ *   READY_MIN_GAP (1000) behind it, and the SYNC FSM can receive a snapshot.
+ * REMEDY: action=set_snapshot_receive — sync_set_state(SYNC_SNAPSHOT_RECEIVE);
+ *   failure to enter that state returns COND_REMEDY_FAILED.
+ * WITNESSED: SYNC FSM is in SYNC_SNAPSHOT_RECEIVE AND the snapsync offer is
+ *   genuinely active with staged_row_count >= the detect baseline.
+ * COND_WARN; poll_secs=5 (backoff 60s, max_attempts 2). */
 void register_snapshot_offer_ready(void);
 
 #ifdef ZCL_TESTING

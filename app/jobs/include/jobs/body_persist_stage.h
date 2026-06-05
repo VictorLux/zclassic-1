@@ -9,6 +9,7 @@
 #ifndef ZCL_SERVICES_BODY_PERSIST_STAGE_H
 #define ZCL_SERVICES_BODY_PERSIST_STAGE_H
 
+#include "jobs/stage_helpers.h"
 #include "util/stage.h"
 
 #include <stdbool.h>
@@ -21,10 +22,9 @@ struct main_state;
 
 #define BODY_PERSIST_BATCH_PER_TICK 500
 
-typedef bool (*body_persist_reader_fn)(struct block *out,
-                                       const struct block_index *bi,
-                                       const char *datadir,
-                                       void *user);
+/* Alias onto the shared stage reader type (jobs/stage_helpers.h); the public
+ * setter name body_persist_stage_set_reader is unchanged. */
+typedef stage_block_reader_fn body_persist_reader_fn;
 
 bool body_persist_stage_init(struct main_state *ms);
 void body_persist_stage_shutdown(void);

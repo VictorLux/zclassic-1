@@ -10,6 +10,7 @@
 #define ZCL_SERVICES_PROOF_VALIDATE_STAGE_H
 
 #include "core/uint256.h"
+#include "jobs/stage_helpers.h"
 #include "util/stage.h"
 
 #include <stdbool.h>
@@ -33,10 +34,9 @@ struct proof_validate_tx_report {
     const char *first_failure_proof_type;
 };
 
-typedef bool (*proof_validate_reader_fn)(struct block *out,
-                                         const struct block_index *bi,
-                                         const char *datadir,
-                                         void *user);
+/* Alias onto the shared stage reader type (jobs/stage_helpers.h); the public
+ * setter name proof_validate_stage_set_reader is unchanged. */
+typedef stage_block_reader_fn proof_validate_reader_fn;
 
 typedef bool (*proof_validate_tx_verify_fn)(
     const struct transaction *tx,

@@ -11,6 +11,7 @@
 
 #include "core/amount.h"
 #include "core/uint256.h"
+#include "jobs/stage_helpers.h"
 #include "primitives/transaction.h"
 #include "util/stage.h"
 
@@ -24,10 +25,9 @@ struct main_state;
 
 #define SCRIPT_VALIDATE_BATCH_PER_TICK 100
 
-typedef bool (*script_validate_reader_fn)(struct block *out,
-                                          const struct block_index *bi,
-                                          const char *datadir,
-                                          void *user);
+/* Alias onto the shared stage reader type (jobs/stage_helpers.h); the public
+ * setter name script_validate_stage_set_reader is unchanged. */
+typedef stage_block_reader_fn script_validate_reader_fn;
 
 typedef bool (*script_validate_prevout_fn)(const struct outpoint *prevout,
                                            struct tx_out *out,

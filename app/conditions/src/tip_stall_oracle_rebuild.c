@@ -242,7 +242,6 @@ void register_tip_stall_oracle_rebuild(void)
 #ifdef ZCL_TESTING
 void tip_stall_oracle_rebuild_test_reset(void)
 {
-    struct condition_state *s = &c_tip_stall_oracle_rebuild.state;
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
@@ -250,10 +249,7 @@ void tip_stall_oracle_rebuild_test_reset(void)
     g_rebuild_fn = rebuild_recent_repair;
     atomic_store(&g_test_rebuild_calls, 0);
     atomic_store(&g_test_last_rebuild_from, -1);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
-    atomic_store(&s->operator_needed_emitted, false);
+    condition_reset_state(&c_tip_stall_oracle_rebuild);
 }
 
 void tip_stall_oracle_rebuild_test_force_stall(int64_t tip_h, int64_t age_secs)

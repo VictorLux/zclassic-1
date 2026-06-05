@@ -112,11 +112,8 @@ void chain_integrity_failed_test_reset(void)
     atomic_store(&s->last_remedy_unix, 0);
     atomic_store(&s->last_operator_needed_unix, 0);
     atomic_store(&s->target_at_detect, 0);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
-    atomic_store(&s->operator_needed_emitted, false);
     atomic_store(&s->cleared_count, 0);
+    condition_reset_state(&c_chain_integrity_failed);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_last_zero_nbits, 0);
     atomic_store(&g_last_tip_window_holes, 0);

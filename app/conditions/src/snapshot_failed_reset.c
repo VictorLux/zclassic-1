@@ -94,16 +94,13 @@ void register_snapshot_failed_reset(void)
 #ifdef ZCL_TESTING
 void snapshot_failed_reset_test_reset(void)
 {
-    struct condition_state *s = &c_snapshot_failed_reset.state;
     atomic_store(&g_elapsed_at_detect, 0);
     atomic_store(&g_height_at_detect, 0);
     atomic_store(&g_utxos_at_detect, 0);
     atomic_store(&g_peer_at_detect, 0);
     atomic_store(&g_staged_at_detect, 0);
     atomic_store(&g_test_remedy_calls, 0);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_snapshot_failed_reset);
 }
 
 int snapshot_failed_reset_test_remedy_calls(void)

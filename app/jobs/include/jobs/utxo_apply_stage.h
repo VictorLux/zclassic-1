@@ -11,6 +11,7 @@
 #define ZCL_SERVICES_UTXO_APPLY_STAGE_H
 
 #include "core/uint256.h"
+#include "jobs/stage_helpers.h"
 #include "util/stage.h"
 
 #include <stdbool.h>
@@ -54,10 +55,9 @@ struct utxo_apply_lookup {
     uint8_t script[UTXO_APPLY_SCRIPT_MAX];
 };
 
-typedef bool (*utxo_apply_reader_fn)(struct block *out,
-                                     const struct block_index *bi,
-                                     const char *datadir,
-                                     void *user);
+/* Alias onto the shared stage reader type (jobs/stage_helpers.h); the public
+ * setter name utxo_apply_stage_set_reader is unchanged. */
+typedef stage_block_reader_fn utxo_apply_reader_fn;
 
 typedef bool (*utxo_apply_lookup_fn)(const struct uint256 *txid,
                                      uint32_t vout,

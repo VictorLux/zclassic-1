@@ -287,7 +287,6 @@ void register_tip_fork_stale(void)
 #ifdef ZCL_TESTING
 void tip_fork_stale_test_reset(void)
 {
-    struct condition_state *s = &c_tip_fork_stale.state;
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
@@ -299,9 +298,7 @@ void tip_fork_stale_test_reset(void)
     atomic_store(&g_test_rebuild_calls, 0);
     atomic_store(&g_test_last_invalidate_height, -1);
     atomic_store(&g_test_last_rebuild_from, -1);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_tip_fork_stale);
 }
 
 /* Force the no-advance stall timer to satisfy the TIP_STALL_SECS window

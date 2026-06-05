@@ -147,10 +147,7 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
-    atomic_store(&s->operator_needed_emitted, false);
+    condition_reset_state(&c_stale_validate_headers_repair);
     /* Zero last_remedy_unix so condition_due_for_remedy treats the next tick
      * as due (last==0 bypasses the wall-clock backoff). There is no
      * injectable clock; the escalation test re-zeros this between ticks to

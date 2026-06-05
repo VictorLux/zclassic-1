@@ -93,6 +93,12 @@ const char *condition_remedy_result_name(enum condition_remedy_result r);
 
 #ifdef ZCL_TESTING
 void condition_engine_reset_for_testing(void);
+
+/* Zero the shared per-condition state atoms that every *_test_reset() must
+ * clear between tests: attempts, last_outcome (-> COND_REMEDY_SKIP),
+ * currently_active, operator_needed_emitted. Module-static detect/remedy
+ * bookkeeping is each condition's own responsibility. */
+void condition_reset_state(struct condition *c);
 #endif
 
 #endif /* ZCL_FRAMEWORK_CONDITION_H */

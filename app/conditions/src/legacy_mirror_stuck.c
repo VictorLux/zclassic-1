@@ -73,14 +73,11 @@ void register_legacy_mirror_stuck(void)
 #ifdef ZCL_TESTING
 void legacy_mirror_stuck_test_reset(void)
 {
-    struct condition_state *s = &c_legacy_mirror_stuck.state;
     atomic_store(&g_stuck_height_at_detect, 0);
     atomic_store(&g_lag_at_detect, 0);
     atomic_store(&g_stalls_at_detect, 0);
     atomic_store(&g_test_remedy_calls, 0);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_legacy_mirror_stuck);
 }
 
 int legacy_mirror_stuck_test_remedy_calls(void)

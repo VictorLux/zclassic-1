@@ -11,10 +11,11 @@
 // Non-fallible surfaces:
 //   - load_state() returns the state enum (a getter); freeze() is void but
 //     ALWAYS names itself (no-silent-halt) and persists the reason.
-//   - the bool helpers (bytes32_nonzero, u256_nonzero/equal, load_u256,
+//   - the bool helpers (u256_nonzero/equal, load_u256,
 //     has_*_required, persist_state/i64/blob, state_allows_tip_promotion) are
 //     PRIVATE predicates feeding the result enum; parse_state/state_get_i32 are
-//     pure decoders with defaults.
+//     pure decoders with defaults. 32-byte presence checks use the canonical
+//     zcl_chainwork_is_zero predicate (validation/sync_evidence_policy.h).
 // No public fallible operation returns a bare reason-less bool. Behavior
 // bit-for-bit.
 
@@ -26,6 +27,7 @@
 #include "models/database.h"
 #include "models/db_txn.h"
 #include "event/event.h"
+#include "validation/sync_evidence_policy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -96,17 +98,9 @@ void chain_evidence_controller_test_fail_commit_after_csr(bool fail)
 }
 #endif
 
-static bool bytes32_nonzero(const uint8_t b[32])
-{
-    uint8_t acc = 0;
-    for (int i = 0; i < 32; i++)
-        acc |= b[i];
-    return acc != 0;
-}
-
 static bool u256_nonzero(const struct uint256 *u)
 {
-    return u && bytes32_nonzero(u->data);
+    return u && !zcl_chainwork_is_zero(u->data);
 }
 
 static bool load_u256(struct node_db *ndb, const char *key,
@@ -439,8 +433,8 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
         !u256_nonzero(&snapshot->anchor_hash) ||
         !u256_nonzero(&snapshot->utxo_sha3) ||
         snapshot->utxo_count == 0 ||
-        !bytes32_nonzero(snapshot->chainwork) ||
-        !bytes32_nonzero(snapshot->mmb_root) ||
+        zcl_chainwork_is_zero(snapshot->chainwork) ||
+        zcl_chainwork_is_zero(snapshot->mmb_root) ||
         snapshot->schema_version == 0 ||
         snapshot->finality_depth == 0 ||
         !chain_evidence_record_has_snapshot_required(&snapshot->verified)) {

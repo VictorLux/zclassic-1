@@ -174,16 +174,13 @@ bool block_failed_mask_at_tip_recovery_exhausted(int *target_height,
 #ifdef ZCL_TESTING
 void block_failed_mask_at_tip_test_reset(void)
 {
-    struct condition_state *s = &c_block_failed_mask_at_tip.state;
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_tip_height_at_check, -1);
     atomic_store(&g_tip_unchanged_since, 0);
     atomic_store(&g_tip_at_detect, -1);
     atomic_store(&g_tip_age_at_detect, 0);
     atomic_store(&g_stall_type_at_detect, BF_STALL_NONE);
-    atomic_store(&s->attempts, 0);
-    atomic_store(&s->last_outcome, COND_REMEDY_SKIP);
-    atomic_store(&s->currently_active, false);
+    condition_reset_state(&c_block_failed_mask_at_tip);
 }
 
 int block_failed_mask_at_tip_test_stall_type(void)
