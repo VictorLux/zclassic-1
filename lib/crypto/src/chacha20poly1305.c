@@ -4,6 +4,7 @@
  * Replaces libsodium crypto_aead_chacha20poly1305_ietf_encrypt/decrypt. */
 
 #include "crypto/chacha20poly1305.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include <string.h>
 
@@ -87,6 +88,9 @@ void chacha20_encrypt(const uint8_t key[32], uint32_t counter,
             ciphertext[pos + i] = plaintext[pos + i] ^ block[i];
         pos += take;
     }
+    /* Wipe the keystream block: its last read was the XOR above, and it is
+     * key/nonce-derived secret material. Output already written. */
+    memory_cleanse(block, sizeof(block));
 }
 
 /* Poly1305 — RFC 7539 Section 2.5 */
@@ -282,6 +286,9 @@ bool chacha20poly1305_encrypt(const uint8_t *plaintext, size_t plen,
     store64_le(mac_data + pos, plen); pos += 8;
 
     poly1305_mac(mac_data, pos, poly_key, ciphertext + plen);
+    /* Wipe the Poly1305 one-time key: last read was the MAC call above; tag
+     * already written to ciphertext+plen. */
+    memory_cleanse(poly_key, sizeof(poly_key));
     return true;
 }
 
@@ -336,6 +343,12 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++)
         diff |= computed_tag[i] ^ ciphertext[plen + i];
+    /* Both secrets are fully consumed at this point: poly_key's last read was
+     * the MAC call, computed_tag's last read was the compare loop above. Wipe
+     * before the branch so BOTH the mismatch (LOG_FAIL returns) and success
+     * return paths are covered. `diff` (the verdict) is preserved. */
+    memory_cleanse(poly_key, sizeof(poly_key));
+    memory_cleanse(computed_tag, sizeof(computed_tag));
     if (diff != 0)
         LOG_FAIL("chacha20poly1305",
                  "decrypt: Poly1305 tag mismatch (authentication failed): clen=%zu aad_len=%zu",

@@ -31,6 +31,7 @@
  * the regression in test_sapling.c (Hamming-weight timing test). */
 
 #include "crypto/curve25519.h"
+#include "support/cleanse.h"
 #include <string.h>
 #include <stdint.h>
 
@@ -171,6 +172,18 @@ bool curve25519_scalarmult(uint8_t result[32], const uint8_t scalar[32],
     inv25519(c, c);
     M(a, a, c);
     pack25519(result, a);
+    /* Wipe scalar-derived working state. The shared secret / public key is
+     * already written to `result`. `z` is the clamped secret scalar; a..f are
+     * Montgomery-ladder intermediates carrying scalar-derived secret values;
+     * all are dead after pack25519 above. */
+    memory_cleanse(z, sizeof(z));
+    memory_cleanse(a, sizeof(gf));
+    memory_cleanse(b, sizeof(gf));
+    memory_cleanse(c, sizeof(gf));
+    memory_cleanse(d, sizeof(gf));
+    memory_cleanse(e, sizeof(gf));
+    memory_cleanse(f, sizeof(gf));
+    memory_cleanse(x, sizeof(gf));
     return true;
 }
 
