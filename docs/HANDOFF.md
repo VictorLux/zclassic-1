@@ -2,7 +2,7 @@
 
 **Restart command:** type **`continue the zclassic23-way convergence drive — use workflows, commit + push as you go`**.
 
-State at handoff: main worktree, HEAD `80e991608`. Verify with
+State at handoff: main worktree, HEAD `030f16a0e` (round 4+5 below). Verify with
 `git status --short --branch` before editing.
 
 ---
@@ -23,6 +23,16 @@ this one). Full state + gotchas: memory
   FROZEN, never touch) + `boot_services.c` (1767).
 - Real bugs killed: `coins_alloc` OOM NULL-deref; 2 MCP crashes; an `_Atomic` UB.
 - 31 consensus/crypto public headers documented (accuracy-reviewed).
+- **Rounds 4+5 (`cf7bbf05f..030f16a0e`)** swept the under-audited subsystems
+  (tools/mcp, app/views, lib/wallet, lib/rpc, app/models, lib/util,
+  app/controllers, service glue). Fixed a **build regression** (`blake2b.h` doc
+  comment closed early, broke clean compile), **3 MCP + 2 explorer NULL-deref
+  crashes**, a `contact.c` `before_save` veto-bypass, NULL-safe `sqlite3_errmsg`,
+  2 local DRY folds, and ~16 documented public headers. Adversarial review
+  declined 2 false findings (LOG_FAIL/LOG_ERR already return). **The
+  non-consensus safe axis is now harvested** — audits over it return mostly
+  self-rejected noise; see `docs/work/convergence-backlog.md` rounds 4/5 +
+  deferred lists. Stop fanning safe audits over swept subsystems.
 
 **The proven method (repeat it):** read-only audit Workflow → ranked backlog →
 parallel **edit-only** adversarially-reviewed Workflows on **DISJOINT** file sets

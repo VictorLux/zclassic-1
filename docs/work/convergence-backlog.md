@@ -126,6 +126,54 @@ hd_keychain/bip44" finding was WRONG — `LOG_FAIL` already expands to
   identical INT spec defined 3×; low value, each spec is arguably tied to its
   route entry. Leave unless a wider MCP param-spec table lands.
 
+## Round 5 (2026-06-05) — app/controllers + service glue audited + fixed
+
+Read-only audit (4 agents: explorer/web, wallet-store, ops-net, service glue) →
+15 findings (≈5 self-rejected as already-correct/intentional). Executed the real
+ones as a 3-group edit→review workflow on DISJOINT files. Union gate green
+(build 0err / lint 35 / test_parallel 0/371). Landed `678bf081c..030f16a0e`:
+
+- **Explorer NULL-deref / empty-body fixes** (`678bf081c`) — `explorer_controller_tx.c`
+  in_rows/out_rows were malloc'd then iterated with no NULL check (crash on OOM);
+  `serve_tx_rpc`/`serve_block_rpc` returned empty bodies on bad input. Added
+  guards returning the existing not-found/invalid views (free-before-return,
+  no leak). Read-only display path, non-consensus.
+- **Controller glue fixes** (`030f16a0e`) — NULL-safe `sqlite3_errmsg` in
+  store_mark_order_paid; LOG_WARN on uninit name-DB (RPC reply unchanged);
+  LOG_WARN on seed-product save failure; folded the duplicated chain_params
+  base58-prefix fetch in wallet_helpers onto one file-local helper.
+
+Adversarial review again EARNED its keep: the audit's `explorer_controller.c`
+`socket()`-failure finding was WRONG — `LOG_ERR` already `return -1`s, so there
+is no fall-through; the edit was correctly declined.
+
+### New deferred items (surfaced in round 5, not executed)
+
+- **`chain_evidence` dump JSON duplicated** (`event_controller.c:27-74` ≈
+  `diagnostics_registry.c:329-370`, *observability-sensitive*) — both assemble the
+  same chain-evidence snapshot into JSON; the registry version is the superset.
+  Extract one canonical `chain_evidence_controller_dump_state_json(…, bool full)`.
+  Deferred: it is the live diagnostics surface and a test may assert the emitted
+  shape — verify the JSON is byte-identical before merging.
+- **`rpc_call` ≡ `api_rpc_call`** (`explorer_controller.c:254` / `api_controller.c:130`)
+  — identical HTTP+RPC+base64 client, differ only in timeout(5s/10s)/log-prefix.
+  Merge onto one fn with a timeout/context param. Medium value, touches raw socket
+  code — do as its own focused change with a request/response equivalence check.
+- **`store_url_decode` vs `url_decode`** (`store_controller.c:326` /
+  `wallet_view_helpers.c:550`) — the store version validates hex nibbles, the
+  wallet one does not; merging onto the stricter one is a (safe but real) behavior
+  change. Low value; only if a shared `lib/util` URL-decode lands.
+- **base64 alphabet hardcoded ×3** + **31-site `chain_params_base58_prefix`
+  fetch** — both low-value broad sweeps; pick up opportunistically inside a
+  relevant wave, not standalone.
+
+**Safe-axis status:** the non-consensus subsystems (tools/mcp, app/views,
+lib/wallet, lib/rpc, app/models, domain, lib/util, app/controllers, service glue)
+are now harvested — audits return mostly self-rejected noise. Remaining real work
+is the deferred §12 consensus-sensitive items, the boot shutdown TU (HIGH-RISK,
+SIGTERM proof, do ALONE), the flyclient/MMB extraction, and the owner-gated
+peer-scoring enum. Do NOT keep fanning safe audits over the swept subsystems.
+
 ## Deferred — peer_scoring typed-API adoption (needs enum extension, owner-gated)
 
 Round-3 #1 (adopt typed `peer_scoring_record()` across ~34 raw
