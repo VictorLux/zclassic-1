@@ -37,6 +37,7 @@
 #define ZCL_PORTS_BG_VALIDATION_STORE_PORT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct bg_validation_store_port {
     void *self;
@@ -50,6 +51,18 @@ struct bg_validation_store_port {
      * genesis-restart sentinel). Returns true on success, false on a
      * NULL self / unavailable store. */
     bool (*save_progress)(void *self, int height);
+
+    /* Read the persisted cumulative "script-verification skipped, no undo"
+     * tally into *out. Same get/set-int semantics as the cursor above but a
+     * SEPARATE state key. Returns true if present (leaving *out set), false
+     * (out untouched) if unavailable / never written. This counts blocks
+     * that advanced verified_height without full script verification (undo
+     * missing) so the "verified" claim stays honest across restarts. */
+    bool (*load_skips)(void *self, int64_t *out);
+
+    /* Persist the cumulative skip tally. Returns true on success, false on a
+     * NULL self / unavailable store. */
+    bool (*save_skips)(void *self, int64_t skips);
 };
 
 #endif /* ZCL_PORTS_BG_VALIDATION_STORE_PORT_H */

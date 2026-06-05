@@ -50,6 +50,12 @@ struct bg_validation_progress {
     _Atomic int64_t sigs_verified;     /* total ECDSA sigs checked */
     _Atomic int64_t proofs_verified;   /* total zk-SNARK proofs checked */
     _Atomic int64_t blocks_per_sec;    /* recent throughput */
+    /* Non-coinbase txs whose script sigs could NOT be verified because the
+     * block's undo (revXXXXX.dat) was missing/mismatched. These blocks still
+     * advance verified_height (header/structure/shielded proofs checked) but
+     * are NOT fully script-verified — keeps the "verified" claim honest.
+     * Expected for post-snapshot blocks (no rev file), not a failure. */
+    _Atomic int64_t script_verif_skipped_no_undo;
     _Atomic int state;                 /* enum bg_validation_state */
 };
 

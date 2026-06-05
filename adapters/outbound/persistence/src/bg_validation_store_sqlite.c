@@ -22,6 +22,11 @@
  * code so an existing on-disk cursor is read back unchanged. */
 #define BGV_PROGRESS_KEY "bg_validation_height"
 
+/* Separate key for the cumulative "non-coinbase tx not script-verified
+ * because undo was missing/mismatched" tally. Keeps the verified claim
+ * honest across restarts without disturbing the resume cursor. */
+#define BGV_SKIPS_KEY "bg_validation_skipped_no_undo"
+
 /* `self` aliases the node_db* directly — there is no wrapper struct. */
 static inline struct node_db *ndb_of(void *self)
 {
@@ -48,6 +53,26 @@ static bool bgv_save_progress(void *self, int height)
     return node_db_state_set_int(ndb, BGV_PROGRESS_KEY, (int64_t)height);
 }
 
+static bool bgv_load_skips(void *self, int64_t *out)
+{
+    struct node_db *ndb = ndb_of(self);
+    if (!ndb || !ndb->open || !out)
+        return false;
+    int64_t val = 0;
+    if (!node_db_state_get_int(ndb, BGV_SKIPS_KEY, &val))
+        return false;
+    *out = val;
+    return true;
+}
+
+static bool bgv_save_skips(void *self, int64_t skips)
+{
+    struct node_db *ndb = ndb_of(self);
+    if (!ndb || !ndb->open)
+        return false;
+    return node_db_state_set_int(ndb, BGV_SKIPS_KEY, skips);
+}
+
 bool bg_validation_store_sqlite_bind(struct node_db *ndb,
                                      struct bg_validation_store_port *out_port)
 {
@@ -57,6 +82,8 @@ bool bg_validation_store_sqlite_bind(struct node_db *ndb,
         .self          = ndb,
         .load_progress = bgv_load_progress,
         .save_progress = bgv_save_progress,
+        .load_skips    = bgv_load_skips,
+        .save_skips    = bgv_save_skips,
     };
     return true;
 }

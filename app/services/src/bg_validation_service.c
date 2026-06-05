@@ -268,12 +268,13 @@ static bool validate_block_proofs(const struct block *block,
                                   int num_workers,
                                   size_t max_script_batch,
                                   int64_t *sigs_out,
-                                  int64_t *proofs_out)
+                                  int64_t *proofs_out,
+                                  int64_t *skips_out)
 {
     bool ok = false;
     struct validation_state state;
     validation_state_init(&state);
-    int64_t sigs = 0, proofs = 0;
+    int64_t sigs = 0, proofs = 0, skips = 0;
     struct block_undo blockundo;
     bool have_undo = false;
     struct script_check_item *check_items = NULL;
@@ -344,8 +345,13 @@ static bool validate_block_proofs(const struct block *block,
         size_t undo_idx = i - 1;
         bool have_tx_undo = have_undo && undo_idx < blockundo.num_txundo &&
                             blockundo.vtxundo[undo_idx].num_prevout == tx->num_vin;
-        if (!have_tx_undo)
+        if (!have_tx_undo) {
+            /* No undo (rev file): cannot recover spent outputs, so this tx
+             * CANNOT be script-verified. Expected post-snapshot. Don't stall;
+             * record the gap so "verified" stays honest, not a silent skip. */
+            skips++;
             continue;
+        }
 
         struct precomputed_tx_data txdata;
         precompute_tx_data(tx, &txdata);
@@ -380,8 +386,14 @@ static bool validate_block_proofs(const struct block *block,
         goto out;
     }
 
+    if (skips > 0)
+        LOG_WARN("bg-valid", "[bg-valid] h=%d: %lld non-coinbase tx(s) NOT "
+                "script-verified (undo missing) — block advances, not fully "
+                "verified", pindex->nHeight, (long long)skips);
+
     *sigs_out += sigs;
     *proofs_out += proofs;
+    *skips_out += skips;
     ok = true;
 
 out:
@@ -407,6 +419,24 @@ static void save_progress(const struct bg_validation_store_port *store,
 {
     if (store && store->save_progress)
         store->save_progress(store->self, height);
+}
+
+/* Cumulative non-coinbase txs not script-verified (undo missing). Persisted
+ * under a separate key so the tally survives restarts. -1 = never written. */
+static int64_t load_skips(const struct bg_validation_store_port *store)
+{
+    int64_t val = -1;
+    if (store && store->load_skips &&
+        store->load_skips(store->self, &val))
+        return val;
+    return -1; // raw-return-ok:no-key-on-fresh-datadir-means-zero-skips-not-an-error
+}
+
+static void save_skips(const struct bg_validation_store_port *store,
+                       int64_t skips)
+{
+    if (store && store->save_skips)
+        store->save_skips(store->self, skips);
 }
 
 /* ── Main validation thread ──────────────────────────────────── */
@@ -443,6 +473,9 @@ static void *bg_validation_thread(void *arg)
     int h_last_log = start_height;
     int64_t total_sigs = 0;
     int64_t total_proofs = 0;
+    int64_t ls = load_skips(&svc->progress_store);
+    int64_t total_skips = ls < 0 ? 0 : ls;
+    atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
 
     for (int h = start_height; h <= chain_height; h++) {
         if (atomic_load(&svc->stop_requested))
@@ -478,10 +511,10 @@ static void *bg_validation_thread(void *arg)
         }
 
         /* Full validation */
-        int64_t block_sigs = 0, block_proofs = 0;
+        int64_t block_sigs = 0, block_proofs = 0, block_skips = 0;
         if (!validate_block_proofs(&blk, pindex, datadir, params,
                                     num_workers, svc->max_script_batch,
-                                    &block_sigs, &block_proofs)) {
+                                    &block_sigs, &block_proofs, &block_skips)) {
             fprintf(stderr, "[bg-valid] VALIDATION FAILURE at height %d\n", h);
             atomic_store(&svc->progress.state, BG_VALIDATION_FAILED);
             block_free(&blk);
@@ -492,14 +525,17 @@ static void *bg_validation_thread(void *arg)
         block_free(&blk);
         total_sigs += block_sigs;
         total_proofs += block_proofs;
+        total_skips += block_skips;
         atomic_store(&svc->progress.verified_height, h);
         atomic_store(&svc->progress.sigs_verified, total_sigs);
         atomic_store(&svc->progress.proofs_verified, total_proofs);
+        atomic_store(&svc->progress.script_verif_skipped_no_undo, total_skips);
         bg_validation_supervisor_heartbeat(svc);
 
         /* Save progress periodically */
         if (h % SAVE_INTERVAL == 0) {
             save_progress(&svc->progress_store, h);
+            save_skips(&svc->progress_store, total_skips);
 
             /* Bound peak RSS. Every block here churns large transient
              * heap — a per-block undo buffer (up to MAX_UNDO_READ = 4 MB),
@@ -729,6 +765,8 @@ struct bg_validation_progress bg_validation_get_progress(
     p.sigs_verified = atomic_load(&svc->progress.sigs_verified);
     p.proofs_verified = atomic_load(&svc->progress.proofs_verified);
     p.blocks_per_sec = atomic_load(&svc->progress.blocks_per_sec);
+    p.script_verif_skipped_no_undo =
+        atomic_load(&svc->progress.script_verif_skipped_no_undo);
     p.state = atomic_load(&svc->progress.state);
     return p;
 }
@@ -738,9 +776,11 @@ void bg_validation_reset(struct bg_validation_service *svc)
     if (!svc) return;
     bg_validation_stop(svc);
     save_progress(&svc->progress_store, -1);
+    save_skips(&svc->progress_store, 0);
     atomic_store(&svc->progress.verified_height, -1);
     atomic_store(&svc->progress.sigs_verified, 0);
     atomic_store(&svc->progress.proofs_verified, 0);
+    atomic_store(&svc->progress.script_verif_skipped_no_undo, 0);
     atomic_store(&svc->progress.blocks_per_sec, 0);
     atomic_store(&svc->progress.state, BG_VALIDATION_IDLE);
     printf("[bg-valid] Progress reset — will re-verify from block 0\n");

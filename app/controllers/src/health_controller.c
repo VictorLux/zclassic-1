@@ -188,6 +188,13 @@ static bool rpc_getsyncdetail(const struct json_value *params, bool help,
         json_push_kv_int(&bgv, "sigs_verified", p.sigs_verified);
         json_push_kv_int(&bgv, "proofs_verified", p.proofs_verified);
         json_push_kv_int(&bgv, "blocks_per_sec", p.blocks_per_sec);
+        /* Non-coinbase txs that advanced verified_height WITHOUT full script
+         * verification (undo missing/mismatched — expected post-snapshot).
+         * Makes the "verified" claim honest: >0 means incomplete coverage. */
+        json_push_kv_int(&bgv, "script_verif_skipped_no_undo",
+            p.script_verif_skipped_no_undo);
+        json_push_kv_bool(&bgv, "verification_incomplete",
+            p.script_verif_skipped_no_undo > 0);
 
         if (p.chain_height > 0 && p.verified_height >= 0) {
             double pct = 100.0 * (double)(p.verified_height + 1) /
