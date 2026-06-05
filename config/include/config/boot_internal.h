@@ -164,6 +164,28 @@ struct db_service *boot_db_service(struct boot_svc_ctx *svc);
 bool boot_running(const struct boot_svc_ctx *svc);
 bool boot_profile_has_file_service(const struct app_context *ctx);
 
+/* ── boot_frontend_services.c ───────────────────────────────────
+ * Clearnet frontend service lifecycle (file server, JSON-RPC HTTP, explorer
+ * API cache, HTTPS explorer, miner, embedded Tor, store payment processor)
+ * and the spec-table registrar that wires them into svc->frontend_kernel.
+ * Not part of the SIGTERM shutdown sequence — the frontend kernel is torn
+ * down by zcl_service_kernel_stop_all() from the boot_services.c shutdown
+ * path. The runtime-profile gate accessors below STAY in boot_services.c
+ * (several staying app_init call sites read them); they are declared here so
+ * the frontend TU resolves them across the boundary. */
+bool boot_profile_has_explorer(const struct app_context *ctx);
+bool boot_profile_has_store(const struct app_context *ctx);
+bool boot_profile_has_onion(const struct app_context *ctx);
+
+/* Point explorer + API-cache RPC backends at the local JSON-RPC endpoint.
+ * Called by the frontend api_cache / https_explorer starts and once directly
+ * from app_init_services (boot_services.c). */
+void boot_configure_frontend_rpc(struct boot_svc_ctx *svc);
+
+/* Register every clearnet frontend service into svc->frontend_kernel.
+ * Called once from app_init_services before the frontend kernel starts. */
+bool boot_register_frontend_services(struct boot_svc_ctx *svc);
+
 /* Catchup-job helpers stay in boot_services.c (the catchup job is owned beside
  * the staying app_init/shutdown call sites); the projection-backfill worker in
  * boot_background_workers.c drives them forward. */

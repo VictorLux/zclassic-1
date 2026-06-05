@@ -142,7 +142,7 @@ extern void msg_version_set_external_ip(const char *ip_str, uint16_t port);
 #include "services/db_maintenance.h"
 #include "mcp/metrics.h"
 
-extern int g_deferred_proof_validation_below_height;
+extern _Atomic int g_deferred_proof_validation_below_height;
 
 
 /* Boot context accessors. The handle is threaded explicitly by every caller;
@@ -178,21 +178,25 @@ static struct wallet *boot_wallet(struct boot_svc_ctx *svc)
     return runtime->wallet;
 }
 
-static bool boot_profile_has_explorer(const struct app_context *ctx)
+/* Runtime-profile gate accessors. Non-static (prototypes in boot_internal.h)
+ * because several staying app_init call sites read them AND the frontend
+ * service starts in boot_frontend_services.c gate on them across the TU
+ * boundary; they remain co-located here beside boot_profile_has_file_service. */
+bool boot_profile_has_explorer(const struct app_context *ctx)
 {
     if (!ctx)
         return true;
     return app_runtime_profile_has_explorer(ctx->runtime_profile);
 }
 
-static bool boot_profile_has_store(const struct app_context *ctx)
+bool boot_profile_has_store(const struct app_context *ctx)
 {
     if (!ctx)
         return true;
     return app_runtime_profile_has_store(ctx->runtime_profile);
 }
 
-static bool boot_profile_has_onion(const struct app_context *ctx)
+bool boot_profile_has_onion(const struct app_context *ctx)
 {
     return ctx && app_runtime_profile_has_onion(ctx->runtime_profile,
                                                 ctx->tor);
@@ -214,11 +218,6 @@ static int64_t svc_clock_ms(void)
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
-
-static size_t onion_request_adapter(const char *method, const char *path,
-                                    const uint8_t *body, size_t body_len,
-                                    uint8_t *response, size_t response_max,
-                                    void *user_data);
 
 static bool boot_mempool_limits_start(void *ctx)
 {
@@ -260,154 +259,6 @@ static void boot_connman_stop(void *ctx)
         connman_signal_stop(svc->connman);
 }
 
-static bool boot_file_service_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx || !boot_profile_has_file_service(svc->app_ctx))
-        return true;
-    if (svc->defer_offer_service) {
-        printf("File service server deferred during fresh bootstrap receiver mode\n");
-        return true;
-    }
-    fs_server_start(svc->datadir, (uint16_t)svc->app_ctx->fs_port);
-    return true;
-}
-
-static void boot_file_service_stop(void *ctx)
-{
-    (void)ctx;
-    fs_server_stop();
-}
-
-static bool boot_rpc_http_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx)
-        return false;
-    set_rpc_warmup_finished();
-    rpc_http_start(svc->rpc_table, (uint16_t)svc->app_ctx->rpc_port,
-                   svc->app_ctx->rpc_user, svc->app_ctx->rpc_password,
-                   svc->datadir);
-    return true;
-}
-
-static void boot_rpc_http_stop(void *ctx)
-{
-    (void)ctx;
-    rpc_http_stop();
-}
-
-static void boot_configure_frontend_rpc(struct boot_svc_ctx *svc)
-{
-    if (!svc || !svc->app_ctx)
-        return;
-
-    char cookie_path[1024], cookie[256] = "";
-    snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", svc->datadir);
-    FILE *cf = fopen(cookie_path, "r");
-    if (cf) {
-        size_t n = fread(cookie, 1, sizeof(cookie) - 1, cf);
-        fclose(cf);
-        cookie[n] = '\0';
-        char *nl = strchr(cookie, '\n');
-        if (nl)
-            *nl = '\0';
-        char *colon = strchr(cookie, ':');
-        if (colon) {
-            *colon = '\0';
-            api_set_rpc_backend(cookie, colon + 1, svc->app_ctx->rpc_port);
-            explorer_set_rpc(cookie, colon + 1, svc->app_ctx->rpc_port);
-            return;
-        }
-    }
-
-    if (svc->app_ctx->rpc_user && svc->app_ctx->rpc_password) {
-        api_set_rpc_backend(svc->app_ctx->rpc_user,
-                            svc->app_ctx->rpc_password,
-                            svc->app_ctx->rpc_port);
-        explorer_set_rpc(svc->app_ctx->rpc_user,
-                         svc->app_ctx->rpc_password,
-                         svc->app_ctx->rpc_port);
-        return;
-    }
-
-    api_set_rpc_backend(NULL, NULL, svc->app_ctx->rpc_port);
-    explorer_set_rpc(NULL, NULL, svc->app_ctx->rpc_port);
-}
-
-static bool boot_api_cache_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx || !boot_profile_has_explorer(svc->app_ctx))
-        return true;
-
-    int chain_tip_h = active_chain_height(&svc->state->chain_active);
-    int best_header = svc->state->pindex_best_header ?
-        svc->state->pindex_best_header->nHeight : chain_tip_h;
-    if (best_header - chain_tip_h > 1000) {
-        printf("API cache refresh deferred during IBD "
-               "(chain=%d, headers=%d, behind=%d)\n",
-               chain_tip_h, best_header, best_header - chain_tip_h);
-        return true;
-    }
-
-    boot_configure_frontend_rpc(svc);
-    api_start_cache();
-    return true;
-}
-
-static void boot_api_cache_stop(void *ctx)
-{
-    (void)ctx;
-    api_stop_cache();
-}
-
-static bool boot_https_explorer_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx || !boot_profile_has_explorer(svc->app_ctx))
-        return true;
-
-    char cert_path[1024], key_path[1024];
-    snprintf(cert_path, sizeof(cert_path), "%s/ssl/fullchain.pem",
-             svc->datadir);
-    snprintf(key_path, sizeof(key_path), "%s/ssl/privkey.pem",
-             svc->datadir);
-    if (access(cert_path, R_OK) != 0 || access(key_path, R_OK) != 0) {
-        printf("HTTPS: no cert at %s - block explorer not on clearnet\n",
-               cert_path);
-        return true;
-    }
-
-    boot_configure_frontend_rpc(svc);
-
-    int chain_tip_h = active_chain_height(&svc->state->chain_active);
-    int best_header = svc->state->pindex_best_header ?
-        svc->state->pindex_best_header->nHeight : chain_tip_h;
-    bool near_tip = (best_header - chain_tip_h < 1000) &&
-                    (chain_tip_h > g_deferred_proof_validation_below_height - 10000);
-    if (near_tip) {
-        https_server_start_on_port(cert_path, key_path, "zclnet.net",
-                                   svc->app_ctx->https_port,
-                                   svc->app_ctx->https_port - 363);
-    } else {
-        printf("HTTPS: deferred during IBD (chain=%d, headers=%d, "
-               "behind=%d). Will start when near tip.\n",
-               chain_tip_h, best_header, best_header - chain_tip_h);
-        static char s_cert[1024], s_key[1024];
-        strncpy(s_cert, cert_path, sizeof(s_cert) - 1);
-        strncpy(s_key, key_path, sizeof(s_key) - 1);
-        https_deferred_set(s_cert, s_key);
-    }
-    return true;
-}
-
-static void boot_https_explorer_stop(void *ctx)
-{
-    (void)ctx;
-    https_server_stop();
-}
-
 static int boot_known_zcl23_peers(void *ctx,
                                   struct connman_known_peer *out,
                                   size_t max)
@@ -428,167 +279,6 @@ static int boot_known_zcl23_peers(void *ctx,
         out[i].services = peers[i].services;
     }
     return n;
-}
-
-static bool boot_miner_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    const struct app_context *app = svc ? svc->app_ctx : NULL;
-    if (!svc || !app || !app->gen)
-        return true;
-
-    svc->gen->ms = svc->state;
-    svc->gen->coins_tip = svc->coins_tip;
-    svc->gen->mempool = svc->mempool;
-    svc->gen->params = svc->params;
-    svc->gen->num_threads = app->gen_threads > 0 ? app->gen_threads : 1;
-    svc->gen->block_found = boot_submit_mined_block;
-    svc->gen->block_found_ctx = svc;
-    svc->gen->coinbase_script.size = 0;
-
-    if (app->miner_address) {
-        size_t pk_pfx_len, sc_pfx_len;
-        const unsigned char *pk_pfx = chain_params_base58_prefix(
-            svc->params, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-        const unsigned char *sc_pfx = chain_params_base58_prefix(
-            svc->params, B58_SCRIPT_ADDRESS, &sc_pfx_len);
-        struct tx_destination dest;
-        if (decode_destination(app->miner_address, pk_pfx, pk_pfx_len,
-                               sc_pfx, sc_pfx_len, &dest))
-            script_for_destination(&svc->gen->coinbase_script, &dest);
-    }
-
-    gen_start(svc->gen);
-    return true;
-}
-
-static void boot_miner_stop(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (svc && svc->gen && svc->gen->running)
-        gen_stop(svc->gen);
-}
-
-static bool boot_onion_tor_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx)
-        return false;
-
-    char onion_dir[512];
-    snprintf(onion_dir, sizeof(onion_dir), "%s/onion-keys", svc->datadir);
-    struct stat onion_st;
-    bool has_onion_keys = (stat(onion_dir, &onion_st) == 0);
-
-    if (!boot_profile_has_onion(svc->app_ctx) && !has_onion_keys) {
-        printf("Tor: skipped (use -tor or -profile=onion-node to enable)\n");
-        return true;
-    }
-
-    onion_service_start(svc->datadir);
-    tor_integration_set_handler(onion_request_adapter, NULL);
-    printf("Starting embedded Tor...\n");
-    if (!tor_integration_start(svc->datadir,
-                               (uint16_t)svc->app_ctx->p2p_port)) {
-        fprintf(stderr, "Warning: Tor failed to start\n");
-    } else {
-        const char *onion = tor_integration_get_onion_address();
-        if (onion)
-            printf("Tor .onion address: %s\n", onion);
-        else
-            printf("Tor: bootstrapping...\n");
-    }
-    return true;
-}
-
-static void boot_onion_tor_stop(void *ctx)
-{
-    (void)ctx;
-    tor_integration_stop();
-    onion_service_stop();
-}
-
-static bool boot_store_payment_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->app_ctx || !boot_profile_has_store(svc->app_ctx))
-        return true;
-    if (svc->defer_payment_service) {
-        printf("Store payment processor deferred during bootstrap receiver mode\n");
-        return true;
-    }
-    if (!boot_start_payment_service(svc)) {
-        fprintf(stderr,
-                "WARNING: failed to start tracked payment processor thread\n");
-    }
-    return true;
-}
-
-static void boot_store_payment_stop(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (svc)
-        boot_join_payment_service(svc);
-}
-
-static bool boot_register_frontend_services(struct boot_svc_ctx *svc)
-{
-    const struct zcl_service_spec specs[] = {
-        {
-            .name = "file_service",
-            .start = boot_file_service_start,
-            .stop = boot_file_service_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "rpc_http",
-            .start = boot_rpc_http_start,
-            .stop = boot_rpc_http_stop,
-            .ctx = svc,
-        },
-        {
-            .name = "api_cache",
-            .start = boot_api_cache_start,
-            .stop = boot_api_cache_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "https_explorer",
-            .start = boot_https_explorer_start,
-            .stop = boot_https_explorer_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "miner",
-            .start = boot_miner_start,
-            .stop = boot_miner_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "onion_tor",
-            .start = boot_onion_tor_start,
-            .stop = boot_onion_tor_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-        {
-            .name = "store_payment",
-            .start = boot_store_payment_start,
-            .stop = boot_store_payment_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        },
-    };
-
-    for (size_t i = 0; i < sizeof(specs) / sizeof(specs[0]); i++) {
-        if (!zcl_service_kernel_register(&svc->frontend_kernel, &specs[i]))
-            return false;
-    }
-    return true;
 }
 
 static bool boot_register_network_services(struct boot_svc_ctx *svc)
@@ -868,18 +558,6 @@ static bool boot_mmb_leaf_store_repair_prefix_legacy(
     printf("[FlyClient] MMB leaf store prefix repaired: %llu leaves\n",
            (unsigned long long)count);
     return true;
-}
-
-extern size_t onion_service_handle_request(const char *, const char *,
-    const uint8_t *, size_t, uint8_t *, size_t);
-
-static size_t onion_request_adapter(const char *method, const char *path,
-    const uint8_t *req_data, size_t req_len,
-    uint8_t *resp, size_t resp_max, void *ctx)
-{
-    (void)ctx;
-    return onion_service_handle_request(method, path,
-        req_data, req_len, resp, resp_max);
 }
 
 /* ── Runtime service startup (called from app_init) ────────── */

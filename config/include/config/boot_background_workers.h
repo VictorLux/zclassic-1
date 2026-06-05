@@ -76,7 +76,7 @@ void boot_register_worker_supervisor(
     int64_t progress_max_quiet_us);
 
 /* Store payment processor (store profile). Start is gated by
- * boot_store_payment_start in boot_services.c. */
+ * boot_store_payment_start in boot_frontend_services.c. */
 bool boot_start_payment_service(struct boot_svc_ctx *svc);
 void boot_join_payment_service(struct boot_svc_ctx *svc);
 

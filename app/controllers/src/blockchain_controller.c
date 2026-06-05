@@ -250,7 +250,7 @@ void rpc_blockchain_maybe_commit(int32_t height,
 
     /* Skip commitment during deferred proof validation IBD — the MMR will be built
      * from scratch once we pass deferred proof validation height. */
-    extern int g_deferred_proof_validation_below_height;
+    extern _Atomic int g_deferred_proof_validation_below_height;
     if (g_deferred_proof_validation_below_height >= 0 && height <= g_deferred_proof_validation_below_height)
         return;
 
