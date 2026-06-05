@@ -86,7 +86,7 @@ a slice; `no` = not gated.
 | 5 | List + sell file via store | partial | slice ◐ | in-process store-proxy gate in `make ci`; real shielded-buy+file-transfer unproven |
 | 6 | 7-day soak, zero intervention | **regressing** | no | no soak harness; node wedged — the opposite of soak |
 | 7 | Recover from kill -9 <2 min | met-manual | slice ◐ | SQLite-atomicity gate in `make ci`; full-binary restart-to-peer-tip unproven |
-| 8 | Consensus parity w/ zclassicd | unmet | no | **no continuous diff service exists** — net-new build |
+| 8 | Consensus parity w/ zclassicd | partial | slice ◐ | diff service **now EXISTS** (`app/services/src/utxo_parity_service.c`, wired `config/src/boot_utxo_parity.c`, ships dormant); hermetic `mvp-parity-slice` gate (`test_parity_slice.c`) in `make ci-mvp-gates` proves the MATCH/DRIFT machinery; full claim still needs the live oracle over the soak window |
 
 ---
 
@@ -109,13 +109,28 @@ must not jump the queue.
       with full-scope tests (real sync / real shielded buy / full-binary
       restart-to-peer-tip) and add net-new CI jobs for #1 (clean-container
       install) and #8 (parity). Only then does the CI-verified MRS move.
-- [ ] **Scope + build the consensus-parity-diff service (C8)** — net-new; none
-      exists in `app/` or `lib/` (only in-process `test_reorg_parity.c` /
-      `test_projection_replay_invariant.c`). A standing service that
-      block-by-block diffs `zcl_utxocommitment` against a reference and emits
-      `EV_OPERATOR_NEEDED` on mismatch. Develop/unit-test autonomously; running
-      it needs the oracle up (bucket C). Ports: zcl23 RPC 18232, zclassicd RPC
-      8232 / P2P 127.0.0.1:8034.
+- [x] **Scope + build the consensus-parity-diff service (C8)** — DONE: the
+      standing service exists at `app/services/src/utxo_parity_service.c`
+      (wired at boot via `config/src/boot_utxo_parity.c`), ships dormant, and
+      diffs the reducer UTXO set against a reference source
+      (`utxo_reference_source_{fixture,zclassicd}.c`), emitting drift on
+      mismatch. The hermetic `mvp-parity-slice` gate (`test_parity_slice.c`,
+      in `make ci-mvp-gates`) proves the MATCH/DRIFT detection machinery with a
+      negative control. REMAINING (bucket C): run it against the live oracle
+      (zclassicd RPC 8232) over the soak window to move ◐ → ✅.
+- [ ] **Regtest on-demand instant-finalize (gates #6 soak + #7 kill-9 teeth)** —
+      root-caused 2026-06-05 on an isolated regtest node: `generate N` mines a
+      valid PoW block but `reducer_ingest_block` rejects it
+      `block-not-finalized-by-reducer` because `tip_finalize`
+      (`app/jobs/src/tip_finalize_stage.c` step_finalize) requires a one-block
+      lookahead (`active_chain_at(next_h+1)`), which self-mining cannot produce
+      — chicken-and-egg: the tip can't finalize without a child header, and no
+      child can be mined until the tip advances (`generate 3` mined the SAME
+      hash 3×). Fix = a regtest-only (`fMineBlocksOnDemand`) instant-finalize of
+      a self-mined, fully-validated block, gated so mainnet/testnet finality is
+      byte-identical. Diagnostic now logged at `mining_submit_mined_block`
+      (`b56e645ca`). Design under adversarial review; implement with a unit test
+      + the hermetic `generate 3 → getblockcount==3` proof on the isolated node.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
