@@ -358,3 +358,20 @@ wallet_commit_transaction locks mempool->cs (wallet.c:1116) and then tx_mempool_
 also locks pool->cs (txmempool.c:281) — a nested acquire of the SAME mempool mutex. The
 shipped binary runs, so cs is recursive or this path is uncontended; verify whether cs is a
 recursive mutex and, if not, restructure to avoid the re-acquire.
+
+### CORRECTION (2026-06-05) — zcl_mutex is RECURSIVE; two "deadlock" calls were overclaims
+zcl_mutex_init sets PTHREAD_MUTEX_RECURSIVE (lib/util/include/util/sync.h:40). Same-thread
+re-acquire does NOT deadlock. Two consequences:
+- Round-10 `fix(wallet): break keypool deadlock ...` (`2aa7ab00a`) was MIS-CHARACTERIZED: holding
+  w->cs across wallet_generate_new_key (which re-locks w->cs) is NOT a deadlock on a recursive
+  mutex. The shipped change is still correct and worth keeping — it adds a real concurrent-overshoot
+  OOB guard on key_pool[] (two parallel RPC top-ups) and snapshots the default_fee/best_block_height
+  data races — but the "deadlock" framing was wrong. NOTE: the restructure RELEASED w->cs between
+  iterations, which is what created the concurrent-overshoot window the reviewer then guarded; net
+  still safe (tests green) but it was not fixing a hang.
+- Round-11b nested-mempool-mutex note: wallet_commit_transaction holds mempool->cs across
+  tx_mempool_add_unchecked (which re-locks pool->cs == same mutex). RESOLVED-BENIGN: recursive, no
+  deadlock. The wallet_commit_transaction explicit lock/unlock around the call is now REDUNDANT (the
+  callee locks internally) — harmless; could be removed for clarity in a later cleanup.
+Lesson: zcl_mutex is recursive — do NOT call a nested same-mutex acquire a "deadlock" without
+checking sync.h first.
