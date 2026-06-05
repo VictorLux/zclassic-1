@@ -386,10 +386,15 @@ bool sapling_encode_extended_full_viewing_key(const struct zip32_xfvk *xfvk,
     uint8_t data5[272];
     size_t data5_len = 0;
     if (!ConvertBits(8, 5, true, raw, ZIP32_XFVK_SERIALIZED_SIZE,
-                     data5, sizeof(data5), &data5_len))
+                     data5, sizeof(data5), &data5_len)) {
+        memory_cleanse(raw, sizeof(raw));
         return false;
+    }
+    memory_cleanse(raw, sizeof(raw));
 
-    return domain_encoding_bech32_encode(out, out_size, hrp, data5, data5_len);
+    bool ok = domain_encoding_bech32_encode(out, out_size, hrp, data5, data5_len);
+    memory_cleanse(data5, sizeof(data5));
+    return ok;
 }
 
 bool sapling_decode_extended_full_viewing_key(const char *str,

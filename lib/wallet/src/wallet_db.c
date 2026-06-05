@@ -307,7 +307,7 @@ bool wallet_db_write_sapling_key(struct wallet_db *wdb,
 
     bool ok = db_write(&wdb->db, dbkey, dbkey_len,
                        (const char *)val, vlen, true);
-    memory_cleanse(val, sizeof(struct zip32_xsk));
+    memory_cleanse(val, sizeof(val));
     return ok;
 }
 
