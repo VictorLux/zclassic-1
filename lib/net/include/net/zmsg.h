@@ -56,7 +56,18 @@ struct zmsg_message {
 
 struct byte_stream;
 
+/* Write msg onto stream s in wire form (msg_id, timestamp, then
+ * length-prefixed sender/recipient/body). Caller must pass non-NULL
+ * msg and s; neither is null-checked. sender/recipient are capped at
+ * 127 bytes and body at ZMSG_MAX_BODY on the wire. Returns true only
+ * if every field was written. */
 bool zmsg_serialize(const struct zmsg_message *msg, struct byte_stream *s);
+
+/* Read a message from stream s into msg (zeroed first). Caller must
+ * pass non-NULL msg and s; neither is null-checked. Peer-controlled
+ * length prefixes are bounds-checked against the fixed-size fields.
+ * Returns true only if every field was read and in range; false on a
+ * short/over-long stream. */
 bool zmsg_deserialize(struct zmsg_message *msg, struct byte_stream *s);
 
 /* Compute msg_id from message contents */

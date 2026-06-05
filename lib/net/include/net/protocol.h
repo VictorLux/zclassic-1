@@ -51,20 +51,39 @@ void msg_header_init_full(struct msg_header *h,
                           const unsigned char msgstart[MESSAGE_START_SIZE],
                           const char *command, unsigned int msg_size);
 
+/* Copy the header's command field into out as a NUL-terminated string.
+ * Reads at most COMMAND_SIZE bytes (the field is not guaranteed
+ * NUL-terminated) and truncates to fit out_size, always writing a
+ * trailing NUL. Returns the number of command bytes written (excluding
+ * the NUL). Requires out_size >= 1; h and out must be non-NULL. */
 int msg_header_get_command(const struct msg_header *h,
                            char *out, size_t out_size);
 
 bool msg_header_is_valid(const struct msg_header *h,
                          const unsigned char msgstart[MESSAGE_START_SIZE]);
 
+/* Zero-initialize inv: type 0, null hash. inv must be non-NULL. */
 void inv_item_init(struct inv_item *inv);
+/* Set inv to the given type and hash (hash is copied). inv and hash
+ * must be non-NULL. */
 void inv_item_init_typed(struct inv_item *inv, int type,
                          const struct uint256 *hash);
+/* Set inv's type from a type name (e.g. "tx", "block") and copy hash.
+ * Returns 0 on a known name; -1 if type_name matches no known type. */
 int inv_item_init_by_name(struct inv_item *inv, const char *type_name,
                           const struct uint256 *hash);
+/* True if inv->type is a recognized inventory type. */
 bool inv_item_is_known_type(const struct inv_item *inv);
+/* Return the wire command name for inv's type. Returns the static
+ * string "UNKNOWN" if inv is NULL or its type is unrecognized. The
+ * returned pointer is a static string and must not be freed. */
 const char *inv_item_get_command(const struct inv_item *inv);
+/* Format inv as "<command> <hexhash>" into out (NUL-terminated,
+ * truncated to out_size). Returns the snprintf result (length that
+ * would have been written), or -1 if inv or out is NULL. */
 int inv_item_to_string(const struct inv_item *inv, char *out, size_t out_size);
+/* Total order over inv items: by type, then by hash. a and b must be
+ * non-NULL. */
 bool inv_item_less(const struct inv_item *a, const struct inv_item *b);
 
 #define CADDR_TIME_VERSION 31402

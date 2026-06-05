@@ -40,8 +40,18 @@ static inline void version_message_init(struct version_message *v)
     v->relay = true;
 }
 
+/* Write a version message onto stream s in P2P wire order (version,
+ * services, timestamp, both net_addresses without time, nonce,
+ * compact-size-prefixed sub_version, start_height, relay byte).
+ * Caller must pass non-NULL v and s; neither is null-checked. Returns
+ * true only if every field was written. */
 bool version_message_serialize(const struct version_message *v,
                                struct byte_stream *s);
+/* Read a version message from stream s into v. Caller must pass
+ * non-NULL v and s; neither is null-checked. The sub_version length is
+ * bounds-checked against MAX_SUBVER_LENGTH; a missing trailing relay
+ * byte defaults relay to true. Returns true only if every required
+ * field was read and in range. */
 bool version_message_deserialize(struct version_message *v,
                                  struct byte_stream *s);
 bool getdata_blocks_serialize(struct byte_stream *s,
