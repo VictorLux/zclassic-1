@@ -37,8 +37,12 @@ bool coins_alloc(struct coins *c, size_t num_outputs)
 {
     c->vout = zcl_calloc(num_outputs, sizeof(struct tx_out), "coins_vout");
     if (num_outputs && !c->vout) {
-        /* Leave num_vout=0 so the caller can distinguish the zero-
-         * request case from the OOM case via the return value. */
+        /* OOM: leave an empty (num_vout=0, vout=NULL) record and return
+         * false BEFORE the null-init loop so we never deref the NULL
+         * vout.  Callers distinguish OOM from a fully-pruned record by
+         * the return value (false == failure, not "pruned").  Set
+         * num_vout=0 before LOG_FAIL, which itself returns false. */
+        c->num_vout = 0;
         LOG_FAIL("coins", "zcl_calloc failed for num_outputs=%zu",
                  num_outputs);
     }

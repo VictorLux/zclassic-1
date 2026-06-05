@@ -130,7 +130,11 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
             mask_remaining--;
     }
 
-    coins_alloc(out, num_avail);
+    if (!coins_alloc(out, num_avail)) {
+        stream_free(&s); free(val);
+        LOG_FAIL("coins_db",
+                 "get_coins: coins_alloc failed for %zu vouts", num_avail);
+    }
     for (size_t i = 0; i < num_avail; i++) {
         if (avail_stack[i]) {
             if (!compressed_txout_deserialize(&out->vout[i], &s)) {

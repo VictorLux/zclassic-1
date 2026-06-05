@@ -23,10 +23,16 @@ struct coins {
     int version;
 };
 
+/* Produce a pruned/empty record (vout=NULL, num_vout=0); never fails. */
 void coins_init(struct coins *c);
 void coins_free(struct coins *c);
 void coins_copy(struct coins *dst, const struct coins *src);
+/* Allocate num_outputs null txouts. Returns false and leaves an empty
+ * (vout=NULL, num_vout=0) record on OOM — never a partial/NULL-deref. */
 bool coins_alloc(struct coins *c, size_t num_outputs);
+/* Build a record from tx: skips OP_RETURN/unspendable outputs and caps at
+ * 65536 outputs. On OOM (or over-cap) it leaves an empty (num_vout=0)
+ * record, which callers MUST treat as failure — never as "fully pruned". */
 void coins_from_transaction(struct coins *c, const struct transaction *tx, int height);
 bool coins_spend(struct coins *c, uint32_t pos);
 bool coins_is_available(const struct coins *c, unsigned int pos);
