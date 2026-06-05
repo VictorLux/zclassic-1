@@ -249,7 +249,8 @@ static bool store_mark_order_paid(const char *datadir,
 
     ok = db_store_order_mark_paid(&ndb, order_id, status);
     if (!ok) {
-        LOG_WARN("controller", "Store: failed to persist status=%d for order #%lld: %s", status, (long long)order_id, sqlite3_errmsg(ndb.db));
+        const char *em = sqlite3_errmsg(ndb.db);
+        LOG_WARN("controller", "Store: failed to persist status=%d for order #%lld: %s", status, (long long)order_id, em ? em : "unknown");
     }
     node_db_close(&ndb);
     return ok;

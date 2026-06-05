@@ -104,14 +104,23 @@ bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx)
     return ctx->node_db && ctx->node_db->open;
 }
 
-bool wallet_decode_address(const char *str, struct tx_destination *dest)
+/* Fetch the active chain's base58 prefixes for P2PKH and P2SH addresses.
+ * Both the decode and encode paths need the same pair, so resolve them
+ * in one place to keep the two address paths in lockstep. */
+static void wallet_get_address_prefixes(
+    const unsigned char **pk_pfx, size_t *pk_pfx_len,
+    const unsigned char **sc_pfx, size_t *sc_pfx_len)
 {
     const struct chain_params *cp = chain_params_get();
+    *pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, pk_pfx_len);
+    *sc_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, sc_pfx_len);
+}
+
+bool wallet_decode_address(const char *str, struct tx_destination *dest)
+{
     size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+    const unsigned char *pk_pfx, *sc_pfx;
+    wallet_get_address_prefixes(&pk_pfx, &pk_pfx_len, &sc_pfx, &sc_pfx_len);
     return decode_destination(str, pk_pfx, pk_pfx_len,
                               sc_pfx, sc_pfx_len, dest);
 }
@@ -119,12 +128,9 @@ bool wallet_decode_address(const char *str, struct tx_destination *dest)
 bool wallet_encode_destination(const struct tx_destination *dest,
                                char *out, size_t out_size)
 {
-    const struct chain_params *cp = chain_params_get();
     size_t pk_pfx_len, sc_pfx_len;
-    const unsigned char *pk_pfx = chain_params_base58_prefix(
-        cp, B58_PUBKEY_ADDRESS, &pk_pfx_len);
-    const unsigned char *sc_pfx = chain_params_base58_prefix(
-        cp, B58_SCRIPT_ADDRESS, &sc_pfx_len);
+    const unsigned char *pk_pfx, *sc_pfx;
+    wallet_get_address_prefixes(&pk_pfx, &pk_pfx_len, &sc_pfx, &sc_pfx_len);
     return encode_destination(dest, pk_pfx, pk_pfx_len,
                               sc_pfx, sc_pfx_len, out, out_size);
 }

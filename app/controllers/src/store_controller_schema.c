@@ -151,8 +151,13 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
                 .active = true
             }
         };
-        for (size_t i = 0; i < sizeof(products) / sizeof(products[0]); i++)
-            (void)db_store_product_save(&ndb, &products[i]);
+        for (size_t i = 0; i < sizeof(products) / sizeof(products[0]); i++) {
+            /* Log-and-continue: a failed default-product seed must be
+             * observable, but one bad seed should not abort store setup. */
+            if (!db_store_product_save(&ndb, &products[i]))
+                LOG_WARN("store", "default product seed failed: name=%s",
+                         products[i].name);
+        }
     }
 }
 

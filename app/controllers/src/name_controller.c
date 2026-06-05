@@ -96,7 +96,12 @@ static bool rpc_name_resolve(const struct json_value *params, bool help,
     }
 
     struct znam_entry entry;
-    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &entry)) {
+    if (!g_name_ndb) {
+        LOG_WARN("controller", "name_resolve: name DB not initialized; cannot resolve '%s'", name);
+        json_set_str(result, "Name not found");
+        return true;
+    }
+    if (!db_znam_find(g_name_ndb, name, &entry)) {
         json_set_str(result, "Name not found");
         return true;
     }
