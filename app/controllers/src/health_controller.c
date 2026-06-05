@@ -498,6 +498,9 @@ static bool rpc_getsyncwatchdog(const struct json_value *params, bool help,
     json_push_kv_str(result, "current_state", sync_state_name(sync_get_state()));
     json_push_kv_int(result, "current_state_duration_secs",
                      sync_get_state_duration());
+    /* Always 0 today: entry-height tracking is not yet wired in
+     * lib/sync/src/sync_state.c. Not a live metric — see
+     * sync_get_state_entry_height in sync/sync_state.h. */
     json_push_kv_int(result, "current_state_entry_height",
                      (int64_t)sync_get_state_entry_height());
     push_watchdog_recovery_fields(result);

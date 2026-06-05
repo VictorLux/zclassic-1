@@ -14,8 +14,8 @@
 #include <string.h>
 
 /* Controller helpers; forward-declared so the view does not include a
- * controller-internal header. Resolve at link time. */
-size_t html_escape(char *out, size_t out_size, const char *in);
+ * controller-internal header. Resolve at link time. html_escape comes
+ * from util/template.h. */
 void wv_txid_short(const char *txid, char *out, size_t max);
 void wv_txid_lower(const char *txid, char *out, size_t max);
 void wv_format_relative_time(int64_t timestamp, char *out, size_t max);

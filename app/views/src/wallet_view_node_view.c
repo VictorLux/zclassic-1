@@ -11,11 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* html_escape is declared in explorer_internal.h, but this view only
- * needs the small subset already escaped by the controller path. The
- * peer addr/subver are escaped here to preserve the prior behaviour. */
-size_t html_escape(char *out, size_t out_size, const char *in);
-
+/* The peer addr/subver are escaped here to preserve the prior
+ * behaviour. html_escape comes from util/template.h. */
 size_t wv_render_peer_table(char *out, size_t outmax,
                             const struct wallet_view_peer_row *peers, int n)
 {

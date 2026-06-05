@@ -100,9 +100,3 @@ int GetRandInt(int nMax)
     return (int)GetRand((uint64_t)nMax);
 }
 
-
-
-uint32_t insecure_rand_Rz = 11;
-uint32_t insecure_rand_Rw = 11;
-
-

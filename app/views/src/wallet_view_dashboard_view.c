@@ -12,8 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Controller helpers; forward-declared (resolve at link time). */
-size_t html_escape(char *out, size_t out_size, const char *in);
+/* Controller helpers; forward-declared (resolve at link time).
+ * html_escape comes from util/template.h. */
 void wv_txid_lower(const char *txid, char *out, size_t max);
 void wv_format_relative_time(int64_t timestamp, char *out, size_t max);
 
@@ -35,8 +35,7 @@ size_t wv_render_dashboard_tokens(char *out, size_t outmax,
                 "<div class='section-header'>"
                 "<span>Tokens</span>"
                 "<a href='/wallet/coins'>View all</a></div>");
-        double div = 1.0;
-        for (int d = 0; d < decimals; d++) div *= 10.0;
+        double div = (double)zcl_pow10(decimals);
         char esc_tk[32];
         html_escape(esc_tk, sizeof(esc_tk), ticker);
         toff += (size_t)snprintf(out + toff, outmax - toff,

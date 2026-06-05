@@ -253,9 +253,9 @@ void wallet_view_legacy_import(struct json_value *out,
     json_push_kv_int(&src_info, "block_files", snap->src_block_files);
 
     char sz[32];
-    zcl_format_zcl(sz, sizeof(sz), snap->src_blocks_bytes / 1048576);
+    snprintf(sz, sizeof(sz), "%" PRId64, snap->src_blocks_bytes / 1048576);
     json_push_kv_str(&src_info, "blocks_mb", sz);
-    zcl_format_zcl(sz, sizeof(sz), snap->src_chainstate_bytes / 1048576);
+    snprintf(sz, sizeof(sz), "%" PRId64, snap->src_chainstate_bytes / 1048576);
     json_push_kv_str(&src_info, "chainstate_mb", sz);
     json_push_kv(out, "source", &src_info);
     json_free(&src_info);

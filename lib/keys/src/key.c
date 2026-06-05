@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "keys/key.h"
+#include "crypto/common.h"
 #include "crypto/hmac_sha512.h"
 #include "crypto/random_secret.h"
 #include "core/hash.h"
@@ -129,10 +130,7 @@ void ext_key_encode(const struct ext_key *ek,
 {
     code[0] = ek->nDepth;
     memcpy(code + 1, ek->vchFingerprint, 4);
-    code[5] = (ek->nChild >> 24) & 0xFF;
-    code[6] = (ek->nChild >> 16) & 0xFF;
-    code[7] = (ek->nChild >> 8) & 0xFF;
-    code[8] = ek->nChild & 0xFF;
+    WriteBE32(code + 5, ek->nChild);
     memcpy(code + 9, ek->chaincode.data, 32);
     code[41] = 0;
     memcpy(code + 42, ek->key.vch, 32);
@@ -143,10 +141,7 @@ void ext_key_decode(struct ext_key *ek,
 {
     ek->nDepth = code[0];
     memcpy(ek->vchFingerprint, code + 1, 4);
-    ek->nChild = ((unsigned int)code[5] << 24) |
-                 ((unsigned int)code[6] << 16) |
-                 ((unsigned int)code[7] << 8) |
-                 (unsigned int)code[8];
+    ek->nChild = ReadBE32(code + 5);
     memcpy(ek->chaincode.data, code + 9, 32);
     memcpy(ek->key.vch, code + 42, 32);
     ek->key.fValid = secp256k1_ec_seckey_verify(secp256k1_ctx_sign, ek->key.vch);

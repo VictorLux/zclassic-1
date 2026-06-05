@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "keys/pubkey.h"
+#include "crypto/common.h"
 #include "crypto_registry/crypto_registry.h"
 #include "util/log_macros.h"
 #include <assert.h>
@@ -124,10 +125,7 @@ void ext_pubkey_encode(const struct ext_pubkey *epk,
 {
     code[0] = epk->nDepth;
     memcpy(code + 1, epk->vchFingerprint, 4);
-    code[5] = (epk->nChild >> 24) & 0xFF;
-    code[6] = (epk->nChild >> 16) & 0xFF;
-    code[7] = (epk->nChild >> 8) & 0xFF;
-    code[8] = epk->nChild & 0xFF;
+    WriteBE32(code + 5, epk->nChild);
     memcpy(code + 9, epk->chaincode.data, 32);
     assert(epk->pubkey.size == COMPRESSED_PUBLIC_KEY_SIZE);
     memcpy(code + 41, epk->pubkey.vch, COMPRESSED_PUBLIC_KEY_SIZE);
@@ -138,10 +136,7 @@ void ext_pubkey_decode(struct ext_pubkey *epk,
 {
     epk->nDepth = code[0];
     memcpy(epk->vchFingerprint, code + 1, 4);
-    epk->nChild = ((unsigned int)code[5] << 24) |
-                  ((unsigned int)code[6] << 16) |
-                  ((unsigned int)code[7] << 8) |
-                  (unsigned int)code[8];
+    epk->nChild = ReadBE32(code + 5);
     memcpy(epk->chaincode.data, code + 9, 32);
     pubkey_set(&epk->pubkey, code + 41, COMPRESSED_PUBLIC_KEY_SIZE);
 }

@@ -134,8 +134,7 @@ size_t explorer_view_tokens(const char *datadir, uint8_t *r, size_t max)
                 /* Format supply with decimals */
                 char supply[64];
                 if (dec > 0 && dec <= 8) {
-                    int64_t divisor = 1;
-                    for (int d = 0; d < dec; d++) divisor *= 10;
+                    int64_t divisor = zcl_pow10(dec);
                     snprintf(supply, sizeof(supply), "%" PRId64 ".%0*" PRId64,
                              minted / divisor, dec, minted % divisor);
                 } else {
@@ -189,8 +188,7 @@ size_t explorer_view_tokens(const char *datadir, uint8_t *r, size_t max)
 
                 char amt[64];
                 if (dec > 0 && dec <= 8) {
-                    int64_t divisor = 1;
-                    for (int d = 0; d < dec; d++) divisor *= 10;
+                    int64_t divisor = zcl_pow10(dec);
                     snprintf(amt, sizeof(amt), "%" PRId64 ".%0*" PRId64,
                              amount / divisor, dec, amount % divisor);
                 } else {
@@ -319,8 +317,7 @@ size_t explorer_view_token_detail(const char *token_id_hex,
 
     char supply[64];
     if (decimals > 0 && decimals <= 8) {
-        int64_t divisor = 1;
-        for (int d = 0; d < decimals; d++) divisor *= 10;
+        int64_t divisor = zcl_pow10(decimals);
         snprintf(supply, sizeof(supply), "%" PRId64 ".%0*" PRId64,
                  total_minted / divisor, decimals, total_minted % divisor);
     } else {
@@ -400,8 +397,7 @@ size_t explorer_view_token_detail(const char *token_id_hex,
 
                 char amt[64];
                 if (decimals > 0 && decimals <= 8) {
-                    int64_t divisor = 1;
-                    for (int d = 0; d < decimals; d++) divisor *= 10;
+                    int64_t divisor = zcl_pow10(decimals);
                     snprintf(amt, sizeof(amt), "%" PRId64 ".%0*" PRId64,
                              amount / divisor, decimals, amount % divisor);
                 } else {

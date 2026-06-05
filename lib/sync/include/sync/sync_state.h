@@ -46,6 +46,10 @@ bool sync_set_state(enum sync_state new_state, const char *reason);
 const char *sync_state_name(enum sync_state state);
 void sync_state_monitor_init(void);
 int64_t sync_get_state_duration(void);
+/* Chain height at which the current sync state was entered. Currently
+ * always returns 0: entry-height tracking is not yet wired (the entry
+ * height is only ever stored as 0 on init and on each transition).
+ * Do not read it as a live metric until a real height is recorded. */
 int sync_get_state_entry_height(void);
 #ifdef ZCL_TESTING
 void sync_state_test_set_entered_unix(int64_t entered_unix);

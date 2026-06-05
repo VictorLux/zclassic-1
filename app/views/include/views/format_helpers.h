@@ -63,4 +63,12 @@ static inline double zcl_json_real(const char *json, const char *key)
     return v;
 }
 
+/* Integer power of ten (10^n) for token-decimal scaling. n must be >= 0. */
+static inline int64_t zcl_pow10(int n)
+{
+    int64_t p = 1;
+    for (int i = 0; i < n; i++) p *= 10;
+    return p;
+}
+
 #endif

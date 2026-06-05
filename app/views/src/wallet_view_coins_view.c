@@ -6,14 +6,15 @@
  * the HTML fragments. */
 
 #include "views/wallet_view_coins_view.h"
+#include "views/format_helpers.h"
+#include "util/template.h"
 
 #include <stdio.h>
 #include <string.h>
 
 /* Defined in the wallet view controller helpers; forward-declared here so
  * the view does not depend on a controller-internal header (the symbols
- * resolve at link time). */
-size_t html_escape(char *out, size_t out_size, const char *in);
+ * resolve at link time). html_escape comes from util/template.h. */
 void wv_txid_short(const char *hex, char *out, size_t out_max);
 void wv_txid_lower(const char *hex, char *out, size_t out_max);
 
@@ -124,9 +125,7 @@ size_t wv_render_token_rows(char *out, size_t outmax,
         char esc_ticker[64] = "", esc_name[128] = "";
         if (ticker && ticker[0]) html_escape(esc_ticker, sizeof(esc_ticker), ticker);
         if (name && name[0]) html_escape(esc_name, sizeof(esc_name), name);
-        double divisor = 1.0;
-        for (int d = 0; d < decimals; d++) divisor *= 10.0;
-        double disp = (double)bal / divisor;
+        double disp = (double)bal / (double)zcl_pow10(decimals);
         int nn = snprintf(out + tr_off, outmax - tr_off,
             "<tr><td><span class='pill pill-z'>%s</span></td>"
             "<td>%s</td>"
