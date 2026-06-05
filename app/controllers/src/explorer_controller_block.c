@@ -35,7 +35,10 @@
 
 static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
 {
-    if (!param || !param[0]) return 0;
+    /* Empty param: render the not-found view so callers get a real error
+     * body instead of an empty response. */
+    if (!param || !param[0])
+        return explorer_view_block_not_found_rpc(r, max);
     char buf[262144]; /* 256KB for block JSON */
 
     /* Get block hash */

@@ -43,8 +43,10 @@
 
 static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 {
+    /* Bad txid: render the invalid-tx view so callers get a real error
+     * body instead of an empty response (and never re-probe on 0). */
     if (!zcl_is_hex_string(param, 64))
-        return 0;
+        return explorer_view_tx_invalid(r, max);
 
     char buf[262144];
 
@@ -108,6 +110,8 @@ static size_t serve_tx_rpc(const char *param, uint8_t *r, size_t max)
 
         if (cap > 0) {
             out_rows = zcl_malloc(cap * sizeof(*out_rows), "explorer.tx.rpc.out_rows");
+            if (!out_rows)
+                return explorer_view_tx_not_found_rpc(param, r, max);
             const char *p = vout;
             int out_idx = 0;
             while (p < vout_end && num_out_rows < cap) {
@@ -273,6 +277,11 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
     struct explorer_tx_in_row *in_rows = NULL;
     if (tx.num_vin > 0)
         in_rows = zcl_malloc(tx.num_vin * sizeof(*in_rows), "explorer.tx.in_rows");
+    if (tx.num_vin > 0 && !in_rows) {
+        transaction_free(&tx);
+        block_free(&blk);
+        return explorer_view_tx_invalid(r, max);
+    }
     for (size_t i = 0; i < tx.num_vin; i++) {
         struct explorer_tx_in_row *in = &in_rows[i];
         memset(in, 0, sizeof(*in));
@@ -307,6 +316,12 @@ size_t serve_tx(const char *param, uint8_t *r, size_t max)
     struct explorer_tx_out_row *out_rows = NULL;
     if (tx.num_vout > 0)
         out_rows = zcl_malloc(tx.num_vout * sizeof(*out_rows), "explorer.tx.out_rows");
+    if (tx.num_vout > 0 && !out_rows) {
+        free(in_rows);
+        transaction_free(&tx);
+        block_free(&blk);
+        return explorer_view_tx_invalid(r, max);
+    }
     for (size_t i = 0; i < tx.num_vout; i++) {
         struct explorer_tx_out_row *o = &out_rows[i];
         memset(o, 0, sizeof(*o));
