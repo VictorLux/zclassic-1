@@ -13,6 +13,23 @@
 > keep it covering the candidate, or have the body/script/proof/utxo stages
 > resolve via the same above-window path validate_headers uses). Deep
 > reducer-internals; prove on the isolated node + union gate + repro-on-copy.
+>
+> **UPDATE 2 (2026-06-05):** the supervisor-vs-synchronous-drive race is hardened
+> (`18d27b8ae`, `util/reducer_drive_guard`: the supervisor skips stage ticks
+> while `reducer_ingest_block` is driving) — a real concurrency hazard, but NOT
+> sufficient: `generate` still returns `[]`. With the guard removing supervisor
+> noise, the per-stage diagnostics are **self-contradicting across runs**: in one
+> probe `body_fetch` shows good inputs (`vh_ok=1`, `have_data=1`, which must
+> record `disk ok=1`), yet `body_persist` reads its `body_fetch` upstream as
+> `ok=0` and the `body_persist` step never reaches its VERIFIED success path nor
+> any logged failure (read_failed/header_mismatch/merkle). That points at a
+> deeper state/timing bug in the synchronous drain — possibly the forward-only
+> cursor locking in a row written under a transiently-different window/active-
+> chain state, or a stale `body_fetch_log` row from a prior `generate` attempt
+> that the cursor floor prevents re-processing. **Needs step-through debugging /
+> a single-stepped drain harness, not single-probe instrumentation.** Landed so
+> far: L0, L1, L2.5, drain-ordering, L2, supervisor guard — all gated + pushed;
+> `generate` is not yet end-to-end.
 
 
 **Status:** root-caused 2026-06-05 on an isolated regtest node (empirical, not
