@@ -112,6 +112,12 @@ bool disk_block_index_deserialize(struct disk_block_index *d,
     if (d->nStatus & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) {
         if (!stream_read_varint(s, &v))
             LOG_FAIL("block_index_db", "deserialize: read nFile failed");
+        /* nFile is a small block-file index; a varint past INT_MAX would cast
+         * to a negative file number. Reject a corrupt record loudly here rather
+         * than relying on the downstream nFile<0 guards (mirrors the nHeight
+         * range check in the legacy reader). */
+        if (v > 0x7fffffffULL)
+            LOG_FAIL("block_index_db", "deserialize: nFile out of range");
         d->nFile = (int)v;
     }
     if (d->nStatus & BLOCK_HAVE_DATA) {
