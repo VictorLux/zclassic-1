@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "support/cleanse.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -163,24 +164,46 @@ bool zclassic_sapling_spend_proof(
     unsigned char *rk,
     unsigned char *zkproof)
 {
-    if (!ensure_spend_pk())
-        LOG_FAIL("sapling_prover",
-                 "spend_proof: ensure_spend_pk failed (params_dir=%s)", g_params_dir);
+    /* Secret witness material — declared up front so every exit (success
+     * and every LOG_FAIL error path) routes through `cleanup:` and wipes
+     * them. All cleanses happen AFTER the last read of each secret (the
+     * proof/nullifier/bsk are already produced), so this is output-neutral. */
+    uint8_t rcv[32] = {0};
+    struct sapling_spend_witness wit;
+    uint8_t nk[32] = {0}, ivk[32] = {0};
+    bool ok = false;
+
+    if (!ensure_spend_pk()) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: ensure_spend_pk failed (params_dir=%s)\n",
+                __FILE__, __LINE__, __func__, g_params_dir);
+        goto cleanup;
+    }
 
     /* Generate rcv for value commitment */
-    uint8_t rcv[32];
-    if (!sapling_generate_r(rcv))
-        LOG_FAIL("sapling_prover", "spend_proof: sapling_generate_r(rcv) failed (RNG hygiene)");
+    if (!sapling_generate_r(rcv)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: sapling_generate_r(rcv) failed (RNG hygiene)\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
 
     /* cv = value_commit(value, rcv) */
-    if (!sapling_value_commit(value, rcv, cv))
-        LOG_FAIL("sapling_prover", "spend_proof: sapling_value_commit failed");
+    if (!sapling_value_commit(value, rcv, cv)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: sapling_value_commit failed\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
 
     /* rk = randomize(ak, ar) via spend auth generator */
-    if (!sapling_compute_rk(ak, ar, rk))
-        LOG_FAIL("sapling_prover", "spend_proof: sapling_compute_rk failed");
+    if (!sapling_compute_rk(ak, ar, rk)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: sapling_compute_rk failed\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
 
-    struct sapling_spend_witness wit;
     memcpy(wit.ak, ak, 32);
     memcpy(wit.nsk, nsk, 32);
     memcpy(wit.ar, ar, 32);
@@ -188,7 +211,6 @@ bool zclassic_sapling_spend_proof(
     memcpy(wit.diversifier, diversifier, 11);
 
     /* Derive pk_d from nsk → nk, then crh_ivk(ak, nk) → ivk, then ivk_to_pkd */
-    uint8_t nk[32], ivk[32];
     sapling_nsk_to_nk(nsk, nk);
     sapling_crh_ivk(ak, nk, ivk);
     sapling_ivk_to_pkd(ivk, diversifier, wit.pk_d);
@@ -200,11 +222,14 @@ bool zclassic_sapling_spend_proof(
      * The helper bounds-checks witness_len against the fixed 1057-byte
      * layout before reading anything — see sapling_spend_parse_witness
      * for the rationale. */
-    if (!sapling_spend_parse_witness(witness, witness_len, &wit))
-        LOG_FAIL("sapling_prover",
-                 "spend_proof: malformed merkle path (witness_len=%zu, expected >= %zu)",
-                 witness_len,
-                 (size_t)(1 + SAPLING_MERKLE_DEPTH * 33));
+    if (!sapling_spend_parse_witness(witness, witness_len, &wit)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: malformed merkle path (witness_len=%zu, expected >= %zu)\n",
+                __FILE__, __LINE__, __func__,
+                witness_len,
+                (size_t)(1 + SAPLING_MERKLE_DEPTH * 33));
+        goto cleanup;
+    }
 
     /* Compute nullifier */
     struct sapling_spend_inputs pub;
@@ -221,11 +246,15 @@ bool zclassic_sapling_spend_proof(
 
     /* Groth16 prove */
     if (!sapling_create_spend_proof(g_spend_pk_data, g_spend_pk_len,
-                                     &wit, &pub, zkproof))
-        LOG_FAIL("sapling_prover",
-                 "spend_proof: sapling_create_spend_proof failed");
+                                     &wit, &pub, zkproof)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "spend_proof: sapling_create_spend_proof failed\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
 
-    /* Accumulate bsk: bsk += rcv (spends add) */
+    /* Accumulate bsk: bsk += rcv (spends add). This is the last read of
+     * rcv; all secret reads are now complete. */
     struct zclassic_proving_ctx *pctx = ctx;
     if (pctx) {
         struct fs rcv_fs;
@@ -234,9 +263,19 @@ bool zclassic_sapling_spend_proof(
         fs_add(&new_bsk, &pctx->bsk, &rcv_fs);
         pctx->bsk = new_bsk;
         pctx->has_bsk = true;
+        memory_cleanse(&rcv_fs, sizeof(rcv_fs));
     }
 
-    return true;
+    ok = true;
+
+cleanup:
+    /* Wipe the spend secrets on every path: rcv randomness, the witness
+     * struct (ak/nsk/ar/rcm/rcv + derived pk_d), and the derived nk/ivk. */
+    memory_cleanse(rcv, sizeof(rcv));
+    memory_cleanse(&wit, sizeof(wit));
+    memory_cleanse(nk, sizeof(nk));
+    memory_cleanse(ivk, sizeof(ivk));
+    return ok;
 }
 
 bool zclassic_sapling_output_proof(
@@ -249,18 +288,35 @@ bool zclassic_sapling_output_proof(
     unsigned char *cv,
     unsigned char *zkproof)
 {
-    if (!ensure_output_pk())
-        LOG_FAIL("sapling_prover",
-                 "output_proof: ensure_output_pk failed (params_dir=%s)", g_params_dir);
-
-    uint8_t rcv[32];
-    if (!sapling_generate_r(rcv))
-        LOG_FAIL("sapling_prover", "output_proof: sapling_generate_r(rcv) failed (RNG hygiene)");
-
-    if (!sapling_value_commit(value, rcv, cv))
-        LOG_FAIL("sapling_prover", "output_proof: sapling_value_commit failed");
-
+    /* Secret witness material — declared up front so every exit (success
+     * and every LOG_FAIL error path) routes through `cleanup:` and wipes
+     * them. All cleanses happen AFTER the last read (proof + bsk already
+     * produced), so this is output-neutral. */
+    uint8_t rcv[32] = {0};
     struct sapling_output_witness wit;
+    bool ok = false;
+
+    if (!ensure_output_pk()) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "output_proof: ensure_output_pk failed (params_dir=%s)\n",
+                __FILE__, __LINE__, __func__, g_params_dir);
+        goto cleanup;
+    }
+
+    if (!sapling_generate_r(rcv)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "output_proof: sapling_generate_r(rcv) failed (RNG hygiene)\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
+
+    if (!sapling_value_commit(value, rcv, cv)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "output_proof: sapling_value_commit failed\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
+
     wit.value = value;
     memcpy(wit.diversifier, diversifier, 11);
     memcpy(wit.pk_d, pk_d, 32);
@@ -274,11 +330,14 @@ bool zclassic_sapling_output_proof(
     sapling_compute_cm(diversifier, pk_d, value, rcm, pub.cm);
 
     if (!sapling_create_output_proof(g_output_pk_data, g_output_pk_len,
-                                      &wit, &pub, zkproof))
-        LOG_FAIL("sapling_prover",
-                 "output_proof: sapling_create_output_proof failed");
+                                      &wit, &pub, zkproof)) {
+        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
+                "output_proof: sapling_create_output_proof failed\n",
+                __FILE__, __LINE__, __func__);
+        goto cleanup;
+    }
 
-    /* Accumulate bsk: bsk -= rcv (outputs subtract) */
+    /* Accumulate bsk: bsk -= rcv (outputs subtract). Last read of rcv. */
     struct zclassic_proving_ctx *pctx = ctx;
     if (pctx) {
         struct fs rcv_fs, neg_rcv;
@@ -288,9 +347,18 @@ bool zclassic_sapling_output_proof(
         fs_add(&new_bsk, &pctx->bsk, &neg_rcv);
         pctx->bsk = new_bsk;
         pctx->has_bsk = true;
+        memory_cleanse(&rcv_fs, sizeof(rcv_fs));
+        memory_cleanse(&neg_rcv, sizeof(neg_rcv));
     }
 
-    return true;
+    ok = true;
+
+cleanup:
+    /* Wipe the output secrets on every path: rcv randomness and the
+     * witness struct (esk/rcm/rcv). */
+    memory_cleanse(rcv, sizeof(rcv));
+    memory_cleanse(&wit, sizeof(wit));
+    return ok;
 }
 
 bool zclassic_sapling_binding_sig(
@@ -305,7 +373,11 @@ bool zclassic_sapling_binding_sig(
     uint8_t bsk_bytes[32];
     fs_to_bytes(bsk_bytes, &pctx->bsk);
     /* generator_idx=1 for binding signature (uses value commitment generator) */
-    return redjubjub_sign(bsk_bytes, sighash, 32, result, 1);
+    bool ok = redjubjub_sign(bsk_bytes, sighash, 32, result, 1);
+    /* Wipe the binding signing key after the signature is produced
+     * (last read), on both success and failure. Output-neutral. */
+    memory_cleanse(bsk_bytes, sizeof(bsk_bytes));
+    return ok;
 }
 
 void zclassic_init_zksnark_params(
