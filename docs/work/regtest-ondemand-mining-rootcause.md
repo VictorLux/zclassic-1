@@ -200,14 +200,51 @@ from `reducer_ingest_block`. Likely a cursor-visibility / persisted-cursor-read
 timing issue across the per-stage `progress_store` transactions within one drain,
 or a downstream active-chain-membership gate. **Investigate next.**
 
+### L2.5 ROOT-CAUSED + the architectural wall (2026-06-05, all reverted)
+
+**L2.5 = `pindex_best_header` not advanced by the producer path.** With L0+L1,
+the mined block is admitted but every downstream cursor stayed at 1: nothing
+advanced. Root cause: `vh_resolve_bi` (`validate_headers_stage.c:270-280`)
+resolves a block above the finalized window ONLY via `ms->pindex_best_header`,
+but the reducer PRODUCER path (`header_admit` → `add_to_block_index`) never
+advances `pindex_best_header` — only the network path does
+(`lib/net/src/msg_headers.c:485-517`, chainwork-ranked). **Verified fix:** after
+`authoritative_admit` in `step_admit`, advance `ms->pindex_best_header` to the
+admitted block when it is most-work (mirror msg_headers; needs
+`core/arith_uint256.h`). With this, the pipeline FLOWS: all cursors advanced
+(`vh=bf=bp=sv=pv=ua=2`) — a big step.
+
+**The wall (L2.6/L2.7) — why it's a dedicated effort, not one more patch.** Once
+the pipeline flows, the block is still rejected: `utxo_apply` records
+`upstream_failed` because `proof_validate.ok==0`, and **the downstream stages
+resolve their block via the raw `active_chain_at` finalized-window accessor**
+(`proof_validate_stage.c:418`, `utxo_apply_stage.c:219`), which returns NULL for
+a block ABOVE the finalized tip. `validate_headers` works only because it has the
+`vh_resolve_bi` best-header fallback; `script_validate`/`proof_validate`/
+`utxo_apply` do NOT — they gate on the finalized window. So a single
+successor-less self-mined block (which is, by construction, one above the
+finalized tip until tip_finalize runs) cannot clear those stages. This is the
+fundamental mismatch: **the staged reducer pipeline is built for continuous,
+network-fed operation where blocks finalize as successors arrive; driving one
+successor-less block through it synchronously hits the finalized-window
+resolution gate at each downstream stage.**
+
+The proper fix gives the downstream stages the same above-finalized-window
+resolver `validate_headers` uses (or extends the active-chain window across the
+synchronous drain), across 3 consensus-critical stages — a substantial change
+that alters block resolution for ALL operation (network included) and must be
+proven on a copy. NOT a drive-by.
+
 ### Next session order
 
-L0 is done. Next: **L2.5** — instrument each downstream stage's advance gate on
-the isolated node (why `validate_headers` at cursor 1 does not advance when
-`header_admit` cursor is 2 within the same synchronous drain). Once the pipeline
-flows, re-apply L1 + L2 (both verified above), then the 3 required proofs (e2e +
-negative-gate twin + `generate 3 → getblockcount==3`). L1 + L2 are reverted on
-disk but their exact diffs are captured in git history and this doc.
+L0 is shipped (`06ae18c26`). The full feature needs, in order: L1 (header
+staging) + L2.5 (best_header in producer path) — both verified this session, make
+the pipeline flow — then **L2.6/L2.7**: give `script_validate`/`proof_validate`/
+`utxo_apply` an above-finalized-window block resolver (mirror `vh_resolve_bi`),
+or extend the active-chain window for the duration of the synchronous ingest.
+Then L2 (regtest-gated `set_authoritative_tip` finalize). Then the 3 proofs (e2e
++ negative-gate twin + `generate 3 → getblockcount==3`). All exploratory diffs
+are in git history; only L0 is on disk.
 
 ## Method
 
