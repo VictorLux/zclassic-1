@@ -23,7 +23,9 @@ struct snapshot_tx_index_job {
  * Hard-links blk*.dat/rev*.dat (instant), copies LevelDB dirs.
  * Stores in c23_datadir/snapshots/YYYYMMDD_HHMMSS/.
  * Rotates old snapshots, keeping max_keep most recent.
- * Returns path to new snapshot dir, or NULL on error. */
+ * Returns path to new snapshot dir, or NULL on error. The returned string
+ * points to a static buffer overwritten by the next snapshot_create call —
+ * use or copy it before calling again; do not free it. */
 const char *snapshot_create(const char *legacy_datadir,
                             const char *c23_datadir,
                             int max_keep);

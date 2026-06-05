@@ -375,3 +375,33 @@ re-acquire does NOT deadlock. Two consequences:
   callee locks internally) — harmless; could be removed for clarity in a later cleanup.
 Lesson: zcl_mutex is recursive — do NOT call a nested same-mutex acquire a "deadlock" without
 checking sync.h first.
+
+## §12-EXT — Consensus-sensitive findings from the round-12 deep sweep (repro-on-copy each)
+Round-12 audited the consensus-ADJACENT surface (app/services, sync/repair/snapshot
+controllers, storage glue) under a STRICT bar. Autonomously-safe yield was ~nil (the one
+"leak" in block_index_projection.c:381 is NOT a leak — sqlite3_finalize always runs; it is
+only a per-event prepare/finalize PERF nit, prepare-once like ins_stmt = a follow-up perf
+item). The real value is these REAL, vetted, consensus/security findings — each needs a
+datadir-copy repro before any edit; do NOT batch:
+- **HIGH header_sync_service.c:575** — `if (verify && tip && verify->nHeight==tip->nHeight) return true;`
+  accepts a same-height candidate WITHOUT hash equality (the hash-match case already returned
+  at :570). Verified real code. MUST analyze the caller contract: if this gates chain
+  acceptance (not just reorg-candidate eval), it could accept a competing same-height block.
+  Top priority to investigate.
+- **MED bg_validation_service.c:312** — when read_block_undo fails, 4b `continue`s (SKIPS script-sig
+  verification) yet the block is reported validated (ok=true). Real gap in the BACKGROUND
+  validator's guarantee (not the connect_block consensus path). Should report incomplete, not
+  validated, when undo is required but missing.
+- **LOW(sev) utxo_recovery_restore.c:126** — system("rm -rf '%s' && cp -a '%s' '%s'") with
+  operator-controlled datadir. Real but NOT network-reachable (datadir is a launch arg), so low
+  severity; still harden (validate path chars or POSIX copy) for defense-in-depth.
+- snapshot_sync_service.c:571 — g_snapshot_anchor read/set without g_snapsync_service_lock while
+  snapsync_reset frees it under the lock → potential UAF race with header_sync's anchor walk.
+- block_index_loader.c:376 — incomplete nChainTx recompute in the flat-file loader.
+- legacy_import_service.c:555 — double-free on the sapling-note import error path.
+- coins_view_sqlite.c:1056 — commitment write failure not rolled back (silent torn write).
+- disk_block_io.c:231 — stale FILE* cached after ftell failure → wrong read position.
+- block_index_db.c:406 — deserialization allows nFile<0 without HAVE_DATA/HAVE_UNDO guard.
+- quorum_oracle_service.c:255 — asymmetric agreement counts in the quorum vote tally.
+- sync_controller_blocks.c:287 — db_tx_save failure early-returns, skipping batch-state cleanup.
+- repair_controller_utxo.c:432 — uninitialized prev_txid_hex read on malformed JSON txid.
