@@ -82,6 +82,12 @@ bool domain_encoding_base58_decode(const char *psz,
     }
 
     size_t input_len = strlen(psz);
+    /* Bound the stack VLA below: no valid base58 address or key string
+     * approaches this length, so a longer input is malformed — reject it
+     * rather than let an attacker-sized string exhaust the stack (mirrors the
+     * length cap in bech32_decode). */
+    if (input_len > 1023)
+        return false;
     size_t b256_size = input_len * 733 / 1000 + 1;
     unsigned char b256[b256_size];
     memset(b256, 0, b256_size);
