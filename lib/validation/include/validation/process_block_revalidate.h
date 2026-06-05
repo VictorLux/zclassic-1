@@ -31,7 +31,20 @@
  *      `qr.winning_hash_hex` equal to OUR pindex's hash (exact
  *      32-byte SHA256d). Two independent sources must agree on the
  *      same hash we already have a block_index entry for. Anything
- *      less and we leave BLOCK_FAILED_VALID set.
+ *      less and we leave BLOCK_FAILED_VALID set — EXCEPT the
+ *      single-source local-authority pathway in 2b.
+ *
+ *   2b. Pathway (B) — single-source local authority (personal-stack
+ *      sovereignty). On a personal stack zclassicd IS the local
+ *      authority, so we also clear when ALL of: zclassicd is present and
+ *      returns a hash equal to our pindex's; QO_SRC_LOCAL has no vote
+ *      (we genuinely have no opinion, not a bug); and the active tip is
+ *      strictly below the target height (so LOCAL silence is structural).
+ *      This accepts a single agreeing source by design; verification is
+ *      still preserved because connect_block fully re-validates the block
+ *      before it can be committed (see the implementation's evidence_path
+ *      "local_authority_zclassicd"). Implemented in
+ *      process_block_revalidate.c step 3, pathway (B).
  *
  *   3. On agreement: clear BLOCK_FAILED_VALID on the pindex and
  *      BLOCK_FAILED_CHILD on every descendant whose only failure-mark

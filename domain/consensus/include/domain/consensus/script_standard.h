@@ -117,7 +117,9 @@ int domain_consensus_script_sig_args_expected(
  *
  * The dest_out pointer is required (non-NULL). For P2PK, the pubkey
  * must be valid (curve-point check); an invalid pubkey returns
- * *matched=false and a zero-filled destination. */
+ * *matched=false with dest_out->type set to DEST_NONE (the rest of
+ * dest_out is left unspecified — callers must not read it when
+ * *matched is false). */
 struct zcl_result domain_consensus_script_extract_destination(
         const struct script *s,
         struct tx_destination *dest_out,
