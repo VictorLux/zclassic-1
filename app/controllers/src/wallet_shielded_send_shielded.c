@@ -261,8 +261,9 @@ bool z_sendmany_shielded(
             struct script empty_script;
             empty_script.size = 0;
             struct uint256 sighash;
-            signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
-                           branch_id, &txdata, &sighash);
+            if (!signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
+                                branch_id, &txdata, &sighash))
+                spend_err = "Binding sighash computation failed";
 
             for (size_t i = 0; i < num_sel_notes && !spend_err; i++) {
                 /* rsk = ask + ar in Jubjub scalar field (Fs, NOT Fr).

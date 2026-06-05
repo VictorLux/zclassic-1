@@ -398,8 +398,13 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         struct script empty_script;
         empty_script.size = 0;
         struct uint256 binding_sighash;
-        signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
-                       branch_id, &txdata, &binding_sighash);
+        if (!signature_hash(&empty_script, &wtx.tx, NOT_AN_INPUT, ht, 0,
+                            branch_id, &txdata, &binding_sighash)) {
+            zclassic_sapling_proving_ctx_free(proving_ctx);
+            transaction_free(&wtx.tx);
+            json_set_str(result, "Binding sighash computation failed");
+            LOG_FAIL("wallet_shielded", "z_sendmany: binding signature_hash failed (t->z path)");
+        }
 
         if (!zclassic_sapling_binding_sig(proving_ctx,
                                                wtx.tx.value_balance,
@@ -458,9 +463,17 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
             precompute_tx_data(&wtx.tx, &txdata);
 
             struct uint256 sighash;
-            signature_hash(&prev_script, &wtx.tx,
-                           (unsigned int)i, ht, db_selected[i].value,
-                           branch_id, &txdata, &sighash);
+            if (!signature_hash(&prev_script, &wtx.tx,
+                                (unsigned int)i, ht, db_selected[i].value,
+                                branch_id, &txdata, &sighash)) {
+                memory_cleanse(skey.vch, 32);
+                zcl_mutex_unlock(&ctx->wallet->cs);
+                transaction_free(&wtx.tx);
+                json_set_str(result, "Sighash computation failed");
+                for (size_t j = 0; j < num_selected; j++)
+                    db_wallet_utxo_free(&db_selected[j]);
+                LOG_FAIL("wallet_shielded", "z_sendmany: signature_hash failed for input %zu (t->t path)", i);
+            }
 
             unsigned char sig[SIGNATURE_SIZE + 1];
             size_t siglen = 0;
