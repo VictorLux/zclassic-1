@@ -521,3 +521,18 @@ FIXED (each proven output-neutral before edit; test_sapling PASS / 0/371): note_
 sapling_generate_r RNG-buffer cleanse on the failure path. STILL DEFERRED: g_esk_ring global
 ephemeral-secret lifecycle wipe (needs ring-usage analysis); the bn254/bls12_381/circuit_gadgets/
 groth16 proof-math files (huge, strictest consensus bar — not audited).
+
+### g_esk_ring — REJECTED, not a fix (2026-06-05)
+note_encryption.c:54 g_esk_ring is entirely under `#if ZCL_CRYPTO_SANITY` (disabled by default —
+ZCL_CRYPTO_SANITY 0), so it does not exist in production builds (the #else path is a no-op inline).
+It is a DELIBERATE debug ring that retains the last 64 esk values to detect an RNG-stuck repeat
+(two-time-pad guard) and abort(); retention is the feature's whole point — wiping it would defeat it.
+Not a secret-hygiene leak. No fix.
+
+### Secret-hygiene sweep status: COMPLETE for tractable items
+Rounds 17–19 cleansed all reachable secret-material buffers across lib/crypto, domain/wallet,
+domain/encoding, and lib/sapling key/note files (KAT-gated, output-neutral). ONLY remaining secret
+surface NOT audited: the zk-SNARK proof-math (bn254/bls12_381/circuit_gadgets/groth16_prover/
+sapling_circuit/fr/pedersen/msm/jubjub) — huge, the strictest must-never-fork consensus bar, and the
+proving witness/intermediates are the most consensus-critical code. Defer to an owner-gated, repro/KAT
+-heavy pass; do NOT churn it for marginal hygiene.
