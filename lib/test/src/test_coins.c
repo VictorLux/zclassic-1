@@ -238,6 +238,30 @@ int test_coins(void)
         transaction_free(&tx);
     }
 
+    /* Round-23 contract: on a real OOM in coins_alloc, coins_from_transaction
+     * returns false with an empty record rather than a misleading num_vout==0
+     * "all pruned" coin. We arm the allocator fault seam on coins_alloc's
+     * "coins_vout" label (fires once, then self-clears). */
+    printf("coins_from_transaction OOM returns false... ");
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 1, 2);
+        tx.version = 4;
+        tx.vout[0].value = 100;
+        tx.vout[1].value = 200;
+        struct coins c;
+        coins_init(&c);
+        zcl_alloc_fault_fail_next("coins_vout");
+        bool ok = coins_from_transaction(&c, &tx, 700);
+        zcl_alloc_fault_clear();              /* belt-and-suspenders if unfired */
+        if (!ok && c.num_vout == 0 && c.vout == NULL)
+            printf("OK\n");
+        else { printf("FAIL (ok=%d num_vout=%zu)\n", (int)ok, c.num_vout); failures++; }
+        coins_free(&c);
+        transaction_free(&tx);
+    }
+
     printf("coins_stats_init... ");
     {
         struct coins_stats s;
