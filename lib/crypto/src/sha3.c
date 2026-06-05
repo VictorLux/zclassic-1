@@ -8,6 +8,7 @@
 
 #include "crypto/sha3.h"
 #include "crypto/common.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 static inline uint64_t rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
@@ -243,7 +244,9 @@ void hmac_sha3_512(const unsigned char *key, size_t key_len,
     sha3_512_write(&ctx, inner, 64);
     sha3_512_finalize(&ctx, output);
 
-    memset(inner, 0, 64);
-    memset(k_pad, 0, sizeof(k_pad));
-    memset(key_hash, 0, sizeof(key_hash));
+    /* Non-elidable wipe: these hold key-derived HMAC material; a plain
+     * memset before scope exit can be optimized away. */
+    memory_cleanse(inner, 64);
+    memory_cleanse(k_pad, sizeof(k_pad));
+    memory_cleanse(key_hash, sizeof(key_hash));
 }

@@ -5,6 +5,7 @@
 
 #include "crypto/blake2s.h"
 #include "util/log_macros.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 static const uint32_t blake2s_IV[8] = {
@@ -167,6 +168,9 @@ int blake2s_final(struct blake2s_ctx *ctx, void *out, size_t outlen)
         buffer[i * 4 + 3] = (uint8_t)(ctx->h[i] >> 24);
     }
     memcpy(out, buffer, outlen);
+    /* blake2s output can be secret (e.g. Sapling crh_ivk → ivk); wipe the
+     * local digest copy after it is delivered to the caller. */
+    memory_cleanse(buffer, sizeof(buffer));
     return 0;
 }
 
