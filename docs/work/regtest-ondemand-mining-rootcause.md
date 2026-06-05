@@ -214,26 +214,27 @@ admitted block when it is most-work (mirror msg_headers; needs
 `core/arith_uint256.h`). With this, the pipeline FLOWS: all cursors advanced
 (`vh=bf=bp=sv=pv=ua=2`) — a big step.
 
-**The wall (L2.6/L2.7) — why it's a dedicated effort, not one more patch.** Once
-the pipeline flows, the block is still rejected: `utxo_apply` records
-`upstream_failed` because `proof_validate.ok==0`, and **the downstream stages
-resolve their block via the raw `active_chain_at` finalized-window accessor**
-(`proof_validate_stage.c:418`, `utxo_apply_stage.c:219`), which returns NULL for
-a block ABOVE the finalized tip. `validate_headers` works only because it has the
-`vh_resolve_bi` best-header fallback; `script_validate`/`proof_validate`/
-`utxo_apply` do NOT — they gate on the finalized window. So a single
-successor-less self-mined block (which is, by construction, one above the
-finalized tip until tip_finalize runs) cannot clear those stages. This is the
-fundamental mismatch: **the staged reducer pipeline is built for continuous,
-network-fed operation where blocks finalize as successors arrive; driving one
-successor-less block through it synchronously hits the finalized-window
-resolution gate at each downstream stage.**
-
-The proper fix gives the downstream stages the same above-finalized-window
-resolver `validate_headers` uses (or extends the active-chain window across the
-synchronous drain), across 3 consensus-critical stages — a substantial change
-that alters block resolution for ALL operation (network included) and must be
-proven on a copy. NOT a drive-by.
+**CORRECTION (later same day): it is NOT a finalized-window wall — it is a
+drain-ordering / stale-upstream-row problem.** A decisive probe added an
+instrumented `active_chain_at(next_h)` inside `proof_validate` and found it
+returns **non-NULL** with `have_data=1` once L2.5 is in place
+(`[L2.6-DIAG] h=1 sv_upstream_ok=0 aca=0x… have_data=1`) — the active-chain
+window IS extended to the candidate, so the earlier "finalized-window wall"
+hypothesis was WRONG. The real signal: `proof_validate` sees its upstream
+(`script_validate`) row `ok==0`, and `script_validate` in turn exits via its own
+`upstream_failed` path BEFORE running `validate_block_scripts` (its
+`[L2.6b-DIAG]` after the validate call never fires). So a **failure row is
+recorded for height 1 by an early stage during drain #1** — which runs BEFORE
+`reducer_persist_ingested_body_locked` makes the body available — and that stale
+`ok=0` row then propagates downstream as `upstream_failed` and is never cleared
+in drain #2. The fix is in the synchronous-ingest ordering
+(`reducer_ingest_block`): persist the body and/or seed the stages so the body is
+present BEFORE the first stage processes the height (or make the body-dependent
+stages re-evaluate rather than persist a permanent failure when the body is not
+yet available). This is a smaller, more localized change than the (incorrect)
+"3-stage resolver" framing — but still consensus-path and must be proven on a
+copy. **Next session: instrument `body_fetch`/`body_persist`/`validate_headers`
+results for height 1 across drain #1 vs drain #2 to pin the exact stale row.**
 
 ### Next session order
 
