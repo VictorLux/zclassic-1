@@ -278,10 +278,20 @@ uint64_t contacts_projection_catch_up(contacts_projection_t *p)
                                 ctx.next_offset))
         ctx.ok = false;
     if (!exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
-                  ctx.ok ? "commit catch_up" : "rollback catch_up"))
+                  ctx.ok ? "commit catch_up" : "rollback catch_up")) {
+        /* Rolled back — restore the cached offset from persisted meta;
+           SQLite discarded the in-flight writes on ROLLBACK. Without this,
+           the catchup_cb's in-flight advance leaks and the next catch_up
+           skips events. */
+        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
         return UINT64_MAX;
-    if (!ctx.ok)
+    }
+    if (!ctx.ok) {
+        /* Rolled back — restore the cached offset from persisted meta;
+           SQLite discarded the in-flight writes on ROLLBACK. */
+        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
         return UINT64_MAX;
+    }
     int64_t elapsed = now_ms() - start_ms;
     p->last_catch_up_ms = elapsed > 0 ? (uint64_t)elapsed : 0;
     return p->last_consumed_offset;

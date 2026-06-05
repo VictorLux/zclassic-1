@@ -307,8 +307,14 @@ uint64_t peers_projection_catch_up(peers_projection_t *p)
     bool finish_ok = exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
                               ctx.ok ? "catch_up commit" :
                                        "catch_up rollback");
-    if (!ctx.ok || !finish_ok)
+    if (!ctx.ok || !finish_ok) {
+        /* Rolled back — restore the cached offset from persisted meta;
+           SQLite discarded the in-flight writes on ROLLBACK. Without this,
+           the catchup_cb's in-flight advance leaks and the next catch_up
+           skips events. */
+        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
         return UINT64_MAX;
+    }
     p->last_consumed_offset = ctx.next_offset;
     int64_t elapsed = now_ms() - start_ms;
     p->last_catch_up_ms = elapsed > 0 ? (uint64_t)elapsed : 0;
