@@ -568,8 +568,23 @@ bool snapsync_check_stall(void)
     return true;
 }
 
-struct block_index *snapsync_get_anchor(void) { return g_snapshot_anchor; }
-void snapsync_set_anchor(struct block_index *anchor) { g_snapshot_anchor = anchor; }
+struct block_index *snapsync_get_anchor(void)
+{
+    /* Guard g_snapshot_anchor with the service lock: snapsync_reset()
+     * frees and NULLs it while holding g_snapsync_service_lock (see
+     * lines ~263-265), and chain walkers (header_sync_service) deref the
+     * returned pointer — an unlocked read could return a freed pointer. */
+    snapsync_service_lock_internal();
+    struct block_index *result = g_snapshot_anchor;
+    snapsync_service_unlock_internal();
+    return result;
+}
+void snapsync_set_anchor(struct block_index *anchor)
+{
+    snapsync_service_lock_internal();
+    g_snapshot_anchor = anchor;
+    snapsync_service_unlock_internal();
+}
 
 /* ── Progress Query ──────────────────────────────────────── */
 
