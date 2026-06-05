@@ -375,6 +375,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
     json_set_str(result, txid);
+    transaction_free(&wtx.tx);
     return true;
 }
 
@@ -428,6 +429,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     }
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
+    transaction_free(&wtx.tx);
     return true;
 }
 

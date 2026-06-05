@@ -164,6 +164,7 @@ bool rpc_sendmany(const struct json_value *params, bool help,
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
     json_set_str(result, txid);
+    transaction_free(&wtx.tx);
     return true;
 }
 

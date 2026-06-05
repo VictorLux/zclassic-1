@@ -1117,6 +1117,7 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
     bool ok = tx_mempool_add_unchecked(mempool, &wtx->tx.hash, &entry);
     zcl_mutex_unlock(&mempool->cs);
 
+    mempool_entry_free(&entry);
     return ok;
 }
 
