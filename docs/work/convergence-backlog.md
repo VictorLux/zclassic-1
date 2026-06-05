@@ -437,3 +437,20 @@ Still-deferred consensus-DECISION §12-EXT items (repro-on-copy/owner): coins_vi
 rollback, block_index_db.c:406 nFile guard, quorum_oracle_service.c:255 tally, block_index_loader.c:376
 nChainTx recompute, sync_controller_blocks.c:287 batch cleanup, repair_controller_utxo.c:432 uninit read,
 utxo_recovery_restore.c:126 system() hardening.
+
+### Round 14 (2026-06-05) — defensive subset of §12-EXT, prove-then-fix (all CLEAN)
+FIXED (proven real + defensive-only + consensus-neutral + no deadlock, each reviewed):
+legacy_import_scan.c both realloc-into-self OOM NULL-derefs (c->results + ctx->hits twin),
+repair_controller_utxo.c malformed-txid uninitialized hex-decode read, sync_controller_blocks.c
+db_tx_save-failure batch-cleanup skip, utxo_recovery_restore.c system() datadir char-validation.
+
+### FRONTIER (2026-06-05): autonomous-safe convergence is EXHAUSTED
+Every remaining §12-EXT item is a genuine CONSENSUS-DECISION change → needs repro-on-copy
+(tools/repro_on_copy.sh) proof + likely owner-gating; do NOT autonomously batch:
+- coins_view_sqlite.c:1056 — commitment write failure not rolled back (torn write).
+- block_index_db.c:406 — deserialization allows nFile<0 without HAVE_DATA/HAVE_UNDO guard.
+- quorum_oracle_service.c:255 — asymmetric agreement counts in the quorum vote tally.
+- block_index_loader.c:376 — incomplete nChainTx recompute in the flat-file loader.
+Next step for each: read-only prove-or-refute triage (skeptical analysts + adjudicator) FIRST
+(header_sync:575 proved this catches false positives), THEN repro-on-copy design only for the
+confirmed-real ones.
