@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "util/log_macros.h"
+#include "util/reducer_drive_guard.h"
 
 /* ── Reducer-as-ingest includes ─────────────────────────────────────
  * The synchronous reducer wrapper drives the staged Job pipeline and the
@@ -283,6 +284,12 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * call. The reorg disconnect (step 4) is driven from inside utxo_apply
      * when a better fork is selected. */
     zcl_mutex_lock(&ctl->mutex);
+    /* Mark a synchronous drive so the staged_sync_supervisor yields its stage
+     * ticks for the duration — they share the active-chain window, which is not
+     * under the per-stage lock, and a concurrent supervisor drain races this
+     * drive and can lock in a permanent failure row for the block being
+     * ingested. Cleared before every return below (mutex unlock points). */
+    reducer_drive_enter();
     (void)force; /* relay pre-filter gating lives in the admit producer */
     struct block_index *anchor_tip = active_chain_tip(&ctl->ms->chain_active);
     if (anchor_tip && anchor_tip->phashBlock &&
@@ -307,6 +314,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
             break;
     }
     if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out)) {
+        reducer_drive_exit();
         zcl_mutex_unlock(&ctl->mutex);
         return false;
     }
@@ -343,6 +351,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * header/stateful rejects are recorded at the ingested height. */
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
     int target_h = ingested ? ingested->nHeight : (tip ? tip->nHeight : 0);
+    reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
 
     /* (4) Read back the verdict from the freshly-written log rows. */

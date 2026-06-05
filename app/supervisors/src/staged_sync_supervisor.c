@@ -18,6 +18,7 @@
 
 #include "supervisors/staged_sync_supervisor.h"
 #include "util/log_macros.h"
+#include "util/reducer_drive_guard.h"
 #include "supervisors/domains.h"
 
 #include "util/supervisor.h"
@@ -166,6 +167,18 @@ static void staged_stage_tick(struct liveness_contract *c)
 {
     struct staged_stage_desc *d = (struct staged_stage_desc *)c->ctx;
     if (!d || !d->ms) return;
+    /* Yield to an in-flight SYNCHRONOUS reducer drive (reducer_ingest_block on
+     * the mining/submitblock/rebuild thread). The stages share the active-chain
+     * window, which is not under the per-stage progress.kv lock, so draining a
+     * stage here concurrently with that drive races and can record a permanent
+     * failure row for the block being ingested. No-op for live network sync,
+     * where reducer_ingest_block is never on the path so the flag stays 0; we
+     * still heartbeat so the liveness contract does not trip on the skip. */
+    if (reducer_drive_active()) {
+        supervisor_progress(d->id, (int64_t)d->cursor());
+        supervisor_tick(d->id);
+        return;
+    }
     (void)d->drain(d->batch);
     supervisor_progress(d->id, (int64_t)d->cursor());
     supervisor_tick(d->id);
