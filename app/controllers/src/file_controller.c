@@ -272,16 +272,21 @@ static bool file_manifest_save(const struct file_manifest *fm,
     if (!f) LOG_FAIL("file", "manifest_save: cannot create %s", path);
     /* Write header: magic + num_chunks + total_bytes + root_hash */
     uint32_t magic = 0x464D414E; /* "FMAN" */
-    fwrite(&magic, 4, 1, f);
-    fwrite(&fm->num_chunks, 4, 1, f);
-    fwrite(&fm->total_bytes, 8, 1, f);
-    fwrite(fm->root_hash, 32, 1, f);
+    /* A short fwrite silently corrupts the on-disk manifest; reject it. */
+    if (fwrite(&magic, 4, 1, f) != 1 ||
+        fwrite(&fm->num_chunks, 4, 1, f) != 1 ||
+        fwrite(&fm->total_bytes, 8, 1, f) != 1 ||
+        fwrite(fm->root_hash, 32, 1, f) != 1) {
+        fclose(f); LOG_FAIL("file", "manifest_save: short header write to %s", path);
+    }
     /* Write chunks */
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
-        fwrite(fm->chunks[i].sha3, 32, 1, f);
-        fwrite(&fm->chunks[i].offset, 8, 1, f);
-        fwrite(&fm->chunks[i].size, 4, 1, f);
-        fwrite(&fm->chunks[i].file_index, 1, 1, f);
+        if (fwrite(fm->chunks[i].sha3, 32, 1, f) != 1 ||
+            fwrite(&fm->chunks[i].offset, 8, 1, f) != 1 ||
+            fwrite(&fm->chunks[i].size, 4, 1, f) != 1 ||
+            fwrite(&fm->chunks[i].file_index, 1, 1, f) != 1) {
+            fclose(f); LOG_FAIL("file", "manifest_save: short chunk write to %s", path);
+        }
     }
     fflush(f);
     fdatasync(fileno(f));
@@ -303,15 +308,21 @@ static bool file_manifest_load(struct file_manifest *fm,
     if (fread(&magic, 4, 1, f) != 1 || magic != 0x464D414E) {
         fclose(f); LOG_FAIL("file", "manifest_load: bad magic in %s (got 0x%08x)", path, magic);
     }
-    fread(&fm->num_chunks, 4, 1, f);
-    fread(&fm->total_bytes, 8, 1, f);
-    fread(fm->root_hash, 32, 1, f);
+    /* A truncated cache leaves these fields uninitialized; a short fread must
+     * fail loudly rather than run the bounds check and loop on garbage. */
+    if (fread(&fm->num_chunks, 4, 1, f) != 1 ||
+        fread(&fm->total_bytes, 8, 1, f) != 1 ||
+        fread(fm->root_hash, 32, 1, f) != 1) {
+        fclose(f); LOG_FAIL("file", "manifest_load: short header read from %s", path);
+    }
     if (fm->num_chunks > FILE_MAX_CHUNKS) { fclose(f); LOG_FAIL("file", "manifest_load: num_chunks %u exceeds max %d", fm->num_chunks, FILE_MAX_CHUNKS); }
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
-        fread(fm->chunks[i].sha3, 32, 1, f);
-        fread(&fm->chunks[i].offset, 8, 1, f);
-        fread(&fm->chunks[i].size, 4, 1, f);
-        fread(&fm->chunks[i].file_index, 1, 1, f);
+        if (fread(fm->chunks[i].sha3, 32, 1, f) != 1 ||
+            fread(&fm->chunks[i].offset, 8, 1, f) != 1 ||
+            fread(&fm->chunks[i].size, 4, 1, f) != 1 ||
+            fread(&fm->chunks[i].file_index, 1, 1, f) != 1) {
+            fclose(f); LOG_FAIL("file", "manifest_load: short chunk read from %s (chunk %u of %u)", path, i, fm->num_chunks);
+        }
     }
     fclose(f);
 
