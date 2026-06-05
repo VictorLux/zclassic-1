@@ -48,12 +48,29 @@ bool sapling_ka_agree(const uint8_t p[32], const uint8_t sk[32], uint8_t result[
 bool sapling_ka_derivepublic(const uint8_t diversifier[11], const uint8_t esk[32],
                               uint8_t result[32]);
 
-/* Compute Sapling note commitment cm */
+/* Compute Sapling note commitment cm = x-coord of the Jubjub point
+ *   WindowedPedersenHash(NoteCommitment, value(8 LE) || g_d || pk_d)
+ *     + rcm · NoteCommitmentRandomness
+ * where g_d = GH("Zcash_gd", diversifier). The output `cm[32]` is the
+ * affine x-coordinate (an Fr element) — this is exactly the leaf that
+ * gets appended to the note-commitment merkle tree. Returns false only
+ * if `diversifier` is invalid (g_d would be the identity). `value` is in
+ * zatoshi; `rcm` must be a valid Fs scalar. Same note contents bound here
+ * are re-derived inside the output proof, so a mismatched cm fails the
+ * Groth16 check in sapling_check_output. */
 bool sapling_compute_cm(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          uint64_t value, const uint8_t rcm[32],
                          uint8_t cm[32]);
 
-/* Compute Sapling nullifier */
+/* Compute the Sapling nullifier that double-spend protection keys on:
+ *   nf = BLAKE2s-256("Zcash_nf", nk || rho)
+ * where rho = cm_full_point + position · NullifierPosition, and
+ * cm_full_point is the *uncompressed* note-commitment point (the same
+ * point whose x-coord is cm). `position` is the leaf's 0-based index in
+ * the note-commitment tree — it is what binds the nullifier to where the
+ * note sits in the tree, so an honest spend must pass the real merkle
+ * position. `ak` is unused for nf (it gates only the viewing key); only
+ * `nk` enters the hash. Returns false only if `diversifier` is invalid. */
 bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
                          uint64_t value, const uint8_t rcm[32],
                          const uint8_t ak[32], const uint8_t nk[32],
@@ -65,9 +82,18 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
  * may discard the return value; production callers must propagate. */
 bool sapling_generate_r(uint8_t result[32]);
 
-/* RedJubjub signature verification.
- * msg/msg_len: message bytes (32 for sighash in spend_auth/binding)
- * generator_idx: 5 for SpendingKey (spend_auth_sig), 4 for ValueCommitmentRandomness (binding_sig) */
+/* RedJubjub signature verification (Zcash spec §5.4.7).
+ * Returns true iff (vk, msg, sig) is a valid signature, asserting:
+ *   - vk and R = sig_rbar deserialize to valid Jubjub points;
+ *   - S = sig_sbar is canonical, i.e. S < Fs subgroup order (a
+ *     non-canonical S is rejected to match zcashd and prevent
+ *     signature malleability that could split consensus);
+ *   - the cofactored equation [8]·(R + c·vk - S·G) == identity holds,
+ *     where c = H*(Rbar || vk_bytes || msg) and G is the fixed generator.
+ * msg/msg_len: message bytes (32 for sighash in spend_auth/binding).
+ * generator_idx: 5 for SpendingKey (spend_auth_sig),
+ *                4 for ValueCommitmentRandomness (binding_sig).
+ * Returns false (and logs) on any malformed input or rejected signature. */
 bool redjubjub_verify(const uint8_t vk_bytes[32],
                        const uint8_t *msg, size_t msg_len,
                        const uint8_t sig_rbar[32],
@@ -140,19 +166,47 @@ bool sapling_build_spend_with_ctx(
     uint8_t sd_rk[32], uint8_t sd_zkproof[192],
     uint8_t ar_out[32]);
 
-/* Sapling verification context (accumulates value commitments for balance check) */
+/* Sapling verification context — accumulates the value-commitment balance
+ * point `bvk` across every spend/output in ONE transaction. The full
+ * bundle verification is a 3-phase sequence and the phases are stateful and
+ * ORDER-DEPENDENT:
+ *   1. init       — bvk := identity
+ *   2. check_spend per spend  (adds  cv to bvk)
+ *   3. check_output per output (subtracts cv from bvk)
+ *   4. final_check — asserts bvk - value_balance·G_v opens the binding sig
+ * The per-description checks below verify the proof/sig for that one
+ * description but DO NOT establish transaction balance on their own —
+ * only sapling_final_check closes that. Use one ctx per transaction;
+ * sharing a ctx across transactions corrupts the balance accumulator. */
 struct sapling_verification_ctx {
     struct jub_point bvk; /* accumulated value commitment balance */
 };
 
 void sapling_verification_ctx_init(struct sapling_verification_ctx *ctx);
 
-/* Set global verifying keys (call at init before verification) */
+/* Set the global Groth16 verifying keys. MUST be called once at startup
+ * (sapling_init_params) before any check_spend/check_output. The check
+ * functions fail closed — a NULL VK makes them reject every proof rather
+ * than silently accept it — so forgetting this is loud, not silent. */
 struct groth16_vk;
 void sapling_set_spend_vk(struct groth16_vk *vk);
 void sapling_set_output_vk(struct groth16_vk *vk);
 
-/* Check spend: accumulate cv, verify spend_auth_sig, verify Groth16 proof */
+/* Verify one Sapling SpendDescription and fold it into the bundle balance.
+ * On success (`true`) this asserts ALL of:
+ *   - cv and rk deserialize to valid Jubjub points and are NOT small-order
+ *     (rejects the cofactor-subgroup malleability attack);
+ *   - spend_auth_sig is a valid RedJubjub signature over `sighash` under
+ *     the re-randomized key rk (proves authority to spend without
+ *     revealing ak);
+ *   - the Groth16 spend proof verifies against the 7 public inputs
+ *     {rk.x, rk.y, cv.x, cv.y, anchor, nullifier_packed[0..1]} — i.e. the
+ *     note is committed under `anchor` (a past note-commitment tree root),
+ *     its value matches cv, and `nullifier` is the correct nf for it.
+ * SIDE EFFECT: on success cv is ADDED to ctx->bvk. NOTE: this does NOT
+ * check that `anchor` is a recognized historical root, nor that
+ * `nullifier` is unspent — those are the caller's (chainstate) job.
+ * Returns false (and logs) on the first failed check. */
 bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t cv[32],
                           const uint8_t anchor[32],
@@ -162,14 +216,32 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
                           const uint8_t spend_auth_sig[64],
                           const uint8_t sighash[32]);
 
-/* Check output: subtract cv from bvk, verify the Groth16 output proof. */
+/* Verify one Sapling OutputDescription and fold it into the bundle balance.
+ * On success (`true`) this asserts ALL of:
+ *   - cv and epk deserialize to valid Jubjub points and are NOT small-order;
+ *   - the Groth16 output proof verifies against the 5 public inputs
+ *     {cv.x, cv.y, epk.x, epk.y, cm} — i.e. cv commits to the same value
+ *     the note plaintext encodes and `cm` is the correct note commitment
+ *     for epk's diversifier. (The new note's `cm` is what the caller
+ *     appends to the commitment tree.)
+ * SIDE EFFECT: on success cv is SUBTRACTED from ctx->bvk. Returns false
+ * (and logs) on the first failed check. */
 bool sapling_check_output(struct sapling_verification_ctx *ctx,
                            const uint8_t cv[32],
                            const uint8_t cm[32],
                            const uint8_t epk[32],
                            const uint8_t zkproof[192]);
 
-/* Final check: verify binding signature matches value balance */
+/* Close the bundle: assert that the accumulated value commitments balance
+ * to the declared `value_balance` (net zatoshi moving in/out of the shielded
+ * pool). Computes final_bvk = ctx->bvk - value_balance·ValueCommitmentValue
+ * and verifies `binding_sig` is a valid RedJubjub signature over `sighash`
+ * under final_bvk as the verification key. This succeeds iff the prover knew
+ * bsk = sum(rcv_spends) - sum(rcv_outputs), which is only possible when the
+ * value commitments actually sum to value_balance — i.e. no value was minted
+ * or burned. value_balance == INT64_MIN is rejected (matches Rust
+ * checked_abs). MUST be called only after every check_spend/check_output for
+ * the transaction has run; returns false (and logs) on rejection. */
 bool sapling_final_check(struct sapling_verification_ctx *ctx,
                           int64_t value_balance,
                           const uint8_t binding_sig[64],

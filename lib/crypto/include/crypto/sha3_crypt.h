@@ -20,7 +20,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Derive shared key from blockchain state + peer nonces. */
+/* Derive the 32-byte shared session key from chain state + both peer nonces:
+ *   key_out = SHA3-256(utxo_root || min(nonce_a,nonce_b) || max(...)).
+ * The two nonces are sorted lexicographically before hashing, so the result
+ * is SYMMETRIC in (nonce_a, nonce_b) — both peers compute the identical key
+ * regardless of which side they call A vs B. Binding `utxo_root` means the
+ * key is tied to a shared view of chain state. Always writes 32 bytes. */
 void sha3_crypt_derive_key(const uint8_t utxo_root[32],
                             const uint8_t nonce_a[32],
                             const uint8_t nonce_b[32],

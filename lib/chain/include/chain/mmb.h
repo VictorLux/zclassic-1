@@ -117,15 +117,45 @@ struct mmb_proof {
     uint64_t mmb_size;                            /* packed: low 40 bits = num_leaves, bits 40-63 = lr_bits */
 };
 
-/* Generate inclusion proof for a leaf.
- * Requires all_leaf_hashes: pre-hashed leaves (mmb_hash_leaf output).
- * Returns true on success. */
+/* Generate an inclusion proof for the leaf at `leaf_index` within an MMB
+ * of `num_leaves` leaves. `all_leaf_hashes` must be the full ordered
+ * array of pre-hashed leaves (mmb_hash_leaf / mmb_append_hash output) —
+ * the function replays the exact append+lazy-merge sequence to recover
+ * the target's authentication path. On success it fills `proof` with the
+ * target leaf hash, the sibling hashes along the path, the left/right
+ * orientation at each step, and all peak hashes at proof time (packed
+ * into `proof->mmb_size`), then returns true.
+ *
+ * Precondition: `leaf_index < num_leaves` and both pointers non-NULL;
+ * otherwise the reason is logged and false is returned. Cost is O(n)
+ * (it rebuilds the whole structure), so this is a prover-side / fast-sync
+ * operation, not a per-block hot path.
+ *
+ * Source: src/mmb.c (mmb_prove). */
 bool mmb_prove(const uint8_t (*all_leaf_hashes)[32],
                uint64_t num_leaves,
                uint64_t leaf_index,
                struct mmb_proof *proof);
 
-/* Verify a proof against an expected MMB root */
+/* Verify an inclusion proof against an expected MMB root.
+ *
+ * A true return PROVES that `proof->leaf_hash` is committed under
+ * `expected_root`: i.e. folding the leaf hash up through the recorded
+ * siblings (using the packed left/right bits) reproduces one of the
+ * proof's peaks, AND bagging those peaks
+ * (SHA3-256(0x14 || peak_0 || ... || peak_k), or the single peak
+ * verbatim) equals `expected_root`. Because every hash is SHA3-256 with
+ * domain separation, this is a cryptographic membership proof: only a
+ * leaf actually appended to the MMB that produced `expected_root` can
+ * pass.
+ *
+ * It does NOT by itself prove anything about the leaf's *contents* —
+ * the caller must independently bind `proof->leaf_hash` to a trusted
+ * mmb_hash_leaf(leaf) of the block metadata it expects. Returns false
+ * (and logs) on NULL args, zero peaks, a non-matching peak, or a root
+ * mismatch.
+ *
+ * Source: src/mmb.c (mmb_verify). */
 bool mmb_verify(const struct mmb_proof *proof,
                 const uint8_t expected_root[32]);
 

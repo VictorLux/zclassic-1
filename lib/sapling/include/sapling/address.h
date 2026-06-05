@@ -66,18 +66,33 @@ struct payment_address {
     };
 };
 
+/* hash256 (double-SHA256) over the canonical serialization of the address.
+ * Used as a stable map key for the address, not a consensus value. */
 void sprout_payment_address_get_hash(const struct sprout_payment_address *addr,
                                       struct uint256 *out);
 void sapling_payment_address_get_hash(const struct sapling_payment_address *addr,
                                        struct uint256 *out);
 
+/* Sprout: a_sk → viewing key (a_pk, sk_enc). a_pk = PRF_addr(a_sk, 0);
+ * sk_enc = PRF_addr(a_sk, 1) then Curve25519-clamped (low 3 bits cleared,
+ * high bit cleared, bit 254 set) so it is a valid scalar. */
 void sprout_spending_key_to_viewing_key(const struct sprout_spending_key *sk,
                                          struct sprout_viewing_key *vk);
+/* NOTE (verified against address.c): this copies a_pk but leaves pk_enc
+ * ZEROED — the Curve25519 base-point multiply (pk_enc = sk_enc·B) is not
+ * done here, so the produced address is NOT a complete, encryptable Sprout
+ * address. Sprout is legacy/cold-start only; do not rely on pk_enc. */
 void sprout_viewing_key_to_address(const struct sprout_viewing_key *vk,
                                     struct sprout_payment_address *addr);
 void sprout_spending_key_to_address(const struct sprout_spending_key *sk,
                                      struct sprout_payment_address *addr);
 
+/* Sapling: spending key sk → expanded spending key (ask, nsk, ovk) via
+ * PRF^expand(sk, 0/1/2). ask/nsk are reduced to Fs scalars; ovk is the raw
+ * 32 bytes. This is the deterministic root of the Sapling key ladder:
+ * ask→ak, nsk→nk give the full viewing key, and (ask, nsk) are what the
+ * spend prover needs. (This is the non-ZIP32 single-key derivation; the HD
+ * tree lives in zip32.h.) */
 void sapling_spending_key_to_expanded(const struct sapling_spending_key *sk,
                                        struct sapling_expanded_spending_key *esk);
 

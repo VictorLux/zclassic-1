@@ -67,15 +67,42 @@ struct mmr_proof {
     uint64_t mmr_size;                      /* num_leaves at proof time */
 };
 
-/* Generate inclusion proof for a leaf.
- * Requires all_leaves array of block hashes (or NULL + db for lazy load).
- * Returns true on success. */
+/* Generate an inclusion proof for the leaf at `leaf_index` within an MMR
+ * of `num_leaves` leaves. `all_leaves` is the full ordered array of raw
+ * leaf inputs (block hashes); the function hashes each with
+ * mmr_hash_leaf and replays the append/peak-merge sequence to recover
+ * the target's authentication path, filling `proof` with the target
+ * leaf hash, the sibling hashes, and all peak hashes at proof time, then
+ * returns true.
+ *
+ * Precondition: `leaf_index < num_leaves` and both pointers non-NULL;
+ * otherwise the reason is logged and false is returned. O(n) — rebuilds
+ * the full MMR, so it is a prover-side operation only.
+ *
+ * Source: src/mmr.c (mmr_prove_from_leaves). */
 bool mmr_prove_from_leaves(const uint8_t (*all_leaves)[32],
                            uint64_t num_leaves,
                            uint64_t leaf_index,
                            struct mmr_proof *proof);
 
-/* Verify a proof against an expected MMR root */
+/* Verify an inclusion proof against an expected MMR root.
+ *
+ * A true return PROVES that `proof->leaf_hash` is committed under
+ * `expected_root`: folding the leaf hash up through the recorded
+ * siblings — choosing left/right at each level from the bits of
+ * `proof->leaf_index` — reproduces one of the proof's peaks, AND bagging
+ * those peaks (SHA3-256(0x02 || peak_0 || ... || peak_k), or the single
+ * peak verbatim) equals `expected_root`. With SHA3-256 + domain
+ * separation this is a cryptographic membership proof for a leaf that
+ * was actually appended to the MMR producing `expected_root`.
+ *
+ * As with mmr_prove_from_leaves, the leaf's *meaning* is the caller's
+ * responsibility: bind `proof->leaf_hash` to a trusted
+ * mmr_hash_leaf(block_hash) (or mmr_hash_commitment) before relying on
+ * it. Returns false (and logs) on a NULL proof, a non-matching peak, or
+ * a root mismatch.
+ *
+ * Source: src/mmr.c (mmr_verify). */
 bool mmr_verify(const struct mmr_proof *proof,
                 const uint8_t expected_root[32]);
 

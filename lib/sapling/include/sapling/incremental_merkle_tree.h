@@ -14,7 +14,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Hash combine functions */
+/* Hash combine functions — the parent = combine(left, right, depth) rule
+ * for each pool. The Sprout SHA256Compress variant IGNORES `depth` (every
+ * level uses the same compression); the Sapling Pedersen variant
+ * (pedersen_combine, wired internally) KEYS on `depth` so a hash at one
+ * level cannot be replayed at another. `uncommitted` is the leaf-level
+ * "empty" value (all-zero for Sprout). Callers normally use the function
+ * pointers stored on the tree by *_tree_init rather than these directly. */
 void sha256_compress_combine(const struct uint256 *a,
                               const struct uint256 *b,
                               size_t depth,
@@ -42,20 +48,45 @@ struct incremental_merkle_tree {
     void (*uncommitted)(struct uint256 *out);
 };
 
+/* Initialize an empty tree with the protocol-specific depth + hash:
+ *   sprout_tree_init   — depth 29, SHA256Compress  (Sprout pool)
+ *   sapling_tree_init  — depth 32, Pedersen        (Sapling pool; consensus)
+ *   sapling_testing_tree_init — depth 4, Pedersen  (tests only)
+ * The depth fixes the maximum leaf count (2^depth) and the root height. */
 void sprout_tree_init(struct incremental_merkle_tree *t);
 void sapling_tree_init(struct incremental_merkle_tree *t);
 void sapling_testing_tree_init(struct incremental_merkle_tree *t);
 
+/* Append one leaf (a note commitment) at the next free position.
+ * Leaves are added strictly left-to-right and are NEVER removed or
+ * reordered — the tree is append-only, so a leaf's position (its index,
+ * == the value passed to sapling_compute_nf) is fixed at insertion and an
+ * earlier root is always a prefix-consistent ancestor of every later root.
+ * Storage is O(depth): only the frontier (left/right buffer + one optional
+ * hash per level in parents[]) is kept, not every leaf. Appending past
+ * 2^depth leaves is a caller error (the frontier loop has no room). */
 void incremental_tree_append(struct incremental_merkle_tree *t,
                               const struct uint256 *obj);
 
+/* Compute the current Merkle root: the frontier is folded up to `depth`,
+ * substituting the precomputed empty-subtree root for every absent branch.
+ * The result is exactly the `anchor` a spend proves membership against.
+ * The root changes with every append; a spend's anchor must equal the root
+ * at (or after) the time its note was appended. */
 void incremental_tree_root(const struct incremental_merkle_tree *t,
                             struct uint256 *out);
 
+/* Number of leaves appended so far (0..2^depth). Equals the index that the
+ * next incremental_tree_append will occupy. */
 size_t incremental_tree_size(const struct incremental_merkle_tree *t);
 
+/* True iff the tree is completely full (2^depth leaves). Used as the
+ * subtree-complete signal by the witness append loop; not an error path. */
 bool incremental_tree_is_complete(const struct incremental_merkle_tree *t);
 
+/* Root of a fully-empty tree of this depth (all leaves = uncommitted).
+ * Deterministic from depth + hash function; the Pedersen empties are
+ * cached after first computation. */
 void incremental_tree_empty_root(const struct incremental_merkle_tree *t,
                                   struct uint256 *out);
 
@@ -107,12 +138,28 @@ struct incremental_witness {
     size_t cursor_depth;
 };
 
+/* Begin tracking the authentication path for the LAST leaf that was
+ * appended to `tree` at the moment of this call. The witness snapshots the
+ * tree's frontier; from here, every subsequent leaf added to the global
+ * tree must be replayed into THIS witness via incremental_witness_append so
+ * the path stays current. The tracked leaf's position is fixed for the life
+ * of the witness. */
 void incremental_witness_init(struct incremental_witness *w,
                                const struct incremental_merkle_tree *tree);
 
+/* Replay one later leaf into the witness so the authentication path keeps
+ * pace with the growing tree. Call once per leaf appended to the global
+ * tree AFTER the witnessed leaf. Completed sibling subtrees are folded into
+ * filled[] (the auth path); a partial subtree lives in the cursor. The
+ * witnessed leaf itself is never re-supplied. */
 void incremental_witness_append(struct incremental_witness *w,
                                  const struct uint256 *obj);
 
+/* Root of the tree as reconstructed FROM this witness. Invariant: this
+ * equals incremental_tree_root of the underlying tree at the same leaf
+ * count — i.e. the witness's auth path hashes up to the same anchor the
+ * spend proof is checked against. This is what makes the witnessed path a
+ * valid membership proof for the tracked leaf. */
 void incremental_witness_root(const struct incremental_witness *w,
                                struct uint256 *out);
 
@@ -126,10 +173,16 @@ bool incremental_witness_deserialize(struct incremental_witness *w,
                                                       size_t, struct uint256 *),
                                       void (*uncommitted)(struct uint256 *));
 
-/* Extract Merkle authentication path from witness in Sapling wire format.
+/* Extract the Merkle authentication path for the witnessed leaf, in the
+ * Sapling wire format the spend prover consumes. The path is the `depth`
+ * sibling hashes from leaf to root; hashing the leaf up against them must
+ * reproduce incremental_witness_root (the anchor). Each level carries a
+ * position_bit: 0 = witnessed leaf is the LEFT child at that level (sibling
+ * on the right), 1 = leaf is the RIGHT child (sibling on the left). Absent
+ * siblings are filled with the empty-subtree root for that level.
  * Output: compact_size(depth) || depth × (32-byte sibling || 1-byte position_bit)
  * path_out must have space for at least 1 + depth*33 bytes.
- * Returns true on success. */
+ * Returns false (and logs) if the tree is empty (no leaf to authenticate). */
 bool incremental_witness_merkle_path(const struct incremental_witness *w,
                                       uint8_t *path_out, size_t *path_len);
 

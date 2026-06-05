@@ -31,6 +31,10 @@ struct equihash_params {
     size_t solution_width;           /* (1<<K)*(CollisionBitLength+1)/8 */
 };
 
+/* Fill `p` with every derived dimension for the (N,K) Equihash instance
+ * (sub-hash counts, collision bit/byte lengths, row widths, and the on-wire
+ * solution_width). Pure arithmetic on N,K — does not touch crypto. Must be
+ * called before equihash_initialise_state / equihash_is_valid_solution. */
 void equihash_params_init(struct equihash_params *p,
                           unsigned int N, unsigned int K);
 
@@ -41,9 +45,29 @@ void equihash_params_init(struct equihash_params *p,
 bool equihash_solution_params(size_t solution_len,
                               unsigned int *n, unsigned int *k);
 
+/* Initialise the BLAKE2b base state that personalizes every per-index hash
+ * for this (N,K): keyless BLAKE2b with digest length p->hash_output and the
+ * 16-byte personalization "ZcashPoW" || LE32(N) || LE32(K). The caller then
+ * feeds the header pre-solution bytes + nonce via blake2b_update before
+ * passing this state to equihash_is_valid_solution. Returns blake2b_init's
+ * status (0 on success). This personalization is consensus-fixed; changing
+ * it changes which solutions verify. */
 int equihash_initialise_state(const struct equihash_params *p,
                               struct blake2b_ctx *state);
 
+/* The Equihash PoW verifier. Returns true IFF `soln` is a valid Equihash
+ * answer for `base_state` (the personalized BLAKE2b state already fed the
+ * header+nonce) under the (N,K) in `p`. A true return certifies ALL of:
+ *   - soln_len == p->solution_width and it unpacks to exactly 2^K indices;
+ *   - at every Wagner round the paired rows collide on the expected leading
+ *     bytes, their index blocks are in canonical (ascending) order, and all
+ *     2^K indices are pairwise distinct;
+ *   - the final merged row XORs to all-zero over the remaining hash bytes.
+ * Any failure of any check returns false (it logs the specific reason and
+ * returns; it does NOT abort the process). `base_state` is read-only — the
+ * function copies it per index, so the same state verifies many solutions.
+ * This is the function the consensus block check dispatches to via the
+ * crypto registry (CRYPTO_PROOF_EQUIHASH_200_9). */
 bool equihash_is_valid_solution(const struct equihash_params *p,
                                 const struct blake2b_ctx *base_state,
                                 const unsigned char *soln, size_t soln_len);

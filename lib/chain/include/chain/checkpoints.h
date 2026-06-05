@@ -24,8 +24,27 @@ struct checkpoint_data {
     double fTransactionsPerDay;
 };
 
+/* Estimated total block count for the chain, taken as the height of the
+ * last (highest) checkpoint entry. Returns 0 if `data` is NULL or has no
+ * entries. This is a lower-bound progress denominator, not a consensus
+ * value. Source: src/checkpoints.c ->
+ * domain/consensus/src/checkpoints.c
+ * (domain_consensus_checkpoints_total_blocks_estimate). */
 int checkpoints_get_total_blocks_estimate(const struct checkpoint_data *data);
 
+/* Fraction of chain verification work completed at `pindex`, in [0.0,
+ * 1.0], for UI/sync-progress display (not consensus). Models work as
+ * cheap pre-last-checkpoint transactions plus expensive post-checkpoint
+ * ones, extrapolating the remaining tail from `fTransactionsPerDay` and
+ * the wall-clock gap to now; `fSigchecks` weights signature-checking
+ * work 5x. Reads `pindex->nChainTx` and the block time, plus a single
+ * wall-clock read held in this wrapper.
+ *
+ * Contract: a NULL `pindex` returns 0.0 (handled here, before the clock
+ * read); a degenerate/zero denominator also returns 0.0 rather than
+ * NaN/inf. Source: src/checkpoints.c ->
+ * domain/consensus/src/checkpoints.c
+ * (domain_consensus_checkpoints_progress_at_now). */
 double checkpoints_guess_verification_progress(
     const struct checkpoint_data *data,
     const struct block_index *pindex, bool fSigchecks);
