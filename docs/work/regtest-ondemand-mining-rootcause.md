@@ -88,6 +88,40 @@ calls `validation_state_init(out)` and would clobber the caller's verdict.
 Plus `make lint` + `make test_parallel` green, and the hermetic
 `generate 3 → getblockcount==3` proof on an isolated regtest node.
 
+## Deeper findings (fix attempted + reverted 2026-06-05)
+
+Implementing L1 (stage the carried header *before* the `height<0` guard in
+`handle_header_admit_msg`) + L2 (the regtest-gated `set_authoritative_tip`) and
+re-probing showed the block was **still not admitted** (`ingested==nil`, no
+`produce_block_index`/admit log lines) — so there is a layer **below** L1:
+
+- **L0 — the stage pipeline does not admit the pushed header at all on an
+  at-tip regtest boot.** The inbox drain that stages carried headers lives in
+  `header_admit_stage_step_once` (`app/jobs/src/header_admit_stage.c:500`,
+  `mailbox_header_admit_drain(handle_header_admit_msg)`), gated by
+  `if (!g_stage) return JOB_IDLE` (line 490). The stages are init'd by
+  `staged_sync_supervisor_register` (`config/src/boot_services.c:1455`), but a
+  fresh regtest node boots straight `connecting→at_tip` and the boot smoke
+  showed **no** `[header_admit] stage initialised` / `[tip_finalize] stage
+  initialised (authoritative)` line — so the reducer stage pipeline appears
+  inactive/idle for an at-tip node, meaning `reducer_drain_to_convergence()`
+  inside `reducer_ingest_block` does no admit/apply work for the mined block.
+  Confirm whether `g_stage` is NULL here; if so, on-demand mining needs the
+  stage pipeline live even with nothing to sync. **This is the true first
+  blocker and must be fixed before L1/L2 do anything.**
+- **Separate pre-existing symptom:** the node goes RPC-unresponsive immediately
+  after a `generate` call (getblockcount returns nothing) on BOTH the committed
+  binary and the L1/L2 build — i.e. NOT introduced by the fix. The `generate`
+  RPC likely holds a lock / blocks the single RPC servicing path during the
+  synchronous drain. Investigate independently.
+
+So the lane is broken at **≥3 layers** (L0 stage-pipeline-inactive → L1
+header-staging-height-guard → L2 finalize-lookahead/read-back), plus the
+RPC-unresponsive symptom. The L1+L2 changes were reverted (unproven, and a no-op
+without L0). Next focused session: start at L0 — prove whether the reducer
+stages are live for an at-tip regtest node, on a COPY/isolated node, before
+touching the shared header-admission handler.
+
 ## Method
 
 `tools/scripts/isolated_node_env.sh` gives a safe isolated `/tmp` regtest node
