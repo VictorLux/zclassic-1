@@ -174,6 +174,53 @@ is the deferred §12 consensus-sensitive items, the boot shutdown TU (HIGH-RISK,
 SIGTERM proof, do ALONE), the flyclient/MMB extraction, and the owner-gated
 peer-scoring enum. Do NOT keep fanning safe audits over the swept subsystems.
 
+## Round 6 (2026-06-05) — never-swept small libs audited + fixed
+
+Read-only audit (4 agents: znam/zslp, metrics/health/event, bloom/core/keys/encoding,
+storage/policy/mining) → 17 findings (10 safe, 7 consensus-sensitive). Safe ones
+executed as a 4-group edit→review workflow; union gate green (build 0 / lint 35 /
+test_parallel 0/371). Landed `2bca9c825`, `594dba893`, `fba7f1f1a`:
+
+- **znam DRY** — dropped `app/models` `is_valid_znam_name` dup, call canonical
+  `znam_validate_name`. **event.c DRY** — `payload_is_text` + `format_payload_escaped`
+  (byte-identical) + log observer-table-full. **mining** — LOG_FAIL on the
+  `mine_block_pow` NULL guard; 6 `printf`→`LogPrintf` in gen.c.
+- **~docs** for bloom/core/keys/metrics/znam/zslp public headers (reviewer fixed a
+  `decode_secret` doc that wrongly claimed scalar-range validation).
+- **Build regression fixed** (`fba7f1f1a`) — `zclassic-cli` failed to link
+  (`EncodeBase64` undefined) since the base64 unification; `make all`/`make deploy`
+  were broken. Added `utilstrencodings.c` to `CLI_SRCS`.
+
+Adversarial review again earned its keep (caught the missed 6th gen.c printf + the
+decode_secret doc lie). 
+
+### Round-6 deferred (consensus/crypto-sensitive — NOT executed)
+
+- **`lib/keys` asserts on the BIP32/secp256k1 path** (`pubkey.c:93-95,130`,
+  `key.c:35,40,56,109,114`) — flagged as "disabled in Release". **VERIFIED NOT A
+  LIVE BUG**: the production CFLAGS (Makefile:62) define **no `-DNDEBUG`**, so
+  `assert()` is ACTIVE (fail-fast abort on violation). Converting to graceful
+  error-returns is optional hardening *only if* `-DNDEBUG` is ever added — low
+  priority, and a behavior change (abort→return) on a crypto path, so treat as
+  consensus-sensitive if ever done.
+- **znam/zslp builders return 0 without logging** (`znam.c:147-241`, `slp.c:170-292`)
+  — on-chain OP_RETURN encode path; add `log_macros.h` + context. Consensus-adjacent
+  (parse/serialize), defer with care.
+- **mining PoW BLAKE2b-state duplicated** (`gen.c:38-48` vs `miner.c:223-253`) —
+  consensus PoW format built two ways; extract one canonical builder. Repro/verify
+  the personalization bytes are identical. Node isn't mining, low urgency.
+- **mining `tx_size=250` hardcoded** (`miner.c:116`) — block-template fill uses a
+  fixed size estimate instead of `transaction_serialize_size`; can mis-fill blocks.
+  Block-construction path; defer.
+
+**Safe-axis status (updated):** with rounds 2–6, every non-consensus subsystem
+(util/rpc/wallet/models/views/mcp/controllers/domain + znam/zslp/metrics/health/
+event/bloom/core/keys/encoding/mining-logging) is now swept. Audits return mostly
+self-rejected noise or consensus-sensitive items. **The safe parallel axis is
+DONE.** Remaining real work is all deferred/gated: §12 + the round-4/5/6 deferred
+lists + the boot shutdown TU + flyclient/MMB + peer-scoring enum + the live wedge
+(operational/owner-gated — see `[[project_live_wedge_rootcause_2026-06-05]]`).
+
 ## Deferred — peer_scoring typed-API adoption (needs enum extension, owner-gated)
 
 Round-3 #1 (adopt typed `peer_scoring_record()` across ~34 raw
