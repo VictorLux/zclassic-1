@@ -367,8 +367,8 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     if (ctx->wallet_db) {
         struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
         if (!fr.ok) {
-            LOG_FAIL("wallet", "sendtoaddress: post-broadcast flush failed "
-                                "(code=%d): %s", fr.code, fr.message);
+            LOG_WARN("wallet", "sendtoaddress: post-broadcast flush failed "
+                               "(code=%d): %s", fr.code, fr.message);
         }
     }
 
@@ -422,8 +422,8 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     if (ctx->wallet_db) {
         struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
         if (!fr.ok) {
-            LOG_FAIL("wallet", "direct_sendtoaddress: post-broadcast flush "
-                                "failed (code=%d): %s", fr.code, fr.message);
+            LOG_WARN("wallet", "direct_sendtoaddress: post-broadcast flush "
+                               "failed (code=%d): %s", fr.code, fr.message);
         }
     }
 

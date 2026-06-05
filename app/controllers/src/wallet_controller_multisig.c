@@ -156,8 +156,8 @@ bool rpc_sendmany(const struct json_value *params, bool help,
     if (ctx->wallet_db) {
         struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
         if (!fr.ok) {
-            LOG_FAIL("wallet", "send: post-broadcast flush failed "
-                                "(code=%d): %s", fr.code, fr.message);
+            LOG_WARN("wallet", "send: post-broadcast flush failed "
+                               "(code=%d): %s", fr.code, fr.message);
         }
     }
 
@@ -223,7 +223,11 @@ bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     script_for_multisig(&redeem, n_required, pks, n_keys);
 
     /* Store redeem script in wallet keystore */
-    keystore_add_cscript(&ctx->wallet->keystore, &redeem);
+    if (!keystore_add_cscript(&ctx->wallet->keystore, &redeem)) {
+        json_set_str(result, "Failed to store redeem script (keystore full)");
+        LOG_FAIL("wallet", "addmultisigaddress: keystore_add_cscript failed "
+                           "(nrequired=%d, %zu keys)", n_required, n_keys);
+    }
 
     struct script_id sid;
     script_id_from_script(&sid, &redeem);
