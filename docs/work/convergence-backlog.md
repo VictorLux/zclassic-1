@@ -84,6 +84,43 @@ weaken a gate, never touch `config/src/boot.c`.
   carefully. (Surfaced by the Wave-1 `coins_alloc` review; the live NULL-deref
   sibling at `coins_db.c:133` was fixed in Wave 1.)
 
+## boot_services.c decomposition plan (2513 LOC → target the shutdown TU last)
+
+Seam map (read-only audit `w6755v1wu`). Extract order by risk:
+
+**Wave A (SAFE — independent, non-consensus, not in shutdown body):**
+- `boot_sd_watchdog.c` (~110) — owns g_sd_watchdog_id/ctx, zero shared state. *(in flight)*
+- `boot_node_utilities.c` (~130) — app_add_node, metrics start/stop, sync-state logger. *(in flight)*
+- `boot_bg_verification.c` (~60) — bg-validation/hash-verify start/stop; re-checks finalized history, not the connect path. *(in flight)*
+
+**Wave B (consensus-adjacent but NOT in shutdown body — boot-smoke validates):**
+- `boot_runtime_sync_services.c` (~200) — header_probe / legacy_mirror / gap_fill /
+  zclassicd_oracle / rolling_anchor start/stop wrappers. Stop ordering is preserved
+  via the kernel spec table (they are not in the shutdown sequence body). Move
+  byte-identical; boot-smoke on a copy.
+
+**Wave C (needs prep first):**
+- `boot_frontend_services.c` (~470, biggest payoff) — BLOCKED: shares the profile
+  statics `boot_profile_has_explorer/store/onion` (13 read sites incl. stayers) and
+  `boot_configure_frontend_rpc` is called from app_init. First promote the 3 trivial
+  profile accessors to a shared header + make boot_configure_frontend_rpc public, THEN
+  extract.
+- `boot_flyclient_mmb.c` (~175, consensus) — BLOCKED: `g_mmb_leaf_store` is an extern
+  global shared with boot_snapshot_offer.c + read in app_init's MMB-build block; a lint
+  gate asserts msgprocessor_snapshot.c does NOT reference it. Extract only together with
+  the MMB-build block, and update the gate's expected-owner file.
+
+**HIGH-RISK (do ALONE, with a real SIGTERM stop/restart proof on a datadir COPY — boot-smoke CANNOT validate this):**
+- The shutdown section (boot_services.c lines ~2168-2407): shutdown_stop_frontend_services,
+  shutdown_persist_fast_restart_state, shutdown_flush_coins_to_sqlite,
+  shutdown_quiesce_network_and_flush_coins, shutdown_persist_runtime_state,
+  shutdown_release_owned_resources, app_shutdown_svc. The ordering invariant lives here:
+  coins.db COMMIT (emergency flush + quiesce) MUST precede block_index fsync / flat-file
+  save / block_tree+node_db close. See [[feedback_at_tip_kill9_ordering_invariant]].
+- `boot_catchup_job.c` (~35) — small but `boot_join_catchup_service` is called from
+  shutdown_persist_runtime_state, so it touches the SIGTERM teardown. Low payoff, not
+  worth the shutdown risk until the shutdown TU is being done anyway.
+
 ## Dropped / opportunistic (pick up inside the relevant wave, not standalone)
 
 `gap_fill_service` stale doc + descent swap; `stage_helpers.h` roster comment;
