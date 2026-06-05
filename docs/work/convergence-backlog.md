@@ -551,3 +551,17 @@ domain/wallet+encoding, and all of lib/sapling incl. the prover. bn254/bls12_381
 inner-loop temps deliberately NOT cleansed (not the key; churn). g_esk_ring rejected (disabled-by-default
 debug ring). The proof-math FIELD files (bn254/bls12_381/fr) hold only transient field elements — no
 standing secret buffer — so no further cleanse target remains.
+
+### Round 22 (2026-06-05) — must-never-fork consensus code (DOC + behavior-neutral memory-safety)
+Strict-bar audit of domain/consensus + lib/validation + lib/chain (10 findings). FIXED:
+- connect_block.c 3 unchecked zcl_malloc/zcl_realloc → NULL-deref SIGSEGV on OOM; now check + free +
+  block_undo_free + REJECT_FATAL("out-of-memory") (non-DoS internal error, matching block_undo_alloc;
+  temp-realloc avoids the lost-pointer leak). OOM-only path — valid-block validation unchanged (0/371).
+- accept_block_header.c nSolution leak on block_map_insert failure (free before free(pindex)).
+- DOC: process_block_revalidate.h now documents the real single-source local-authority pathway (header
+  said ">=2 oracles"); script_standard.h extract_destination zero-fill contract corrected.
+NOT-A-BUG: the upgrades.h vs coins_math.h "error-code collision" (both use 1301/1302) — domain/consensus
+error codes are MODULE-SCOPED (interpreted per call site), so numeric overlap across unrelated modules
+is by design, not a contract violation. No renumber (that would change API values). DEFERRED (consensus
+-sensitive, repro-on-copy): the few consensus_sensitive findings the audit flagged. **This was the last
+unswept surface — the whole codebase is now audited.**
