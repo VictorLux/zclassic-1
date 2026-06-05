@@ -498,3 +498,18 @@ DEFERRED (lower-value defensive, not this round): aes256 state cleanse, blake2s_
 cleanse, ed25519:277 (signature VERIFICATION — public, no secret, skip), the bech32/base58
 attacker-length VLA-stack-exhaustion findings (separate class — needs a length cap that must not
 reject valid bounded addresses), mnemonic checksum-bit DRY + buffer-cleansing API doc.
+
+### Round 18 (2026-06-05) — Sapling shielded-key secret hygiene
+Secret-cleanse audit of lib/sapling key/note files (25 findings). FIXED 16 (output-neutral,
+KAT-gated — test_sapling PASS / 0/371): zip32 FVK fingerprint + serialized-FVK(ovk) buffers,
+sapling.c derived ak/nk + h_star/redjubjub/crh_ivk hash contexts, prf sprout_prf/prf_expand
+contexts, address sprout viewing-key intermediate, sprout_h_sig context, ff1 AES ctx + PRF/CBC-MAC
+intermediates (pq/R/S/c) incl. an early-return path. Public verification keys and the returned
+re-randomizer correctly left intact. (The negative-test logs — "validation FAILED", "Poly1305 tag
+mismatch", "jub_from_bytes failed" — are EXPECTED reject-path output, not failures.)
+DEFERRED (the agent flagged these note/encryption ones consensus-sensitive — cleanse is likely
+still output-neutral but re-verify before fixing): note.c value_le buffers (4×, note value),
+note_encryption sprout_kdf/sapling_kdf/sapling_prf_ock dhsecret/ovk blocks (3×), g_esk_ring
+ephemeral-secret lifecycle wipe, redjubjub_sign digest[64] parity cleanse, sapling_generate_r
+memset→memory_cleanse (non-elidable). bn254/bls12_381/circuit/groth16 proof-math files NOT audited
+(huge, strictest consensus bar).
