@@ -118,19 +118,23 @@ must not jump the queue.
       in `make ci-mvp-gates`) proves the MATCH/DRIFT detection machinery with a
       negative control. REMAINING (bucket C): run it against the live oracle
       (zclassicd RPC 8232) over the soak window to move ◐ → ✅.
-- [ ] **Regtest on-demand instant-finalize (gates #6 soak + #7 kill-9 teeth)** —
-      root-caused 2026-06-05 on an isolated regtest node: `generate N` mines a
-      valid PoW block but `reducer_ingest_block` rejects it
-      `block-not-finalized-by-reducer` because `tip_finalize`
-      (`app/jobs/src/tip_finalize_stage.c` step_finalize) requires a one-block
-      lookahead (`active_chain_at(next_h+1)`), which self-mining cannot produce
-      — chicken-and-egg: the tip can't finalize without a child header, and no
-      child can be mined until the tip advances (`generate 3` mined the SAME
-      hash 3×). Fix = a regtest-only (`fMineBlocksOnDemand`) instant-finalize of
-      a self-mined, fully-validated block, gated so mainnet/testnet finality is
-      byte-identical. Diagnostic now logged at `mining_submit_mined_block`
-      (`b56e645ca`). Design under adversarial review; implement with a unit test
-      + the hermetic `generate 3 → getblockcount==3` proof on the isolated node.
+- [ ] **Regtest on-demand mining `generate N` (gates #6 soak + #7 kill-9 teeth)**
+      — fully root-caused 2026-06-05 on an isolated regtest node; full layered
+      diagnosis in [`regtest-ondemand-mining-rootcause.md`](./regtest-ondemand-mining-rootcause.md).
+      Two layers: **(L1, first blocker, NOT autonomous)** the mined block never
+      reaches the block_index — `reducer_ingest_block` pushes the carried header
+      with `height=-1`, and `handle_header_admit_msg`
+      (`app/jobs/src/header_admit_stage.c:178`) early-returns on `height<0`
+      *before* staging the carried header, so `step_admit` never creates the
+      entry (`ingested==nil`). The fix touches the **live shared header-admission
+      path** (`chain_activation_service.c:434` network intake uses the same
+      handler) → owner-gated, **prove-on-copy**, must keep mainnet sync
+      byte-identical. **(L2, vetted GO/LOW-risk but dead until L1)** a
+      regtest-gated (`fMineBlocksOnDemand`) `set_authoritative_tip` instant-
+      finalize, since `tip_finalize`'s one-block lookahead can't finalize a
+      successor-less self-mined tip. Diagnostic logged at
+      `mining_submit_mined_block` (`b56e645ca`). Required proofs: e2e +
+      negative-gate twin + `generate 3 → getblockcount==3`.
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
