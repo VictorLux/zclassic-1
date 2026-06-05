@@ -40,13 +40,19 @@ static bool zss_open(void *self, const char *datadir, void **db_out)
         return false;
     }
     sqlite3_busy_timeout(db, 5000);
-    sqlite3_exec(db,
+    char *exec_err = NULL;
+    if (sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS zslp_balances ("
         "token_id TEXT NOT NULL,"
         "address TEXT NOT NULL,"
         "balance INTEGER NOT NULL DEFAULT 0,"
         "PRIMARY KEY (token_id, address))",
-        NULL, NULL, NULL);
+        NULL, NULL, &exec_err) != SQLITE_OK) {
+        sqlite3_free(exec_err);
+        sqlite3_close(db);
+        *db_out = NULL;
+        return false;
+    }
     *db_out = db;
     return true;
 }
