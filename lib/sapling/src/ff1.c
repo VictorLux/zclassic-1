@@ -5,6 +5,7 @@
 
 #include "sapling/ff1.h"
 #include "crypto/aes256.h"
+#include "support/cleanse.h"
 #include <string.h>
 
 static void aes_cbcmac(const struct aes256_ctx *aes,
@@ -127,7 +128,11 @@ void ff1_aes256_encrypt(const uint8_t key[32],
 
         size_t pq_len = 16 + q_padded;
         uint8_t pq[256];
-        if (pq_len > sizeof(pq)) return;
+        if (pq_len > sizeof(pq)) {
+            memory_cleanse(pq, sizeof(pq));
+            memory_cleanse(&aes, sizeof(aes));
+            return;
+        }
 
         memcpy(pq, P, 16);
         size_t off = 16;
@@ -152,6 +157,7 @@ void ff1_aes256_encrypt(const uint8_t key[32],
             for (int k = 0; k < 16; k++)
                 block[k] ^= R[k];
             aes256_encrypt(&aes, block, S + j * 16);
+            memory_cleanse(block, sizeof(block));
         }
 
         /* c = (num(left) + y) mod 2^m where y = first d bytes of S */
@@ -167,6 +173,11 @@ void ff1_aes256_encrypt(const uint8_t key[32],
         memset(right, 0, 16);
         memcpy(right + 16 - c_bytes, c + 16 - c_bytes, c_bytes);
 
+        memory_cleanse(c, sizeof(c));
+        memory_cleanse(S, sizeof(S));
+        memory_cleanse(R, sizeof(R));
+        memory_cleanse(pq, sizeof(pq));
+
         size_t t = left_bits;
         left_bits = right_bits;
         right_bits = t;
@@ -176,4 +187,6 @@ void ff1_aes256_encrypt(const uint8_t key[32],
     memset(data, 0, data_bytes);
     be_to_bits(data, 0, left_bits, left, 16);
     be_to_bits(data, left_bits, right_bits, right, 16);
+
+    memory_cleanse(&aes, sizeof(aes));
 }
