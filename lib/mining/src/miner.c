@@ -25,6 +25,7 @@
 #include "script/script.h"
 #include "script/script_flags.h"
 #include "util/timedata.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -257,7 +258,8 @@ bool mine_block_pow(struct block *block, int height,
                     uint64_t max_nonces)
 {
     if (!block || !params)
-        return false;
+        LOG_FAIL("mining", "mine_block_pow: null %s",
+                 !block ? "block" : "params");
 
     unsigned int n = chain_params_equihash_n(params, height);
     unsigned int k = chain_params_equihash_k(params, height);

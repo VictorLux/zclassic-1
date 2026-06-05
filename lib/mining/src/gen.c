@@ -16,6 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/log_macros.h"
+#include "util/util.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
 
@@ -117,7 +118,7 @@ static bool try_solve_equihash(struct block *blk,
 static void *miner_thread(void *arg)
 {
     struct gen_context *ctx = (struct gen_context *)arg;
-    printf("Miner thread started.\n");
+    LogPrintf("Miner thread started.\n");
 
     while (ctx->running) {
         struct block_index *tip = active_chain_tip(&ctx->ms->chain_active);
@@ -139,7 +140,7 @@ static void *miner_thread(void *arg)
 
         if (try_solve_equihash(&tmpl->block, ctx->params,
                                tip->nHeight + 1)) {
-            printf("Found block!\n");
+            LogPrintf("Found block!\n");
             if (ctx->block_found &&
                 ctx->block_found(&tmpl->block, ctx->block_found_ctx)) {
                 struct block_index *new_tip =
@@ -147,8 +148,8 @@ static void *miner_thread(void *arg)
                 if (new_tip && new_tip->phashBlock) {
                     char hex[65];
                     uint256_get_hex(new_tip->phashBlock, hex);
-                    printf("New block: height=%d hash=%s\n",
-                           new_tip->nHeight, hex);
+                    LogPrintf("New block: height=%d hash=%s\n",
+                              new_tip->nHeight, hex);
                 }
             }
         }
@@ -157,7 +158,7 @@ static void *miner_thread(void *arg)
         free(tmpl);
     }
 
-    printf("Miner thread stopped.\n");
+    LogPrintf("Miner thread stopped.\n");
     return NULL;
 }
 
@@ -194,7 +195,7 @@ void gen_start(struct gen_context *ctx)
         started++;
     }
 
-    printf("Mining started with %d thread(s).\n", g_num_miner_threads);
+    LogPrintf("Mining started with %d thread(s).\n", g_num_miner_threads);
 }
 
 void gen_stop(struct gen_context *ctx)
@@ -207,5 +208,5 @@ void gen_stop(struct gen_context *ctx)
     free(g_miner_threads);
     g_miner_threads = NULL;
     g_num_miner_threads = 0;
-    printf("Mining stopped.\n");
+    LogPrintf("Mining stopped.\n");
 }

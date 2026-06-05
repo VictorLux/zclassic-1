@@ -39,7 +39,12 @@ static struct {
 bool event_observe(enum event_type type, event_observer_fn fn, void *ctx)
 {
     if ((int)type < 0 || type >= EV_NUM_TYPES) return false;
-    if (g_observers[type].count >= EVENT_MAX_OBSERVERS) return false;
+    if (g_observers[type].count >= EVENT_MAX_OBSERVERS) {
+        fprintf(stderr, "event_observe: observer table full for %s "
+                "(max %d) — observer dropped\n",
+                event_type_name(type), EVENT_MAX_OBSERVERS);
+        return false;
+    }
     int idx = g_observers[type].count++;
     g_observers[type].observers[idx].fn = fn;
     g_observers[type].observers[idx].ctx = ctx;
@@ -95,7 +100,12 @@ static struct {
 bool event_observe_async(enum event_type type, event_observer_fn fn, void *ctx)
 {
     if ((int)type < 0 || type >= EV_NUM_TYPES) return false;
-    if (g_async_observers[type].count >= EVENT_MAX_OBSERVERS) return false;
+    if (g_async_observers[type].count >= EVENT_MAX_OBSERVERS) {
+        fprintf(stderr, "event_observe_async: observer table full for %s "
+                "(max %d) — observer dropped\n",
+                event_type_name(type), EVENT_MAX_OBSERVERS);
+        return false;
+    }
     int idx = g_async_observers[type].count++;
     g_async_observers[type].observers[idx].fn = fn;
     g_async_observers[type].observers[idx].ctx = ctx;
@@ -470,6 +480,17 @@ const char *event_type_name(enum event_type type)
 
 /* ── Dump to stderr ──────────────────────────────────────── */
 
+/* A payload renders as a quoted string when every byte is printable
+ * (>= 0x20) or a NUL; any other control byte forces the hex fallback. */
+static bool payload_is_text(const uint8_t *payload, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++) {
+        if (payload[i] < 0x20 && payload[i] != 0)
+            return false;
+    }
+    return true;
+}
+
 static void format_event(FILE *f, const struct event *ev)
 {
     int64_t sec = ev->timestamp_us / 1000000;
@@ -481,13 +502,7 @@ static void format_event(FILE *f, const struct event *ev)
 
     /* Print payload as string if it looks like text, else hex */
     if (ev->payload_len > 0) {
-        bool is_text = true;
-        for (uint32_t i = 0; i < ev->payload_len; i++) {
-            if (ev->payload[i] < 0x20 && ev->payload[i] != 0) {
-                is_text = false;
-                break;
-            }
-        }
+        bool is_text = payload_is_text(ev->payload, ev->payload_len);
         if (is_text) {
             fprintf(f, "\"%.*s\"", (int)ev->payload_len,
                     (const char *)ev->payload);
@@ -554,6 +569,25 @@ static size_t json_escape(char *out, size_t out_size,
     return w;
 }
 
+/* Render a payload into `out` for the JSON "data" field: printable
+ * payloads pass through json_escape, binary payloads become a bounded
+ * hex string. Returns the number of bytes written. */
+static size_t format_payload_escaped(char *out, size_t out_size,
+                                     const uint8_t *payload, uint32_t len)
+{
+    size_t elen = 0;
+    if (len == 0)
+        return 0;
+    if (payload_is_text(payload, len)) {
+        elen = json_escape(out, out_size, (const char *)payload, len);
+    } else {
+        for (uint32_t j = 0; j < len && elen + 2 < out_size; j++)
+            elen += (size_t)snprintf(out + elen, out_size - elen,
+                                     "%02x", payload[j]);
+    }
+    return elen;
+}
+
 size_t event_dump_json(char *buf, size_t buf_size, size_t count)
 {
     if (!atomic_load(&g_log.initialized))
@@ -578,27 +612,8 @@ size_t event_dump_json(char *buf, size_t buf_size, size_t count)
 
         /* Payload as escaped string */
         char escaped[256];
-        size_t elen = 0;
-        if (ev->payload_len > 0) {
-            bool is_text = true;
-            for (uint32_t j = 0; j < ev->payload_len; j++) {
-                if (ev->payload[j] < 0x20 && ev->payload[j] != 0) {
-                    is_text = false;
-                    break;
-                }
-            }
-            if (is_text) {
-                elen = json_escape(escaped, sizeof(escaped),
-                                   (const char *)ev->payload,
-                                   ev->payload_len);
-            } else {
-                for (uint32_t j = 0; j < ev->payload_len &&
-                     elen + 2 < sizeof(escaped); j++)
-                    elen += (size_t)snprintf(escaped + elen,
-                                             sizeof(escaped) - elen,
-                                             "%02x", ev->payload[j]);
-            }
-        }
+        size_t elen = format_payload_escaped(escaped, sizeof(escaped),
+                                             ev->payload, ev->payload_len);
 
         w += (size_t)snprintf(buf + w, buf_size - w,
             "{\"seq\":%llu,\"ts\":%lld,\"type\":\"%s\","
@@ -651,25 +666,8 @@ size_t event_dump_json_filtered(char *buf, size_t buf_size, size_t count,
         matched++;
 
         char escaped[256];
-        size_t elen = 0;
-        if (ev->payload_len > 0) {
-            bool is_text = true;
-            for (uint32_t j = 0; j < ev->payload_len; j++) {
-                if (ev->payload[j] < 0x20 && ev->payload[j] != 0) {
-                    is_text = false;
-                    break;
-                }
-            }
-            if (is_text)
-                elen = json_escape(escaped, sizeof(escaped),
-                                   (const char *)ev->payload, ev->payload_len);
-            else
-                for (uint32_t j = 0; j < ev->payload_len &&
-                     elen + 2 < sizeof(escaped); j++)
-                    elen += (size_t)snprintf(escaped + elen,
-                                             sizeof(escaped) - elen,
-                                             "%02x", ev->payload[j]);
-        }
+        size_t elen = format_payload_escaped(escaped, sizeof(escaped),
+                                             ev->payload, ev->payload_len);
 
         w += (size_t)snprintf(buf + w, buf_size - w,
             "{\"seq\":%llu,\"ts\":%lld,\"type\":\"%s\","

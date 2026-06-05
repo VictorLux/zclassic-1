@@ -26,24 +26,6 @@ DEFINE_MODEL_CALLBACKS(znam_entry)
 DEFINE_MODEL_CALLBACKS(znam_text)
 DEFINE_MODEL_CALLBACKS(znam_addr)
 
-/* Names: lowercase alphanumeric + hyphens (ENS-like; first-come-first-served). */
-static bool is_valid_znam_name(const char *s, size_t max_len)
-{
-    if (!s || !*s) return false;
-    size_t len = strnlen(s, max_len + 1);
-    if (len == 0 || len > max_len) return false;
-    for (size_t i = 0; i < len; ++i) {
-        char c = s[i];
-        if (!((c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') ||
-              c == '-'))
-            return false;
-    }
-    /* No leading/trailing hyphen */
-    if (s[0] == '-' || s[len - 1] == '-') return false;
-    return true;
-}
-
 bool db_znam_entry_validate(const struct znam_entry *entry,
                             struct ar_errors *errors)
 {
@@ -56,7 +38,7 @@ bool db_znam_entry_validate(const struct znam_entry *entry,
     static const uint8_t zero32[32] = {0};
 
     validates_custom(errors,
-        is_valid_znam_name(entry->name, ZNAM_NAME_MAX),
+        znam_validate_name(entry->name),
         "name", "is not a valid ZNAM name");
     validates_presence_of(errors, entry, owner_address);
     validates_range(errors, entry, target_type,
@@ -83,7 +65,7 @@ bool db_znam_text_validate(const struct znam_text_record *rec,
     }
 
     validates_custom(errors,
-        is_valid_znam_name(rec->name, ZNAM_NAME_MAX),
+        znam_validate_name(rec->name),
         "name", "is not a valid ZNAM name");
     validates_presence_of(errors, rec, key);
     validates_custom(errors,
@@ -107,7 +89,7 @@ bool db_znam_addr_validate(const struct znam_addr_record *rec,
     }
 
     validates_custom(errors,
-        is_valid_znam_name(rec->name, ZNAM_NAME_MAX),
+        znam_validate_name(rec->name),
         "name", "is not a valid ZNAM name");
     validates_range(errors, rec, coin_type,
                     ZNAM_TYPE_ONION, ZNAM_TYPE_CONTENT);
