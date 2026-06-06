@@ -83,6 +83,51 @@ a copy to full convergence + `gettxoutsetinfo == zclassicd` before any deploy.
 
 ---
 
+## Why a surgical coins_best-follow is DEAD — two adversarial NO_GOs (2026-06-06)
+
+Two independent design+adversarial-review workflows (`wj65w0x4n`, `wf_813bb6be`)
+both returned **BLOCKED_NO_GO** on every "advance coins_best to follow the reducer
+tip" design. The verdicts converge on one structural truth, verified against
+source:
+
+- **There are TWO separate UTXO engines.** The reducer fills ONLY
+  `utxo_projection` (utxo.db); **no `app/jobs/*` stage ever writes the coins.db
+  `utxos` table** (verified by grep). The legacy coins.db (`utxos` rows +
+  `best_block`) is written ONLY by `coins_view_sqlite_batch_write_ex` on the
+  connect_block/process_block path.
+- **coins_best is meaningless without its matching `utxos` materialization.**
+  `coins_view_sqlite_check_tip_consistency` (lib/storage/src/coins_view_sqlite.c:448,
+  gated at :706) **FATALs (DB_ERR_TIP_MISMATCH)** at coins-DB-open if
+  `coins_best` names a height above `MAX(utxos.height)` — and it runs BEFORE the
+  chain_state_validator. Advancing coins_best ahead of the (reducer-unfilled)
+  coins.db utxos table hard-halts the node.
+- **Multi-surface coins_best.** node.db `coins_best_block` (csr) /
+  `cec.coins_best_block_height` (cec) / coins.db `best_block` row / in-memory
+  `g_coins_tip.hash_block` are FOUR surfaces with different writers + lifetimes.
+  The boot validator + restore read the coins_view_cache/coins.db surface, not
+  the surface a bridge would write.
+- **Cross-DB tear is structural for any reducer stage.** `stage_run_once` wraps
+  every stage `step()` in a progress.kv `BEGIN IMMEDIATE … COMMIT`
+  (lib/util/src/stage.c:316–347). A coins_best write inside a step lands in that
+  open txn and commits non-atomically with the cursor — the exact "TEAR A" the
+  trailing-stage design tried to avoid, merely relocated.
+
+**Conclusion — the correct fix is the SINGLE-ENGINE CUTOVER, not a bridge.** Make
+the reducer's `utxo_projection` the authoritative coins view end-to-end: give the
+projection a real `get_best_block` keyed off the durable tip_finalize finalized
+tip (today it hard-returns NULL — coins_view_projection.c:37-45), and flip the
+boot validator / restore / tip-consistency gate to read the projection's tip
+instead of the coins.db `utxos` surface (the projection is ALREADY the runtime
+consensus read model — bound at config/src/boot.c:1795). This retires the coins.db
+`utxos` table as a second authority rather than keeping two engines in lockstep.
+It is the long-planned single-engine work (`docs/work/single-engine-newcode-plan.md`,
+steps 6-10) — large, consensus-critical, deploy-gated, proven on a copy
+(restart × N kill-seeds → no WIPE; `gettxoutsetinfo == zclassicd`) before any
+deploy. Do NOT attempt another surgical coins_best bridge; the adversarial record
+above shows why every cut forks or FATALs.
+
+---
+
 ## The five blockers (all verified against source + a full datadir copy)
 
 1. **Header-solution gap.** ~676K node.db rows have empty Equihash solutions
