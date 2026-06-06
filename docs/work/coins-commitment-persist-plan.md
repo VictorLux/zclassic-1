@@ -1,5 +1,26 @@
 # Plan: persist the `utxo_sha3` commitment so the §3 self-heal auto-fires
 
+> ## ✅ DURABILITY KEYSTONE — Option A landed 2026-06-06 (`801832692`)
+> A 3-lens consensus-safety panel (`wf_8ea5ab58-84d`, GO_WITH_FIXES) found the
+> minimal safe fix for reducer-mined-block durability is **NOT** a coins.db write
+> (Options B & C were REJECTED — the reducer writing coins.db would corrupt the
+> mainnet boot integrity gate and hit the wrong-table commitment hole). The
+> reducer's durable state (`tip_finalize_log.tip_hash` + cursor, `utxo_projection`)
+> is already crash-safe and boot already runs the forward-only seed
+> `block_index_loader_seed_tip_from_finalized`. The only gap: the block_index map
+> was never persisted on a small chain (`size > 1000` gate). **Fix: lower the
+> shutdown persist gate to `> 1`** (boot_services.c). VERIFIED: regtest
+> `generate 5` → clean restart → `getblockcount=5`. Mainnet byte-identical
+> (always >>1000). coins.db stays the untouched stale anchor (boot.c:1743
+> unchanged). REMAINING: under SIGKILL the reducer tip is rewound toward the
+> stale coins.db anchor — that is the single-engine cutover proper (reducer tip
+> vs coins.db), still owner-gated. The `utxo_sha3` commitment-persist below
+> remains the OPTIONAL hardening for the §3 self-heal (must compute over the
+> PROJECTION, not the stale coins.db `utxos`).
+>
+> ---
+
+
 **Status:** original boundary (below) **SUPERSEDED** — a full implementation
 spec was built and run past a 3-lens consensus-safety panel (2026-06-03,
 `wf_c80cf28e-371`). Verdict: **DO_NOT_APPLY** (2 of 3 lenses, 3 HIGH holes).
