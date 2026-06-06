@@ -164,6 +164,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
+    X(reducer_step_drain_harness) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
     X(domain_consensus_pow) X(domain_consensus_sigops) \
     X(domain_consensus_script_standard) \

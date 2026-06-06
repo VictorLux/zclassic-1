@@ -889,6 +889,7 @@ int main(void)
     failures += test_reorg_projection_parity();
     failures += test_stage_reorg_unwind_parity();
     failures += test_reducer_ingest_e2e();
+    failures += test_reducer_step_drain_harness();
     failures += test_connect_block_self_write();
     failures += test_key_scrub();
     failures += test_block_index_loader();
@@ -986,6 +987,7 @@ int main(void)
     failures += test_tip_finalize_stage();
     failures += test_reducer_stage_fuzz();
     failures += test_reducer_ingest_e2e();
+    failures += test_reducer_step_drain_harness();
     failures += test_stage_reducer_unwedge();
     failures += test_process_block_revalidate();
     failures += test_domain_consensus_verify();
