@@ -442,7 +442,14 @@ int main(int argc, char **argv)
         "soak: logging to %s; will run %" PRIu64 "s (SIGINT/TERM to stop early)\n",
         log_path, cfg.min_duration_sec);
 
-    time_t deadline = started + (time_t)cfg.min_duration_sec;
+    /* Sample for at least min_duration_sec of SPAN. The verdict requires
+     * last_sample_ts - first_sample_ts >= min_duration_sec; samples are taken
+     * at the top of the loop every interval_sec, so the last sample lands one
+     * interval before a `started + min_duration` deadline and the span falls
+     * short by ~interval_sec. Extend the deadline by one interval so the final
+     * sample's span reaches min_duration. */
+    time_t deadline = started + (time_t)cfg.min_duration_sec +
+                      (time_t)interval_sec;
     time_t last_load = started;
     while (!g_stop) {
         time_t now = platform_time_wall_time_t();
