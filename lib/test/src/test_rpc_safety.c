@@ -160,6 +160,7 @@ int test_rpc_safety(void)
         rpc_repair_set_state(ms, coins_tip, ndb, "/tmp",
                              chain_params_get());
         register_repair_rpc_commands(repair_tbl);
+        register_backfill_header_solutions_rpc_commands(repair_tbl);
 
         struct json_value params = {0};
         struct json_value result = {0};

@@ -60,6 +60,10 @@ uint64_t tip_finalize_stage_upstream_failed_total(void);
 uint64_t tip_finalize_stage_reorg_detected_total(void);
 uint64_t tip_finalize_stage_utxo_count_diverged_total(void);
 uint64_t tip_finalize_stage_precondition_failed_total(void);
+/* Count of LOOKAHEAD-not-ready deferrals (H held via JOB_IDLE until its
+ * successor H+1 lands) — distinct from precondition_failed_total which now
+ * counts only the genuine competing-fork (chainwork_not_greater) skip. */
+uint64_t tip_finalize_stage_successor_pending_total(void);
 uint64_t tip_finalize_stage_total_work_added_high(void);
 uint64_t tip_finalize_stage_total_work_added_low(void);
 

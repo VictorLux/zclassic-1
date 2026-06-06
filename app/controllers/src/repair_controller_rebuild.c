@@ -28,6 +28,9 @@
 #include "primitives/block.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "storage/progress_store.h"  /* progress_store_db for backfill */
+#include "jobs/stage_repair.h"       /* header-solution save/available */
+#include "core/uint256.h"
 
 #include <string.h>
 
@@ -195,27 +198,71 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
      * is preserved. */
     bool ok = reducer_ingest_block(boot_activation_controller(), &blk,
                                    REDUCER_SRC_REPAIR, true, &state);
+
+    char msg[256] = {0};
+    if (!ok) {
+        format_state_message(&state, msg, sizeof(msg));
+
+        /* CODE4 — single FRONTIER poison_rewind. The new reducer pipeline
+         * latches a solutionless validate_headers failure for the wedge gap and
+         * its forward-only cursor is parked PAST it, so even after the
+         * solutions are backfilled (CODE3) the gap is never re-validated until
+         * the cursor is rewound. The self-heal Condition that would normally do
+         * this has exhausted its attempts. Do it once, here: when the FIRST
+         * block of the window (the only height where height==active_tip+1 holds)
+         * comes back "no-header-solution-backfill-required" and its solution is
+         * now available, call the sanctioned frontier poison_rewind — it deletes
+         * the validate_headers + downstream log rows at/above the frontier and
+         * rewinds those cursors, but REFUSES if any finalized (ok=1) row sits
+         * at/above the frontier (the Tier-2 public-tip floor), so it can never
+         * disturb finalized history — then re-ingest the in-hand block. After
+         * this single rewind, validate_headers re-drains the whole gap forward
+         * (solutions all present from CODE3 + per-ingest fix-1); later blocks
+         * are NOT at the frontier, so this fires at most once per run. */
+        if (strstr(msg, "no-header-solution-backfill-required") &&
+            ctx && ctx->main_state) {
+            sqlite3 *pdb = progress_store_db();
+            int active_tip = active_chain_height(&ctx->main_state->chain_active);
+            if (pdb && height == active_tip + 1 &&
+                stage_repair_header_solution_available(pdb, height)) {
+                struct stage_repair_header_solution_result rr;
+                if (stage_repair_header_solution_poison_rewind(pdb, height,
+                                                               active_tip, &rr)) {
+                    validation_state_init(&state);
+                    ok = reducer_ingest_block(boot_activation_controller(), &blk,
+                                              REDUCER_SRC_REPAIR, true, &state);
+                    if (!ok)
+                        format_state_message(&state, msg, sizeof(msg));
+                }
+            }
+        }
+    }
     block_free(&blk);
 
     if (!ok) {
-        char msg[256];
-        format_state_message(&state, msg, sizeof(msg));
-
-        /* The reducer finalizes height H only once block H+1 is ALSO present
-         * (a one-block tip_finalize lookahead), so reducer_ingest_block(H)
-         * returns the verdict "block-not-finalized-by-reducer" for the
-         * frontier block even though it connected + staged cleanly — its
-         * finalization simply awaits the successor we are about to fetch next.
-         * Treat THAT specific verdict as connected-but-pending and CONTINUE so
-         * the loop reaches the missing body that actually unwedges the tip;
-         * any OTHER verdict (bad block, header reject, failed stage with a
-         * distinct reason) is a genuine rejection and stops the rebuild.
-         * Without this the lookahead made rebuild_recent halt on its very
-         * first block forever. The witness (tip actually advanced) still gates
-         * real success, so a genuinely stuck block surfaces as no-advance,
-         * never a false OK. */
-        if (strstr(msg, "not-finalized-by-reducer")) {
-            *accepted = false; /* connected; finalization pending lookahead */
+        /* Two verdicts are connected-but-pending, NOT genuine rejections, and
+         * the loop must CONTINUE supplying bodies on both:
+         *
+         *  - "not-finalized-by-reducer": tip_finalize's one-block lookahead
+         *    holds H until its successor H+1 is present (which we fetch next).
+         *
+         *  - "no-header-solution-backfill-required" past the first block: the
+         *    body WAS persisted by reducer_ingest_block (BLOCK_HAVE_DATA is set
+         *    unconditionally) and this block's solution saved, while
+         *    validate_headers (rewound once above) re-drains the gap forward
+         *    ASYNC and simply lags the body supply — so a mid-gap block still
+         *    reads back the stale latched verdict on the synchronous call.
+         *    Halting there would strand every later body and freeze the tip
+         *    (validate_headers ran hundreds of blocks ahead while body_fetch
+         *    starved at the first un-supplied body). Continuing feeds bodies for
+         *    the whole window; the rebuild_run witness (did the active tip
+         *    actually advance) still gates real success — never a false OK.
+         *
+         * Any OTHER verdict (bad block, header reject, a distinct failed stage)
+         * is a real rejection and stops the rebuild. */
+        if (strstr(msg, "not-finalized-by-reducer") ||
+            strstr(msg, "no-header-solution-backfill-required")) {
+            *accepted = false; /* connected; body persisted, validate catching up */
             return true;
         }
 
@@ -461,6 +508,197 @@ void register_rebuild_recent_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "blockchain", "rebuild_recent", rpc_rebuild_recent, false },
+    };
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
+        rpc_table_must_append(t, &cmds[i]);
+}
+
+/* ── backfill_header_solutions (CODE3) ──────────────────────────────────
+ *
+ * Bulk-fill the progress.kv header_solution_repair side-table for every
+ * height in [from .. header_tip] whose solution is not already stored,
+ * fetching each block from the trusted local zclassicd (getblock verbose=0,
+ * the SAME transport rebuild_recent uses — no LevelDB LOCK, works against the
+ * 24/7 oracle) and saving its check-derived header.
+ *
+ * Purely ADDITIVE and NON-CONSENSUS: it writes ONLY the verified-cache
+ * side-table via stage_repair_header_solution_save (hash-bound: recomputes the
+ * block hash and refuses on mismatch; validate_headers independently
+ * re-verifies the Equihash PoW on load). It NEVER ingests a block, touches
+ * coins/utxos, advances a reducer cursor, or moves the tip — so it cannot fork.
+ * Idempotent: stage_repair_header_solution_available() skips already-filled
+ * heights; INSERT OR REPLACE makes a re-save a no-op. Pre-filling all gap
+ * solutions up front lets validate_headers' recheck_failed_rows flip the
+ * latched ok=0 rows on the next drain/restart with NO per-block poison_rewind. */
+static bool backfill_header_solutions_run(struct repair_context *ctx,
+                                          int64_t from_arg, bool from_present,
+                                          int *out_from, int *out_to,
+                                          int *out_filled, int *out_skipped,
+                                          char *err, size_t err_sz)
+{
+    if (!ctx->main_state) {
+        snprintf(err, err_sz, "Node not fully initialized");
+        return false;
+    }
+    sqlite3 *pdb = progress_store_db();
+    if (!pdb) {
+        snprintf(err, err_sz, "progress store not open");
+        return false;
+    }
+
+    /* Upper bound is the header tip (highest admitted header), clamped to what
+     * zclassicd actually serves — the solutionless gap lives ABOVE the active
+     * tip. */
+    int header_tip = ctx->main_state->pindex_best_header
+                   ? ctx->main_state->pindex_best_header->nHeight
+                   : active_chain_height(&ctx->main_state->chain_active);
+
+    int remote_height = 0;
+    if (!legacy_chain_rpc_get_block_count(&remote_height)) {
+        snprintf(err, err_sz,
+                 "Cannot reach zclassicd (getblockcount) — is it running?");
+        return false;
+    }
+    int hi = header_tip < remote_height ? header_tip : remote_height;
+
+    int lo;
+    if (from_present) {
+        if (from_arg < 0 || from_arg > INT32_MAX) {
+            snprintf(err, err_sz, "from_height out of range (%lld)",
+                     (long long)from_arg);
+            return false;
+        }
+        lo = (int)from_arg;
+    } else {
+        /* Default: one past the active tip — the start of the forward gap. */
+        lo = active_chain_height(&ctx->main_state->chain_active) + 1;
+        if (lo < 0) lo = 0;
+    }
+
+    *out_from = lo; *out_to = hi; *out_filled = 0; *out_skipped = 0;
+    if (hi < lo) return true; /* nothing above the tip — no-op */
+
+    /* Bound the span (mirrors rebuild_recent's cap) so a from_height=0 call
+     * cannot fire ~3.1M getblock RPCs at the 24/7 oracle. Chunk if larger. */
+    if (hi - lo > (REBUILD_RECENT_MAX_RANGE - 1)) {
+        snprintf(err, err_sz,
+                 "span [%d..%d] = %d blocks > %d cap — call in chunks",
+                 lo, hi, hi - lo + 1, REBUILD_RECENT_MAX_RANGE);
+        return false;
+    }
+
+    char *hex_buf = zcl_malloc(REBUILD_RECENT_HEX_CAP,
+                               "backfill_header_solutions_hex");
+    if (!hex_buf) {
+        snprintf(err, err_sz, "Out of memory allocating block buffer");
+        return false;
+    }
+
+    for (int h = lo; h <= hi; h++) {
+        if (stage_repair_header_solution_available(pdb, h)) {
+            (*out_skipped)++;
+            continue;
+        }
+        if (!legacy_chain_rpc_get_block_hex(h, hex_buf,
+                                            REBUILD_RECENT_HEX_CAP)) {
+            snprintf(err, err_sz, "fetch block %d from zclassicd failed", h);
+            free(hex_buf);
+            return false;
+        }
+        size_t bin_len = strlen(hex_buf) / 2;
+        if (bin_len == 0) {
+            snprintf(err, err_sz, "empty block hex for %d", h);
+            free(hex_buf);
+            return false;
+        }
+        unsigned char *bin = zcl_malloc(bin_len, "backfill_bin");
+        if (!bin) {
+            snprintf(err, err_sz, "oom decoding block %d", h);
+            free(hex_buf);
+            return false;
+        }
+        size_t parsed = ParseHex(hex_buf, bin, bin_len);
+        struct byte_stream s;
+        stream_init_from_data(&s, bin, parsed);
+        struct block blk;
+        block_init(&blk);
+        bool dok = (parsed > 0) && block_deserialize(&blk, &s);
+        stream_free(&s);
+        free(bin);
+        if (!dok) {
+            block_free(&blk);
+            snprintf(err, err_sz, "block deserialize failed for %d", h);
+            free(hex_buf);
+            return false;
+        }
+
+        struct uint256 hh;
+        block_header_get_hash(&blk.header, &hh);
+        bool sok = stage_repair_header_solution_save(pdb, h, &hh, &blk.header);
+        block_free(&blk);
+        if (!sok) {
+            snprintf(err, err_sz, "solution save failed for %d", h);
+            free(hex_buf);
+            return false;
+        }
+        (*out_filled)++;
+        if (((*out_filled) % 200) == 0) {
+            printf("backfill_header_solutions: filled %d (at h=%d/%d)\n",
+                   *out_filled, h, hi);
+            fflush(stdout);
+        }
+    }
+    free(hex_buf);
+    return true;
+}
+
+static bool rpc_backfill_header_solutions(const struct json_value *params,
+                                          bool help,
+                                          struct json_value *result)
+{
+    struct repair_context *ctx = repair_ctx();
+    RPC_HELP(help, result,
+        "backfill_header_solutions ( from_height )\n"
+        "\nBulk-fill the header_solution_repair side-table for\n"
+        "[from .. header_tip] from the local zclassicd. Additive,\n"
+        "idempotent, hash-bound: writes only the verified solution cache,\n"
+        "never ingests a block or moves the tip.\n"
+        "\nArguments:\n"
+        "1. from_height (number, optional) start; default active_tip+1.\n"
+        "\nResult: { \"from\": n, \"to\": n, \"filled\": n, \"skipped\": n }\n");
+
+    if (!ctx->main_state) {
+        json_set_str(result, "Node not fully initialized");
+        return false;
+    }
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 1);
+    bool from_present = (params && json_size(params) >= 1);
+    int64_t from_arg = rpc_permit_int(&p, 0, "from_height", 0);
+    if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); return false; }
+
+    int from = 0, to = -1, filled = 0, skipped = 0;
+    char err[256] = {0};
+    if (!backfill_header_solutions_run(ctx, from_arg, from_present,
+                                       &from, &to, &filled, &skipped,
+                                       err, sizeof(err))) {
+        json_set_str(result, err[0] ? err : "backfill failed");
+        return false;
+    }
+    json_set_object(result);
+    json_push_kv_int(result, "from", from);
+    json_push_kv_int(result, "to", to);
+    json_push_kv_int(result, "filled", filled);
+    json_push_kv_int(result, "skipped", skipped);
+    return true;
+}
+
+void register_backfill_header_solutions_rpc_commands(struct rpc_table *t)
+{
+    struct rpc_command cmds[] = {
+        { "blockchain", "backfill_header_solutions",
+          rpc_backfill_header_solutions, false },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

@@ -24,6 +24,12 @@ void register_repair_rpc_commands(struct rpc_table *t);
  * rpc_repair_set_state() must be called before registration. */
 void register_rebuild_recent_rpc_commands(struct rpc_table *t);
 
+/* backfill_header_solutions ( from_height ) — bulk-fill the
+ * header_solution_repair side-table for [from..header_tip] from zclassicd via
+ * getblock verbose=0. Additive, idempotent, hash-bound; no consensus write,
+ * never moves the tip. Implemented in repair_controller_rebuild.c. */
+void register_backfill_header_solutions_rpc_commands(struct rpc_table *t);
+
 /* Programmatic entry to the same rebuild_recent recovery logic the RPC
  * runs — for self-heal Conditions that must call the validated repair
  * directly (no RPC text round-trip). Fetches the canonical recent range

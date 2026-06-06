@@ -19,6 +19,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
+#include "coins/coins.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -294,6 +295,69 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     return JOB_ADVANCED;
 }
 
+/* Production prevout resolver for utxo_apply, the init-time default for
+ * g_lookup — the analogue of script_validate's created_index_prevout
+ * self-default, but with the CORRECT semantics for utxo_apply: it must mean
+ * "currently UNSPENT". The utxo_projection DELETEs a coin on spend, so a hit
+ * from utxo_projection_get_coins == the coin is live/unspent. This is the
+ * double-spend-safe source; a creation index (which never deletes spent rows)
+ * would report found=true for an already-spent coin and let utxo_apply accept
+ * a double-spend (monetary inflation / hard fork) AND false-trip BIP30
+ * collision — so it MUST NOT be used here. The full pre-image
+ * (value/height/is_coinbase/script) is required for the inverse-delta
+ * restore-ADD. A genuine miss returns found=false (compute_block_delta then
+ * records spend_unknown_utxo with the exact outpoint — never a silent pass).
+ *
+ * FRESHNESS CONTRACT: this reads the projection's `utxo` table, which is folded
+ * from the event log by utxo_projection_catch_up. utxo_apply_stage_step_once
+ * drives that catch_up after every advancing step so a coin created earlier in
+ * the SAME drain is visible to a later block's spend. Without that the read
+ * would be stale and could false-accept a cross-block double-spend. */
+static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
+                                   struct utxo_apply_lookup *out, void *user)
+{
+    (void)user;
+    if (!txid || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+
+    utxo_projection_t *p = utxo_projection_get_global();
+    if (!p)
+        return true;   /* projection not open yet → treat as absent (found=0),
+                        * matching the lookup==NULL "all external absent"
+                        * contract; never a false-accept. */
+
+    struct coins c;
+    coins_init(&c);
+    if (!utxo_projection_get_coins(p, txid->data, &c)) {
+        coins_free(&c);
+        return true;   /* no live output at this txid → found stays false */
+    }
+
+    bool ok = true;
+    if (vout < c.num_vout && !tx_out_is_null(&c.vout[vout])) {
+        const struct tx_out *o = &c.vout[vout];
+        size_t slen = o->script_pub_key.size;
+        if (slen > UTXO_APPLY_SCRIPT_MAX) {
+            /* Contract violation (a UTXO scriptPubKey is <= MAX_SCRIPT_SIZE ==
+             * UTXO_APPLY_SCRIPT_MAX). Fail the resolver (compute_block_delta
+             * turns this into an internal_error) rather than truncate or
+             * over-read a consensus script. */
+            ok = false;
+        } else {
+            out->found       = true;
+            out->value       = o->value;
+            out->height      = (uint32_t)(c.height < 0 ? 0 : c.height);
+            out->is_coinbase = c.is_coinbase;
+            out->script_len  = (uint32_t)slen;
+            if (slen)
+                memcpy(out->script, o->script_pub_key.data, slen);
+        }
+    }
+    coins_free(&c);
+    return ok;
+}
+
 bool utxo_apply_stage_init(struct main_state *ms)
 {
     if (!ms) LOG_FAIL("utxo_apply", "init: NULL main_state");
@@ -330,6 +394,14 @@ bool utxo_apply_stage_init(struct main_state *ms)
 
     g_ms = ms;
     g_stage = s;
+    /* Wire the production UTXO-set resolver unless a caller (e.g. a test)
+     * already installed one. Without it g_lookup stays NULL and
+     * utxo_apply_compute_block_delta treats EVERY external coin as absent,
+     * rejecting every cross-block transparent spend as spend_unknown_utxo
+     * (live-wedge blocker #5). Symmetric with script_validate's
+     * created_index_prevout self-default (script_validate_stage.c). */
+    if (!g_lookup)
+        g_lookup = projection_live_lookup;
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO("utxo_apply", "[utxo_apply] stage initialised");
@@ -363,6 +435,23 @@ job_result_t utxo_apply_stage_step_once(void)
     }
     job_result_t r = stage_run_once(g_stage, db);
     progress_store_tx_unlock();
+    /* CODE1 freshness: after an advancing step, fold the UTXO events this step
+     * just emitted into the projection's read `utxo` table, so a coin CREATED
+     * by this block is visible to projection_live_lookup (utxo_apply's prevout
+     * resolver) when a LATER block in the SAME drain spends it. The read table
+     * is otherwise folded only at boot (utxo_projection_catch_up's sole other
+     * caller), so without this a cross-block create-then-spend within one
+     * pre-restart drain would read a stale table and could false-accept a
+     * double-spend. catch_up runs its OWN txn on the SEPARATE projection DB
+     * handle (not progress.kv), so it does not nest with the lock just
+     * released. Idempotent + crash-safe (the log commit is independent of the
+     * stage cursor txn). Covers BOTH drivers — reducer ingest AND the
+     * supervisor drain — since both reach the chain via this function. */
+    if (r == JOB_ADVANCED) {
+        utxo_projection_t *proj = utxo_projection_get_global();
+        if (proj)
+            (void)utxo_projection_catch_up(proj);
+    }
     return r;
 }
 

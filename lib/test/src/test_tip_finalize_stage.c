@@ -445,16 +445,31 @@ int test_tip_finalize_stage(void)
         TF_CHECK("precondition: setup",
                  tf_setup("precondition", 3, TF_FAIL_PRECONDITION, -1,
                           dir, sizeof(dir), &ms, &sc) == 0);
-        TF_CHECK("precondition: drains 3",
-                 tip_finalize_stage_drain(100) == 3);
-        TF_CHECK("precondition: counter == 1",
-                 tip_finalize_stage_precondition_failed_total() == 1);
+        /* block[2] lacks BLOCK_HAVE_DATA -> finalizing height 1 sees a
+         * TRANSIENT have_data_missing lookahead. Height 0 finalizes; the
+         * stage then HOLDS at height 1 (JOB_IDLE) instead of stranding it by
+         * advancing the cursor past an un-finalized height (the live
+         * 3134304<->3134302 oscillation). */
+        TF_CHECK("precondition: drains only height 0 (holds at 1)",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("precondition: cursor held at 1 (not advanced past)",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("precondition: successor_pending counter fired",
+                 tip_finalize_stage_successor_pending_total() == 1);
+        TF_CHECK("precondition: genuine-fork counter NOT fired",
+                 tip_finalize_stage_precondition_failed_total() == 0);
         int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
-        log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
-                   &depth, &utxos);
-        TF_CHECK("precondition: h=1 ok=0", ok == 0);
-        TF_CHECK("precondition: h=1 status",
-                 strcmp(status, "precondition_failed") == 0);
+        TF_CHECK("precondition: NO junk row written at h=1",
+                 log_row_at(progress_store_db(), 1, &ok, status,
+                            sizeof(status), &depth, &utxos) == false);
+        /* Land the successor body: block[2] now has HAVE_DATA, so BOTH height 1
+         * (lookahead = block[2]) and height 2 (lookahead = the always-ready
+         * block[3]) become finalizable. The held frontier drains forward two
+         * blocks; cursor lands at 3 (utxo_apply_log has rows only through 2). */
+        sc.blocks[2].nStatus |= BLOCK_HAVE_DATA;
+        TF_CHECK("precondition: drains 1 and 2 once successor lands",
+                 tip_finalize_stage_drain(100) == 2 &&
+                 tip_finalize_stage_cursor() == 3);
         tf_teardown(dir, &ms, &sc);
     }
 

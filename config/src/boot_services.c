@@ -1198,11 +1198,11 @@ bool app_init_services(struct app_context *ctx,
     rpc_hodl_set_state(svc->state, svc->coins_tip, boot_node_db(svc),
                         ctx->datadir);
     register_hodl_rpc_commands(svc->rpc_table);
-
     rpc_repair_set_state(svc->state, svc->coins_tip, boot_node_db(svc),
                          ctx->datadir, params);
     register_repair_rpc_commands(svc->rpc_table);
     register_rebuild_recent_rpc_commands(svc->rpc_table);
+    register_backfill_header_solutions_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,
                                  NULL, svc->coins_tip, boot_node_db(svc));

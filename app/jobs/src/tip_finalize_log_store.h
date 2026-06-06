@@ -26,6 +26,11 @@ struct finalized_tip_row {
     bool found;
     bool ok;
     bool has_tip_hash;
+    /* True when status=="anchor": a tip SEED, whose tip_hash is the block's
+     * OWN hash (row H -> hash H), NOT the finalized lookahead convention
+     * (row H -> hash H+1). The reorg-rewind must skip these or it false-detects
+     * a divergence comparing hash(H) to active_chain_at(H+1). */
+    bool is_anchor;
     struct uint256 tip_hash;
 };
 

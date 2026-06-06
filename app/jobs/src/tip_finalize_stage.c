@@ -39,6 +39,11 @@ static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_reorg_detected_total = 0;
 static _Atomic uint64_t g_utxo_count_diverged_total = 0;
 static _Atomic uint64_t g_precondition_failed_total = 0;
+/* Lookahead successor (H+1) is not yet body-on-disk / script-valid: the
+ * finalize of H is correctly DEFERRED (cursor held, JOB_IDLE), not skipped.
+ * Distinct from g_precondition_failed_total, which now counts ONLY the genuine
+ * competing-fork skip (chainwork_not_greater). */
+static _Atomic uint64_t g_successor_pending_total = 0;
 static _Atomic uint64_t g_total_work_added_high = 0;
 static _Atomic uint64_t g_total_work_added_low = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
@@ -182,6 +187,14 @@ static bool finalized_row_active_match(sqlite3 *db, int row_height,
         return false;
     if (!row.found || !row.ok || !row.has_tip_hash)
         return true;
+    /* Skip tip SEED rows. An anchor row stores the block's OWN hash (row H ->
+     * hash H), not the finalized lookahead convention (row H -> hash H+1) that
+     * this match assumes. Comparing an anchor's hash(H) to active_chain_at(H+1)
+     * ALWAYS mismatches, which false-detected a reorg and rewound the cursor
+     * back onto the seed forever (the 3134304<->3134302 oscillation). A genuine
+     * reorg at/around the seed is still caught by the real finalized rows. */
+    if (row.is_anchor)
+        return true;  /* out_known stays false → no-op for the rewind scan */
 
     struct main_state *ms = g_ms;
     struct block_index *active =
@@ -322,25 +335,45 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    /* Name WHICH precondition blocks before collapsing to the bool, so the
-     * stall reason (e.g. not_script_valid) is not masked. Evaluated in the
-     * same order: the block-status checks first, then the chainwork compare,
-     * exactly matching the prior (!preconditions_ok || chainwork<=0)
-     * verdict — the branch is taken iff precond_reason != NULL, identical. */
-    const char *precond_reason = precondition_block_reason(new_tip);
-    if (precond_reason == NULL &&
-        arith_uint256_compare(&new_tip->nChainWork,
-                              &old_tip->nChainWork) <= 0)
-        precond_reason = "chainwork_not_greater";
-    if (precond_reason != NULL) {
+    /* Reaching here we KNOW new_tip->pprev == old_tip (the structural-reorg
+     * branch above returned first) — a LINEAR one-block lookahead extension.
+     * Two outcomes are NOT the same and must be handled differently:
+     *
+     *  (a) TRANSIENT (block_missing / have_data_missing / not_script_valid /
+     *      not_header_valid): the successor H+1 has simply not finished the
+     *      body_persist -> script_validate -> utxo_apply pipeline yet. H is
+     *      genuinely finalizable; we are only missing its lookahead witness.
+     *      We must NOT advance the cursor — advancing strands H forever
+     *      because anchor_cursor_to_authority is MONOTONIC (never pulls back),
+     *      which is the live 3134304<->3134302 oscillation. Return JOB_IDLE:
+     *      cursor unchanged, framework rolls back the txn (no junk row), and
+     *      the frontier retries on the next tick once the successor lands.
+     *
+     *  (b) chainwork_not_greater: a LINEAR successor that adds no work. On a
+     *      valid PoW chain GetBlockProof() is strictly >= 1 per block, so this
+     *      is unreachable for a real header; it appears only from a
+     *      corrupt/zero-work synthetic candidate that must NEVER finalize.
+     *      Preserve the prior behavior EXACTLY: persist the precondition_failed
+     *      ok=0 row, count it, emit the reject, and ADVANCE past it so the
+     *      pipeline cannot deadlock on an unfinalizable lighter candidate. */
+    const char *transient_reason = precondition_block_reason(new_tip);
+    if (transient_reason != NULL) {
+        atomic_fetch_add(&g_successor_pending_total, 1);
+        record_precondition_block(next_h, transient_reason);
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        /* No DB row, no cursor move: hold H until its successor is ready. */
+        return JOB_IDLE;
+    }
+    if (arith_uint256_compare(&new_tip->nChainWork,
+                              &old_tip->nChainWork) <= 0) {
         if (!log_insert(db, next_h, "precondition_failed", false,
                         &work_delta, -1, 0, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_precondition_failed_total, 1);
-        record_precondition_block(next_h, precond_reason);
+        record_precondition_block(next_h, "chainwork_not_greater");
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "tip_finalize precondition_failed height=%d reason=%s",
-                    next_h, precond_reason);
+                    next_h, "chainwork_not_greater");
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
@@ -518,6 +551,7 @@ void tip_finalize_stage_shutdown(void)
     atomic_store(&g_reorg_detected_total, (uint64_t)0);
     atomic_store(&g_utxo_count_diverged_total, (uint64_t)0);
     atomic_store(&g_precondition_failed_total, (uint64_t)0);
+    atomic_store(&g_successor_pending_total, (uint64_t)0);
     atomic_store(&g_total_work_added_high, (uint64_t)0);
     atomic_store(&g_total_work_added_low, (uint64_t)0);
     atomic_store(&g_last_step_unix, (int64_t)0);
@@ -629,6 +663,7 @@ uint64_t tip_finalize_stage_upstream_failed_total(void) { return atomic_load(&g_
 uint64_t tip_finalize_stage_reorg_detected_total(void) { return atomic_load(&g_reorg_detected_total); }
 uint64_t tip_finalize_stage_utxo_count_diverged_total(void) { return atomic_load(&g_utxo_count_diverged_total); }
 uint64_t tip_finalize_stage_precondition_failed_total(void) { return atomic_load(&g_precondition_failed_total); }
+uint64_t tip_finalize_stage_successor_pending_total(void) { return atomic_load(&g_successor_pending_total); }
 uint64_t tip_finalize_stage_total_work_added_high(void) { return atomic_load(&g_total_work_added_high); }
 uint64_t tip_finalize_stage_total_work_added_low(void) { return atomic_load(&g_total_work_added_low); }
 
@@ -656,6 +691,8 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_utxo_count_diverged_total));
     json_push_kv_int (out, "precondition_failed_total",
                       (int64_t)atomic_load(&g_precondition_failed_total));
+    json_push_kv_int (out, "successor_pending_total",
+                      (int64_t)atomic_load(&g_successor_pending_total));
     json_push_kv_int (out, "last_precondition_height",
                       atomic_load(&g_last_precondition_height));
     {

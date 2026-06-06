@@ -146,7 +146,7 @@ bool finalized_tip_row_at(sqlite3 *db, int height,
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok, tip_hash FROM tip_finalize_log WHERE height = ?",
+        "SELECT ok, tip_hash, status FROM tip_finalize_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("tip_finalize", "[tip_finalize] finalized row prepare failed: %s", sqlite3_errmsg(db));
         return false;
@@ -162,6 +162,8 @@ bool finalized_tip_row_at(sqlite3 *db, int height,
             memcpy(out->tip_hash.data, blob, 32);
             out->has_tip_hash = true;
         }
+        const unsigned char *status = sqlite3_column_text(st, 2);
+        out->is_anchor = (status && strcmp((const char *)status, "anchor") == 0);
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("tip_finalize", "[tip_finalize] finalized row step failed rc=%d: %s", rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);
