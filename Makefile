@@ -790,6 +790,30 @@ ci-sync-smoke: zclassic23
 # on stock Ubuntu/Debian hosts where the CLI isn't installed).  The tool
 # issues `sqlite3_wal_checkpoint_v2(TRUNCATE)` via the library only — no
 # DELETE, no unguarded statements, and safe to re-run.
+# ── install (MVP criterion #1) ──────────────────────────────────────────────
+# Literal install for a fresh operator: copy the two binaries onto PATH and
+# install the systemd --user unit pointed at the installed binary, so a clean
+# Ubuntu/Debian box can do `make install && systemctl --user start zclassic23`.
+#   PREFIX   binary install prefix (default /usr/local; use ~/.local for rootless)
+#   DESTDIR  staging root for packaging — when set, the live --user unit + daemon
+#            reload are skipped (binaries are only staged under DESTDIR).
+PREFIX  ?= /usr/local
+DESTDIR ?=
+.PHONY: install
+install: zclassic23 zcl-rpc
+	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -m 755 zclassic23 "$(DESTDIR)$(PREFIX)/bin/zclassic23"
+	install -m 755 zcl-rpc    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
+	@if [ -z "$(DESTDIR)" ]; then \
+	    install -d "$(HOME)/.config/systemd/user"; \
+	    sed 's|%h/zclassic23/zclassic23|$(PREFIX)/bin/zclassic23|' \
+	        deploy/zclassic23.service \
+	        > "$(HOME)/.config/systemd/user/zclassic23.service"; \
+	    (systemctl --user daemon-reload 2>/dev/null || true); \
+	    echo "installed systemd --user unit; start: systemctl --user start zclassic23"; \
+	fi
+	@echo "make install: zclassic23 + zcl-rpc -> $(DESTDIR)$(PREFIX)/bin"
+
 deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
 	    ./tools/wal_checkpoint $(HOME)/.zclassic-c23/node.db \

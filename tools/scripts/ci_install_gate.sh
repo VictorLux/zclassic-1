@@ -92,12 +92,13 @@ gate_rm_prefix() {
 # also drops the prefix, no matter when it fires.
 trap gate_rm_prefix EXIT INT TERM
 
-echo "ci-install: installing to throwaway prefix $PREFIX"
-install -d -m 755 "$PREFIX/bin" || gate_die "install -d $PREFIX/bin failed"
-install -m 755 "$SRC_NODE" "$PREFIX/bin/zclassic23" \
-    || gate_die "install zclassic23 -> prefix failed"
-install -m 755 "$SRC_RPC" "$PREFIX/bin/zcl-rpc" \
-    || gate_die "install zcl-rpc -> prefix failed"
+echo "ci-install: installing via 'make install' to throwaway prefix $PREFIX"
+# Exercise the REAL `make install` target (the literal MVP #1 step), staged
+# into the throwaway prefix via DESTDIR. PREFIX= empty so binaries land at
+# $PREFIX/bin (matching the spawn cwd below); DESTDIR set => the live systemd
+# --user unit install is skipped, so this stays fully hermetic.
+make -C "$REPO_ROOT" install DESTDIR="$PREFIX" PREFIX= >/dev/null \
+    || gate_die "make install -> prefix failed"
 [ -x "$PREFIX/bin/zclassic23" ] || gate_die "installed node not executable"
 [ -x "$PREFIX/bin/zcl-rpc" ]    || gate_die "installed zcl-rpc not executable"
 
