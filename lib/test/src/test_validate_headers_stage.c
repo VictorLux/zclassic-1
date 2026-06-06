@@ -1170,6 +1170,81 @@ int test_validate_headers_stage(void)
 
         vh_teardown(dir, &ms, &sc);
     }
+
+    /* ── stale-floor clamp: ancient solutionless rows never starve the
+     *    cursor-frontier recheck ─────────────────────────────────────────
+     * Regression for the second live tip-wedge: after validate_headers drains
+     * forward over a cold-imported chain it leaves many ancient ok=0
+     * "no-header-solution-backfill-required" rows (empty-solution headers).
+     * Those are REPAIRABLE-looking, so the in-process recheck floor used to pin
+     * on the lowest of them and the bounded batch (LIMIT VH_BATCH_SIZE) never
+     * reached the real frontier whose solution had since landed — tip frozen.
+     * The fix clamps the recheck scan floor up to the live pipeline frontier
+     * = min(tip_finalize_cursor, body_fetch_cursor), excluding the ancient rows
+     * so the recheck reaches and flips the frontier. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        /* Validator passes everything it is ASKED to re-validate, so the only
+         * thing that can keep a row ok=0 is the recheck scan never reaching it
+         * — making "ancient row still ok=0" a clean proof of exclusion. */
+        VH_CHECK("clamp: setup",
+                 vh_setup("clamp_frontier", 6, stub_pass, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+
+        /* An ANCIENT repairable ok=0 row far below the frontier (height 1, a
+         * cold-import artifact) and one AT the frontier (height 4). Both carry
+         * the exact solutionless reason so both look repairable to the floor. */
+        VH_CHECK("clamp: seed ancient ok=0",
+                 seed_failed_vh_row(db, 1, sc.blocks[1].phashBlock,
+                                    "no-header-solution-backfill-required"));
+        VH_CHECK("clamp: seed frontier ok=0",
+                 seed_failed_vh_row(db, 4, sc.blocks[4].phashBlock,
+                                    "no-header-solution-backfill-required"));
+
+        /* Forward drain caught up (validate==header_admit==6 ⇒ step_once runs
+         * the recheck), and the pipeline is durably BLOCKED at height 4
+         * (tip_finalize and body_fetch cursors both 4). */
+        VH_CHECK("clamp: set validate cursor",
+                 set_stage_cursor(db, "validate_headers", 6));
+        VH_CHECK("clamp: set header_admit cursor",
+                 set_stage_cursor(db, "header_admit", 6));
+        VH_CHECK("clamp: set tip_finalize frontier",
+                 set_stage_cursor(db, "tip_finalize", 4));
+        VH_CHECK("clamp: set body_fetch frontier",
+                 set_stage_cursor(db, "body_fetch", 4));
+
+        /* Reopen so the never-persisted in-process recheck floor starts at 0 —
+         * the exact fresh-boot condition under which the ancient row used to
+         * pin it. Cursors reload from the table (validate/header_admit = 6). */
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+        VH_CHECK("clamp: reopen", progress_store_open(dir));
+        VH_CHECK("clamp: re-init admit", header_admit_stage_init(&ms));
+        VH_CHECK("clamp: re-init validate", validate_headers_stage_init(&ms));
+        validate_headers_stage_set_validator(stub_pass, NULL);
+        db = progress_store_db();
+
+        /* One step: recheck clamps the scan to [4,6), reaches + flips the
+         * frontier row. */
+        VH_CHECK("clamp: step reaches + flips frontier",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+
+        int ok = -1;
+        VH_CHECK("clamp: frontier h=4 now ok=1",
+                 log_row_at(db, 4, &ok, NULL, 0) && ok == 1);
+
+        /* Load-bearing assertion: the ancient h=1 row was clamped OUT of the
+         * scan window, so it is untouched — still ok=0. Without the clamp the
+         * same batch would have scanned [0,6) and flipped h=1 under stub_pass
+         * (and with >VH_BATCH_SIZE ancient rows would have starved h=4). */
+        ok = -1;
+        VH_CHECK("clamp: ancient h=1 excluded — still ok=0",
+                 log_row_at(db, 1, &ok, NULL, 0) && ok == 0);
+
+        vh_teardown(dir, &ms, &sc);
+    }
     printf("validate_headers_stage: %d failures\n", failures);
     return failures;
 }

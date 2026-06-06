@@ -336,6 +336,31 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     int64_t start = atomic_load(&g_failure_recheck_cursor);
     if (start < 0)
         start = 0;
+
+    /* Anchor the scan at the live pipeline frontier so stale reindex-artifact
+     * ok=0 rows (cold-imported solutionless headers far below the tip) can
+     * never pin the in-process floor and starve the bounded (LIMIT
+     * VH_BATCH_SIZE) batch before it reaches the real frontier — the live
+     * tip-wedge. The frontier is the LOWER of two durable cursors: tip_finalize
+     * (= finalized_tip+1) and body_fetch (which JOB_BLOCKs on a live
+     * solutionless ok=0 row, so its cursor is the height that must not be
+     * skipped even if a torn WAL restart leaves the finalized seed above it).
+     * Taking the lower can only widen the scan toward an earlier live row,
+     * never skip one; being persisted, it is independent of the never-persisted
+     * floor's boot value (converges identically after kill-9). Verdict-
+     * preserving: only narrows WHICH heights reach the unchanged validator. */
+    {
+        int64_t fin_cur = (int64_t)stage_cursor_persisted(db, "tip_finalize",
+                                                          STAGE_NAME);
+        int64_t bf_cur  = (int64_t)stage_cursor_persisted(db, "body_fetch",
+                                                          STAGE_NAME);
+        int64_t frontier = fin_cur;
+        if (bf_cur > 0 && (frontier <= 0 || bf_cur < frontier))
+            frontier = bf_cur;
+        if (frontier > start)
+            start = frontier;
+    }
+
     if ((uint64_t)start >= validated_cursor)
         return JOB_IDLE;
 
@@ -360,6 +385,7 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     memset(jobs, 0, sizeof(jobs));
     int n = 0;
     int64_t last_seen = start - 1;
+    int64_t first_unresolved = -1;
     while (n < VH_BATCH_SIZE &&
            (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         int64_t h64 = sqlite3_column_int64(stmt, 0);
@@ -373,10 +399,15 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         }
         struct block_index *bi = vh_resolve_bi(ms, (int)h64);
         if (!bi || !bi->phashBlock) {
-            sqlite3_finalize(stmt);
-            progress_store_tx_unlock();
+            /* Transient resolve miss (e.g. a concurrent reorg between admit and
+             * recheck). SKIP this one height instead of aborting the entire
+             * pass — one unresolvable row must never strand every later
+             * frontier row — and remember the lowest such height so the floor
+             * is never advanced past it (the next pass retries it). */
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-            return JOB_IDLE;
+            if (first_unresolved < 0)
+                first_unresolved = h64;
+            continue;
         }
         vh_job_bind_block(db, &jobs[n], bi, (int)h64);
         n++;
@@ -391,7 +422,12 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
     progress_store_tx_unlock();
 
     if (n == 0) {
-        atomic_store(&g_failure_recheck_cursor, (int64_t)validated_cursor);
+        /* If every selected row was skipped (unresolvable), pin at the lowest
+         * skipped height so the next pass retries it; only a genuinely empty
+         * scan may jump the floor to validated_cursor. */
+        int64_t idle_floor = (first_unresolved >= 0)
+                             ? first_unresolved : (int64_t)validated_cursor;
+        atomic_store(&g_failure_recheck_cursor, idle_floor);
         return JOB_IDLE;
     }
 
@@ -445,6 +481,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         }
     int64_t new_floor = (lowest_still_failing >= 0)
                         ? lowest_still_failing : (last_seen + 1);
+    /* Never advance the floor past a height skipped as unresolvable this pass —
+     * it must be retried on the next pass, not stepped over. */
+    if (first_unresolved >= 0 && new_floor > first_unresolved)
+        new_floor = first_unresolved;
     atomic_store(&g_failure_recheck_cursor, new_floor);
     /* Only claim progress when the floor actually advanced. A pinned floor
      * (the lowest repairable row still has no backfilled solution) returns
