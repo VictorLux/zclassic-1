@@ -1537,12 +1537,12 @@ static void shutdown_stop_frontend_services(struct boot_svc_ctx *svc)
 static void shutdown_persist_fast_restart_state(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] persisting fast restart state\n");
-    if (svc->state->map_block_index.size > 1000) {
+    /* >1 not >1000: persist small reducer chains (regtest generate) too, else the map restores empty and the finalized-tip seed no-op's (getblockcount=0). */
+    if (svc->state->map_block_index.size > 1) {
         printf("Saving block index flat file (%zu entries)...\n",
                svc->state->map_block_index.size);
         save_block_index_flat(svc->datadir, svc->state);
     }
-
     printf("[shutdown] fast restart state persisted\n");
 }
 
