@@ -7,6 +7,9 @@
 #include "test/test_helpers.h"
 #include "services/chain_state_validator.h"
 #include "validation/main_state.h"
+#include "storage/progress_store.h"
+#include "jobs/tip_finalize_stage.h"
+#include <sqlite3.h>
 
 #define CSV_CHECK(name, expr) do {          \
     printf("%s... ", (name));              \
@@ -198,6 +201,74 @@ int test_chain_state_validator(void)
 
         coins_view_cache_free(&cache);
         block_map_free(&ms.map_block_index);
+    }
+
+    /* ── 5b. Coins behind chain BUT the chain tip IS the durable
+     *        reducer-finalized tip → BOOT_OK (reducer tip is the authority) ──
+     * Identical shape to test 5 (coins at h=50, chain at h=99), but with a
+     * durable tip_finalize tip seeded at the chain tip. The stale coins.db best
+     * is benign lagging materialization (the projection authority is at the
+     * finalized tip), so the validator must AGREE rather than reset the public
+     * tip down and discard finalized progress. Test 5 (no progress store) still
+     * asserts RESET_CHAIN — proving this branch never over-fires without a
+     * finalized tip. */
+    {
+        char pdir[96];
+        snprintf(pdir, sizeof(pdir), "/tmp/zcl_csv_fin_%d", (int)getpid());
+        char rmcmd[160];
+        snprintf(rmcmd, sizeof(rmcmd), "rm -rf '%s'", pdir);
+        (void)system(rmcmd);
+        char mkcmd[160];
+        snprintf(mkcmd, sizeof(mkcmd), "mkdir -p '%s'", pdir);
+        (void)system(mkcmd);
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        block_map_init(&ms.map_block_index);
+        active_chain_init(&ms.chain_active);
+        csv_build_chain(&ms, 100);
+        struct block_index *tip = active_chain_tip(&ms.chain_active);
+
+        bool seeded = false;
+        if (tip && tip->phashBlock && progress_store_open(pdir)) {
+            /* Seed the durable finalized-tip log row WITHOUT initialising the
+             * stage: tip_finalize_stage_init would register an irreversible
+             * global active_chain authority (is_authoritative()==true, no
+             * unregister API) that leaks into later tests. seed_anchor writes
+             * the tip_finalize_log anchor row but only stamps the cursor when
+             * g_stage is wired, so we stamp the 'tip_finalize' cursor directly. */
+            bool row = tip_finalize_stage_seed_anchor(tip->nHeight,
+                                                      tip->phashBlock->data);
+            char sql[160];
+            snprintf(sql, sizeof(sql),
+                     "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at)"
+                     " VALUES('tip_finalize',%d,0)", tip->nHeight + 1);
+            seeded = row &&
+                     sqlite3_exec(progress_store_db(), sql, NULL, NULL, NULL)
+                         == SQLITE_OK;
+        }
+
+        struct coins_view_cache cache;
+        struct coins_view nv;
+        memset(&nv, 0, sizeof(nv));
+        coins_view_cache_init(&cache, &nv);
+
+        struct uint256 h50;
+        memset(&h50, 0, sizeof(h50));
+        h50.data[0] = 50;
+        h50.data[3] = 0xBB;
+        coins_view_cache_set_best_block(&cache, &h50);
+
+        struct boot_validation_result r =
+            validate_coins_chain_agreement(&ms, &cache, "/tmp");
+
+        CSV_CHECK("csv: coins behind + chain==reducer-finalized tip → BOOT_OK",
+                  seeded && r.action == BOOT_OK && r.coins_height == 99);
+
+        coins_view_cache_free(&cache);
+        block_map_free(&ms.map_block_index);
+        progress_store_close();
+        (void)system(rmcmd);
     }
 
     /* ── 6. Coins not in index, chain > 1000 → reset coins cursor ── */

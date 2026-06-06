@@ -16,7 +16,11 @@
 #include "chain/chain.h"
 #include "coins/coins_view.h"
 #include "event/event.h"
+#include "storage/progress_store.h"
+#include "jobs/stage_helpers.h"
+#include "jobs/tip_finalize_stage.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -132,6 +136,51 @@ struct boot_validation_result validate_coins_chain_agreement(
         r.action = BOOT_OK;
         r.coins_height = r.chain_height;
         return r;
+    }
+
+    /* Case 3b (reducer-finalized tip is the coins authority): coins_best
+     * disagrees with the active chain tip, BUT the active chain tip IS the
+     * durable reducer-finalized tip (tip_finalize_log, in progress.kv). The runtime
+     * coins authority is the utxo_projection read view (g_coins_read_view, bound
+     * at config/src/boot.c:1795), which is AT this finalized tip; a stale/behind
+     * coins.db coins_best_block is benign lagging materialization the reducer
+     * reconciles forward — NOT a chain disagreement. Returning BOOT_OK here
+     * stops the Case-4 RESET_CHAIN that discarded finalized progress on every
+     * restart (observed: reset tip 3,135,248 -> stale coins 3,134,303, losing
+     * the climb).
+     *
+     * STRICTLY guarded so it can never mask real corruption: AGREE only when the
+     * active tip's (height,hash) BYTE-MATCHES the durable finalized tip (read via
+     * the same accessor block_index_loader_rebuild uses to seed the tip, so the
+     * lookahead/anchor convention is handled), AND coins.db is found behind-or-
+     * equal. coins.db AHEAD of the finalized tip, or not in the index, falls
+     * through to the Case-4 reset/wipe path unchanged. Read is safe here:
+     * progress_store_open (boot.c:1581) precedes this validator (boot.c:2734). */
+    if (chain_tip->phashBlock) {
+        sqlite3 *pdb = progress_store_db();
+        uint64_t fin_cursor = pdb
+            ? stage_cursor_persisted(pdb, "tip_finalize", "chain_state_validator")
+            : 0;
+        if (fin_cursor > 0 && (int)fin_cursor - 1 == chain_tip->nHeight) {
+            uint8_t fin_hash[32];
+            if (tip_finalize_stage_finalized_tip_at(pdb, chain_tip->nHeight,
+                                                    fin_hash) &&
+                memcmp(fin_hash, chain_tip->phashBlock->data, 32) == 0) {
+                struct block_index *cb = block_map_find(&ms->map_block_index,
+                                                        &coins_best);
+                if (cb && cb->nHeight <= chain_tip->nHeight) {
+                    LOG_INFO("boot",
+                             "[boot] coins_best (h=%d) behind reducer-finalized "
+                             "tip (h=%d); active chain matches the finalized "
+                             "authority — AGREE (coins reconciles forward, no "
+                             "tip reset)",
+                             cb->nHeight, chain_tip->nHeight);
+                    r.action = BOOT_OK;
+                    r.coins_height = r.chain_height;
+                    return r;
+                }
+            }
+        }
     }
 
     /* Case 4: Coins and chain disagree — find coins block in index */
