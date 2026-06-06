@@ -739,7 +739,7 @@ bool app_init_services(struct app_context *ctx,
     if (boot_node_db(svc))
         node_db_sync_wallet_keys(boot_node_db(svc), boot_wallet(svc));
 
-    /* Initialize message processor */
+    /* Pass base datadir; msg_processor_init re-resolves NET-SPECIFIC. */
     msg_processor_init(svc->msg_processor, svc->state, svc->mempool,
                        svc->coins_tip, params, ctx->datadir,
                        &svc->connman->manager, &svc->runtime);

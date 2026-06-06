@@ -92,7 +92,8 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
         check-file-size-ceiling check-framework-filename-suffix \
         check-operator-needed-sink check-doc-accuracy \
         fuzz-ci-leaks \
-        soak-smoke soak-7day soak-ci test-crash-bootstrap chaos chaos-clean
+        soak-smoke soak-7day soak-ci test-crash-bootstrap \
+        test-two-node-peer-tip chaos chaos-clean
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli
@@ -396,6 +397,21 @@ test-crash-bootstrap: crash_recovery_test zclassic23 zcl-rpc
 	     --iterations=2 --min-delay-ms=200 --max-delay-ms=800 \
 	     --verbose; \
 	 echo "test-crash-bootstrap: PASS (recovery invariants held under SIGKILL)"'
+
+# C7 PEER-tip kill-9 (the FULL #7 claim): two isolated regtest nodes on
+# disjoint 39xxx quads, B connect-only to A. A mines; assert B syncs to A
+# over NATIVE P2P, then kill-9 B mid-life, mine more on A, restart B, and
+# assert B re-catches up to A's PEER-tip. This is the complement to
+# test-crash-bootstrap (which only proves SINGLE-node boot recovery).
+# DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes. The
+# harness owns its own /tmp datadirs + 39xxx port refuse/LISTEN preflight
+# + process-group SIGKILL + EXIT/INT/TERM cleanup trap (same discipline
+# as tools/scripts/isolated_node_env.sh, generalized to two nodes).
+.PHONY: test-two-node-peer-tip
+# Runs under bash for `set -o pipefail` parity with the other spawn
+# harnesses; the script itself sets -euo pipefail.
+test-two-node-peer-tip: zclassic23 zcl-rpc
+	@bash tools/scripts/two_node_peer_tip.sh
 
 # C6 bounded compressed-soak PROXY: self-spawn an isolated /tmp regtest
 # node, drive 180 s of generate-load, and assert the soak runner exits

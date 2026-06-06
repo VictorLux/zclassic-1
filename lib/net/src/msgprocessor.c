@@ -39,6 +39,7 @@
  * challenge responses. The manifest protocol types live in net/file_manifest.h;
  * the remaining controller dependency is the cache ownership boundary. */
 #include "controllers/file_controller.h"  // lib-layer-ok:file_manifest-cache
+#include "util/util.h"  /* GetDataDir — net-specific block-body serve dir */
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "config/runtime.h"
@@ -690,7 +691,19 @@ void msg_processor_init(struct msg_processor *mp,
     mp->mempool = mempool;
     mp->coins_tip = coins_tip;
     mp->params = params;
-    mp->datadir = datadir;
+    /* Block bodies are served from <mp->datadir>/blocks/blkNNNNN.dat, but the
+     * reducer persists them under the NET-SPECIFIC datadir, GetDataDir(true)
+     * (=<base>/regtest on regtest; ==base on mainnet — see
+     * reducer_ingest_service.c). Resolve net-specific here so the P2P serve
+     * path opens the SAME directory the reducer wrote to. Passing the base
+     * `datadir` made every getdata for a regtest-mined block answer
+     * `notfound`, so a follower peer could never sync bodies (this is the
+     * symmetric twin of the reducer write-path fix). On mainnet the two are
+     * identical. The static buffer is process-lifetime (single node
+     * instance) so the const char* mp->datadir stays valid for the run. */
+    static char s_net_datadir[2048];
+    GetDataDir(true, s_net_datadir, sizeof(s_net_datadir));
+    mp->datadir = s_net_datadir[0] ? s_net_datadir : datadir;
     mp->net_mgr = net_mgr;
     mp->runtime = runtime;
     mp->block_submit = NULL;
