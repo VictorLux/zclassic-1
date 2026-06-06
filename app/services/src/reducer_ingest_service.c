@@ -52,6 +52,7 @@
 #include "jobs/proof_validate_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "jobs/stage_repair.h"  /* header-solution repair-table backfill */
 
 /* ── Reducer-as-ingest: synchronous wrapper driving the staged Job pipeline.
  * Drain the eight stage step bodies once, in pipeline order — the SAME
@@ -278,6 +279,37 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * without legacy accept_block_header. Hash-hint is the block hash. */
     struct uint256 block_hash;
     block_get_hash(pblock, &block_hash);
+
+    /* Backfill the header's Equihash solution into the durable repair
+     * side-table BEFORE the validate_headers drain below. check_block (above)
+     * already stateless-verified this solution, so it is real. validate_headers
+     * resolves any height ABOVE the persisted node.db tip from this table and
+     * INDEPENDENTLY re-verifies PoW + Equihash, so this is a verified cache,
+     * never a trust shortcut. Without it, a full block ingested for a height
+     * whose in-index entry lost its nSolution (loaders drop it to save RAM)
+     * fails validate_headers with "no-header-solution-backfill-required" even
+     * though the trusted full block in hand carries the real solution — the
+     * live wedge. Fixing it here makes EVERY full-block ingest (rebuild_recent
+     * from the co-located zclassicd, submitblock, P2P block) self-supply its
+     * solution. The save is hash-bound (recomputes hash(header)==block_hash)
+     * and keyed by canonical height, so it cannot poison a different block. */
+    if (pblock->header.nSolutionSize > 0 && ctl->ms) {
+        int sol_h = -1;
+        struct block_index *self =
+            block_map_find(&ctl->ms->map_block_index, &block_hash);
+        if (self) {
+            sol_h = self->nHeight;
+        } else {
+            struct block_index *prev =
+                block_map_find(&ctl->ms->map_block_index,
+                               &pblock->header.hashPrevBlock);
+            if (prev) sol_h = prev->nHeight + 1;
+        }
+        sqlite3 *rdb = progress_store_db();
+        if (sol_h >= 0 && rdb)
+            (void)stage_repair_header_solution_save(rdb, sol_h, &block_hash,
+                                                    &pblock->header);
+    }
 
     struct header_admit_msg msg;
     memset(&msg, 0, sizeof(msg));
