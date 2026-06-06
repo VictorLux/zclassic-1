@@ -123,29 +123,38 @@ working tree, adversarially reviewed:
   lookahead convention); comparing an anchor's hash(H) to active_chain_at(H+1)
   ALWAYS mismatched → false reorg → rewound the cursor onto the seed forever.
 
-## REMAINING (not yet converged — do NOT deploy)
+## PROVEN ON COPY — the tip crosses the wedge and climbs (2026-06-06)
 
-- **Blocker 7 — tip_finalize precondition reads block_index nStatus, reducer tracks
-  logs.** After the gap crosses (utxo_apply→3,137,761 via LOG rows), tip_finalize
-  holds at 3,134,304 spamming `have_data_missing` for the lookahead 3,134,305: the
-  block_index `nStatus & BLOCK_HAVE_DATA` is NOT set on the object tip_finalize
-  reads, even though body_persist_log has the row (body_persist_stage.c:334 sets it
-  — likely on a relocated/different block_index, the phashBlock/block_map class).
-  FIX OPTION A: `precondition_block_reason` should consult body_persist_log /
-  script_validate_log for the lookahead height (the reducer's source of truth),
-  NOT nStatus. OPTION B: ensure reducer_persist_ingested_body sets HAVE_DATA on the
-  canonical map node.
-- **Node-exit during/after a full rebuild_recent run** (no crash_log/signal in
-  stderr; copy was NOT P2P-isolated so concurrent native header_admit raced the
-  rebuild + per-step catch_up). Re-test with an isolated copy (`-connect=<dead>`)
-  to separate a real concurrency bug from the unisolated-test artifact; verify the
-  catch_up txn nesting under concurrency.
+Procedure on a full datadir copy (NON-isolated so it finds peers and the no-peer
+self-heal does not exit it): boot → `backfill_header_solutions` → `rebuild_recent
+(3134304)`. RESULT: the public tip climbed **3,134,303 → 3,135,048+** and kept
+going, node alive; `utxo_apply` crossed block 3,134,341 (first transparent spend),
+`tip_finalize` advanced past the seed (3134304 → 3134663 → …) in bursts. All six
+fixes carry forward end-to-end.
+
+- The earlier "blocker 7" (tip_finalize have_data_missing) was a MISREAD — it is
+  transient: tip_finalize correctly HOLDS (CODE2 JOB_IDLE) until each lookahead
+  body lands, then advances. The anchor-skip fix was the real final piece (the
+  false reorg had been rewinding the cursor onto the seed forever).
+- The "node-exit" was purely a TEST ARTIFACT of `-connect=<dead>` isolation: with
+  0 peers the boot self-heal exits the node ("Connections 0", supervisor stall).
+  Non-isolated, the node stays up and the pipeline drains.
+
+## REMAINING before live deploy (owner-gated)
+
+- **Full convergence**: let the copy run to ~3,137,787 (zclassicd's tip). Climb is
+  ~1-3 blk/s in bursts (a one-time recovery cost; perf note below).
+- **§3 byte-exact gate**: at the converged tip, gettxoutsetinfo / utxo_sha3 must
+  match zclassicd. If it diverges by one coin, STOP.
+- **Performance**: the per-step `utxo_projection_catch_up` (CODE1 freshness) folds
+  the event log every advancing block — O(events) per step — the likely cause of
+  the slow climb. Consider a bounded/incremental catch_up or a periodic fold once
+  correctness is locked. Functional first, then this.
 
 ## Status
-- FIX-1 landed (`1bc2b1a62`).
-- CODE1-4 + anchor-skip: in the working tree, union-gate green, NOT deploy-ready
-  (blocker 7 + node-exit). Prove FULLY on an isolated copy (tip must reach
-  ~3,137,720, gettxoutsetinfo == zclassicd) before live.
+- FIX-1 `1bc2b1a62`; CODE1-4 + anchor-skip `345114d06` — union-gate green, now
+  PROVEN to advance the tip across the wedge on a copy. Deploy still owner-gated:
+  run to full convergence + the byte-exact gate on the copy, THEN `make deploy`.
 - Design + adversarial review: workflows `wokek1cfg` (trace) + `w75jh8zx4` (design).
-- Repro: `repro_on_copy --full` → 3,134,303; backfill_header_solutions; then
-  rebuild_recent(3134304). Isolate P2P next time.
+- Repro: `repro_on_copy --full` → 3,134,303; `backfill_header_solutions`; then
+  `rebuild_recent(3134304)`. Do NOT P2P-isolate (no-peer self-heal exits).
