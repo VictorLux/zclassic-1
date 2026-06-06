@@ -28,6 +28,7 @@
 
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
+#include "util/util.h"  /* GetDataDir */
 
 /* ── Reducer-as-ingest includes ─────────────────────────────────────
  * The synchronous reducer wrapper drives the staged Job pipeline and the
@@ -39,6 +40,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "storage/progress_store.h"
+#include <sqlite3.h>
 #include "storage/disk_block_io.h"
 #include "services/header_admit_inbox.h"
 #include "jobs/header_admit_stage.h"
@@ -211,15 +213,29 @@ static bool reducer_persist_ingested_body_locked(
         return validation_state_error(out, "reducer-body-runtime-unwired");
     }
 
+    /* Write the body to the SAME directory the stage readers read from. Every
+     * reader (body_persist/script_validate/proof_validate/utxo_apply) resolves
+     * the block file under GetDataDir(true) — the NET-SPECIFIC datadir (e.g.
+     * <base>/regtest). ctl->datadir is the BASE datadir (boot passes
+     * ctx->datadir), so on a net with a subdir (regtest/testnet) writing to
+     * ctl->datadir/blocks lands the body where the readers never look —
+     * body_persist then fails read_failed and the whole drive cascades to
+     * "block-not-finalized-by-reducer". On mainnet GetDataDir(true)==base, so
+     * this is byte-identical there. This is exactly why mainnet sync works but
+     * regtest `generate` mined nothing. */
+    char persist_dir[2048];
+    GetDataDir(true, persist_dir, sizeof(persist_dir));
+    const char *bdir = persist_dir[0] ? persist_dir : ctl->datadir;
+
     struct disk_block_pos pos;
     disk_block_pos_init(&pos);
-    if (!write_block_to_disk(pblock, &pos, ctl->datadir,
+    if (!write_block_to_disk(pblock, &pos, bdir,
                              ctl->params->pchMessageStart)) {
         LOG_WARN("reducer", "body persist write failed h=%d", bi->nHeight);
         return validation_state_error(out, "reducer-body-write-failed");
     }
 
-    if (!block_index_set_have_data_verified(bi, &pos, ctl->datadir)) {
+    if (!block_index_set_have_data_verified(bi, &pos, bdir)) {
         LOG_WARN("reducer", "body persist verify failed h=%d file=%d pos=%u",
                  bi->nHeight, pos.nFile, pos.nPos);
         return validation_state_error(out, "reducer-body-verify-failed");
@@ -363,6 +379,36 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     if (ingested && ingested == tip &&
         reducer_pending_body_is_accepted(ingested, out))
         return true;
+
+    /* On a regtest on-demand (generate/submitblock) REJECT, dump each stage's
+     * log row + cursor for the height so an operator can see exactly which
+     * stage in the synchronous drive recorded the failure. Gated on
+     * fMineBlocksOnDemand — regtest only, zero cost on a live network. */
+    if (ctl->params && ctl->params->fMineBlocksOnDemand) {
+        sqlite3 *pdb = progress_store_db();
+        static const char *const tbl[7] = {
+            "validate_headers_log", "body_fetch_log", "body_persist_log",
+            "script_validate_log", "proof_validate_log", "utxo_apply_log",
+            "tip_finalize_log" };
+        char line[512];
+        int n = snprintf(line, sizeof(line),
+                         "[ondemand-reject] h=%d:", target_h);
+        for (int i = 0; i < 7 && pdb && n < (int)sizeof(line); i++) {
+            sqlite3_stmt *st = NULL;
+            char q[96];
+            snprintf(q, sizeof(q), "SELECT ok FROM %s WHERE height=?", tbl[i]);
+            int ok = -1;
+            if (sqlite3_prepare_v2(pdb, q, -1, &st, NULL) == SQLITE_OK) {  // raw-sql-ok:regtest-diag
+                sqlite3_bind_int(st, 1, target_h);
+                if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:regtest-diag
+                    ok = sqlite3_column_int(st, 0);
+                sqlite3_finalize(st);
+            }
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " %.3s=%d",
+                          tbl[i], ok);
+        }
+        LOG_INFO("reducer", "%s", line);
+    }
 
     return false;
 }
