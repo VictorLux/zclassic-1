@@ -207,14 +207,18 @@ bool json_push_kv_bool(struct json_value *obj, const char *key, bool b)
     return json_push_kv_owned(obj, key, &v);
 }
 
+/* Read accessors are NULL-safe: passing NULL (e.g. json_at()/json_get() on an
+ * absent element/key) yields the type's zero value rather than dereferencing.
+ * This makes the idiom json_get_str(json_at(params, N)) safe when the optional
+ * param N is missing — a missing RPC arg must never crash the node. */
 size_t json_size(const struct json_value *v)
 {
-    return v->num_children;
+    return v ? v->num_children : 0;
 }
 
 bool json_empty(const struct json_value *v)
 {
-    return v->num_children == 0;
+    return !v || v->num_children == 0;
 }
 
 const struct json_value *json_get(const struct json_value *obj, const char *key)
@@ -228,22 +232,23 @@ const struct json_value *json_get(const struct json_value *obj, const char *key)
 
 const struct json_value *json_at(const struct json_value *v, size_t index)
 {
-    if (index >= v->num_children) return NULL;
+    if (!v || index >= v->num_children) return NULL;
     return &v->children[index];
 }
 
 bool json_is_null(const struct json_value *v)
 {
-    return v->type == JSON_NULL;
+    return !v || v->type == JSON_NULL;
 }
 
 bool json_get_bool(const struct json_value *v)
 {
-    return v->type == JSON_BOOL && v->val.b;
+    return v && v->type == JSON_BOOL && v->val.b;
 }
 
 int64_t json_get_int(const struct json_value *v)
 {
+    if (!v) return 0;
     if (v->type == JSON_INT) return v->val.i;
     if (v->type == JSON_REAL) return (int64_t)v->val.d;
     return 0;
@@ -251,6 +256,7 @@ int64_t json_get_int(const struct json_value *v)
 
 double json_get_real(const struct json_value *v)
 {
+    if (!v) return 0.0;
     if (v->type == JSON_REAL) return v->val.d;
     if (v->type == JSON_INT) return (double)v->val.i;
     return 0.0;
@@ -258,7 +264,7 @@ double json_get_real(const struct json_value *v)
 
 const char *json_get_str(const struct json_value *v)
 {
-    if (v->type == JSON_STR) return v->val.s;
+    if (v && v->type == JSON_STR) return v->val.s;
     return "";
 }
 
