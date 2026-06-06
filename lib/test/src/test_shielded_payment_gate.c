@@ -297,8 +297,13 @@ int test_shielded_payment_gate(void)
                                       &funding_script, tip.nHeight);
 
     if (ok) {
+        /* register_wallet_rpc_commands() already registers the shielded
+         * sub-controller (wallet_controller.c calls
+         * register_wallet_shielded_rpc_commands internally), so a second
+         * explicit call here would re-register z_getnewaddress and trip the
+         * rpc_table_must_append duplicate-name guard. One call registers the
+         * full transparent + shielded surface the gate exercises. */
         register_wallet_rpc_commands(&tbl);
-        register_wallet_shielded_rpc_commands(&tbl);
         {
             char warmup_status[64];
             if (rpc_is_in_warmup(warmup_status, sizeof(warmup_status)))
