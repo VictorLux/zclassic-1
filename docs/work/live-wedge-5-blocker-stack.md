@@ -142,14 +142,23 @@ fixes carry forward end-to-end.
 
 ## REMAINING before live deploy (owner-gated)
 
-- **Full convergence**: let the copy run to ~3,137,787 (zclassicd's tip). Climb is
-  ~1-3 blk/s in bursts (a one-time recovery cost; perf note below).
-- **§3 byte-exact gate**: at the converged tip, gettxoutsetinfo / utxo_sha3 must
-  match zclassicd. If it diverges by one coin, STOP.
+- **Blocker 8 (the real stability gap) = SINGLE-ENGINE coins_best follow (task #2).**
+  The reducer pipeline advances its authoritative tip (tip_finalize → 3,135,202 in
+  the proof) and authors utxo_projection forward, but the LEGACY `coins_best` /
+  node.db.utxos stays at 3,132,687 — it never follows. The growing divergence trips
+  `chain_integrity_failed` (app/conditions/src/chain_integrity_failed.c) and the
+  node destabilizes/exits after climbing ~900 blocks. So the wedge fix advances the
+  tip CORRECTLY, but the node can't STAY up until coins_best tracks the reducer tip.
+  This is the deploy-gated single-engine cutover (make the reducer tip authoritative
+  over coins.db, or have utxo_apply/tip_finalize advance coins_best). MUST land with
+  the wedge fix for a stable live recovery.
+- **Full convergence + §3 byte-exact gate**: once coins_best follows, run the copy
+  to ~3,137,787 (zclassicd's tip); gettxoutsetinfo / utxo_sha3 must match zclassicd
+  (diverge by one coin → STOP).
 - **Performance**: the per-step `utxo_projection_catch_up` (CODE1 freshness) folds
   the event log every advancing block — O(events) per step — the likely cause of
-  the slow climb. Consider a bounded/incremental catch_up or a periodic fold once
-  correctness is locked. Functional first, then this.
+  the ~1-3 blk/s climb. Consider a bounded/incremental catch_up or a periodic fold
+  once correctness is locked. Functional first, then this.
 
 ## Status
 - FIX-1 `1bc2b1a62`; CODE1-4 + anchor-skip `345114d06` — union-gate green, now
