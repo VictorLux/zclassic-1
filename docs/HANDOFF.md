@@ -1,9 +1,49 @@
 # HANDOFF — read this first
 
-**Restart command:** type **`continue the zclassic23-way convergence drive — use workflows, commit + push as you go`**.
+**Restart command:** type **`continue zclassic23 development`**.
 
-State at handoff: main worktree, HEAD `030f16a0e` (round 4+5 below). Verify with
-`git status --short --branch` before editing.
+State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
+
+---
+
+## ★ LIVE-WEDGE RESOLVED — copy-proof PASS, deploy is the one remaining (owner-gated) step (2026-06-06)
+
+The months-old live tip-wedge (tip frozen at **3,134,303**, `tip_finalize`
+oscillating, self-heal "exhausted") is **root-caused and fixed**. It was **three
+interacting defects in the self-heal machinery — NOT a consensus bug, NOT
+body-source starvation, NOT owner-gated** (`validate_headers`' load is hash-checked
+so a fork was never possible; the repair paths just disagreed with it):
+
+1. **validate_headers recheck floor was monotonic** → a solutionless `ok=0` row
+   logged before its solution was backfilled was never re-validated. Fix `060a5cb4c`.
+2. **`header_solution_repair` is off-by-2** (row H held block H+2's solution, a
+   stale ~June-3 reindex artifact) AND `stage_repair_header_solution_available()`
+   was **hash-blind** → backfill/Condition skipped the stale rows while
+   validate_headers' hash-checked load rejected them → permanent
+   `no-header-solution-backfill-required`. Fix `30e41d650` (hash-aware `available()`).
+3. **Condition's destructive `poison_rewind` churn** rewound the validate cursor →
+   long forward re-drain that **starved the recheck** → frontier never flipped →
+   5× unwitnessed → `operator_needed`. Fix `30e41d650` (Condition defers to the
+   non-destructive recheck for SOLUTIONLESS; rewind kept only for DOWNSTREAM_STALE).
+
+All verdict-preserving (a header still flips `ok=0→ok=1` only via the **unchanged
+PoW+Equihash validator**). poison_rewind's guards (frontier-only, ok=1 floor,
+never deletes `tip_finalize_log`) untouched.
+
+**PROVEN on a full datadir copy (`tools/copyproof_increment1.sh`): VERDICT PASS —
+autonomous self-advance +128 (3134303→3134431, no script driving), zero blocker
+markers, kill-9 + restart preserved the tip, no reset.** The node now self-heals
+by construction (its own Conditions backfill canonical solutions, defer to the
+recheck, the tip climbs).
+
+Union gate green: build clean, `test_parallel` **0/372**, `make lint` all checks.
+Both commits are **WIP-not-deploy** on `main`. Full detail: memory
+`project_live_wedge_rootcause_validate_headers_recheck_2026-06-06`.
+
+**REMAINING (owner-gated): `make deploy`** (build + setcap + restart the live
+service — needs sudo) to bring the fix live and unwedge the real node. The manual
+fallback if needed: deploy then one `rebuild_recent` (NOT `backfill_header_solutions`
+pre-Fix-2). After deploy: watch the live tip climb 3,134,303 → oracle tip.
 
 ---
 
