@@ -223,8 +223,14 @@ static bool rebuild_recent_fetch_and_connect(struct repair_context *ctx,
             ctx && ctx->main_state) {
             sqlite3 *pdb = progress_store_db();
             int active_tip = active_chain_height(&ctx->main_state->chain_active);
+            /* Hash-aware availability: only proceed once the CORRECT solution
+             * for the in-hand block at `height` is durably present (the prior
+             * reducer_ingest above saved it via the per-ingest backfill), never
+             * on a stale wrong-block row. */
+            struct uint256 ihh;
+            block_header_get_hash(&blk.header, &ihh);
             if (pdb && height == active_tip + 1 &&
-                stage_repair_header_solution_available(pdb, height)) {
+                stage_repair_header_solution_available(pdb, height, &ihh)) {
                 struct stage_repair_header_solution_result rr;
                 if (stage_repair_header_solution_poison_rewind(pdb, height,
                                                                active_tip, &rr)) {
@@ -595,7 +601,17 @@ static bool backfill_header_solutions_run(struct repair_context *ctx,
     }
 
     for (int h = lo; h <= hi; h++) {
-        if (stage_repair_header_solution_available(pdb, h)) {
+        /* Skip only if the CORRECT solution (matching the canonical block at
+         * this height) is already present. A stale wrong-block row — e.g. an
+         * off-by-N save from a transient reindex/reorg — must NOT count as
+         * available, or we would never overwrite it and validate_headers,
+         * whose load IS hash-checked, would keep rejecting it and the tip would
+         * stay wedged. When the canonical hash is unknown (height not on the
+         * in-memory chain) do not skip: fetch and overwrite to be safe. */
+        struct block_index *cbi =
+            active_chain_at(&ctx->main_state->chain_active, h);
+        if (cbi && cbi->phashBlock &&
+            stage_repair_header_solution_available(pdb, h, cbi->phashBlock)) {
             (*out_skipped)++;
             continue;
         }

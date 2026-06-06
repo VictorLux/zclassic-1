@@ -28,7 +28,7 @@ set -u
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
-ORACLE_P2P="127.0.0.1:8034"
+ORACLE_P2P="127.0.0.1:8033"   # zclassicd P2P (verified via ss: pid=zclassicd listens 0.0.0.0:8033)
 CLIMB_ROUNDS=15
 WATCH=180
 

@@ -365,7 +365,7 @@ int test_stage_repair(void)
         struct uint256 rehash;
         block_header_get_hash(&loaded, &rehash);
         ok = ok && uint256_eq(&rehash, &hash);
-        ok = ok && stage_repair_header_solution_available(db, 100);
+        ok = ok && stage_repair_header_solution_available(db, 100, NULL);
         STR_CHECK("header solution save/load round-trips", ok);
         teardown_case(dir);
     }
@@ -385,7 +385,7 @@ int test_stage_repair(void)
         bool rv = stage_repair_header_solution_save(db, 200, &wrong, &h);
         ok = ok && rv == false;                 /* refused */
         /* Nothing persisted, so it is not available. */
-        ok = ok && !stage_repair_header_solution_available(db, 200);
+        ok = ok && !stage_repair_header_solution_available(db, 200, NULL);
         STR_CHECK("save refuses a hash that mismatches the header bytes", ok);
         teardown_case(dir);
     }
@@ -406,7 +406,7 @@ int test_stage_repair(void)
 
         bool rv = stage_repair_header_solution_save(db, 300, &hash, &h);
         ok = ok && rv == false;                 /* refused */
-        ok = ok && !stage_repair_header_solution_available(db, 300);
+        ok = ok && !stage_repair_header_solution_available(db, 300, NULL);
         STR_CHECK("save refuses an oversized solution", ok);
         teardown_case(dir);
     }

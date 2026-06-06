@@ -330,21 +330,25 @@ int test_stale_validate_headers_repair_condition(void)
         condition_engine_tick();
 
         ok = ok && stale_validate_headers_repair_test_remedy_calls() == 1;
-        /* W2: forward-tip-only witness. The rewind deleted the validate
-         * frontier poison and a repair header is available, but the tip did
-         * NOT move (active_chain_height stays at 1, target=2) so the
-         * condition stays ACTIVE (was ==0 under the old repair-available
-         * witness shortcut — this flip IS the regression proof). */
+        /* NON-DESTRUCTIVE defer: when the repair header is available, the remedy
+         * no longer poison_rewinds a SOLUTIONLESS frontier. validate_headers
+         * self-heals the ok=0 row forward via recheck_failed_rows (060a5cb4c),
+         * so the remedy returns SKIP and PRESERVES all forward progress: the
+         * validate_headers + downstream cursors are NOT rewound and the log rows
+         * survive. The condition stays ACTIVE because the tip did NOT advance
+         * (active_chain_height stays at 1, target=2); the honest forward-tip
+         * witness governs the clear. A destructive rewind here would delete the
+         * forward validate work and re-starve the recheck — the churn that
+         * produced the 5x-unwitnessed → operator_needed loop. */
         ok = ok && condition_engine_get_active_count() == 1;
-        ok = ok && cursor_for(db, "validate_headers") == 2;
-        ok = ok && cursor_for(db, "body_fetch") == 2;
-        ok = ok && !row_exists(db, "validate_headers_log", 2);
-        ok = ok && !row_exists(db, "body_fetch_log", 2);
-        /* The validate-frontier rewind also must NOT delete tip_finalize_log
-         * rows; the seeded (ok=0) row survives the repair. */
+        ok = ok && cursor_for(db, "validate_headers") == 5;
+        ok = ok && cursor_for(db, "body_fetch") == 5;
+        ok = ok && row_exists(db, "validate_headers_log", 2);
+        ok = ok && row_exists(db, "body_fetch_log", 2);
         ok = ok && row_exists(db, "tip_finalize_log", 2);
-        SVHR_CHECK("solutionless validate poison rewinds validate frontier, "
-                   "preserves tip_finalize_log, stays active until tip advances",
+        SVHR_CHECK("solutionless poison WITH repair header defers to "
+                   "non-destructive recheck (no rewind, progress preserved, "
+                   "stays active until tip advances)",
                    ok);
         teardown_condition_case(dir, &ms);
     }
@@ -371,15 +375,20 @@ int test_stale_validate_headers_repair_condition(void)
     }
 
     /* ── W2 NEW1: a non-advancing remedy escalates to EV_OPERATOR_NEEDED ──
-     * Model the live wedge: the pipeline keeps re-poisoning the frontier and
-     * the destructive rewind keeps "repairing" it, but the finalized tip
-     * never advances. Under the honest witness this accrues attempts to
-     * max_attempts=5 and pages the operator (the Law-7 lie is ended).
+     * Model a frontier that never advances: the pipeline keeps re-poisoning it
+     * (solutionless) and the remedy keeps running but the finalized tip never
+     * moves. Under the honest witness this accrues attempts to max_attempts=5
+     * and pages the operator (the Law-7 lie is ended) — REGARDLESS of whether
+     * the remedy was the (now non-destructive) SKIP-defer or a destructive
+     * rewind: every due remedy increments the attempt counter (condition.c),
+     * and a witness that never sees forward tip movement never clears it.
      *
      * We re-seed the solutionless poison + a repair header before each tick
      * (the pipeline regenerates the poison live) and clear the wall-clock
      * backoff between ticks (no injectable clock). The tip is held frozen at
-     * 1 (target=2), so the witness stays false the whole time. */
+     * 1 (target=2), so the witness stays false the whole time. With canon
+     * unavailable here (height 2 is not on the seeded 2-block chain) detect
+     * does not deactivate, so the remedy runs each tick and accrues attempts. */
     {
         char dir[256];
         struct main_state ms;

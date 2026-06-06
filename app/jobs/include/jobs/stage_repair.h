@@ -54,7 +54,16 @@ bool stage_repair_header_solution_load(struct sqlite3 *db,
                                        const struct uint256 *expected_hash,
                                        struct block_header *out);
 
-bool stage_repair_header_solution_available(struct sqlite3 *db, int height);
+/* Returns true iff a header-solution row is present at `height` AND — when
+ * `expected_hash != NULL` — its stored hash equals expected_hash, i.e. the
+ * CORRECT solution for the canonical block at that height is present. Pass NULL
+ * for a presence-only check (any row that round-trips). Hash-aware callers pass
+ * active_chain_at(height)->phashBlock so a STALE wrong-block row (e.g. an
+ * earlier off-by-N save) does NOT count as available — otherwise the backfill /
+ * self-heal paths would skip a height whose stored solution validate_headers
+ * (whose load IS hash-checked) keeps rejecting, wedging the tip. */
+bool stage_repair_header_solution_available(struct sqlite3 *db, int height,
+                                            const struct uint256 *expected_hash);
 
 bool stage_repair_header_solution_poison_rewind(
     struct sqlite3 *db,

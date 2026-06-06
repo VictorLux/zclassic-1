@@ -38,6 +38,27 @@ static bool detect_stale_validate_headers_repair(void)
     if (mode == STAGE_REPAIR_POISON_NONE)
         return false;
 
+    /* For a SOLUTIONLESS poison the symptom is "the frontier block's Equihash
+     * solution is missing." Once the CORRECT solution is backfilled, the
+     * non-destructive validate_headers recheck (header_from_repair_table +
+     * recheck_failed_rows, 060a5cb4c) flips the ok=0 row forward — no
+     * destructive rewind is needed. So this Condition must DEACTIVATE the moment
+     * the correct solution is present, letting the recheck self-heal and the
+     * attempt counter reset (condition.c resets on !detected once cleared). The
+     * availability check is HASH-AWARE against the canonical block at `target`
+     * so a stale wrong-block row does not masquerade as "present". A
+     * DOWNSTREAM_STALE poison (validate ok=1 but a skipped-invalid body) has no
+     * non-destructive heal and always fires. */
+    if (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS) {
+        struct main_state *ms = condition_engine_main_state();
+        struct block_index *bi =
+            ms ? active_chain_at(&ms->chain_active, target) : NULL;
+        const struct uint256 *canon = bi ? bi->phashBlock : NULL;
+        if (canon &&
+            stage_repair_header_solution_available(db, target, canon))
+            return false;
+    }
+
     atomic_store(&g_target_at_detect, target);
     atomic_store(&g_mode_at_detect, (int)mode);
     return true;
@@ -54,8 +75,19 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
 
     enum stage_repair_header_solution_poison mode =
         stage_repair_header_solution_poison_mode(db, target);
+
     if (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS) {
-        if (!stage_repair_header_solution_available(db, target)) {
+        struct main_state *ms0 = condition_engine_main_state();
+        struct block_index *bi0 =
+            ms0 ? active_chain_at(&ms0->chain_active, target) : NULL;
+        const struct uint256 *canon = bi0 ? bi0->phashBlock : NULL;
+
+        /* Step 1 — backfill the CORRECT (canonical) solution from the oracle if
+         * it is not already present. header_probe_pull_range re-validates the
+         * fetched header and writes it hash-bound into header_solution_repair
+         * (INSERT OR REPLACE by height — it OVERWRITES any stale wrong-block
+         * row, which the hash-aware availability check above does not accept). */
+        if (!stage_repair_header_solution_available(db, target, canon)) {
             int added = 0;
             struct zcl_result r = header_probe_pull_range(target, 128, &added);
             if (!r.ok) {
@@ -70,15 +102,42 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
                      "header probe h=%d added=%d",
                      target, added);
         }
-        if (!stage_repair_header_solution_available(db, target)) {
+
+        /* Step 2 — if the correct solution is now present, DEFER to the
+         * non-destructive validate_headers recheck. Do NOT poison_rewind: the
+         * recheck flips the ok=0 row forward (recheck floor pinned at the lowest
+         * repairable height, 060a5cb4c) while preserving all downstream
+         * progress. A destructive rewind here would delete forward validate work
+         * and re-starve the recheck (forcing a long forward re-drain that parks
+         * the recheck) — the precise churn that produced the 5x-unwitnessed
+         * poison_rewind → operator_needed loop. Return SKIP and let the witness
+         * (durable tip advanced past the frontier) govern success; detect()
+         * deactivates next tick and resets the attempt counter. */
+        if (stage_repair_header_solution_available(db, target, canon)) {
             LOG_WARN("condition",
                      "[condition:stale_validate_headers_repair] "
-                     "no durable repair header available h=%d",
+                     "solution present h=%d — deferring to non-destructive "
+                     "validate_headers recheck (no poison_rewind)",
                      target);
-            return COND_REMEDY_FAILED;
+            return COND_REMEDY_SKIP;
         }
+
+        /* Solution still unavailable after a backfill attempt. A poison_rewind
+         * cannot help a solutionless row (the forward re-drain would re-yield
+         * ok=0), so do not rewind — fail this attempt and retry backfill next
+         * tick (e.g. the oracle was briefly unreachable). */
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] "
+                 "no durable repair header available h=%d", target);
+        return COND_REMEDY_FAILED;
     }
 
+    /* DOWNSTREAM_STALE: validate_headers is ok=1 but a body was skipped-invalid
+     * at the frontier. There is no non-destructive heal for this, so the
+     * sanctioned frontier poison_rewind is the correct tool. Its guards in
+     * stage_repair_rewind.c are unchanged (frontier-only == active_tip+1;
+     * refuses if any ok=1 success_checked row sits at/above the frontier; never
+     * deletes tip_finalize_log), so the Tier-2 public-tip floor is preserved. */
     struct stage_repair_header_solution_result rr;
     struct main_state *ms = condition_engine_main_state();
     int active_tip = ms ? active_chain_height(&ms->chain_active) : -2;

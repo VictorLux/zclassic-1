@@ -187,13 +187,14 @@ bool stage_repair_header_solution_load(sqlite3 *db, int height,
     return uint256_eq(&computed, &stored_hash);
 }
 
-bool stage_repair_header_solution_available(sqlite3 *db, int height)
+bool stage_repair_header_solution_available(sqlite3 *db, int height,
+                                            const struct uint256 *expected_hash)
 {
     if (!db || height < 0)
         return false;
     progress_store_tx_lock();
     bool ok = ensure_header_solution_schema(db) &&
-              stage_repair_header_solution_load(db, height, NULL,
+              stage_repair_header_solution_load(db, height, expected_hash,
                                                 &(struct block_header){0});
     progress_store_tx_unlock();
     return ok;
