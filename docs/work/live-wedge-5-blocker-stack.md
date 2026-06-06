@@ -10,6 +10,79 @@ interlocking blockers. The new reducer pipeline (header_admit → validate_heade
 → body_fetch → body_persist → script_validate → proof_validate → utxo_apply →
 tip_finalize) is what's wedged; the legacy engine got coins to 3,134,303.
 
+---
+
+## ⚠️ CORRECTED UNDERSTANDING — 2026-06-06 instrumented diagnostic repro
+
+A clean reproduce-and-trace run on a full copy (binary at `095dec9cb`, the wedge
+fix `345114d06` carried forward) **overturned the central Blocker-8 theory**.
+Read this before acting on anything below it.
+
+**1. The reducer wedge fix WORKS.** Fed `backfill_header_solutions` +
+`rebuild_recent` rounds from the trusted zclassicd, the copy climbed
+**3,134,303 → 3,135,248 (+945 blocks)**, crossing every transparent-spend block
+(CODE1 resolver), tip_finalize correctly *holding* the lookahead frontier
+(CODE2: `precondition_failed … not_script_valid` → JOB_IDLE, no oscillation),
+no consensus error. The fix is sound; the only thing gating forward speed is
+**header-solution supply + peer-starvation**, not consensus.
+
+**2. "Node destabilizes/exits after ~900 blocks" was a TEST ARTIFACT — not a
+node bug.** The deaths in prior runs were the node being SIGTERM'd because it had
+been launched as a *child of a transient background task*; when that task was
+reaped, the node's process group got the signal (silent: no crash_log, no OOM,
+not in the crash handler's `{SIGABRT,SIGSEGV,SIGBUS,SIGFPE}` set). Relaunched
+fully detached (`setsid`, own session), the **idle node survives indefinitely at
+0 peers**. There is no ~900-block self-termination.
+
+**3. The "coins_best lag trips chain_integrity_failed" theory is WRONG** (exactly
+as the design-workflow's adversarial panel found). During the live climb
+`chain_integrity_failed` never fired; coins_best lag is **benign at runtime** —
+cec logs `coins_best_block != active_tip … deferring/recoverable` (WARN) and the
+node keeps working. `chain_integrity_check_post_restore` does not even read
+coins_best.
+
+**4. The REAL Blocker 8 = RESTART durability (Case-4 reset).** On restart, with
+coins_best (node.db, 3,134,303) lagging the reducer tip (3,135,248),
+`chain_state_validator` hits Case 4 and **resets the public tip back down to the
+stale coins tip**:
+```
+Resetting chain to disk-backed coins tip — will replay blocks.
+csr: tip committed from=3135248 to=3134303 reason=chain_coins_mismatch_reset
+post-restore integrity RECONCILABLE: tip_window_holes=945 … DEGRADED_SERVING; Not fatal.
+```
+The node recovers (DEGRADED_SERVING, not fatal) but **loses the climb on every
+restart**. cec correctly *refuses to rewrite the persisted high tip down*
+(high-water protection). This is the genuine durability gap.
+
+**The fix** is therefore a **tear-safe coins_best-follow** (the design workflow
+`wj65w0x4n` returned BLOCKED_NO_GO on the first cut and gave the exact
+constraints): advance coins_best toward the reducer tip **only AFTER the
+tip_finalize cursor is durably committed** (so coins_best can only LAG, never
+LEAD — a lead would hit `BOOT_RECOVER_WIPE_WAIT` on a torn restart, "TEAR A"),
+keyed on **(height, hash)** so a same-height reorg re-anchors (not a no-op), using
+`new_tip->nHeight` (not the off-by-one), routed through the already-validated
+`promote_tip` single-writer. This is consensus-critical + deploy-gated; prove on
+a copy to full convergence + `gettxoutsetinfo == zclassicd` before any deploy.
+
+**Side findings this run:**
+- **FIXED + committed `095dec9cb`:** a NULL-unsafe JSON accessor class bug — the
+  `dumpstate` RPC with no arg SIGSEGV'd the whole node (json_get_str(json_at(
+  params,0))→NULL deref). Any handler reading an absent param could crash the
+  node. Root-fixed in lib/json + regression test.
+- **Follow-up (not yet fixed):** `chain_evidence_controller_reconcile_startup`
+  runs on EVERY ephemeral `chain_evidence_controller_init` (per-event,
+  per-tip-hook, per-health-check) — observed 773 identical WARNs in one catch-up.
+  It is a once-per-boot operation. Benign (node works) but wastes CPU + floods
+  logs. Correct fix = explicit one-time boot reconcile (or a global-ndb-only
+  guard); a naive process-static guard breaks the 9 per-fixture cec unit tests.
+- The forward-progress drive that WORKS for a live catch-up to zclassicd:
+  repeated `backfill_header_solutions(tip+1)` + `rebuild_recent(tip+1)` rounds
+  (see `tools/blocker8_drive_*.sh`). Packaging that as a self-driving "follow
+  zclassicd" service is the operational path to a live sync, once coins_best
+  follow makes it restart-durable.
+
+---
+
 ## The five blockers (all verified against source + a full datadir copy)
 
 1. **Header-solution gap.** ~676K node.db rows have empty Equihash solutions
