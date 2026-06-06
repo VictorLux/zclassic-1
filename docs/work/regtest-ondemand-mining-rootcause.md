@@ -1,6 +1,27 @@
 # Regtest on-demand mining (`generate N`) — layered root cause
 
-> **STATUS 2026-06-05:** L0 shipped (`06ae18c26`). L1 + L2.5 + drain-ordering +
+> ## ✅ SOLVED 2026-06-06 (`bcd44e68e`)
+> `generate N` works end-to-end on an isolated regtest node: `generate 3` → 3
+> DISTINCT block hashes, `getblockcount` 0→3→5, rejects=0, reorg=0.
+>
+> **THE root cause was a datadir mismatch, found via the single-stepped harness
+> (`3204cc123`):** the harness (which drives the real stages with ONE consistent
+> `netdir`) PASSED, proving the reducer code correct — so the live failure was
+> environmental. A regtest-gated on-reject stage-dump then pinned `body_persist`
+> failing `read_failed`: `reducer_persist_ingested_body_locked` wrote the mined
+> body to `ctl->datadir` (the BASE datadir) but every stage reader reads under
+> `GetDataDir(true)` (the NET-SPECIFIC `<base>/regtest`). Body written to
+> `<base>/blocks`, read from `<base>/regtest/blocks` → not found. Mainnet has no
+> subdir (`GetDataDir(true)==base`), which is why mainnet sync always worked and
+> regtest generate never did. Fix: persist via `GetDataDir(true)` (byte-identical
+> on mainnet). The L0/L1/L2.5/drain-ordering/L2/supervisor-guard work below was
+> all real and necessary to make the pipeline flow that far; the datadir mismatch
+> was the final, environmental layer.
+>
+> GREENS MVP #6 (soak synthetic load) and #7 (kill-9 overshoot teeth).
+>
+> ---
+> **(historical, pre-solve) STATUS 2026-06-05:** L0 shipped (`06ae18c26`). L1 + L2.5 + drain-ordering +
 > L2 LANDED (`2cf7fa215`, union-gate + repro-on-copy green, network-safe). The
 > pipeline now flows (validate_headers passes, body-absent cascade gone).
 > **REMAINING red blocker:** `utxo_apply` still records ok=0 NONDETERMINISTICALLY
