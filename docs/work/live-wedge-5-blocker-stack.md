@@ -126,6 +126,65 @@ steps 6-10) — large, consensus-critical, deploy-gated, proven on a copy
 deploy. Do NOT attempt another surgical coins_best bridge; the adversarial record
 above shows why every cut forks or FATALs.
 
+### Cutover obstacle map — verified constraints for the migration (round-3 review `wf_9805dc09`)
+
+A third design+adversarial workflow tried the cleanest possible cutover ("one
+edit to `cvp_get_best_block_impl` flips all three boot read-sites via cache
+delegation"). Verdict: **BLOCKED_NO_GO**, but it pinned the EXACT obstacles any
+cutover must clear. Use these as the migration's spec, not a blank page:
+
+1. **VERIFIED SAFE — the parity surface is already projection-sourced.**
+   `rpc_gettxoutsetinfo` (blockchain_controller_chain.c:334) and
+   `rpc_getutxocommitment`/utxo_sha3 (:383) read `utxo_projection_get_global()`
+   EXCLUSIVELY — no coins.db read. So the byte-exact-vs-zclassicd gate already
+   reflects the authoritative set; the cutover only has to make the projection
+   *name a tip*, not change what the commitment reads. Lock this with a
+   regression test so a refactor can't re-route it to the stale coins.db utxos.
+
+2. **Site A (`coins_view_sqlite_check_tip_consistency`, coins_view_sqlite.c:448-573,
+   gated boot.c:1719) reads coins.db DIRECTLY** (`SELECT MAX(height) FROM utxos`
+   :455; `coins_best_block` from node_state :469) — it never touches the
+   projection vtable. A `get_best_block` change does NOT flip it; the FATAL gate
+   must be authority-flipped in its own edit (allow coins.db stale-behind when a
+   `tip_finalize_log` finalized tip outranks it; keep FATAL only for coins.db
+   utxos max_height ABOVE the finalized tip = genuine corruption).
+
+3. **The shared `coins_view_cache` MEMOIZES** the first `get_best_block` into
+   `c->hash_block` (coins_view.c:202-204), and it is shared across the boot gates,
+   the projection backing, AND legacy `connect_block`. Two consequences:
+   (a) Site C (`utxo_recovery_restore`, boot.c:2571) runs BEFORE Site B
+   (`validate_coins_chain_agreement`, boot.c:2734) and calls `csr_commit_tip →
+   coins_view_cache_set_best_block`, stamping the coins.db hash and **bypassing
+   delegation** for Site B; (b) `connect_block.c:151-162` REJECT_FATALs
+   ("connect_block-view-mismatch") if the cached best != the connecting block's
+   `hashPrevBlock` — so a cache returning the finalized tip while the coins.db
+   view is materialized only to a stale height **halts the climb**. The boot
+   gates need a read of the finalized tip that does NOT poison the shared cache
+   that `connect_block` depends on.
+
+4. **`connect_block` must be retired as an engine, not just outranked.** Obstacle
+   3(b) is the original "coins_best is meaningless without its matching UTXO
+   materialization" re-emerging through the cache: as long as the legacy
+   connect_block path runs with the coins.db view, advertising the reducer's tip
+   to it FATALs. The migration must make the reducer the ONLY block-connect
+   engine (single-engine purge), not run both.
+
+5. **Default-boot path caveat:** Case-3 AGREE cannot assume the active tip was
+   seeded from the tip_finalize cursor — `rebuild_seed_tip`
+   (block_index_loader_rebuild.c:130-170) only runs on `-rebuildfromlog`; a normal
+   restart uses `load_block_index_flat/sqlite`. And a finalized tip present in
+   `tip_finalize_log` but not yet folded into the in-memory block map at the gate
+   moment can make `block_map_find(coins_best)` NULL → a reachable WIPE path.
+   Ordering + map-presence must be proven on a copy.
+
+**Conclusion:** the cutover is the FULL single-engine migration (steps 6-10 of
+`single-engine-newcode-plan.md`), executed as sequenced, individually-copy-proven
+steps — give the projection a durable tip source, authority-flip Site A, route the
+boot gates to the finalized tip WITHOUT poisoning the connect_block cache, and
+retire the legacy connect_block engine — each proven on a datadir copy
+(restart × N kill-seeds → no WIPE; `gettxoutsetinfo == zclassicd`) before the
+owner-gated deploy. It is a dedicated effort, not a one-file edit.
+
 ---
 
 ## The five blockers (all verified against source + a full datadir copy)
