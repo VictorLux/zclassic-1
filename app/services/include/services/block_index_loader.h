@@ -152,4 +152,15 @@ bool load_block_index_from_projection(struct main_state *ms,
 int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
                                                struct sqlite3 *progress_db);
 
+/* Shared projection-rebuild front door for boot (see the .c for contract).
+ * Folds block_index_projection into ms's map, accepts iff the folded map has
+ * > min_entries nodes. `publish_tip`=true publishes the cursor tip (the
+ * projection-as-authority -rebuildfromlog path); =false does a PURE map
+ * rebuild with NO tip publish (the kill-9 fallback — the coins authority +
+ * the guarded forward seed own the tip). Returns true on accept. */
+bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
+                                                  const struct chain_params *params,
+                                                  size_t min_entries,
+                                                  bool publish_tip);
+
 #endif /* ZCL_SERVICES_BLOCK_INDEX_LOADER_H */

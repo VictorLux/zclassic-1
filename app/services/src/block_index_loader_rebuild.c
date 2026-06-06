@@ -19,6 +19,9 @@
 #include "validation/main_state.h"
 #include "storage/block_index_db.h"
 #include "storage/block_index_projection.h"
+#include "storage/progress_store.h"
+#include "event/event.h"
+#include "chain/chainparams.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
 #include "core/uint256.h"
@@ -272,7 +275,6 @@ bool load_block_index_from_projection(struct main_state *ms,
                                       struct block_index_projection *bip,
                                       struct sqlite3 *progress_db)
 {
-    (void)params;
     if (!ms)
         LOG_FAIL("block_index",
                  "load_block_index_from_projection: null main_state");
@@ -319,6 +321,27 @@ bool load_block_index_from_projection(struct main_state *ms,
         }
     }
 
+    /* (2b) Ensure genesis exists in the map so block 1's pprev links.
+     * The projection persists blocks 1..tip but NOT genesis (genesis is
+     * canonically initialized later, at config/src/boot.c's
+     * "Ensure genesis block is always properly initialized" block, which
+     * runs AFTER this rebuild on the kill-9 fallback path). Without genesis
+     * in the map, projection_link_pprev_cb leaves block 1's pprev NULL and
+     * the forward-only finalized-tip seed's contiguity walk falls off the
+     * bottom (NOT_CONTIGUOUS). Insert a BARE genesis node here — height 0,
+     * nStatus untouched (no BLOCK_HAVE_DATA) — so it only carries the pprev
+     * link; boot.c's genesis-ensure block still performs the full canonical
+     * init (HAVE_DATA / nTx / nChainTx / validity / chainwork) because it
+     * only does so when BLOCK_HAVE_DATA is NOT already set. No-op when
+     * genesis is already present (e.g. the -rebuildfromlog path). */
+    if (params && !block_map_find(&ms->map_block_index,
+                                  &params->consensus.hashGenesisBlock)) {
+        struct block_index *g = chainstate_insert_block_index(
+            (struct chainstate *)ms, &params->consensus.hashGenesisBlock);
+        if (g)
+            g->nHeight = 0;
+    }
+
     /* (3) Link pprev via the carried hashPrev. Re-iterate the projection
      * (one ORDER BY scan) — hashPrev is not retained on the in-memory
      * entry. Resolving after all rows are inserted handles same-height
@@ -354,5 +377,46 @@ bool load_block_index_from_projection(struct main_state *ms,
     /* (5) Seed the tip from the durable tip_finalize cursor. */
     rebuild_seed_tip(ms, progress_db);
 
+    return true;
+}
+
+/* Shared projection-rebuild front door for boot. Folds the durable
+ * block_index_projection into the in-memory map and ACCEPTS only when the
+ * folded map has > `min_entries` nodes (re-checked on the actual map size,
+ * NOT the bool return: load_block_index_from_projection returns true even
+ * when it folds zero rows from a cold datadir). On accept it logs + emits
+ * EV_BOOT_BLOCK_INDEX and returns true; otherwise false so boot falls through
+ * unchanged.
+ *
+ * `publish_tip` gates the cursor-driven tip publish inside the rebuild:
+ *   - true  → the projection IS the authority (the -rebuildfromlog path);
+ *             the tip is published from the tip_finalize cursor.
+ *   - false → PURE MAP REBUILD, no tip published (the kill-9 fallback). The
+ *             coins/UTXO authority then owns the active tip and the guarded
+ *             block_index_loader_seed_tip_from_finalized advances it forward.
+ *             This is the load-bearing safety distinction: publishing an
+ *             unguarded cursor tip here would short-circuit coins-restore and
+ *             genesis-init. */
+bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
+                                                  const struct chain_params *params,
+                                                  size_t min_entries,
+                                                  bool publish_tip)
+{
+    if (!ms)
+        return false;
+    struct block_index_projection *bip = block_index_projection_singleton();
+    if (!bip)
+        return false;
+    if (!load_block_index_from_projection(
+            ms, params, bip, publish_tip ? progress_store_db() : NULL))
+        return false;
+    if (ms->map_block_index.size <= min_entries)
+        return false;
+    if (publish_tip && !active_chain_tip(&ms->chain_active))
+        return false;
+    printf("[boot] block index rebuilt from projection: %zu entries "
+           "(publish_tip=%d)\n", ms->map_block_index.size, (int)publish_tip);
+    event_emitf(EV_BOOT_BLOCK_INDEX, 0, "rebuilt_from_projection entries=%zu",
+                ms->map_block_index.size);
     return true;
 }

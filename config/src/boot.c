@@ -1894,41 +1894,34 @@ bool app_init(struct app_context *ctx)
          * to the legacy loaders so a sparse/empty projection never bricks
          * boot. fast-sync (snapshot_apply) seeds the projection+cursor on the
          * FRESH path; a warm boot of that node rebuilds here. */
-        if (ctx->boot_from_log) {
-            struct block_index_projection *bip =
-                block_index_projection_singleton();
-            if (load_block_index_from_projection(&g_state, params, bip,
-                                                 progress_store_db())) {
-                struct block_index *log_tip =
-                    active_chain_tip(&g_state.chain_active);
-                if (log_tip && g_state.map_block_index.size > 1000) {
-                    rebuilt_from_log = true;
-                    loaded = true;
-                    printf("[boot] block index rebuilt from log: %zu entries, "
-                           "tip height=%d\n",
-                           g_state.map_block_index.size, log_tip->nHeight);
-                    event_emitf(EV_BOOT_BLOCK_INDEX, 0,
-                                "rebuilt_from_log entries=%zu tip=%d",
-                                g_state.map_block_index.size, log_tip->nHeight);
-                } else {
-                    fprintf(stderr,
-                            "[boot] -rebuildfromlog: projection rebuild "
-                            "yielded %zu entries / tip=%s — falling back to "
-                            "legacy loaders\n",
-                            g_state.map_block_index.size,
-                            log_tip ? "set" : "none");
-                }
-            } else {
-                fprintf(stderr,
-                        "[boot] -rebuildfromlog: load_block_index_from_"
-                        "projection failed — falling back to legacy loaders\n");
-            }
+        if (ctx->boot_from_log &&
+            boot_try_rebuild_block_index_from_projection(
+                &g_state, params, 1000, /*publish_tip=*/true)) {
+            rebuilt_from_log = true;
+            loaded = true;
         }
 
         if (!rebuilt_from_log)
             loaded = load_block_index_flat(ctx->datadir, &g_state);
         if (!rebuilt_from_log && !loaded && g_node_db.open)
             loaded = load_block_index_sqlite(&g_node_db, &g_state);
+
+        /* kill-9 recovery: a node SIGKILL'd with no clean shutdown never wrote
+         * the flat file (clean-shutdown only) or the >1000-gated block_index
+         * cache, so the legacy loaders above yield an empty/genesis-only map
+         * and the forward-only finalized-tip seed (boot_services.c) can't
+         * resolve its tip_hash. Rebuild the map from the durable per-block
+         * block_index_projection (WAL-crash-safe). publish_tip=false → PURE map
+         * rebuild, NO early tip: the coins/UTXO authority owns the tip and the
+         * GUARDED seed advances forward. Fires ONLY when the legacy loaders
+         * came back empty (map.size<=1) — on a real multi-million-entry boot it
+         * is never reached, so mainnet behavior is unaffected. Precondition on this
+         * path: node.db db_height<=0 (the small chain never flushed it), so the
+         * stale-flat (1940) + tip-hash (1957) guards below short-circuit. */
+        if (!rebuilt_from_log && g_state.map_block_index.size <= 1 &&
+            boot_try_rebuild_block_index_from_projection(
+                &g_state, params, 1, /*publish_tip=*/false))
+            loaded = true;
 
         /* Check if flat file is stale — if it loaded but has far fewer
          * entries than the chain (checked via SQLite), reload from LevelDB.
