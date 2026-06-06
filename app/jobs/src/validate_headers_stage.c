@@ -12,6 +12,7 @@
 #include "jobs/validate_headers_stage.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/stage_repair.h"
+#include "jobs/stage_repair_internal.h"  /* STAGE_REPAIR_SOLUTIONLESS_REASON */
 #include "validate_headers_internal.h"
 #include "jobs/header_admit_stage.h"
 
@@ -93,6 +94,24 @@ static vh_validator_fn g_validator      = NULL;
 static void           *g_validator_user = NULL;
 /* Datadir cached at init for the workers (g_validator may need it). */
 static char            g_datadir[2048] = {0};
+
+/* A validate_headers failure is REPAIRABLE — worth keeping in the recheck
+ * window until it can be re-validated — ONLY when it failed for lack of a
+ * backfillable Equihash solution (STAGE_REPAIR_SOLUTIONLESS_REASON, the exact
+ * reason the live tip-wedge produced: the header is canonical but its solution
+ * had not yet been backfilled when the forward drain first reached it).
+ * recheck_failed_rows retries these until backfill_header_solutions supplies
+ * the solution and the unchanged PoW+Equihash validator flips the row to ok=1.
+ *
+ * A TERMINAL failure (high-hash / invalid-solution / version-too-low / a test
+ * stub) will never pass, so the recheck floor must ADVANCE past it — never pin
+ * — or recheck would re-run the validator on a permanently-bad header every
+ * tick. Restricting the pin to repairable rows is what keeps the floor's
+ * forward-progress behavior identical to before for genuine rejections. */
+static inline bool vh_failure_is_repairable(const char *reason)
+{
+    return reason && strcmp(reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0;
+}
 
 /* ── Worker pool ──────────────────────────────────────────────────── */
 
@@ -411,8 +430,27 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         return JOB_FATAL;
     }
     progress_store_tx_unlock();
-    atomic_store(&g_failure_recheck_cursor, last_seen + 1);
-    return JOB_ADVANCED;
+    /* Advance the floor only past rows that RESOLVED to ok=1; pin it at the
+     * lowest row still ok=0 so the next pass retries it once its solution is
+     * backfilled. jobs[] is height-ascending, so the first !ok is the lowest
+     * still-failing height. Advancing unconditionally to last_seen+1 (the old
+     * behavior) re-stranded a repairable row the moment recheck touched it
+     * before its solution landed — the same monotonic-strand defect as the
+     * forward drain. Verdict-preserving: a row only leaves ok=0 via a genuine
+     * PoW + Equihash pass in pool_run_batch above. */
+    int64_t lowest_still_failing = -1;
+    for (int i = 0; i < n; i++)
+        if (!jobs[i].ok && vh_failure_is_repairable(jobs[i].reason)) {
+            lowest_still_failing = jobs[i].height; break;
+        }
+    int64_t new_floor = (lowest_still_failing >= 0)
+                        ? lowest_still_failing : (last_seen + 1);
+    atomic_store(&g_failure_recheck_cursor, new_floor);
+    /* Only claim progress when the floor actually advanced. A pinned floor
+     * (the lowest repairable row still has no backfilled solution) returns
+     * JOB_IDLE so the stage backs off rather than busy-looping on a row it
+     * cannot yet flip; the next poll retries it once the solution lands. */
+    return (new_floor > start) ? JOB_ADVANCED : JOB_IDLE;
 }
 
 static bool mark_valid_header(struct block_index *bi)
@@ -489,9 +527,35 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     c->cursor_out = c->cursor_in + (uint64_t)batch_n;
+    /* Failure-recheck floor: the lowest height recheck_failed_rows will
+     * revisit. It must NEVER advance past a still-failing (ok=0) row. recheck
+     * only scans [floor, validated_cursor); slaving the floor to the forward
+     * cursor (the old `floor = max(floor, cursor_out)`) made recheck a no-op
+     * for every row this drain logged ok=0 — they were stranded the instant
+     * they were written. That is the live tip-wedge: validate_headers logged
+     * height H ok=0 "no-header-solution-backfill-required" (its Equihash
+     * solution not yet backfilled), the floor jumped past H, backfill_header_
+     * solutions later supplied H's solution, but recheck never looked back —
+     * so body_fetch stalled at H and the public tip froze one block below.
+     * Pin the floor at the lowest failure in this batch; only advance to
+     * cursor_out when the whole batch passed. This changes only WHICH rows are
+     * re-validated, never the verdict — a row still flips to ok=1 solely
+     * through the unchanged PoW + Equihash validator, so it can never admit an
+     * invalid header (zero fork risk). Only REPAIRABLE (solutionless) failures
+     * pin the floor; a terminal rejection advances it exactly as before, so
+     * recheck never re-runs the validator on a permanently-bad header. */
+    int64_t lowest_fail = -1;
+    for (int i = 0; i < batch_n; i++)
+        if (!jobs[i].ok && vh_failure_is_repairable(jobs[i].reason)) {
+            lowest_fail = jobs[i].height; break;
+        }
     int64_t recheck_floor = atomic_load(&g_failure_recheck_cursor);
-    if (recheck_floor < (int64_t)c->cursor_out)
+    if (lowest_fail >= 0) {
+        if (recheck_floor > lowest_fail)
+            atomic_store(&g_failure_recheck_cursor, lowest_fail);
+    } else if (recheck_floor < (int64_t)c->cursor_out) {
         atomic_store(&g_failure_recheck_cursor, (int64_t)c->cursor_out);
+    }
     return JOB_ADVANCED;
 }
 
