@@ -102,7 +102,7 @@ int main(int argc, char **argv)
         sqlite3_close(db);
         return 3;
     }
-    if (sqlite3_step(st) == SQLITE_ROW &&
+    if (sqlite3_step(st) == SQLITE_ROW && // raw-sql-ok:standalone-dev-tool
         sqlite3_column_type(st, 0) != SQLITE_NULL) {
         cursor_present = true;
         apply_cursor = sqlite3_column_int64(st, 0);
@@ -121,7 +121,7 @@ int main(int argc, char **argv)
         sqlite3_close(db);
         return 3;
     }
-    if (sqlite3_step(st) == SQLITE_ROW &&
+    if (sqlite3_step(st) == SQLITE_ROW && // raw-sql-ok:standalone-dev-tool
         sqlite3_column_type(st, 0) != SQLITE_NULL) {
         frontier_absent = false;
         const void *blob = sqlite3_column_blob(st, 0);
