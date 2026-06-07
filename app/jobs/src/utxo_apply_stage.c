@@ -330,8 +330,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 /* Production prevout resolver for utxo_apply, the init-time default for
  * g_lookup — the analogue of script_validate's created_index_prevout
  * self-default, but with the CORRECT semantics for utxo_apply: it must mean
- * "currently UNSPENT". The utxo_projection DELETEs a coin on spend, so a hit
- * from utxo_projection_get_coins == the coin is live/unspent. This is the
+ * "currently UNSPENT". coins_kv DELETEs a coin on spend, so a hit from
+ * coins_kv_get_coins == the coin is live/unspent. This is the
  * double-spend-safe source; a creation index (which never deletes spent rows)
  * would report found=true for an already-spent coin and let utxo_apply accept
  * a double-spend (monetary inflation / hard fork) AND false-trip BIP30
@@ -340,11 +340,16 @@ static job_result_t step_apply(struct stage_step_ctx *c)
  * restore-ADD. A genuine miss returns found=false (compute_block_delta then
  * records spend_unknown_utxo with the exact outpoint — never a silent pass).
  *
- * FRESHNESS CONTRACT: this reads the projection's `utxo` table, which is folded
- * from the event log by utxo_projection_catch_up. utxo_apply_stage_step_once
- * drives that catch_up after every advancing step so a coin created earlier in
- * the SAME drain is visible to a later block's spend. Without that the read
- * would be stale and could false-accept a cross-block double-spend. */
+ * FRESHNESS CONTRACT: this reads the authoritative coins set (coins_kv) on the
+ * progress.kv handle. Because utxo_apply authors coins_kv IN the stage txn (step
+ * 2/3), a coin created by an earlier block is already committed to coins_kv
+ * before a later block's step_apply runs — reads are inherently fresh with no
+ * catch_up dependency (the projection's last_consumed_offset freshness hack is
+ * gone). The read runs inside the apply path's progress_store_tx_lock, so it is
+ * consistent with the apply txn. coins_kv DELETEs a coin on spend, so a hit ==
+ * the coin is live/unspent (double-spend-safe); a genuine miss returns
+ * found=false (compute_block_delta records spend_unknown_utxo with the exact
+ * outpoint — never a silent pass). */
 static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
                                    struct utxo_apply_lookup *out, void *user)
 {
@@ -353,15 +358,15 @@ static bool projection_live_lookup(const struct uint256 *txid, uint32_t vout,
         return false;
     memset(out, 0, sizeof(*out));
 
-    utxo_projection_t *p = utxo_projection_get_global();
-    if (!p)
-        return true;   /* projection not open yet → treat as absent (found=0),
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return true;   /* store not open yet → treat as absent (found=0),
                         * matching the lookup==NULL "all external absent"
                         * contract; never a false-accept. */
 
     struct coins c;
     coins_init(&c);
-    if (!utxo_projection_get_coins(p, txid->data, &c)) {
+    if (!coins_kv_get_coins(db, txid->data, &c)) {
         coins_free(&c);
         return true;   /* no live output at this txid → found stays false */
     }

@@ -35,6 +35,8 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "services/utxo_audit_service.h"
 #include "storage/block_index_db.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
@@ -331,10 +333,10 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
         "gettxoutsetinfo\n"
         "\nReturns statistics about the UTXO set.\n");
 
-    utxo_projection_t *proj = utxo_projection_get_global();
-    if (!proj) {
-        json_set_str(result, "UTXO projection not available");
-        LOG_FAIL("blockchain", "gettxoutsetinfo: UTXO projection not available");
+    sqlite3 *cdb = progress_store_db();
+    if (!cdb) {
+        json_set_str(result, "coins store not available");
+        LOG_FAIL("blockchain", "gettxoutsetinfo: coins store not available");
     }
     if (!ctx->main_state || !active_chain_tip(&ctx->main_state->chain_active)) {
         json_set_str(result, "Chain not loaded");
@@ -348,8 +350,8 @@ bool rpc_gettxoutsetinfo(const struct json_value *params, bool help,
     int64_t num_txs = 0;
     int64_t num_txouts = 0;
 
-    /* UTXO set statistics from the log-derived reducer projection. */
-    utxo_projection_setinfo(proj, &num_txs, &num_txouts, &total_amount);
+    /* UTXO set statistics from the authoritative atomic coins set. */
+    coins_kv_setinfo(cdb, &num_txs, &num_txouts, &total_amount);
 
     json_set_object(result);
     json_push_kv_int(result, "height", tip_height);
@@ -380,10 +382,10 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
         "\nComputes SHA3-256 hash over the entire UTXO set in canonical order.\n"
         "This is a deterministic commitment that two nodes can compare.\n");
 
-    utxo_projection_t *proj = utxo_projection_get_global();
-    if (!proj) {
-        json_set_str(result, "UTXO projection not available");
-        LOG_FAIL("blockchain", "getutxocommitment: UTXO projection not available");
+    sqlite3 *cdb = progress_store_db();
+    if (!cdb) {
+        json_set_str(result, "coins store not available");
+        LOG_FAIL("blockchain", "getutxocommitment: coins store not available");
     }
     if (!ctx->main_state) {
         json_set_str(result, "Chain not loaded");
@@ -393,11 +395,11 @@ bool rpc_getutxocommitment(const struct json_value *params, bool help,
     uint8_t sha3_hash[32];
     uint64_t count = 0;
     int64_t t0 = (int64_t)platform_time_wall_time_t();
-    if (utxo_projection_commitment(proj, sha3_hash) != 0) {
+    if (coins_kv_commitment(cdb, sha3_hash) != 0) {
         json_set_str(result, "commitment failed");
-        LOG_FAIL("blockchain", "getutxocommitment: projection commitment failed");
+        LOG_FAIL("blockchain", "getutxocommitment: coins commitment failed");
     }
-    count = utxo_projection_count(proj);
+    count = (uint64_t)coins_kv_count(cdb);
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
 
     int tip = active_chain_height(&ctx->main_state->chain_active);
@@ -518,19 +520,19 @@ bool rpc_verifycheckpoint(const struct json_value *params, bool help,
         return true;
     }
 
-    utxo_projection_t *proj = utxo_projection_get_global();
-    if (!proj) {
-        json_set_str(result, "UTXO projection not available");
-        LOG_FAIL("blockchain", "verifycheckpoint: UTXO projection not available");
+    sqlite3 *cdb = progress_store_db();
+    if (!cdb) {
+        json_set_str(result, "coins store not available");
+        LOG_FAIL("blockchain", "verifycheckpoint: coins store not available");
     }
 
     uint8_t sha3_hash[32];
     uint64_t count = 0;
-    if (utxo_projection_commitment(proj, sha3_hash) != 0) {
+    if (coins_kv_commitment(cdb, sha3_hash) != 0) {
         json_set_str(result, "commitment failed");
-        LOG_FAIL("blockchain", "verifycheckpoint: projection commitment failed");
+        LOG_FAIL("blockchain", "verifycheckpoint: coins commitment failed");
     }
-    count = utxo_projection_count(proj);
+    count = (uint64_t)coins_kv_count(cdb);
 
     bool match = (memcmp(sha3_hash, cp->sha3_hash, 32) == 0);
 
