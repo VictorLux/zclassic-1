@@ -55,6 +55,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "services/chain_activation_service.h"
+#include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -424,15 +425,19 @@ static int rie_drain_to_convergence(void)
     return total;
 }
 
-/* Seed the pre-fork base UTXO set into the live (global) projection. */
-static void seed_base_coins(const struct rie_ext_coin *ext, int n)
+/* Seed the pre-fork base UTXO set into coins_kv — the authoritative live
+ * UTXO store the reducer reads/writes after the projection dual-write was
+ * removed. Seeding coins_kv (not the projection) keeps the reorg runs
+ * symmetric: a base coin spent on the loser then restored on unwind returns
+ * to the SAME seeded coins_kv state a direct build never touched. */
+static void seed_base_coins(sqlite3 *pdb, const struct rie_ext_coin *ext, int n)
 {
+    (void)coins_kv_ensure_schema(pdb);
     for (int i = 0; i < n; i++) {
         const struct rie_ext_coin *e = &ext[i];
-        utxo_projection_emit_add(e->txid.data, e->vout, e->value, e->height,
-                                 e->is_coinbase,
-                                 e->script_len ? e->script : NULL,
-                                 e->script_len);
+        (void)coins_kv_add(pdb, e->txid.data, e->vout, e->value,
+                           (int32_t)e->height, e->is_coinbase,
+                           e->script_len ? e->script : NULL, e->script_len);
     }
 }
 
@@ -470,10 +475,10 @@ static bool rie_env_open(struct rie_env *e, const char *tag,
     if (!e->p) return false;
 
     utxo_projection_set_event_log(e->lg);
-    /* Test-only projection authorship: make utxo_apply write the projection. */
+    /* Test-only UTXO authorship: make utxo_apply author coins_kv as STAGE. */
     utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
 
-    seed_base_coins(ext, n_ext);
+    seed_base_coins(progress_store_db(), ext, n_ext);
 
     active_chain_init(&e->ms.chain_active);
     block_map_init(&e->ms.map_block_index);
@@ -628,18 +633,17 @@ int test_reducer_ingest_e2e(void)
                                        status, sizeof(status)) &&
                       strcmp(status, "finalized") == 0);
 
-            /* The UTXO projection reflects every ingested block: all three
-             * coinbases are live in the STAGE-authored projection. */
-            uint64_t off = utxo_projection_catch_up(e.p);
-            RIE_CHECK("accept: projection caught up", off != UINT64_MAX);
+            /* coins_kv (the authoritative UTXO set) reflects every ingested
+             * block: all three coinbases are live in the STAGE-authored set. */
+            sqlite3 *pdb = progress_store_db();
             bool all_cb_live = true;
             for (int h = 0; h < C.n; h++) {
                 struct uint256 cb;
                 cb_txid(&cb, (h == 0) ? 0x00 : 0x44, h);
-                if (!utxo_projection_get(e.p, cb.data, 0, NULL, NULL, 0, NULL))
+                if (!coins_kv_exists(pdb, cb.data, 0))
                     all_cb_live = false;
             }
-            RIE_CHECK("accept: every ingested coinbase live in UTXO projection",
+            RIE_CHECK("accept: every ingested coinbase live in coins_kv",
                       all_cb_live);
             RIE_CHECK("accept: utxo_apply recorded no spend-unknown",
                       utxo_apply_stage_spend_unknown_total() == 0);
@@ -710,19 +714,16 @@ int test_reducer_ingest_e2e(void)
 
             /* The invalid block's spend output is ABSENT from the UTXO set
              * (compute_block_delta never applied the rejected delta). */
-            uint64_t off = utxo_projection_catch_up(e.p);
-            RIE_CHECK("invalid: projection caught up", off != UINT64_MAX);
+            sqlite3 *pdb = progress_store_db();
             struct uint256 bad_out;
             spend_txid(&bad_out, 0x55, 2);
-            RIE_CHECK("invalid: rejected spend output absent from projection",
-                      !utxo_projection_get(e.p, bad_out.data, 0,
-                                           NULL, NULL, 0, NULL));
+            RIE_CHECK("invalid: rejected spend output absent from coins_kv",
+                      !coins_kv_exists(pdb, bad_out.data, 0));
             /* h2's coinbase is also absent (its whole delta was rejected). */
             struct uint256 bad_cb;
             cb_txid(&bad_cb, 0x55, 2);
-            RIE_CHECK("invalid: rejected block coinbase absent from projection",
-                      !utxo_projection_get(e.p, bad_cb.data, 0,
-                                           NULL, NULL, 0, NULL));
+            RIE_CHECK("invalid: rejected block coinbase absent from coins_kv",
+                      !coins_kv_exists(pdb, bad_cb.data, 0));
 
             rie_env_close(&e);
         }
@@ -789,21 +790,22 @@ int test_reducer_ingest_e2e(void)
                           tipW && tipW->nHeight == W.n - 1 &&
                           tipW == &W.blocks[W.n - 1]);
 
-                uint64_t off = utxo_projection_catch_up(e.p);
-                RIE_CHECK("reorg A: projection caught up", off != UINT64_MAX);
-                countA = utxo_projection_count(e.p);
-                haveA = (utxo_projection_commitment(e.p, cA) == 0);
+                /* coins_kv is the authoritative store — read its count + SHA3
+                 * commitment for the cross-run reorg-parity proof. */
+                sqlite3 *pdb = progress_store_db();
+                countA = (uint64_t)coins_kv_count(pdb);
+                haveA = (coins_kv_commitment(pdb, cA) == 0);
 
                 /* Every L-only outpoint must be ABSENT after the reorg. */
                 struct uint256 t; int absent = 0;
                 cb_txid(&t, 0x11, 1);
-                if (!utxo_projection_get(e.p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
+                if (!coins_kv_exists(pdb, t.data, 0)) absent++;
                 cb_txid(&t, 0x11, 2);
-                if (!utxo_projection_get(e.p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
+                if (!coins_kv_exists(pdb, t.data, 0)) absent++;
                 cb_txid(&t, 0x11, 3);
-                if (!utxo_projection_get(e.p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
+                if (!coins_kv_exists(pdb, t.data, 0)) absent++;
                 spend_txid(&t, 0x11, 2);
-                if (!utxo_projection_get(e.p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
+                if (!coins_kv_exists(pdb, t.data, 0)) absent++;
                 l_only_absent = absent;
 
                 rie_env_close(&e);
@@ -829,10 +831,10 @@ int test_reducer_ingest_e2e(void)
                 struct block_index *tip = active_chain_tip(&e.ms.chain_active);
                 RIE_CHECK("reorg B: tip at W", tip && tip->nHeight == W2.n - 1);
 
-                uint64_t off = utxo_projection_catch_up(e.p);
-                RIE_CHECK("reorg B: projection caught up", off != UINT64_MAX);
-                countB = utxo_projection_count(e.p);
-                haveB = (utxo_projection_commitment(e.p, cB) == 0);
+                /* coins_kv parity source for the cross-run proof. */
+                sqlite3 *pdb = progress_store_db();
+                countB = (uint64_t)coins_kv_count(pdb);
+                haveB = (coins_kv_commitment(pdb, cB) == 0);
                 rie_env_close(&e);
             }
         }

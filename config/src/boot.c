@@ -46,7 +46,7 @@
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
 #include "storage/coins_view_sqlite.h"
-#include "storage/coins_view_projection.h"
+#include "storage/coins_view_kv.h"
 #include "storage/utxo_projection.h"
 #include "storage/coins_db.h"
 #include "storage/ldb_snapshot.h"
@@ -120,11 +120,12 @@
 
 static struct main_state g_state;
 static struct coins_view_sqlite g_coins_sqlite;
-/* Read authority for the coins_tip cache backing:
- * a read-only coins_view over the log-derived UTXO projection. The legacy
+/* Read authority for the coins_tip cache backing: a read-only coins_view over
+ * coins_kv (canonical UTXO set in progress.kv, authored in-txn by the reducer —
+ * atomically consistent with the stage cursor on every crash). The legacy
  * g_coins_sqlite is still opened for legacy damage-recovery best-block reads
  * below; retiring that fallback is remaining one-write-path debt. */
-static struct coins_view_projection g_coins_read_view;
+static struct coins_view_kv g_coins_read_view;
 static struct coins_view_cache g_coins_tip;
 static struct chain_activation_controller g_activation_ctl;
 
@@ -1782,22 +1783,24 @@ bool app_init(struct app_context *ctx)
         /* LDB UTXO import deferred to post-block-index (see below). */
     }
 
-    /* Projection-backed read authority: the coins_tip RAM cache
-     * resolves misses against the log-derived UTXO projection, not the
-     * legacy coins.db `utxos` table. utxo_projection_open publishes the
-     * process-global handle; it normally happens later in
-     * boot_start_projection_storage (via app_init_services), so open it
-     * here first — that call becomes a no-op reuse. FATAL if the projection
-     * cannot be opened: with the projection as the sole read source there is
-     * no fallback, and serving reads off a half-built backing would be a
-     * silent correctness hole. */
-    if (!boot_ensure_log_and_utxo_projection(ctx->datadir) ||
-        !coins_view_projection_init(&g_coins_read_view,
-                                    utxo_projection_get_global())) {
+    /* coins_kv-backed read authority: the coins_tip RAM cache resolves
+     * misses against coins_kv (canonical UTXO set in progress.kv), authored
+     * in-txn by the reducer so it is atomically consistent with the stage
+     * cursor on every crash — the durability the projection's separate WAL
+     * lacked (tip-wedge tear class, docs/work/tip-durability-collapse.md).
+     * We still open the log + UTXO projection (no-op reuse of the later
+     * boot_start_projection_storage open): it is the SEED conduit only
+     * (coins_kv_boot_rebuild_if_needed copies it into coins_kv); the read view
+     * no longer binds it. FATAL only if progress.kv (the coins_kv home) is not
+     * open — coins_view_kv binds progress_store_db() lazily at read time. */
+    (void)boot_ensure_log_and_utxo_projection(ctx->datadir);
+    if (!progress_store_db() ||
+        !coins_view_kv_init(&g_coins_read_view)) {
         fprintf(stderr,
-                "FATAL: utxo_projection not open; cannot serve coins reads\n");
+                "FATAL: progress.kv (coins_kv) not open; cannot serve "
+                "coins reads\n");
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
-                    "utxo_projection unavailable for coins read view");
+                    "coins_kv unavailable for coins read view");
         _exit(EXIT_FAILURE);
     }
     coins_view_cache_init(&g_coins_tip, &g_coins_read_view.view);

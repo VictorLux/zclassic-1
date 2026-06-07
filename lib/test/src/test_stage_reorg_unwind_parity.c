@@ -6,28 +6,29 @@
  * WHY THIS TEST EXISTS
  * --------------------
  * test_reorg_projection_parity proves the legacy disconnect path
- * (disconnect_block) unwinds the projection correctly. When
- * utxo_projection_test_set_author(UTXO_AUTHOR_STAGE), the legacy emitters go silent
- * and the authoritative writer is utxo_apply_stage. A reorg on that
- * path must produce a BYTE-IDENTICAL UTXO projection to a direct build of
- * the winning branch — otherwise a reorg silently and permanently
- * corrupts the UTXO set (a wrong inverse SPENDs an absent coin = a no-op
- * DELETE, with NO crash). This is the proof the stage-side inverse path
- * (utxo_apply_reorg_unwind_if_needed) is correct, in isolation, BEFORE
- * any live author flip.
+ * (disconnect_block) unwinds the UTXO set correctly. When
+ * utxo_projection_test_set_author(UTXO_AUTHOR_STAGE), the authoritative
+ * writer is utxo_apply_stage, which now authors ONLY coins_kv (the
+ * canonical UTXO set in progress.kv — the projection dual-write was
+ * removed). A reorg on that path must produce a BYTE-IDENTICAL coins_kv
+ * SHA3 commitment to a direct build of the winning branch — otherwise a
+ * reorg silently and permanently corrupts the UTXO set (a wrong inverse
+ * SPENDs an absent coin = a no-op DELETE, with NO crash). This is the proof
+ * the stage-side inverse path (utxo_apply_reorg_unwind_if_needed) is
+ * correct, in isolation.
  *
  * WHAT IS DRIVEN (author == STAGE throughout)
  * -------------------------------------------
  *   Base UTXO set: a few pre-fork external coins, seeded IDENTICALLY into
- *   both runs' projections (a coin spent on the losing branch and
- *   restored on unwind must already exist in both, or the runs diverge).
+ *   both runs' coins_kv (a coin spent on the losing branch and restored on
+ *   unwind must already exist in both, or the runs diverge).
  *
  *   RUN 1 (stage reorg path):
  *     - active_chain = losing branch L (genesis h0 + L1..L3, L2 spends an
  *       external coin EXT_L). Seed proof_validate, drive utxo_apply_stage:
- *       it computes the real per-block delta, emits forward EV_UTXO_* (as
- *       STAGE author), AND persists the inverse-delta rows stamped with L
- *       block hashes.
+ *       it computes the real per-block delta, applies it forward to coins_kv
+ *       (as STAGE author), AND persists the inverse-delta rows stamped with
+ *       L block hashes.
  *     - Install heavier winning branch W (genesis h0 + W1..W4, W2 spends a
  *       DIFFERENT external coin EXT_W) on active_chain; extend proof_validate.
  *     - Step the stage: utxo_apply_reorg_unwind_if_needed detects the
@@ -38,14 +39,13 @@
  *   RUN 2 (direct build): same base seed, then active_chain = W only;
  *     drive the stage straight over genesis + W1..W4.
  *
- *   ASSERT: utxo_projection_commitment(P1) == utxo_projection_commitment(P2)
- *     byte-exact (SHA3-256), count(P1) == count(P2), and every L-only
- *     outpoint (L1/L2/L3 coinbases + L2's spend output) is ABSENT from P1.
- *     A per-height post-unwind commitment checkpoint localizes any
- *     divergence to a single block (consensus stakes — design risk #1).
+ *   ASSERT: coins_kv_commitment(C1) == coins_kv_commitment(C2) byte-exact
+ *     (SHA3-256), count(C1) == count(C2), and every L-only outpoint
+ *     (L1/L2/L3 coinbases + L2's spend output) is ABSENT from C1, EXT_L is
+ *     restored live, and EXT_W is spent.
  *
- * No legacy coins.db is involved — this is projection-vs-projection over
- * the SHA3 commitment of each derived UTXO set, exactly like
+ * No legacy coins.db is involved — this is coins_kv-vs-coins_kv over the
+ * SHA3 commitment of each derived UTXO set, exactly like
  * test_reorg_projection_parity but exercising the STAGE inverse path. */
 
 #include "test/test_helpers.h"
@@ -323,15 +323,17 @@ static bool seed_proof_validate(sqlite3 *db, int through_height)
     return ok;
 }
 
-/* Seed the pre-fork base UTXO set into the live (global) projection. */
-static void seed_base_coins(const struct ext_coin *ext, int n)
+/* Seed the pre-fork base UTXO set into coins_kv — the authoritative live
+ * UTXO store the reducer reads/writes after the projection dual-write was
+ * removed. (The forward apply + inverse unwind now author only coins_kv.) */
+static void seed_base_coins(sqlite3 *pdb, const struct ext_coin *ext, int n)
 {
+    (void)coins_kv_ensure_schema(pdb);
     for (int i = 0; i < n; i++) {
         const struct ext_coin *e = &ext[i];
-        utxo_projection_emit_add(e->txid.data, e->vout, e->value, e->height,
-                                 e->is_coinbase,
-                                 e->script_len ? e->script : NULL,
-                                 e->script_len);
+        (void)coins_kv_add(pdb, e->txid.data, e->vout, e->value,
+                           (int32_t)e->height, e->is_coinbase,
+                           e->script_len ? e->script : NULL, e->script_len);
     }
 }
 
@@ -390,7 +392,7 @@ int test_stage_reorg_unwind_parity(void)
         if (lg && p) {
             utxo_projection_set_event_log(lg);
             utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-            seed_base_coins(ext, 2);
+            seed_base_coins(progress_store_db(), ext, 2);
 
             struct main_state ms;
             memset(&ms, 0, sizeof(ms));
@@ -429,51 +431,30 @@ int test_stage_reorg_unwind_parity(void)
             /* Unwound 3 L heights (1..3) then re-applied 4 W heights (1..4). */
             SRU_CHECK("run1: re-advanced over W", adv_w >= W.n - 1);
 
-            uint64_t off = utxo_projection_catch_up(p);
-            SRU_CHECK("run1: catch_up", off != UINT64_MAX);
-            count1 = utxo_projection_count(p);
-            have_c1 = (utxo_projection_commitment(p, c1) == 0);
+            /* coins_kv is the authoritative UTXO store (the projection
+             * dual-write was removed) — read the post-reorg count + SHA3
+             * commitment from coins_kv, which the stage authored in-txn through
+             * the forward apply and the inverse unwind. */
+            sqlite3 *pdb = progress_store_db();
+            count1 = (uint64_t)coins_kv_count(pdb);
+            have_c1 = (coins_kv_commitment(pdb, c1) == 0);
             SRU_CHECK("run1: commitment computed", have_c1);
 
-            /* Every L-only outpoint must be ABSENT from P1. */
-            struct uint256 t; int absent = 0;
-            cb_txid(&t, 0x11, 1);
-            if (!utxo_projection_get(p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
-            cb_txid(&t, 0x11, 2);
-            if (!utxo_projection_get(p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
-            cb_txid(&t, 0x11, 3);
-            if (!utxo_projection_get(p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
-            spend_txid(&t, 0x11, 2);
-            if (!utxo_projection_get(p, t.data, 0, NULL, NULL, 0, NULL)) absent++;
-            l_only_absent = absent;
-            SRU_CHECK("run1: all 4 L-only outpoints absent", absent == 4);
-            /* EXT_L was spent on L then RESTORED on unwind (W never spends
-             * it) — it must be live again. */
-            SRU_CHECK("run1: EXT_L restored live after unwind",
-                      utxo_projection_get(p, ext[0].txid.data, 0,
-                                          NULL, NULL, 0, NULL));
-            /* EXT_W spent on W — absent. */
-            SRU_CHECK("run1: EXT_W spent on W (absent)",
-                      !utxo_projection_get(p, ext[1].txid.data, 0,
-                                           NULL, NULL, 0, NULL));
-
-            /* coins_kv PARITY after the reorg unwind: the atomic progress.kv
-             * coins set must match the projection exactly — this is the proof
-             * that emit_inverse_delta's in-txn coins_kv dual-write (step 3
-             * edit 1) unwinds coins_kv with the cursor (no orphaned above-fork
-             * coins, restored coins re-added). */
-            sqlite3 *pdb = progress_store_db();
-            SRU_CHECK("run1: coins_kv count == projection count",
-                      (uint64_t)coins_kv_count(pdb) == count1);
-            int ck_absent = 0;
+            /* Every L-only outpoint must be ABSENT after the unwind — coins_kv
+             * unwound them with the cursor (no orphaned above-fork coins). */
+            struct uint256 t; int ck_absent = 0;
             cb_txid(&t, 0x11, 1); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
             cb_txid(&t, 0x11, 2); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
             cb_txid(&t, 0x11, 3); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
             spend_txid(&t, 0x11, 2); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
+            l_only_absent = ck_absent;
             SRU_CHECK("run1: coins_kv all 4 L-only outpoints absent",
                       ck_absent == 4);
+            /* EXT_L was spent on L then RESTORED on unwind (W never spends it) —
+             * the inverse-delta re-ADD must make it live again. */
             SRU_CHECK("run1: coins_kv EXT_L restored live after unwind",
                       coins_kv_exists(pdb, ext[0].txid.data, 0));
+            /* EXT_W spent on W — absent. */
             SRU_CHECK("run1: coins_kv EXT_W spent on W (absent)",
                       !coins_kv_exists(pdb, ext[1].txid.data, 0));
 
@@ -504,7 +485,7 @@ int test_stage_reorg_unwind_parity(void)
         if (lg && p) {
             utxo_projection_set_event_log(lg);
             utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
-            seed_base_coins(ext, 2);
+            seed_base_coins(progress_store_db(), ext, 2);
 
             struct main_state ms;
             memset(&ms, 0, sizeof(ms));
@@ -523,10 +504,11 @@ int test_stage_reorg_unwind_parity(void)
             SRU_CHECK("run2: no reorg unwind",
                       utxo_apply_stage_reorg_unwound_total() == 0);
 
-            uint64_t off = utxo_projection_catch_up(p);
-            SRU_CHECK("run2: catch_up", off != UINT64_MAX);
-            count2 = utxo_projection_count(p);
-            have_c2 = (utxo_projection_commitment(p, c2) == 0);
+            /* Direct build: coins_kv is the authoritative store. Read its count
+             * + commitment for the cross-run parity proof against RUN1. */
+            sqlite3 *pdb = progress_store_db();
+            count2 = (uint64_t)coins_kv_count(pdb);
+            have_c2 = (coins_kv_commitment(pdb, c2) == 0);
             SRU_CHECK("run2: commitment computed", have_c2);
 
             utxo_apply_stage_shutdown();

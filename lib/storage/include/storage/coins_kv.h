@@ -42,6 +42,16 @@ bool coins_kv_spend(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
 /* True iff (txid,vout) is currently live (unspent). */
 bool coins_kv_exists(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout);
 
+/* Point-read one live output (txid,vout). Returns true iff the output is
+ * currently live (unspent), filling value/script via the non-NULL out-pointers.
+ * If `script_cap` is smaller than the stored script length the script is
+ * truncated to `script_cap` bytes, but `*script_len_out` always reports the
+ * true length. Mirrors utxo_projection_get exactly so script_validate's prevout
+ * resolver is a verbatim swap. A spent or absent output returns false. */
+bool coins_kv_get(struct sqlite3 *db, const uint8_t txid[32], uint32_t vout,
+                  int64_t *value_out, uint8_t *script_out, size_t script_cap,
+                  size_t *script_len_out);
+
 /* Count of live outputs. Returns -1 on error. */
 int64_t coins_kv_count(struct sqlite3 *db);
 

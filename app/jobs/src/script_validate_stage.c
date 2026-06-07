@@ -29,7 +29,7 @@
 #include "jobs/created_outputs_index.h"
 #include "script/script.h"
 #include "storage/progress_store.h"
-#include "storage/utxo_projection.h"
+#include "storage/coins_kv.h"
 #include "storage/txdb.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -157,8 +157,10 @@ static bool default_prevout(const struct outpoint *prevout,
  *   (1) the forward creation index body_persist maintains — covers every coin
  *       created in a block this node has persisted (body_persist.cursor is
  *       strictly > script_validate.cursor, so the row is present before needed);
- *   (2) the snapshot-seeded utxo_projection — covers pre-anchor coins on a
- *       fast-synced node, which are immutable at snapshot time.
+ *   (2) coins_kv (the canonical UTXO set in progress.kv) — covers pre-anchor
+ *       coins on a fast-synced node (seeded from the snapshot at boot) and the
+ *       reducer-applied live set; a spent output is DELETEd, so a hit here is a
+ *       currently-live coin.
  * A genuine miss returns false; the caller then FAILS LOUD with the exact
  * outpoint (never silently passes). The verifier (verify_script) is unchanged. */
 static bool created_index_prevout(const struct outpoint *prevout,
@@ -182,9 +184,8 @@ static bool created_index_prevout(const struct outpoint *prevout,
         return true;
     }
 
-    utxo_projection_t *p = utxo_projection_get_global();
-    if (p && utxo_projection_get(p, prevout->hash.data, prevout->n,
-                                 &value, script, sizeof(script), &slen)) {
+    if (db && coins_kv_get(db, prevout->hash.data, prevout->n,
+                           &value, script, sizeof(script), &slen)) {
         if (slen > MAX_SCRIPT_SIZE)
             return false;
         out->value = value;

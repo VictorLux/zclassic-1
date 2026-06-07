@@ -72,32 +72,16 @@ static _Atomic int64_t  g_last_advance_height = -1;
  * (utxo_apply_compute_block_delta) live in utxo_apply_delta.c, shared
  * with the inverse-delta persistence + reorg-unwind path. */
 
-/* Author EV_UTXO_ADD/SPEND from a validated block delta. Called only when
- * the stage holds authority (UTXO_AUTHOR_STAGE) and the block verified. Adds
- * are emitted before spends: every UTXO key created in this block is unique
- * (compute_block_delta rejects collisions), and the only intra-block key
- * interaction is create-then-spend of the same output — which add-then-spend
- * resolves to "absent", matching the legacy per-tx order. The projection is a
- * set, so the resulting final state matches legacy interleaved emission
- * (proven empirically by test_utxo_apply_authorship_parity). */
-static void emit_delta(const struct delta_summary *s, uint32_t height)
-{
-    for (size_t i = 0; i < s->added_count; i++)
-        utxo_projection_emit_add(s->added[i].txid.data, s->added[i].vout,
-                                 s->added[i].value, height,
-                                 s->added[i].is_coinbase,
-                                 s->added[i].script, s->added[i].script_len);
-    for (size_t i = 0; i < s->spent_count; i++)
-        utxo_projection_emit_spend(s->spent[i].txid.data, s->spent[i].vout);
-}
-
-/* Author the SAME validated delta into the progress.kv `coins` table on the
- * stage's own db handle, so it lands INSIDE stage_run_once's BEGIN IMMEDIATE —
- * the coin mutation commits or rolls back as ONE atomic unit with the cursor +
- * inverse-delta + log row, closing the tip-wedge tear class
- * (docs/work/tip-durability-collapse.md). Adds before spends, mirroring
- * emit_delta exactly (same set either order). During the dual-write phase
- * (step 2) reads still come from the projection; step 3 flips them here. */
+/* Author the validated block delta into the progress.kv `coins` table (coins_kv)
+ * on the stage's own db handle, so it lands INSIDE stage_run_once's BEGIN
+ * IMMEDIATE — the coin mutation commits or rolls back as ONE atomic unit with
+ * the cursor + inverse-delta + log row, closing the tip-wedge tear class
+ * (docs/work/tip-durability-collapse.md). coins_kv is now the SOLE live UTXO
+ * author and read source (the projection is seed-only). Adds are applied before
+ * spends: every UTXO key created in this block is unique (compute_block_delta
+ * rejects collisions), and the only intra-block key interaction is
+ * create-then-spend of the same output — which add-then-spend resolves to
+ * "absent". The coins set is a set, so the final state is order-independent. */
 static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
                            uint32_t height)
 {
@@ -174,14 +158,14 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
 
-    /* Author the UTXO projection from this validated delta when the
-     * stage holds projection authority. Scripts in `summary.added` alias
-     * into `blk`, so emit before block_free. */
+    /* Author the canonical coins_kv set from this validated delta when the
+     * stage holds UTXO authority. coins_kv is written in-txn so a failure
+     * here rolls back the whole stage txn (cursor + inverse-delta + log row
+     * + coins) — never a torn partial apply. Scripts in `summary.added`
+     * alias into `blk`, so apply before block_free. The author gate is
+     * retained (UTXO_AUTHOR_STAGE) — it now guards the coins_kv write, the
+     * sole live UTXO author after the projection dual-write was removed. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        emit_delta(&summary, (uint32_t)next_h);
-        /* Step-2 dual-write: also author the atomic progress.kv coins set
-         * in-txn. A failure here rolls back the whole stage txn (cursor +
-         * inverse-delta + log row + coins) — never a torn partial apply. */
         if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
             free_delta(&summary);
             block_free(&blk);
@@ -390,23 +374,12 @@ job_result_t utxo_apply_stage_step_once(void)
     }
     job_result_t r = stage_run_once(g_stage, db);
     progress_store_tx_unlock();
-    /* CODE1 freshness: after an advancing step, fold the UTXO events this step
-     * just emitted into the projection's read `utxo` table, so a coin CREATED
-     * by this block is visible to projection_live_lookup (utxo_apply's prevout
-     * resolver) when a LATER block in the SAME drain spends it. The read table
-     * is otherwise folded only at boot (utxo_projection_catch_up's sole other
-     * caller), so without this a cross-block create-then-spend within one
-     * pre-restart drain would read a stale table and could false-accept a
-     * double-spend. catch_up runs its OWN txn on the SEPARATE projection DB
-     * handle (not progress.kv), so it does not nest with the lock just
-     * released. Idempotent + crash-safe (the log commit is independent of the
-     * stage cursor txn). Covers BOTH drivers — reducer ingest AND the
-     * supervisor drain — since both reach the chain via this function. */
-    if (r == JOB_ADVANCED) {
-        utxo_projection_t *proj = utxo_projection_get_global();
-        if (proj)
-            (void)utxo_projection_catch_up(proj);
-    }
+    /* No projection catch_up fold: the prevout resolver (projection_live_lookup)
+     * reads coins_kv, which apply_coins_kv writes IN this stage's BEGIN
+     * IMMEDIATE — a coin created by an earlier block is already committed to
+     * coins_kv before a later block in the same drain resolves it, so reads are
+     * inherently fresh with no fold needed (the projection's last_consumed_offset
+     * freshness hack is gone with the dual-write). */
     return r;
 }
 

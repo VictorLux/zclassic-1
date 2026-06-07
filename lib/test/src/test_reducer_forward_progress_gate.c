@@ -74,6 +74,7 @@
 #include "script/script.h"
 #include "services/chain_activation_service.h"
 #include "services/header_admit_inbox.h"
+#include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
@@ -399,7 +400,9 @@ int test_reducer_forward_progress_gate(void)
     int height_genesis = active_chain_height(&ms.chain_active);
     RFP_CHECK("genesis tip height is 0", height_genesis == 0);
 
-    uint64_t count_genesis = utxo_projection_count(proj);
+    /* coins_kv is the authoritative UTXO set the stages author (the projection
+     * dual-write was removed); read the genesis baseline from it. */
+    uint64_t count_genesis = (uint64_t)coins_kv_count(progress_store_db());
 
     struct rfp_ingest_ctx ictx = { .cp = cp, .ms = &ms, .ctl = &ctl,
                                    .datadir = netdir };
@@ -517,9 +520,8 @@ int test_reducer_forward_progress_gate(void)
         /* Each block added exactly one coinbase UTXO over the genesis baseline.
          * With tip at N finalized and block N+1 also data'd as the pending
          * successor, utxo_apply has applied N+1 coinbases. */
-        uint64_t off = utxo_projection_catch_up(proj);
-        RFP_CHECK("PART1: projection caught up", off != UINT64_MAX);
-        uint64_t count_after = utxo_projection_count(proj);
+        sqlite3 *pdb = progress_store_db();
+        uint64_t count_after = (uint64_t)coins_kv_count(pdb);
         printf("reducer_forward_progress_gate: utxo count %llu -> %llu\n",
                (unsigned long long)count_genesis,
                (unsigned long long)count_after);
@@ -532,8 +534,8 @@ int test_reducer_forward_progress_gate(void)
         bool every_cb_live = !wedge_reproduced;
         for (int h = 1; h <= RFP_N && every_cb_live; h++) {
             int64_t v = 0;
-            bool live = utxo_projection_get(proj, cbids[h].data, 0, &v, NULL,
-                                            0, NULL);
+            bool live = coins_kv_get(pdb, cbids[h].data, 0, &v, NULL,
+                                     0, NULL);
             if (!live || v != cbvals[h] || v <= 0)
                 every_cb_live = false;
         }
@@ -675,17 +677,15 @@ int test_reducer_forward_progress_gate(void)
                       "lookahead)",
                       reorg_tip == RFP_N && tip_is_w);
 
-            uint64_t off = utxo_projection_catch_up(proj);
-            RFP_CHECK("PART2: projection caught up after reorg",
-                      off != UINT64_MAX);
+            /* coins_kv is the authoritative store after the reorg unwind. */
+            sqlite3 *pdb = progress_store_db();
 
             /* Displaced L coinbases (heights F+1..N+1, all unwound + replaced by
              * W) are GONE; W coinbases (F+1..N+1) are present. */
             int l_absent = 0, l_total = 0;
             for (int h = F + 1; h <= RFP_N + 1; h++) {
                 l_total++;
-                if (!utxo_projection_get(proj, cbids[h].data, 0,
-                                         NULL, NULL, 0, NULL))
+                if (!coins_kv_exists(pdb, cbids[h].data, 0))
                     l_absent++;
             }
             RFP_CHECK("PART2: all displaced L-branch coinbases removed",
@@ -693,17 +693,20 @@ int test_reducer_forward_progress_gate(void)
 
             int w_present = 0;
             for (int i = 0; i < W_LEN; i++) {
-                if (utxo_projection_get(proj, wcbid[i].data, 0, NULL, NULL,
-                                        0, NULL))
+                if (coins_kv_exists(pdb, wcbid[i].data, 0))
                     w_present++;
             }
             RFP_CHECK("PART2: all W-branch coinbases present",
                       w_present == W_LEN);
 
+            /* coins_kv_commitment uses the SAME SHA3 encoder as
+             * utxo_projection_commitment (coins_kv.h), so the reorged coins_kv
+             * commitment is byte-comparable to the from-scratch projection
+             * reference (proj2) built below. */
             uint8_t commit_reorg[32];
             bool have_reorg_commit =
-                (utxo_projection_commitment(proj, commit_reorg) == 0);
-            uint64_t count_reorg = utxo_projection_count(proj);
+                (coins_kv_commitment(pdb, commit_reorg) == 0);
+            uint64_t count_reorg = (uint64_t)coins_kv_count(pdb);
             RFP_CHECK("PART2: reorg-path commitment computed", have_reorg_commit);
 
             /* ── From-scratch recompute of the WINNING chain ───────────────

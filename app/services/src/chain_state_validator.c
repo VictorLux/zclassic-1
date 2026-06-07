@@ -141,10 +141,12 @@ struct boot_validation_result validate_coins_chain_agreement(
     /* Case 3b (reducer-finalized tip is the coins authority): coins_best
      * disagrees with the active chain tip, BUT the active chain tip IS the
      * durable reducer-finalized tip (tip_finalize_log, in progress.kv). The runtime
-     * coins authority is the utxo_projection read view (g_coins_read_view, bound
-     * at config/src/boot.c:1795), which is AT this finalized tip; a stale/behind
-     * coins.db coins_best_block is benign lagging materialization the reducer
-     * reconciles forward — NOT a chain disagreement. Returning BOOT_OK here
+     * coins authority is the coins_kv read view (g_coins_read_view, a
+     * coins_view_kv over progress.kv, bound at config/src/boot.c). coins_kv is
+     * authored in-txn with the tip_finalize cursor, so it IS at this finalized
+     * tip by atomic co-commit; a stale/behind coins.db coins_best_block is
+     * benign lagging materialization the reducer reconciles forward — NOT a
+     * chain disagreement. Returning BOOT_OK here
      * stops the Case-4 RESET_CHAIN that discarded finalized progress on every
      * restart (observed: reset tip 3,135,248 -> stale coins 3,134,303, losing
      * the climb).
