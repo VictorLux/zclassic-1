@@ -185,17 +185,7 @@ bool body_fetch_stage_init(struct main_state *ms)
     return true;
 }
 
-job_result_t body_fetch_stage_step_once(void)
-{
-    if (!g_stage) return JOB_IDLE;
-    sqlite3 *db = progress_store_db();
-    if (!db) return JOB_IDLE;
-    reducer_extend_window_to_candidate(g_ms, true);
-    progress_store_tx_lock();
-    job_result_t r = stage_run_once(g_stage, db);
-    progress_store_tx_unlock();
-    return r;
-}
+STAGE_STEP_ONCE_SIMPLE(body_fetch)
 
 STAGE_DRAIN_IMPL(body_fetch)
 
@@ -239,10 +229,7 @@ bool body_fetch_stage_dump_state_json(struct json_value *out,
     if (!out) return false;
     json_set_object(out);
 
-    json_push_kv_bool(out, "initialised", g_stage != NULL);
-    json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_int (out, "cursor",
-                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    stage_dump_header(out, STAGE_NAME, g_stage);
     json_push_kv_int (out, "observed_total",
                       (int64_t)atomic_load(&g_observed_total));
     json_push_kv_int (out, "skipped_total",

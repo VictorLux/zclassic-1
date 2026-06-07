@@ -616,10 +616,7 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
     if (!out) return false;
     json_set_object(out);
 
-    json_push_kv_bool(out, "initialised", g_stage != NULL);
-    json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_int (out, "cursor",
-                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    stage_dump_header(out, STAGE_NAME, g_stage);
     json_push_kv_int (out, "admitted_total",
                       (int64_t)atomic_load(&g_admitted_total));
     json_push_kv_int (out, "inbox_drained_total",

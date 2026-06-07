@@ -319,17 +319,7 @@ bool body_persist_stage_init(struct main_state *ms)
     return true;
 }
 
-job_result_t body_persist_stage_step_once(void)
-{
-    if (!g_stage) return JOB_IDLE;
-    sqlite3 *db = progress_store_db();
-    if (!db) return JOB_IDLE;
-    reducer_extend_window_to_candidate(g_ms, true);
-    progress_store_tx_lock();
-    job_result_t r = stage_run_once(g_stage, db);
-    progress_store_tx_unlock();
-    return r;
-}
+STAGE_STEP_ONCE_SIMPLE(body_persist)
 
 STAGE_DRAIN_IMPL(body_persist)
 
@@ -417,10 +407,7 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
     int64_t now = platform_time_wall_unix();
     int64_t last = atomic_load(&g_last_step_unix);
 
-    json_push_kv_bool(out, "initialised", g_stage != NULL);
-    json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_int (out, "cursor",
-                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    stage_dump_header(out, STAGE_NAME, g_stage);
     json_push_kv_int (out, "verified_total",
                       (int64_t)atomic_load(&g_verified_total));
     json_push_kv_int (out, "upstream_failed_total",

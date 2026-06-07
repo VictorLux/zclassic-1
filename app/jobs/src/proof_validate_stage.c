@@ -422,17 +422,7 @@ bool proof_validate_stage_init(struct main_state *ms)
     return true;
 }
 
-job_result_t proof_validate_stage_step_once(void)
-{
-    if (!g_stage) return JOB_IDLE;
-    sqlite3 *db = progress_store_db();
-    if (!db) return JOB_IDLE;
-    reducer_extend_window_to_candidate(g_ms, true);
-    progress_store_tx_lock();
-    job_result_t r = stage_run_once(g_stage, db);
-    progress_store_tx_unlock();
-    return r;
-}
+STAGE_STEP_ONCE_SIMPLE(proof_validate)
 
 STAGE_DRAIN_IMPL(proof_validate)
 

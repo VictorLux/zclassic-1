@@ -163,4 +163,44 @@ static inline void stage_dump_counters(struct json_value *out, const stage_t *s)
     json_push_kv_int(out, "error_count",    (int64_t)stage_error_count(s));
 }
 
+/* Emit the three universal opening fields of a *_dump_state_json object —
+ * "initialised", "stage_name", "cursor" — in that exact order. Seven of the
+ * eight Job stages open with this identical triple; emitting it from one helper
+ * keeps the same field values and the same field order downstream consumers
+ * see as each stage hand-wrote. The lone exception is validate_headers, which
+ * interleaves an "authority" field BETWEEN stage_name and cursor, so it keeps
+ * its inline form. Pass the stage's own STAGE_NAME and g_stage so the cursor
+ * and `initialised` flag reflect THIS stage (the helper owns no globals — the
+ * registry hazard is avoided by keeping ownership at the call site). */
+static inline void stage_dump_header(struct json_value *out, const char *name,
+                                     const stage_t *s)
+{
+    json_push_kv_bool(out, "initialised", s != NULL);
+    json_push_kv_str (out, "stage_name", name);
+    json_push_kv_int (out, "cursor", (int64_t)(s ? stage_cursor(s) : 0));
+}
+
+/* Define the shared step_once entry point for a stage whose step body is the
+ * uniform shape: bail to JOB_IDLE if the stage or progress.kv handle is not up,
+ * extend the active-chain window to the best candidate, then run one cursor-
+ * stamped step under the progress.kv tx lock. Four of the eight stages
+ * (body_fetch, body_persist, script_validate, proof_validate) share this exact
+ * body. The macro re-expands the per-TU file-local `g_stage`/`g_ms`
+ * inside each stage's own translation unit, so the emitted machine code is
+ * identical to the hand-written form — this collapses the DUPLICATED BODY only,
+ * never any stage-specific wiring or ordering. Stages that need a reorg unwind,
+ * a recheck pass, a mailbox drain, or projection catch-up keep their bespoke
+ * step_once and do NOT use this macro. Pair it with STAGE_DRAIN_IMPL(prefix). */
+#define STAGE_STEP_ONCE_SIMPLE(prefix)                              \
+    job_result_t prefix##_stage_step_once(void) {                  \
+        if (!g_stage) return JOB_IDLE;                             \
+        sqlite3 *db = progress_store_db();                        \
+        if (!db) return JOB_IDLE;                                 \
+        reducer_extend_window_to_candidate(g_ms, true);           \
+        progress_store_tx_lock();                                 \
+        job_result_t r = stage_run_once(g_stage, db);             \
+        progress_store_tx_unlock();                               \
+        return r;                                                 \
+    }
+
 #endif /* ZCL_JOBS_STAGE_HELPERS_H */

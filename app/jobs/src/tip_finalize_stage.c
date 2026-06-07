@@ -740,10 +740,7 @@ bool tip_finalize_dump_state_json(struct json_value *out, const char *key)
     int64_t now = platform_time_wall_unix();
     int64_t last = atomic_load(&g_last_step_unix);
 
-    json_push_kv_bool(out, "initialised", g_stage != NULL);
-    json_push_kv_str (out, "stage_name", STAGE_NAME);
-    json_push_kv_int (out, "cursor",
-                      (int64_t)(g_stage ? stage_cursor(g_stage) : 0));
+    stage_dump_header(out, STAGE_NAME, g_stage);
     json_push_kv_int (out, "finalized_total",
                       (int64_t)atomic_load(&g_finalized_total));
     json_push_kv_int (out, "upstream_failed_total",
