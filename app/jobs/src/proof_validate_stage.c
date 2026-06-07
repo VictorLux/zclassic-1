@@ -9,6 +9,7 @@
 #include "platform/time_compat.h"
 #include "jobs/proof_validate_stage.h"
 #include "jobs/stage_helpers.h"
+#include "proof_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -42,9 +43,9 @@
 
 #define STAGE_NAME "proof_validate"
 
-struct script_validate_row {
-    int ok;
-};
+/* struct script_validate_row + the proof_validate_log schema/read/write
+ * helpers live in proof_validate_log_store.c (pure sqlite kernel helpers
+ * below the AR layer). */
 
 struct validate_summary {
     int ok;
@@ -82,97 +83,6 @@ static _Atomic uint64_t g_binding_sig_failed_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-        "  height                  INTEGER PRIMARY KEY,"
-        "  status                  TEXT    NOT NULL,"
-        "  ok                      INTEGER NOT NULL,"
-        "  sapling_spends_total    INTEGER NOT NULL,"
-        "  sapling_outputs_total   INTEGER NOT NULL,"
-        "  sprout_joinsplits_total INTEGER NOT NULL,"
-        "  first_failure_txid      BLOB,"
-        "  first_failure_proof_type TEXT,"
-        "  validated_at            INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("proof_validate", "[proof_validate] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-static int script_validate_log_at(sqlite3 *db, int height,
-                                  struct script_validate_row *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->ok = -1;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT ok FROM script_validate_log WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("proof_validate", "[proof_validate] script_validate_log prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
-    sqlite3_bind_int(st, 1, height);
-    int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
-        found = 1;
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
-                       size_t sapling_spends_total,
-                       size_t sapling_outputs_total,
-                       size_t sprout_joinsplits_total,
-                       const struct uint256 *first_failure_txid,
-                       const char *first_failure_proof_type)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO proof_validate_log "
-        "(height, status, ok, sapling_spends_total, "
-        " sapling_outputs_total, sprout_joinsplits_total, "
-        " first_failure_txid, first_failure_proof_type, validated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("proof_validate", "[proof_validate] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_text (stmt, 2, status, -1, SQLITE_STATIC);
-    sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)sapling_spends_total);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)sapling_outputs_total);
-    sqlite3_bind_int64(stmt, 6, (sqlite3_int64)sprout_joinsplits_total);
-    if (first_failure_txid)
-        sqlite3_bind_blob(stmt, 7, first_failure_txid->data, 32,
-                          SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 7);
-    if (first_failure_proof_type)
-        sqlite3_bind_text(stmt, 8, first_failure_proof_type, -1,
-                          SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 8);
-    sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
-    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("proof_validate", "[proof_validate] insert height=%d rc=%d", height, rc);
-        return false;
-    }
-    return true;
-}
 
 static void tx_report_init(struct proof_validate_tx_report *r)
 {
@@ -398,7 +308,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct script_validate_row upstream;
-    int found = script_validate_log_at(db, next_h, &upstream);
+    int found = proof_validate_script_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -406,8 +316,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     if (upstream.ok == 0) {
-        if (!log_insert(db, next_h, "upstream_failed", false, 0, 0, 0,
-                        NULL, NULL))
+        if (!proof_validate_log_insert(db, next_h, "upstream_failed", false,
+                        0, 0, 0, NULL, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -463,7 +373,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_fetch_add(&g_verified_total, 1);
     }
 
-    if (!log_insert(db, next_h, status, ok, summary.sapling_spends_total,
+    if (!proof_validate_log_insert(db, next_h, status, ok,
+                    summary.sapling_spends_total,
                     summary.sapling_outputs_total,
                     summary.sprout_joinsplits_total, fail_txid, fail_type))
         return JOB_FATAL;
@@ -490,7 +401,7 @@ bool proof_validate_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!proof_validate_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

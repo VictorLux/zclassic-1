@@ -15,6 +15,7 @@
 #include "jobs/stage_repair_internal.h"  /* STAGE_REPAIR_SOLUTIONLESS_REASON */
 #include "validate_headers_internal.h"
 #include "jobs/header_admit_stage.h"
+#include "validate_headers_log_store.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -221,55 +222,10 @@ static void pool_stop(void)
     g_pool_inited = false;
 }
 
-/* ── Schema ───────────────────────────────────────────────────────── */
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
-        "  height       INTEGER PRIMARY KEY,"
-        "  hash         BLOB    NOT NULL,"
-        "  ok           INTEGER NOT NULL,"
-        "  fail_reason  TEXT,"
-        "  validated_at INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("validate_headers", "[validate_headers] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-static bool log_insert(sqlite3 *db, const struct vh_job *job)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO validate_headers_log "
-        "(height, hash, ok, fail_reason, validated_at) VALUES (?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("validate_headers", "[validate_headers] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)job->height);
-    sqlite3_bind_blob (stmt, 2, job->bi->phashBlock->data, 32, SQLITE_STATIC);
-    sqlite3_bind_int  (stmt, 3, job->ok ? 1 : 0);
-    if (!job->ok && job->reason[0])
-        sqlite3_bind_text(stmt, 4, job->reason, -1, SQLITE_TRANSIENT);
-    else
-        sqlite3_bind_null(stmt, 4);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)platform_time_wall_unix());
-
-    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("validate_headers", "[validate_headers] insert height=%d rc=%d", job->height, rc);
-        return false;
-    }
-    return true;
-}
+/* ── Schema + log writes ──────────────────────────────────────────────
+ * validate_headers_log schema + insert live in validate_headers_log_store.c
+ * (pure sqlite kernel helpers below the AR layer). This stage owns only the
+ * vh_job → primitive binding at the call sites. */
 
 static bool mark_valid_header(struct block_index *bi);
 
@@ -448,7 +404,9 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
             progress_store_tx_unlock();
             return JOB_FATAL;
         }
-        if (!log_insert(db, &jobs[i])) {
+        if (!validate_headers_log_insert(db, jobs[i].height,
+                                         jobs[i].bi->phashBlock, jobs[i].ok,
+                                         jobs[i].reason)) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
             progress_store_tx_unlock();
             return JOB_FATAL;
@@ -561,7 +519,10 @@ static job_result_t step_validate(struct stage_step_ctx *c)
             LOG_WARN("validate_headers", "[validate_headers] authoritative mark failed height=%d", jobs[i].height);
             return JOB_FATAL;
         }
-        if (!log_insert(db, &jobs[i])) return JOB_FATAL;
+        if (!validate_headers_log_insert(db, jobs[i].height,
+                                         jobs[i].bi->phashBlock, jobs[i].ok,
+                                         jobs[i].reason))
+            return JOB_FATAL;
         if (jobs[i].ok) atomic_fetch_add(&g_passed_total, 1);
         else            atomic_fetch_add(&g_failed_total, 1);
     }
@@ -620,7 +581,7 @@ bool validate_headers_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!validate_headers_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

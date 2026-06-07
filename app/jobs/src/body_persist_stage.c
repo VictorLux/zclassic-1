@@ -11,6 +11,7 @@
 #include "jobs/body_persist_stage.h"
 #include "jobs/created_outputs_index.h"
 #include "jobs/stage_helpers.h"
+#include "body_persist_log_store.h"
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"
@@ -43,10 +44,9 @@
 
 #define STAGE_NAME "body_persist"
 
-struct body_fetch_row {
-    int ok;
-    char source[64];
-};
+/* struct body_fetch_row + the body_persist_log schema/read/write helpers
+ * live in body_persist_log_store.c (pure sqlite kernel helpers below the AR
+ * layer). */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -67,75 +67,6 @@ static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS body_persist_log ("
-        "  height       INTEGER PRIMARY KEY,"
-        "  source       TEXT    NOT NULL,"
-        "  ok           INTEGER NOT NULL,"
-        "  persisted_at INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("body_persist", "[body_persist] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-static int body_fetch_log_at(sqlite3 *db, int height,
-                             struct body_fetch_row *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->ok = -1;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT source, ok FROM body_fetch_log WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("body_persist", "[body_persist] body_fetch_log prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
-    sqlite3_bind_int(st, 1, height);
-    int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        const unsigned char *src = sqlite3_column_text(st, 0);
-        if (src)
-            snprintf(out->source, sizeof(out->source), "%s",
-                     (const char *)src);
-        out->ok = sqlite3_column_int(st, 1);
-        found = 1;
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-static bool log_insert(sqlite3 *db, int height, const char *source, bool ok)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO body_persist_log "
-        "(height, source, ok, persisted_at) VALUES (?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("body_persist", "[body_persist] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_text (stmt, 2, source, -1, SQLITE_STATIC);
-    sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)platform_time_wall_unix());
-    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("body_persist", "[body_persist] insert height=%d rc=%d", height, rc);
-        return false;
-    }
-    return true;
-}
 
 static bool verify_merkle_root(const struct block *blk)
 {
@@ -248,7 +179,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     }
 
     struct body_fetch_row upstream;
-    int found = body_fetch_log_at(db, next_h, &upstream);
+    int found = body_persist_body_fetch_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -256,7 +187,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     }
 
     if (upstream.ok == 0) {
-        if (!log_insert(db, next_h, "upstream_failed", false))
+        if (!body_persist_log_insert(db, next_h, "upstream_failed", false))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -276,7 +207,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
                                              : stage_default_block_reader;
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
         block_free(&blk);
-        if (!log_insert(db, next_h, "read_failed", false))
+        if (!body_persist_log_insert(db, next_h, "read_failed", false))
             return JOB_FATAL;
         atomic_fetch_add(&g_read_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -291,7 +222,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     block_get_hash(&blk, &disk_hash);
     if (uint256_cmp(&disk_hash, bi->phashBlock) != 0) {
         block_free(&blk);
-        if (!log_insert(db, next_h, "header_mismatch", false))
+        if (!body_persist_log_insert(db, next_h, "header_mismatch", false))
             return JOB_FATAL;
         atomic_fetch_add(&g_header_mismatch_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -303,7 +234,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
 
     if (!verify_merkle_root(&blk)) {
         block_free(&blk);
-        if (!log_insert(db, next_h, "merkle_mismatch", false))
+        if (!body_persist_log_insert(db, next_h, "merkle_mismatch", false))
             return JOB_FATAL;
         atomic_fetch_add(&g_merkle_mismatch_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -335,7 +266,7 @@ static job_result_t step_persist(struct stage_step_ctx *c)
     block_index_emit_header_event(bi, "body_persist", &g_header_event_emit_total, &g_header_event_emit_fail_total);
 
     block_free(&blk);
-    if (!log_insert(db, next_h, "verified", true))
+    if (!body_persist_log_insert(db, next_h, "verified", true))
         return JOB_FATAL;
     atomic_fetch_add(&g_verified_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -361,7 +292,7 @@ bool body_persist_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!body_persist_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

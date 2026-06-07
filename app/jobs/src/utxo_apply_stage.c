@@ -9,6 +9,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/stage_helpers.h"
+#include "utxo_apply_log_store.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -37,11 +38,11 @@
 
 #define STAGE_NAME "utxo_apply"
 
-struct proof_validate_row {
-    int ok;
-};
-
-/* struct delta_entry / struct delta_summary plus inverse-delta persistence
+/* struct proof_validate_row + the utxo_apply_log schema/read/write helpers
+ * live in utxo_apply_log_store.c (pure sqlite kernel helpers below the AR
+ * layer).
+ *
+ * struct delta_entry / struct delta_summary plus inverse-delta persistence
  * and reorg-unwind machinery live in jobs/utxo_apply_delta.h /
  * utxo_apply_delta.c. */
 
@@ -66,93 +67,6 @@ static _Atomic uint64_t g_total_outputs_spent = 0;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "  height               INTEGER PRIMARY KEY,"
-        "  status               TEXT    NOT NULL,"
-        "  ok                   INTEGER NOT NULL,"
-        "  spent_count          INTEGER NOT NULL,"
-        "  added_count          INTEGER NOT NULL,"
-        "  total_value_delta    INTEGER NOT NULL,"
-        "  first_failure_kind   TEXT,"
-        "  first_failure_detail BLOB,"
-        "  applied_at           INTEGER NOT NULL"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("utxo_apply", "[utxo_apply] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-static int proof_validate_log_at(sqlite3 *db, int height,
-                                 struct proof_validate_row *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->ok = -1;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-        "SELECT ok FROM proof_validate_log WHERE height = ?",
-        -1, &st, NULL) != SQLITE_OK) {
-        LOG_WARN("utxo_apply", "[utxo_apply] proof_validate_log prepare failed: %s", sqlite3_errmsg(db));
-        return -1;  // raw-return-ok:logged-above
-    }
-    sqlite3_bind_int(st, 1, height);
-    int found = 0;
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
-        found = 1;
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
-                       size_t spent_count, size_t added_count,
-                       int64_t total_value_delta,
-                       const char *failure_kind,
-                       const uint8_t failure_detail[36])
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO utxo_apply_log "
-        "(height, status, ok, spent_count, added_count, total_value_delta, "
-        " first_failure_kind, first_failure_detail, applied_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("utxo_apply", "[utxo_apply] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_text (stmt, 2, status, -1, SQLITE_STATIC);
-    sqlite3_bind_int  (stmt, 3, ok ? 1 : 0);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)spent_count);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)added_count);
-    sqlite3_bind_int64(stmt, 6, (sqlite3_int64)total_value_delta);
-    if (failure_kind)
-        sqlite3_bind_text(stmt, 7, failure_kind, -1, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 7);
-    if (failure_detail)
-        sqlite3_bind_blob(stmt, 8, failure_detail, 36, SQLITE_STATIC);
-    else
-        sqlite3_bind_null(stmt, 8);
-    sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
-    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("utxo_apply", "[utxo_apply] insert height=%d rc=%d", height, rc);
-        return false;
-    }
-    return true;
-}
 
 /* The delta structs, free_delta(_arr), and the block-delta builder
  * (utxo_apply_compute_block_delta) live in utxo_apply_delta.c, shared
@@ -223,7 +137,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     struct proof_validate_row upstream;
-    int found = proof_validate_log_at(db, next_h, &upstream);
+    int found = utxo_apply_proof_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -231,8 +145,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     if (upstream.ok == 0) {
-        if (!log_insert(db, next_h, "upstream_failed", false, 0, 0, 0,
-                        NULL, NULL))
+        if (!utxo_apply_log_insert(db, next_h, "upstream_failed", false,
+                        0, 0, 0, NULL, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -316,7 +230,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                     "utxo_apply internal_error height=%d", next_h);
     }
 
-    if (!log_insert(db, next_h, summary.status, summary.ok,
+    if (!utxo_apply_log_insert(db, next_h, summary.status, summary.ok,
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
                     summary.ok ? NULL : summary.failure_detail))
@@ -412,7 +326,7 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!utxo_apply_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

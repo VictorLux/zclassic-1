@@ -14,9 +14,3 @@
 # config/ composition root — boot mega-files, decomposed wave-by-wave.
 config/src/boot.c 3618
 config/src/boot_services.c 1767
-
-# app/jobs — was 790 (at-ceiling) before the block_hash durability column
-# pushed it over. Extract the log store into script_validate_log_store.{c,h}
-# (mirroring tip_finalize_log_store) to drop it back under the ceiling, then
-# delete this line. TODO follow-up; not on the consensus-fix critical path.
-app/jobs/src/script_validate_stage.c 812

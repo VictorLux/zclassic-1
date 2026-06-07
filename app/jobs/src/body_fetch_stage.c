@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/stage_helpers.h"
+#include "body_fetch_log_store.h"
 
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -42,109 +43,13 @@ static _Atomic int64_t  g_last_advance_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
 
-/* ── Schema bootstrap (idempotent) ─────────────────────────────────── */
-
-static bool ensure_log_schema(sqlite3 *db)
-{
-    static const char *const sql =
-        "CREATE TABLE IF NOT EXISTS body_fetch_log ("
-        "  height      INTEGER PRIMARY KEY,"
-        "  hash        BLOB    NOT NULL,"
-        "  source      TEXT    NOT NULL,"
-        "  bytes       INTEGER NOT NULL DEFAULT 0,"
-        "  fetched_at  INTEGER NOT NULL,"
-        "  ok          INTEGER NOT NULL,"
-        "  fail_reason TEXT"
-        ")";
-    char *err = NULL;
-    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("body_fetch", "[body_fetch] schema ensure failed: %s", err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
-}
-
-/* ── Reads from progress.kv ───────────────────────────────────────── */
-
-/* Read the persisted cursor of the upstream stage. We query the
- * stage_cursor table directly rather than calling
- * `validate_headers_stage_cursor()` so that body_fetch's floor check is
- * decoupled from the upstream stage's runtime init order — and so the
- * floor reflects what is DURABLY committed, not the in-memory value
- * which is 0 on a fresh init until the first stage_run_once.
- * See stage_cursor_persisted() in jobs/stage_helpers.h. */
-
-/* Returns 1 if found and ok-flag retrieved, 0 if no row, -1 on error. */
-static int vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
-                        char *out_reason, size_t reason_size)
-{
-    *out_ok = -1;
-    if (out_reason && reason_size)
-        out_reason[0] = 0;
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "SELECT ok, COALESCE(fail_reason,'') "
-        "FROM validate_headers_log WHERE height = ?",
-        -1, &st, NULL);
-    if (rc != SQLITE_OK)
-        LOG_ERR("body_fetch", "[body_fetch] vh log prepare failed: %s",
-                sqlite3_errmsg(db));
-    sqlite3_bind_int(st, 1, height);
-    int found = 0;
-    rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        *out_ok = sqlite3_column_int(st, 0);
-        const unsigned char *txt = sqlite3_column_text(st, 1);
-        if (txt && out_reason && reason_size)
-            snprintf(out_reason, reason_size, "%s", (const char *)txt);
-        found = 1;
-    } else if (rc != SQLITE_DONE) {
-        sqlite3_finalize(st);
-        LOG_ERR("body_fetch",
-                "[body_fetch] vh log step failed height=%d rc=%d: %s",
-                height, rc, sqlite3_errmsg(db));
-    }
-    sqlite3_finalize(st);
-    return found;
-}
-
-/* ── Writes to body_fetch_log ─────────────────────────────────────── */
-
-static bool log_insert(sqlite3 *db, int height,
-                        const struct uint256 *hash,
-                        const char *source, int64_t bytes,
-                        bool ok, const char *reason)
-{
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO body_fetch_log "
-        "(height, hash, source, bytes, fetched_at, ok, fail_reason) "
-        "VALUES (?,?,?,?,?,?,?)",
-        -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("body_fetch", "[body_fetch] prepare insert failed: %s", sqlite3_errmsg(db));
-        return false;
-    }
-    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
-    sqlite3_bind_blob (stmt, 2, hash->data, 32, SQLITE_STATIC);
-    sqlite3_bind_text (stmt, 3, source, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)bytes);
-    sqlite3_bind_int64(stmt, 5, (sqlite3_int64)platform_time_wall_unix());
-    sqlite3_bind_int  (stmt, 6, ok ? 1 : 0);
-    if (reason)
-        sqlite3_bind_text(stmt, 7, reason, -1, SQLITE_TRANSIENT);
-    else
-        sqlite3_bind_null(stmt, 7);
-
-    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
-    sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_WARN("body_fetch", "[body_fetch] insert height=%d rc=%d", height, rc);
-        return false;
-    }
-    return true;
-}
+/* ── Schema + log I/O ─────────────────────────────────────────────────
+ * The body_fetch_log schema, its insert, and the upstream
+ * validate_headers_log ok-flag reader live in body_fetch_log_store.c
+ * (pure sqlite kernel helpers below the AR layer). The upstream cursor is
+ * read via stage_cursor_persisted() (jobs/stage_helpers.h) so body_fetch's
+ * floor check reflects what is DURABLY committed, not the in-memory value
+ * which is 0 on a fresh init until the first stage_run_once. */
 
 /* ── Step body ─────────────────────────────────────────────────────── */
 
@@ -177,8 +82,8 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
      * guarantees the row exists; defend against torn writes anyway. */
     int vh_ok = -1;
     char vh_reason[96];
-    int found = vh_log_ok_at(db, next_h, &vh_ok,
-                             vh_reason, sizeof(vh_reason));
+    int found = body_fetch_vh_log_ok_at(db, next_h, &vh_ok,
+                                        vh_reason, sizeof(vh_reason));
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         /* Row missing despite floor — surface as IDLE (will retry). */
@@ -210,9 +115,9 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
             return JOB_BLOCKED;
         }
         /* Header failed PoW/Equihash earlier — record skip + advance. */
-        if (!log_insert(db, next_h, bi->phashBlock,
-                         "skipped_invalid", 0, false,
-                         "header_validation_failed"))
+        if (!body_fetch_log_insert(db, next_h, bi->phashBlock,
+                                   "skipped_invalid", 0, false,
+                                   "header_validation_failed"))
             return JOB_FATAL;
         atomic_fetch_add(&g_skipped_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -230,7 +135,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
 
     /* Body observed on disk. Record presence; bytes=0 because size probing
      * would add per-height pread cost. */
-    if (!log_insert(db, next_h, bi->phashBlock, "disk", 0, true, NULL))
+    if (!body_fetch_log_insert(db, next_h, bi->phashBlock, "disk", 0, true, NULL))
         return JOB_FATAL;
 
     atomic_fetch_add(&g_observed_total, 1);
@@ -261,7 +166,7 @@ bool body_fetch_stage_init(struct main_state *ms)
         return true;
     }
 
-    if (!ensure_log_schema(db)) {
+    if (!body_fetch_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
