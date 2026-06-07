@@ -206,8 +206,7 @@ Concrete files: `lib/event/include/event/event.h`,
 `lib/event/src/event.c`, `tools/mcp/router.c`, `tools/mcp/metrics.c`,
 `tools/mcp/controllers/ops_controller.c`.
 
-Detailed power-node event gap audit:
-`docs/spec/power-node-event-taxonomy-audit.md`.
+The event/projection model is canonical in `docs/FRAMEWORK.md`.
 
 ## Change Control
 

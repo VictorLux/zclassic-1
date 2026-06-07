@@ -69,11 +69,3 @@ Tried OpenMP parallel parse+CRC-framing with a single `ordered` writer feeding i
 |---|---|---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | 1,905 | 2 | 990s | 16,396 | node stuck: chain-advance blocked, `block_failed_mask_at_tip` failing |
 
-## 🚨 Resilience regressions (P0 — these gate "done", per the doctrine in REFACTOR_STATUS)
-
-| date | commit | what broke | evidence |
-|---|---|---|---|
-| 2026-05-24 | ad34efb65 | **C-3 cutover wedged the live chain** — tip frozen at 3,123,688 (45 behind legacy) for the entire session, 0 forward progress. Shipped "green" (test_parallel 0/196). | `HEADER REJECT reason=header-admit-cutover-diverged` at h=3123689; cascade `bad-prevblk`; `HEADER STALL ... stuck for 782s`. The new authoritative header-admit diverges from legacy on the next real block. |
-| 2026-05-24 | (condition_engine) | **Self-heal lies** — `peer_floor_violated` remedy fired 46× all `result=ok` while tip never advanced. Wrong diagnosis (blames peers), false success. | `[condition_engine] remedy name=peer_floor_violated attempt=N result=ok` ×46, tip unchanged throughout. |
-| 2026-05-24 | (scoreboard) | **Scoreboard lied** — "stay at tip ✓ 0 gap" while node 45 behind & frozen 13min+. Snapshot was stale. | Fixed: "at tip" must = live `tip_advance_age < T` AND gap==0. |
-| 2026-05-24 | chain_tip_watchdog.c:114 | **Restart loop** — node self-restarts every ~20min (NRestarts=4 and counting), Result=success each time. `CHAIN_TIP_WD_DEFAULT_RESTART_SECS=1200`: when the tip is stuck 1200s the watchdog escalates to level 3 and calls `thread_registry_request_shutdown()`; systemd Restart=always brings it back; the C-3 wedge is deterministic so it re-wedges → loops forever. | journal `Scheduled restart job, restart counter is at 4`; node.log `[chain_tip_watchdog] requesting shutdown: h=3123688 age=…s`. **Design flaw beyond C-3:** restart-as-remedy must give up after K no-progress restarts and escalate to a human (doctrine #2), not loop. |

@@ -27,8 +27,7 @@ classes structurally impossible.
    changes (anything touching `tip_finalize`, `*_log`, `coins_best`,
    `connect_block`, `active_chain_tip`, the boot reconcile span, or import /
    cold-import), write the design first and have it refuted. The load-bearing
-   stamp: prove `can_reset_tip=false` and `weakens_gate=false`. Worked example:
-   `docs/work/safe-unwedge-design.md`.
+   stamp: prove `can_reset_tip=false` and `weakens_gate=false`.
 
 3. **RESET-SAFE UNIT TEST — before live.** Mirror
    `lib/test/src/test_stage_reducer_unwedge.c`: synthesize the broken state,

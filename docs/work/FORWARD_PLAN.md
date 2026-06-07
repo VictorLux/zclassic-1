@@ -118,23 +118,13 @@ must not jump the queue.
       in `make ci-mvp-gates`) proves the MATCH/DRIFT detection machinery with a
       negative control. REMAINING (bucket C): run it against the live oracle
       (zclassicd RPC 8232) over the soak window to move ◐ → ✅.
-- [ ] **Regtest on-demand mining `generate N` (gates #6 soak + #7 kill-9 teeth)**
-      — fully root-caused 2026-06-05 on an isolated regtest node; full layered
-      diagnosis in [`regtest-ondemand-mining-rootcause.md`](./regtest-ondemand-mining-rootcause.md).
-      Two layers: **(L1, first blocker, NOT autonomous)** the mined block never
-      reaches the block_index — `reducer_ingest_block` pushes the carried header
-      with `height=-1`, and `handle_header_admit_msg`
-      (`app/jobs/src/header_admit_stage.c:178`) early-returns on `height<0`
-      *before* staging the carried header, so `step_admit` never creates the
-      entry (`ingested==nil`). The fix touches the **live shared header-admission
-      path** (`chain_activation_service.c:434` network intake uses the same
-      handler) → owner-gated, **prove-on-copy**, must keep mainnet sync
-      byte-identical. **(L2, vetted GO/LOW-risk but dead until L1)** a
-      regtest-gated (`fMineBlocksOnDemand`) `set_authoritative_tip` instant-
-      finalize, since `tip_finalize`'s one-block lookahead can't finalize a
-      successor-less self-mined tip. Diagnostic logged at
-      `mining_submit_mined_block` (`b56e645ca`). Required proofs: e2e +
-      negative-gate twin + `generate 3 → getblockcount==3`.
+- [x] **Regtest on-demand mining `generate N` (gates #6 soak + #7 kill-9 teeth)**
+      — SOLVED 2026-06-06 (`bcd44e68e`, datadir mismatch). `generate N` works
+      end-to-end; reducer-mined blocks survive both a clean restart (`801832692`)
+      and a real `kill -9` (`4e7fc176f`), and a follower catches up to peer-tip
+      after kill-9 (`f135abb5f`). `make test-crash-bootstrap` /
+      `make test-two-node-peer-tip` pass; both are opt-in (spawn real nodes), so
+      CI promotion is the only remaining step (tracked under #6/#7 in MVP.md).
 - [ ] **Cleanup** — comment STRIP/REWORD pass + doc-pointer fixes; gate with
       `make lint && make test_parallel`.
 
