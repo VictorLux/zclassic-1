@@ -135,13 +135,16 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         /* Advance the contiguous frontier in lockstep with the cursor on the
          * no-coin-mutation skip path: coins_applied_height == utxo_apply cursor
          * by construction, so the frontier never holes past a skipped height.
-         * In the SAME stage_run_once BEGIN IMMEDIATE → rolls back with the log
-         * row + cursor on failure. */
-        if (!coins_kv_set_applied_height_in_tx(db, (int32_t)(c->cursor_in + 1)))
+         * Compute next_cursor ONCE and write BOTH the frontier and cursor_out
+         * from it, so frontier == cursor is textually enforced (not two
+         * coincidental literals). In the SAME stage_run_once BEGIN IMMEDIATE →
+         * rolls back with the log row + cursor on failure. */
+        uint64_t next_cursor = c->cursor_in + 1;
+        if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
-        c->cursor_out = c->cursor_in + 1;
+        c->cursor_out = next_cursor;
         return JOB_ADVANCED;
     }
 
@@ -230,15 +233,18 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     /* Co-commit the contiguous applied frontier = the SAME value written to the
      * stage cursor (cursor_in + 1), so coins_applied_height == utxo_apply cursor
      * by construction on every advancing path that reaches here (a successful
-     * apply OR a non-fatal reject that still advances). Written in the SAME
+     * apply OR a non-fatal reject that still advances). Compute next_cursor ONCE
+     * and write BOTH the frontier and cursor_out from it, so frontier == cursor
+     * is textually enforced (not two coincidental literals). Written in the SAME
      * stage_run_once BEGIN IMMEDIATE that commits the coins delta + cursor +
      * inverse-delta + log row, so a meta-write failure rolls back the whole
      * step exactly like the apply_coins_kv failure handling. */
-    if (!coins_kv_set_applied_height_in_tx(db, (int32_t)(c->cursor_in + 1)))
+    uint64_t next_cursor = c->cursor_in + 1;
+    if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
         return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
-    c->cursor_out = c->cursor_in + 1;
+    c->cursor_out = next_cursor;
     return JOB_ADVANCED;
 }
 
@@ -610,6 +616,24 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
+
+    /* P2 self-heal input: the contiguous applied frontier and whether it equals
+     * the durable utxo_apply cursor (the invariant the co-commit sites enforce).
+     * Surfaced here so `zcl_state subsystem=utxo_apply` shows the invariant
+     * directly — frontier_eq_cursor must be true on every quiescent path.
+     * coins_applied_height == -1 means ABSENT (a virgin / un-synced datadir),
+     * which is a clean "unknown", not a violation. */
+    if (db) {
+        int32_t frontier = -1;
+        bool fr_found = false;
+        bool fr_ok = coins_kv_get_applied_height(db, &frontier, &fr_found);
+        uint64_t ua_cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+        json_push_kv_int(out, "coins_applied_height",
+                         (fr_ok && fr_found) ? (int64_t)frontier : -1);
+        json_push_kv_bool(out, "frontier_eq_cursor",
+                          fr_ok && fr_found &&
+                          (uint64_t)frontier == ua_cursor);
+    }
     dump_first_failure(out, db);
     stage_dump_counters(out, g_stage);
     return true;

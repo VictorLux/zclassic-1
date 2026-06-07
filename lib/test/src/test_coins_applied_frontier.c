@@ -34,6 +34,8 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_repair.h"
+#include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_stage.h"
 #include "storage/coins_kv.h"
 #include "storage/event_log.h"
@@ -59,6 +61,17 @@
     if ((expr)) printf("OK\n");                          \
     else { printf("FAIL\n"); failures++; }               \
 } while (0)
+
+/* No-op step for a throwaway stage_t handle. utxo_apply_reorg_unwind_if_needed
+ * uses its `stage` argument ONLY as a non-NULL guard (it reads the cursor from
+ * the DB), so this handle is never stepped — it just satisfies stage_create's
+ * non-NULL-step requirement so we can fire the unwind directly, bypassing the
+ * forward re-advance that would otherwise hide the reorg frontier decrease. */
+static job_result_t caf_noop_step(struct stage_step_ctx *c)
+{
+    (void)c;
+    return JOB_IDLE;
+}
 
 /* ── External base coins (the pre-fork UTXO set the spends consume) ──── */
 
@@ -400,16 +413,75 @@ int test_coins_applied_frontier(void)
             }
 
             /* (3) REORG REWIND: install heavier W on active_chain, extend
-             * proof_validate, step. The unwind pulls cursor + frontier BACK to
-             * fork+1, then re-advances over W. frontier must == cursor (the
-             * PLAIN set allowed the decrease). */
+             * proof_validate. L and W share only genesis (h0, tag 0x00) and
+             * diverge at h1, so the fork point is 0 and the unwind pulls the
+             * cursor + frontier BACK to fork+1 == 1.
+             *
+             * LOAD-BEARING (SERIOUS FIX 2): fire the unwind ALONE (no forward
+             * re-advance) and snapshot the frontier AT THE MOMENT OF THE
+             * DECREASE, asserting it == fork+1 (1). If we only drained to the
+             * final quiescent state, the forward re-advance over the heavier W
+             * would immediately re-write the frontier up to W.n and every
+             * assertion would still pass even with the reorg co-commit DELETED
+             * (the forward apply heals it). Pinning the decrease HERE — in the
+             * window between the unwind and the first re-apply — catches BOTH
+             * regressions the reorg co-commit guards against:
+             *   1. DELETING coins_kv_set_applied_height_in_tx(db, fork_plus1) in
+             *      utxo_apply_delta_reorg.c → frontier stranded at the old high
+             *      (4) while the cursor drops to 1 → frontier != cursor, frd != 1;
+             *   2. re-introducing a MONOTONIC FLOOR in the setter → the floor
+             *      blocks the plain-set decrease, leaving frontier at 4 while the
+             *      cursor drops to 1 → frontier != cursor, frd != 1.
+             * (A strictly-shorter-winner sub-case cannot pin this in this
+             * harness: in UTXO_AUTHOR_STAGE driver mode the stage-side reorg only
+             * fires when a competing block occupies the old tip height C-1, so a
+             * winner shorter than the applied tip never triggers the unwind; and
+             * these branches always fork at genesis. The unwind-alone snapshot is
+             * the robust decrease pin.) */
+            int32_t pre_reorg_frontier = -1; bool pre_found = false;
+            (void)coins_kv_get_applied_height(pdb, &pre_reorg_frontier,
+                                              &pre_found);
+            CAF_CHECK("pre-reorg frontier present (== L.n)",
+                      pre_found && pre_reorg_frontier == L.n);
+
             ctx.active = &W;
             active_chain_move_window_tip(&ms.chain_active, &W.blocks[W.n - 1]);
             CAF_CHECK("W seed proof_validate (all ok)",
                       seed_proof_validate(pdb, W.n - 1, -1));
+
+            /* Fire the reorg unwind directly, BYPASSING the forward re-advance
+             * (utxo_apply_stage_step_once would unwind AND re-apply one height in
+             * the same call, hiding the decrease). The unwind reads the cursor
+             * from the DB and uses `stage` only as a non-NULL guard, so a
+             * throwaway handle is sufficient; the progress_store tx lock is
+             * recursive, so wrapping the call mirrors production's
+             * step_once discipline exactly. */
+            {
+                stage_t *probe = stage_create("utxo_apply", caf_noop_step, NULL);
+                CAF_CHECK("reorg probe stage_create", probe != NULL);
+                _Atomic uint64_t unwound_n = 0;
+                _Atomic int64_t  blocked_t = 0;
+                progress_store_tx_lock();
+                bool unwound = utxo_apply_reorg_unwind_if_needed(
+                    pdb, probe, &ms, &unwound_n, &blocked_t);
+                progress_store_tx_unlock();
+                CAF_CHECK("reorg unwind fires alone (no re-advance)", unwound);
+                CAF_CHECK("reorg unwind counted exactly once",
+                          (uint64_t)unwound_n == 1);
+                /* AT THE MOMENT OF THE DECREASE: cursor + frontier both pulled
+                 * to fork+1 == 1, strictly BELOW the pre-reorg frontier (4). */
+                CAF_CHECK("reorg decrease: frontier == cursor (== fork+1)",
+                          frontier_eq_cursor(pdb));
+                int32_t frd = -999; bool fndd = false;
+                (void)coins_kv_get_applied_height(pdb, &frd, &fndd);
+                CAF_CHECK("reorg decrease: frontier DECREASED to fork+1 (1), "
+                          "strictly below pre-reorg frontier",
+                          fndd && frd == 1 && frd < pre_reorg_frontier);
+                if (probe) stage_destroy(probe);
+            }
+
+            /* Now re-advance forward over the heavier W to the quiescent tip. */
             int adv_w = utxo_apply_stage_drain(100);
-            CAF_CHECK("reorg fired exactly once",
-                      utxo_apply_stage_reorg_unwound_total() == 1);
             CAF_CHECK("re-advanced over W", adv_w >= W.n - 1);
             CAF_CHECK("after reorg rewind: frontier == cursor",
                       frontier_eq_cursor(pdb));
@@ -500,9 +572,22 @@ int test_coins_applied_frontier(void)
         sqlite3 *pdb = progress_store_db();
         (void)coins_kv_ensure_schema(pdb);
 
-        /* Stamp a durable utxo_apply cursor at 123 with NO applied-height key
-         * and NO coins at all (so MAX(coins.height) would be wrong/absent —
-         * the backfill must use the cursor). */
+        /* NEGATIVE CONTROL (hardening #4): stamp a durable utxo_apply cursor at
+         * 123 AND seed live coins whose MAX(height) is 200 (deliberately HIGHER
+         * than the cursor and DIFFERENT from it). The backfill must seed the
+         * frontier from the CURSOR (123), NEVER from MAX(coins.height) (200) —
+         * the whole point of P2 (MAX(coins.height) is the most-recent surviving
+         * coin's creation height, not a contiguous applied frontier). If the
+         * backfill ever regressed to MAX(coins.height) this asserts 123 != 200
+         * and FAILS. */
+        {
+            uint8_t ctxid[32] = {0};
+            ctxid[0] = 0xC0; ctxid[1] = 0xDE;
+            uint8_t pk[3] = { 0x76, 0xa9, 0xCC };
+            CAF_CHECK("backfill: seed a live coin at height 200 (> cursor 123)",
+                      coins_kv_add(pdb, ctxid, 0, 999000000LL,
+                                   (int32_t)200, false, pk, sizeof(pk)));
+        }
         CAF_CHECK("backfill: stamp utxo_apply cursor=123",
                   caf_exec(pdb,
                     "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
@@ -519,7 +604,7 @@ int test_coins_applied_frontier(void)
         CAF_CHECK("backfill: key present after backfill",
                   coins_kv_get_applied_height(pdb, &after, &found_after) &&
                   found_after == true);
-        CAF_CHECK("backfill: seeded value == cursor (123), not MAX(coins)",
+        CAF_CHECK("backfill: seeded value == cursor (123), NOT MAX(coins.height) (200)",
                   after == 123);
         CAF_CHECK("backfill: frontier == cursor after seed", frontier_eq_cursor(pdb));
 
@@ -538,6 +623,185 @@ int test_coins_applied_frontier(void)
 
         progress_store_close();
         test_cleanup_tmpdir(dir);
+    }
+
+    /* ── PART D: poison_rewind co-writes the frontier (SERIOUS FIX 1). ────
+     * The poison_rewind is the THIRD production writer of the utxo_apply stage
+     * cursor: it forces the cursor DOWN to the frontier height and deletes the
+     * downstream logs. Before SERIOUS FIX 1 it left coins_applied_height at its
+     * old (higher) value → a DURABLE stale-HIGH frontier the if-absent backfill
+     * could never correct. After the fix it co-writes frontier = height inside
+     * the SAME BEGIN IMMEDIATE, so coins_applied_height == the rewound utxo_apply
+     * cursor. This pins that. */
+    {
+        char dir[256]; caf_tmpdir(dir, sizeof(dir), "poison"); caf_mkdir_p(dir);
+        CAF_CHECK("poison: progress_store opens", progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        (void)coins_kv_ensure_schema(pdb);
+
+        /* Schema the rewind touches (mirrors the reducer's *_log tables). */
+        bool sch =
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS validate_headers_log("
+                "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+                "fail_reason TEXT, validated_at INTEGER NOT NULL)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS body_fetch_log("
+                "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, source TEXT NOT NULL,"
+                "bytes INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL,"
+                "ok INTEGER NOT NULL, fail_reason TEXT)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS body_persist_log("
+                "height INTEGER PRIMARY KEY, source TEXT, ok INTEGER, persisted_at INTEGER)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS script_validate_log("
+                "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS proof_validate_log("
+                "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS utxo_apply_log("
+                "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS utxo_apply_delta("
+                "height INTEGER PRIMARY KEY)") &&
+            caf_exec(pdb, "CREATE TABLE IF NOT EXISTS tip_finalize_log("
+                "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)");
+        CAF_CHECK("poison: reducer log schema created", sch);
+        CAF_CHECK("poison: stage_cursor table ensured", stage_table_ensure(pdb));
+
+        /* Simulate a pipeline applied forward through height 9 (frontier = 10):
+         * ok=1 utxo_apply rows at [0..9], the utxo_apply cursor at 10, and the
+         * applied frontier stamped at 10 (== cursor, the P2 steady state). */
+        const int FRONTIER = 10;
+        bool seeded = true;
+        for (int h = 0; h < FRONTIER && seeded; h++) {
+            char sql[160];
+            snprintf(sql, sizeof(sql),
+                "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+                "VALUES(%d,'verified',1)", h);
+            seeded = caf_exec(pdb, sql);
+        }
+        CAF_CHECK("poison: seed ok=1 utxo_apply rows [0..9]", seeded);
+        CAF_CHECK("poison: stamp utxo_apply cursor=10", caf_exec(pdb,
+            "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('utxo_apply',10,1)"));
+        CAF_CHECK("poison: stamp applied frontier=10 (== cursor)",
+                  coins_kv_backfill_applied_height_if_absent(pdb));
+        CAF_CHECK("poison: precondition frontier == cursor (10)",
+                  frontier_eq_cursor(pdb));
+
+        /* Seed the DOWNSTREAM_STALE poison shape AT the frontier (height 10):
+         * validate_headers ok=1, body_fetch skipped_invalid/header_validation_failed,
+         * and ok=0 downstream rows — the exact shape poison_mode classifies as
+         * STAGE_REPAIR_POISON_DOWNSTREAM_STALE. No ok=1 row sits at/above 10 in
+         * any success_checked_log, so the rewind proceeds. */
+        char ps[2048];
+        snprintf(ps, sizeof(ps),
+            "INSERT OR REPLACE INTO validate_headers_log"
+            "(height,hash,ok,fail_reason,validated_at) VALUES(10,zeroblob(32),1,NULL,1);"
+            "INSERT OR REPLACE INTO body_fetch_log"
+            "(height,hash,source,bytes,fetched_at,ok,fail_reason) "
+            "VALUES(10,zeroblob(32),'skipped_invalid',0,1,0,'header_validation_failed');"
+            "INSERT OR REPLACE INTO body_persist_log(height,source,ok,persisted_at) "
+            "VALUES(10,'upstream_failed',0,1);"
+            "INSERT OR REPLACE INTO script_validate_log(height,status,ok) "
+            "VALUES(10,'upstream_failed',0);"
+            "INSERT OR REPLACE INTO proof_validate_log(height,status,ok) "
+            "VALUES(10,'upstream_failed',0);"
+            "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+            "VALUES(10,'upstream_failed',0);");
+        CAF_CHECK("poison: seed DOWNSTREAM_STALE poison shape at frontier", caf_exec(pdb, ps));
+
+        /* Invoke the rewind AT the frontier (active_tip = 9). It forces the
+         * utxo_apply cursor DOWN to 10 (== the frontier height) and — with
+         * SERIOUS FIX 1 — co-writes coins_applied_height = 10 in the same txn. */
+        struct stage_repair_header_solution_result res;
+        bool rv = stage_repair_header_solution_poison_rewind(pdb, FRONTIER,
+                                                             FRONTIER - 1, &res);
+        CAF_CHECK("poison: rewind succeeds", rv && res.repaired);
+        /* utxo_apply cursor forced to the frontier height (10). */
+        CAF_CHECK("poison: utxo_apply cursor rewound to frontier height",
+                  stage_cursor_persisted(pdb, "utxo_apply", "caf_test") ==
+                  (uint64_t)FRONTIER);
+        /* THE FIX: frontier co-moved with the cursor — equal, not stale-high. */
+        CAF_CHECK("poison: coins_applied_height == utxo_apply cursor (co-written)",
+                  frontier_eq_cursor(pdb));
+        {
+            int32_t fr = -1; bool fnd = false;
+            (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
+            CAF_CHECK("poison: frontier present && == frontier height (10)",
+                      fnd && fr == FRONTIER);
+        }
+
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* ── PART E: non-fatal reject (spend_unknown_utxo) advancing co-commit. ─
+     * step_apply's THIRD advancing caller: summary.ok==false (a spend whose
+     * lookup returns found=false → spend_unknown_utxo) leaves the coins
+     * UNMUTATED but still advances the cursor + co-writes the frontier. Pins
+     * that the frontier tracks the cursor on the reject-but-advance path. */
+    {
+        /* A branch that spends a coin NOT present in coins_kv and NOT resolvable
+         * by the lookup (n_ext = 0 below) → spend_unknown_utxo at h2. */
+        struct caf_ext_coin phantom;
+        memset(&phantom, 0, sizeof(phantom));
+        phantom.txid.data[0] = 0xDE; phantom.txid.data[1] = 0xAD;
+        phantom.vout = 0; phantom.value = 400000000LL; phantom.height = 0;
+        phantom.script[0] = 0x76; phantom.script_len = 1;
+
+        struct caf_branch R;
+        bool rbuilt = branch_build(&R, 0x44, 4, 2, &phantom);
+        CAF_CHECK("reject-branch builds", rbuilt);
+
+        if (rbuilt) {
+            char dir[256]; caf_tmpdir(dir, sizeof(dir), "reject"); caf_mkdir_p(dir);
+            char log_path[512], proj_path[512];
+            snprintf(log_path, sizeof(log_path), "%s/events.log", dir);
+            snprintf(proj_path, sizeof(proj_path), "%s/utxo.db", dir);
+
+            CAF_CHECK("reject: progress_store opens", progress_store_open(dir));
+            event_log_t *lg = event_log_open(log_path);
+            utxo_projection_t *p = lg ? utxo_projection_open(proj_path, lg) : NULL;
+
+            if (lg && p) {
+                utxo_projection_set_event_log(lg);
+                utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+                sqlite3 *pdb = progress_store_db();
+
+                struct main_state ms;
+                memset(&ms, 0, sizeof(ms));
+                active_chain_init(&ms.chain_active);
+                active_chain_move_window_tip(&ms.chain_active, &R.blocks[R.n - 1]);
+
+                /* n_ext = 0 → caf_lookup never resolves the phantom spend. */
+                struct caf_ctx ctx = { .active = &R, .ext = ext, .n_ext = 0 };
+                CAF_CHECK("reject: stage init", utxo_apply_stage_init(&ms));
+                utxo_apply_stage_set_reader(caf_reader, &ctx);
+                utxo_apply_stage_set_lookup(caf_lookup, &ctx);
+
+                CAF_CHECK("reject: seed proof_validate (all ok)",
+                          seed_proof_validate(pdb, R.n - 1, -1));
+                int adv = utxo_apply_stage_drain(100);
+                CAF_CHECK("reject: drains all heights (advances past the reject)",
+                          adv == R.n);
+                CAF_CHECK("reject: recorded a spend_unknown_utxo (coins not mutated)",
+                          utxo_apply_stage_spend_unknown_total() >= 1);
+                CAF_CHECK("non-fatal reject advance: frontier == cursor",
+                          frontier_eq_cursor(pdb));
+                {
+                    int32_t fr = -1; bool fnd = false;
+                    (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
+                    CAF_CHECK("reject: frontier present && == tip+1 (advanced)",
+                              fnd && fr == R.n);
+                }
+
+                utxo_apply_stage_shutdown();
+                active_chain_free(&ms.chain_active);
+            }
+            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+            utxo_projection_set_event_log(NULL);
+            if (p) utxo_projection_close(p);
+            if (lg) event_log_close(lg);
+            progress_store_close();
+            test_cleanup_tmpdir(dir);
+        }
+        branch_free(&R);
     }
 
     branch_free(&L);

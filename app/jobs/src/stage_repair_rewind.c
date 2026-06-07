@@ -20,6 +20,7 @@
 #include "jobs/stage_repair_internal.h"
 
 #include "platform/time_compat.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -299,6 +300,29 @@ bool stage_repair_header_solution_poison_rewind(
             goto rollback;
         rewound++;
     }
+
+    /* THIRD production writer of the utxo_apply stage cursor (after the forward
+     * apply and the reorg unwind): the downstream_stages force loop above just
+     * forced the "utxo_apply" cursor DOWN to `height`, so the contiguous applied
+     * frontier (coins_applied_height) must move with it inside THIS same
+     * BEGIN IMMEDIATE — otherwise the cursor moves while the frontier keeps its
+     * old (higher) value, leaving a DURABLE stale-HIGH frontier that the boot
+     * backfill (if-absent only) can never correct, breaking P2's "frontier ==
+     * cursor by construction" on the exact self-heal path P2 feeds.
+     *
+     * WHY setting the frontier to `height` is coins-consistent (not a fragile
+     * cross-stage assumption): the success_checked_logs ok=1 guard above
+     * (which INCLUDES utxo_apply_log) already refused the whole rewind if ANY
+     * ok=1 utxo_apply row existed at/above `height`. So NO ok=1 utxo_apply
+     * happened at/above `height` → NO coins were mutated at/above `height` →
+     * the coin set is EXACTLY consistent with a frontier of `height`. We do NOT
+     * replay inverse deltas or touch coins_kv rows here: by that same guard
+     * there are no committed coin mutations at/above `height` to undo. This
+     * co-write makes frontier == cursor hold by construction on this path too.
+     * A PLAIN set (the rewind decreases the frontier); ROLLBACK on failure
+     * exactly like the surrounding writes (goto rollback). */
+    if (!coins_kv_set_applied_height_in_tx(db, height))
+        goto rollback;
 
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("stage_repair",
