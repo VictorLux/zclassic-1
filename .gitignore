@@ -1,6 +1,8 @@
 # Build artifacts
 zclassic23
 zclassic23.old
+zclassic23-chaos
+p2_invariant_check
 test_zcl
 test_parallel
 zcl-rpc

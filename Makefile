@@ -330,6 +330,15 @@ chaos-clean:
 	rm -f zclassic23-chaos
 	rm -rf chaos-output/
 
+# Offline P2 self-heal invariant checker: coins_applied_height == utxo_apply
+# cursor, read read-only from a progress.kv (works while the node is down —
+# the kill-9 window). Self-contained against the vendored sqlite3 header.
+p2_invariant_check: tools/p2_invariant_check.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
+	    -o $@ tools/p2_invariant_check.c \
+	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
+
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded
 # datadir (skips trivially if none exists — see tool header). Build
