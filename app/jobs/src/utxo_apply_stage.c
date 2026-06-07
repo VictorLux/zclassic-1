@@ -16,6 +16,7 @@
 #include "json/json.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -176,6 +177,28 @@ static void emit_delta(const struct delta_summary *s, uint32_t height)
         utxo_projection_emit_spend(s->spent[i].txid.data, s->spent[i].vout);
 }
 
+/* Author the SAME validated delta into the progress.kv `coins` table on the
+ * stage's own db handle, so it lands INSIDE stage_run_once's BEGIN IMMEDIATE —
+ * the coin mutation commits or rolls back as ONE atomic unit with the cursor +
+ * inverse-delta + log row, closing the tip-wedge tear class
+ * (docs/work/tip-durability-collapse.md). Adds before spends, mirroring
+ * emit_delta exactly (same set either order). During the dual-write phase
+ * (step 2) reads still come from the projection; step 3 flips them here. */
+static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
+                           uint32_t height)
+{
+    for (size_t i = 0; i < s->added_count; i++)
+        if (!coins_kv_add(db, s->added[i].txid.data, s->added[i].vout,
+                          s->added[i].value, (int32_t)height,
+                          s->added[i].is_coinbase,
+                          s->added[i].script, s->added[i].script_len))
+            return false;
+    for (size_t i = 0; i < s->spent_count; i++)
+        if (!coins_kv_spend(db, s->spent[i].txid.data, s->spent[i].vout))
+            return false;
+    return true;
+}
+
 /* compute_block_delta now lives in utxo_apply_delta.c as
  * utxo_apply_compute_block_delta (it owns the delta structs + the
  * persistence/inversion of the same arrays). */
@@ -240,8 +263,17 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     /* Author the UTXO projection from this validated delta when the
      * stage holds projection authority. Scripts in `summary.added` alias
      * into `blk`, so emit before block_free. */
-    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE)
+    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         emit_delta(&summary, (uint32_t)next_h);
+        /* Step-2 dual-write: also author the atomic progress.kv coins set
+         * in-txn. A failure here rolls back the whole stage txn (cursor +
+         * inverse-delta + log row + coins) — never a torn partial apply. */
+        if (!apply_coins_kv(db, &summary, (uint32_t)next_h)) {
+            free_delta(&summary);
+            block_free(&blk);
+            return JOB_FATAL;
+        }
+    }
 
     /* Persist the per-block inverse-delta so a later disconnect can be
      * reconstructed without re-reading legacy undo files. Stamped with the
@@ -380,6 +412,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return false;
     }
     if (!utxo_apply_ensure_delta_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    if (!coins_kv_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
