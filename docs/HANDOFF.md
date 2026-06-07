@@ -6,44 +6,50 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
-## ★ LIVE-WEDGE RESOLVED — copy-proof PASS, deploy is the one remaining (owner-gated) step (2026-06-06)
+## ★ LIVE WEDGE — STILL OPEN; P2 (self-heal prerequisite) LANDED; next = L0/L1 H* self-heal (2026-06-07)
 
-The months-old live tip-wedge (tip frozen at **3,134,303**, `tip_finalize`
-oscillating, self-heal "exhausted") is **root-caused and fixed**. It was **three
-interacting defects in the self-heal machinery — NOT a consensus bug, NOT
-body-source starvation, NOT owner-gated** (`validate_headers`' load is hash-checked
-so a fork was never possible; the repair paths just disagreed with it):
+**The live wedge is NOT resolved.** (The 2026-06-06 `validate_headers` recheck
+fix below was real and shipped, but it did **not** clear the live node — the
+datadir is **multi-epoch torn**, a deeper class than recheck starvation.)
 
-1. **validate_headers recheck floor was monotonic** → a solutionless `ok=0` row
-   logged before its solution was backfilled was never re-validated. Fix `060a5cb4c`.
-2. **`header_solution_repair` is off-by-2** (row H held block H+2's solution, a
-   stale ~June-3 reindex artifact) AND `stage_repair_header_solution_available()`
-   was **hash-blind** → backfill/Condition skipped the stale rows while
-   validate_headers' hash-checked load rejected them → permanent
-   `no-header-solution-backfill-required`. Fix `30e41d650` (hash-aware `available()`).
-3. **Condition's destructive `poison_rewind` churn** rewound the validate cursor →
-   long forward re-drain that **starved the recheck** → frontier never flipped →
-   5× unwitnessed → `operator_needed`. Fix `30e41d650` (Condition defers to the
-   non-destructive recheck for SOLUTIONLESS; rewind kept only for DOWNSTREAM_STALE).
+**Live truth (this handoff):** node serves at **3,134,951**, oracle (`zclassicd`,
+RPC 8232) at **3,139,290** → **~4,339 behind and not climbing** (`tip_advance_age`
+== uptime). The 8-stage reducer's upstream cursors have raced to **3,138,981**
+while `tip_finalize` is stuck at **~3,134,954**. Per-height logs, the 8 stage
+cursors, and the legacy `block_index` flags drifted to **different heights across
+crash/rewind/replay epochs**, and **nothing reconciles them as a window**.
+Crucially: **the coins are consistent** (inverse-delta-complete) — this is a
+*flag/cursor view* tear, not a coin-money tear. Self-heal is `operator_needed`
+(5 attempts exhausted). ⚠️ **Deploy drift:** the *running* binary predates repo
+HEAD; a clean redeploy is owner-gated and won't by itself fix a torn datadir.
 
-All verdict-preserving (a header still flips `ok=0→ok=1` only via the **unchanged
-PoW+Equihash validator**). poison_rewind's guards (frontier-only, ok=1 floor,
-never deletes `tip_finalize_log`) untouched.
+**The fix (active driver: `docs/work/self-healing-reducer-plan.md`, 2026-06-07):**
+compute a provably-consistent frontier H* from durable state, then sweep-heal the
+drifted flags/cursors forward over the (H*..served_floor] window — never rewinding
+the consistent coins, never deleting a `tip_finalize_log` row.
 
-**PROVEN on a full datadir copy (`tools/copyproof_increment1.sh`): VERDICT PASS —
-autonomous self-advance +128 (3134303→3134431, no script driving), zero blocker
-markers, kill-9 + restart preserved the tip, no reset.** The node now self-heals
-by construction (its own Conditions backfill canonical solutions, defer to the
-recheck, the tip climbs).
+- **P2 (DONE, on `main` `c81e69ae0..4b60c1149`, fully proven):** `coins_applied_height`
+  is co-committed inside the `utxo_apply` txn on **all** write paths (forward,
+  reorg-unwind, poison_rewind) → a contiguous applied-coins frontier that can't
+  hide an interior hole. Proven by 2 independent workflow impls (agree) + 3
+  adversarial verifiers + `test_parallel` **0/375** + `lint` 35-gate + **chaos 9/9**
+  + a kill-9 copy-proof (`tools/copyproof_p2_frontier.sh`) holding the invariant on
+  the raw crash image. Offline checker: `make p2_invariant_check` → `./p2_invariant_check <datadir>`.
+- **NEXT — L0 (task #11) `reducer_frontier_compute_hstar`:** pure SELECT-only
+  authority returning {hstar, served_floor}; anchored at the SHA3 checkpoint
+  **3,056,758** (cold-import logs are sparse → contiguity-from-genesis is wrong).
+  Ships first with a regression test asserting H*==tip on a consistent set.
+- **then L1 (task #12) `reducer_frontier_reconcile_light`:** a Condition that
+  sweep-heals `block_index` flags + clears HAVE_DATA holes (so `body_fetch`
+  re-requests) + clamps ONLY the `tip_finalize` cursor — never touches coins.
+- **L2/L3 (task #13):** forward-immunity for a *future genuine coin tear* +
+  subtraction of the now-subsumed legacy repair code. NOT needed for today's wedge.
 
-Union gate green: build clean, `test_parallel` **0/372**, `make lint` all checks.
-Both commits are **WIP-not-deploy** on `main`. Full detail: memory
-`project_live_wedge_rootcause_validate_headers_recheck_2026-06-06`.
-
-**REMAINING (owner-gated): `make deploy`** (build + setcap + restart the live
-service — needs sudo) to bring the fix live and unwedge the real node. The manual
-fallback if needed: deploy then one `rebuild_recent` (NOT `backfill_header_solutions`
-pre-Fix-2). After deploy: watch the live tip climb 3,134,303 → oracle tip.
+**Method discipline (mandatory):** diagnose on a datadir **COPY** only (isolated
+ports 18299/18933, `setsid`); never touch the live datadir/oracle/ports; H* ≥
+checkpoint 3,056,758; never delete a `tip_finalize_log` row; never lower the
+public tip below `coins_best`. See `docs/work/fast-path.md` and memory
+`project_tipfinalize_precondition_desync_fix_2026-06-07`.
 
 ---
 
