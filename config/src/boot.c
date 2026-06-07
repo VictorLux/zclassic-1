@@ -3328,18 +3328,25 @@ sapling_tree_boot_check_done:
      * log rows, so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
     {
-        int64_t coins_best = -1;
-        if (node_db_state_get_int(&g_node_db, "cec.coins_best_block_height",
-                                  &coins_best) && coins_best >= 0) {
+        /* SINGLE SOURCE OF TRUTH (docs/work/tip-durability-collapse.md): floor
+         * on the GENUINE coins frontier = height(coins_best_block HASH), NOT the
+         * redundant cec int that recovery anchors poisoned above an ok=0 hole.
+         * Under-rewind is SAFE (more forward re-finalize, never ahead); no rows
+         * deleted. */
+        struct uint256 cbh; uint256_set_null(&cbh);
+        if (g_coins_sqlite.db) coins_view_sqlite_get_best_block(&g_coins_sqlite, &cbh);
+        struct block_index *cb = uint256_is_null(&cbh) ? NULL : block_map_find(&g_state.map_block_index, &cbh);
+        int64_t coins_best = cb ? (int64_t)cb->nHeight : -1;
+        if (coins_best >= 0) {
             struct sqlite3 *pdb = progress_store_db();
             struct stage_reconcile_result rr;
             if (pdb &&
                 stage_reconcile_clamp_tip_finalize_to_floor(
                     pdb, (int)coins_best, &rr) && rr.clamped) {
                 printf("[boot] reducer reconcile: clamped tip_finalize cursor "
-                       "to coins_best+1=%d — re-finalizing forward (was wedged "
-                       "ahead of coins_best=%lld)\n",
-                       rr.floor, (long long)coins_best);
+                       "to genuine coins frontier+1=%d (height of "
+                       "coins_best_block hash) — re-finalizing forward\n",
+                       rr.floor);
                 service_state_advance(SERVICE_STATE_RECONCILE,
                                       "reducer cursor/coins desync reconcile");
                 (void)service_state_persist_to_progress_store();
