@@ -17,6 +17,7 @@
 #include "event/event.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "storage/coins_kv.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -137,6 +138,10 @@ static bool emit_inverse_delta(sqlite3 *db, int height)
             uint32_t vout = 0;
             if (!blob_get_u32(&p, end, &vout)) { ok = false; break; }
             utxo_projection_emit_spend(txid, vout);
+            /* Mirror into the atomic coins set IN THIS txn (the caller wraps
+             * emit_inverse_delta in BEGIN IMMEDIATE) so coins_kv unwinds with
+             * the cursor — no orphaned above-fork coins after the read-flip. */
+            if (!coins_kv_spend(db, txid, vout)) { ok = false; break; }
         }
     }
 
@@ -166,6 +171,10 @@ static bool emit_inverse_delta(sqlite3 *db, int height)
             }
             utxo_projection_emit_add(txid, vout, value, ch, is_cb,
                                      script, slen);
+            /* Mirror the restored coin into the atomic coins set IN THIS txn,
+             * with its ORIGINAL value/height/is_coinbase/script pre-image. */
+            if (!coins_kv_add(db, txid, vout, value, (int32_t)ch, is_cb,
+                              script, slen)) { ok = false; break; }
         }
     }
 
@@ -330,27 +339,33 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         }
     }
 
-    /* Emit inverse events for h = C-1 down to fork_plus1 (REVERSE, the
-     * disconnect order). Only the configured projection author may unwind
-     * the projection. */
-    if (utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        for (int h = C - 1; h >= fork_plus1; h--) {
-            if (!emit_inverse_delta(db, h))
-                return false;
-        }
-    }
-
-    /* Atomically drop the abandoned rows and rewind the cursor to
-     * fork_plus1 (the first height step_apply re-applies on the winner).
-     * The cursor row write + the row deletes share ONE txn so a crash
-     * cannot leave a stale cursor pointing past deleted delta rows. The
-     * in-memory s->cursor is reloaded from this DB row at the top of the
-     * next stage_run_once (cursor_read), so we don't touch it here. */
+    /* Atomically, in ONE BEGIN IMMEDIATE on progress.kv: replay the inverse
+     * deltas (which now dual-write the authoritative coins_kv set AND the
+     * projection), drop the abandoned log/delta rows, and rewind the cursor to
+     * fork_plus1 (the first height step_apply re-applies on the winner). Wrapping
+     * the inverse-delta loop in the SAME txn as the cursor rewind is the fix that
+     * keeps coins_kv from drifting from the cursor on a crash mid-unwind
+     * (docs/work/tip-durability-collapse.md): coins_kv mutation + delete + cursor
+     * commit or roll back as one unit. The projection event-log writes inside
+     * emit_inverse_delta ride a SEPARATE db and are NOT undone by a ROLLBACK
+     * here — safe because reads use coins_kv (the projection is non-authoritative
+     * for the live set after the read-flip) and the events are idempotent on
+     * replay (spend=delete, add=insert-or-replace). Only the configured
+     * projection author unwinds. The in-memory s->cursor is reloaded from this
+     * DB row at the top of the next stage_run_once (cursor_read). */
     char *err = NULL;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] unwind BEGIN failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);
         return false;
+    }
+    if (utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+        for (int h = C - 1; h >= fork_plus1; h--) {
+            if (!emit_inverse_delta(db, h)) {
+                sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+                return false;
+            }
+        }
     }
     if (!delete_rows_above(db, fork_plus1, C - 1)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);

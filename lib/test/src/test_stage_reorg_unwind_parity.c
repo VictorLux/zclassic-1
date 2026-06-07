@@ -56,6 +56,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/utxo_apply_stage.h"
+#include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -455,6 +456,26 @@ int test_stage_reorg_unwind_parity(void)
             SRU_CHECK("run1: EXT_W spent on W (absent)",
                       !utxo_projection_get(p, ext[1].txid.data, 0,
                                            NULL, NULL, 0, NULL));
+
+            /* coins_kv PARITY after the reorg unwind: the atomic progress.kv
+             * coins set must match the projection exactly — this is the proof
+             * that emit_inverse_delta's in-txn coins_kv dual-write (step 3
+             * edit 1) unwinds coins_kv with the cursor (no orphaned above-fork
+             * coins, restored coins re-added). */
+            sqlite3 *pdb = progress_store_db();
+            SRU_CHECK("run1: coins_kv count == projection count",
+                      (uint64_t)coins_kv_count(pdb) == count1);
+            int ck_absent = 0;
+            cb_txid(&t, 0x11, 1); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
+            cb_txid(&t, 0x11, 2); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
+            cb_txid(&t, 0x11, 3); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
+            spend_txid(&t, 0x11, 2); if (!coins_kv_exists(pdb, t.data, 0)) ck_absent++;
+            SRU_CHECK("run1: coins_kv all 4 L-only outpoints absent",
+                      ck_absent == 4);
+            SRU_CHECK("run1: coins_kv EXT_L restored live after unwind",
+                      coins_kv_exists(pdb, ext[0].txid.data, 0));
+            SRU_CHECK("run1: coins_kv EXT_W spent on W (absent)",
+                      !coins_kv_exists(pdb, ext[1].txid.data, 0));
 
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
