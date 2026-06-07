@@ -508,6 +508,28 @@ static void cec_restore_csr_view(struct chain_state_repository *csr,
                                      old_coins_best);
 }
 
+int chain_evidence_clamp_coins_height_to_frontier(
+    struct chain_evidence_controller *authority, int requested_height)
+{
+    if (!authority || !authority->csr || !authority->csr->block_map ||
+        !authority->csr->coins_tip)
+        return requested_height;
+    struct uint256 coins_hash;
+    memset(&coins_hash, 0, sizeof(coins_hash));
+    coins_view_cache_get_best_block(authority->csr->coins_tip, &coins_hash);
+    if (uint256_is_null(&coins_hash))
+        return requested_height;
+    struct block_index *cb =
+        block_map_find(authority->csr->block_map, &coins_hash);
+    if (!cb || cb->nHeight < 0 || cb->nHeight >= requested_height)
+        return requested_height;
+    LOG_WARN("cec",
+             "[cec] Guard A: clamping cec.coins_best_block_height %d -> %d "
+             "(genuine coins frontier = height of coins_best_block)",
+             requested_height, cb->nHeight);
+    return cb->nHeight;
+}
+
 enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     struct chain_evidence_controller *authority,
     const struct chain_evidence_controller_tip_request *request)
@@ -611,7 +633,8 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
         persist_i64(authority, "cec.active_tip_height",
                     request->new_tip->nHeight) &&
         persist_i64(authority, "cec.coins_best_block_height",
-                    request->new_tip->nHeight) &&
+                    chain_evidence_clamp_coins_height_to_frontier(
+                        authority, request->new_tip->nHeight)) &&
         persist_i64(authority, "cec.utxo_max_height",
                     request->utxo_max_height) &&
         persist_i64(authority, "cec.publish_state",

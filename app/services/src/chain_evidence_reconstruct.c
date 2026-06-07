@@ -198,7 +198,8 @@ bool cec_reconstruct_active_tip_evidence(
            cer_persist_i64(authority, "cec.active_tip_height",
                            active_tip->nHeight) &&
            cer_persist_i64(authority, "cec.coins_best_block_height",
-                           active_tip->nHeight) &&
+                           chain_evidence_clamp_coins_height_to_frontier(
+                               authority, active_tip->nHeight)) &&
            cer_persist_i64(authority, "cec.utxo_max_height",
                            active_tip->nHeight) &&
            cer_persist_i64(authority, "cec.publish_state",

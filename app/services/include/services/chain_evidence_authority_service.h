@@ -152,6 +152,17 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
     struct chain_evidence_controller *authority,
     const struct chain_evidence_controller_tip_request *request);
 
+/* Guard A (coins-durability): the genuine applied coins frontier is the height
+ * of the block whose hash is coins_best_block (the connect_block authority).
+ * cec.coins_best_block_height must NEVER be persisted above it, or recovery
+ * anchors promoted ahead of the applied coins poison MAX(ok=1) (the
+ * coins-durability desync). Returns min(requested_height, frontier); refusal-
+ * only — returns requested_height unchanged when coins_best_block is zero or
+ * unresolvable (fresh datadir / snapshot anchor), so a legitimate advance is
+ * never blocked. On the normal forward path coins==tip so this is a no-op. */
+int chain_evidence_clamp_coins_height_to_frontier(
+    struct chain_evidence_controller *authority, int requested_height);
+
 
 
 enum chain_evidence_controller_result chain_evidence_controller_mark_fully_validated(
