@@ -50,4 +50,15 @@ int64_t coins_kv_count(struct sqlite3 *db);
 bool coins_kv_get_coins(struct sqlite3 *db, const uint8_t txid[32],
                         struct coins *out);
 
+/* gettxoutsetinfo aggregate: distinct txids, total outputs, summed value.
+ * Mirrors utxo_projection_setinfo exactly. Returns false on error. */
+bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
+                      int64_t *num_txouts, int64_t *total_amount);
+
+/* SHA3-256 UTXO commitment over the coins set in canonical (txid,vout) order.
+ * BYTE-IDENTICAL serialisation to utxo_projection_commitment (the read-flip
+ * relies on this matching the oracle gettxoutsetinfo commitment). Returns 0 on
+ * success, -1 on error. */
+int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
+
 #endif /* STORAGE_COINS_KV_H */

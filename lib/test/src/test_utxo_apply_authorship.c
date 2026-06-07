@@ -227,6 +227,19 @@ static int run_coins_kv_parity(int *failures_out)
     UA_CHECK("parity: o2 coins equal", ck_coins_equal(db, pp, 0xA2));
     UA_CHECK("parity: o1 absent in both", ck_coins_equal(db, pp, 0xA1));
 
+    /* SHA3 commitment + gettxoutsetinfo aggregates must be byte/scalar-identical
+     * to the projection — the read-flip relies on coins_kv matching the oracle
+     * gettxoutsetinfo commitment exactly. */
+    uint8_t ck_cmt[32], pj_cmt[32];
+    UA_CHECK("parity: coins_kv commitment computes", coins_kv_commitment(db, ck_cmt) == 0);
+    UA_CHECK("parity: projection commitment computes", utxo_projection_commitment(pp, pj_cmt) == 0);
+    UA_CHECK("parity: commitments byte-identical", memcmp(ck_cmt, pj_cmt, 32) == 0);
+    int64_t ck_tx = 0, ck_to = 0, ck_amt = 0, pj_tx = 0, pj_to = 0, pj_amt = 0;
+    UA_CHECK("parity: coins_kv setinfo", coins_kv_setinfo(db, &ck_tx, &ck_to, &ck_amt));
+    UA_CHECK("parity: projection setinfo", utxo_projection_setinfo(pp, &pj_tx, &pj_to, &pj_amt));
+    UA_CHECK("parity: setinfo equal (txs/txouts/amount)",
+             ck_tx == pj_tx && ck_to == pj_to && ck_amt == pj_amt);
+
     utxo_projection_set_event_log(NULL);
     utxo_projection_close(pp);
     event_log_close(lp);
