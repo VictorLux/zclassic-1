@@ -119,6 +119,18 @@ struct zcl_result service_state_persist_to_progress_store(void)
     return ZCL_OK;
 }
 
+void service_state_transition_and_persist(enum service_state next,
+                                          const char *reason)
+{
+    /* The atomic pairing: advance the in-RAM mode, then immediately persist it.
+     * Collapsing the two hand-paired calls into one means a transition that must
+     * survive a restart can never be left un-persisted by a forgotten second
+     * call. The persist's own result is intentionally swallowed (already logged
+     * inside), matching every prior `(void)`-ignored call site. */
+    service_state_advance(next, reason);
+    (void)service_state_persist_to_progress_store();
+}
+
 struct zcl_result service_state_restore_from_progress_store(void)
 {
     sqlite3 *db = progress_store_db();
@@ -182,8 +194,7 @@ void service_state_driver_tick(void)
     if (!repairing_now && cur == SERVICE_STATE_REPAIRING) {
         enum service_state prior =
             (enum service_state)atomic_load(&g_prior_state);
-        service_state_advance(prior, "repair condition cleared");
-        (void)service_state_persist_to_progress_store();
+        service_state_transition_and_persist(prior, "repair condition cleared");
         return;
     }
     if (repairing_now)
@@ -238,9 +249,12 @@ void service_state_driver_tick(void)
         snprintf(reason, sizeof(reason),
                  "local=%d peer=%d gap=%d active=%d age=%llds",
                  local_h, peer_max, gap, active, (long long)age);
-        service_state_advance(next, reason);
+        /* Record the new mode as the prior-state to restore after a REPAIRING
+         * detour BEFORE the atomic advance+persist; the stored value is `next`
+         * (independent of the transition), so the order is semantically inert
+         * but keeps the advance+persist a single atomic call. */
         atomic_store(&g_prior_state, (int)next);
-        (void)service_state_persist_to_progress_store();
+        service_state_transition_and_persist(next, reason);
     }
 }
 

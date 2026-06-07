@@ -3347,9 +3347,8 @@ sapling_tree_boot_check_done:
                        "to genuine coins frontier+1=%d (height of "
                        "coins_best_block hash) — re-finalizing forward\n",
                        rr.floor);
-                service_state_advance(SERVICE_STATE_RECONCILE,
+                service_state_transition_and_persist(SERVICE_STATE_RECONCILE,
                                       "reducer cursor/coins desync reconcile");
-                (void)service_state_persist_to_progress_store();
             }
         }
     }
@@ -3496,9 +3495,8 @@ sapling_tree_boot_check_done:
                 event_emitf(EV_BOOT_ACTIVATE, 0,
                     "degraded_serving allow_degraded_corruption tip=%d",
                     tip_h);
-                service_state_advance(SERVICE_STATE_DEGRADED_SERVING,
+                service_state_transition_and_persist(SERVICE_STATE_DEGRADED_SERVING,
                     "allow-degraded over structural corruption");
-                (void)service_state_persist_to_progress_store();
             } else {
                 /* RECONCILABLE: coins-application lag. Self-heal; never
                  * exit. The node serves at the contiguous applied tip
@@ -3518,9 +3516,8 @@ sapling_tree_boot_check_done:
             }
             (void)service_state_persist_to_progress_store();
         } else {
-            service_state_advance(SERVICE_STATE_SYNCING,
+            service_state_transition_and_persist(SERVICE_STATE_SYNCING,
                                   "post-restore integrity clean");
-            (void)service_state_persist_to_progress_store();
         }
     }
 

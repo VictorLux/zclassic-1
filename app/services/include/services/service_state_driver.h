@@ -25,10 +25,27 @@
 #include <stdbool.h>
 
 #include "util/result.h"
+#include "util/service_state.h"
 
 /* Periodic driver tick. Idempotent; safe to call when subsystems are not
  * yet wired (no main_state / no peers) — it simply makes no transition. */
 void service_state_driver_tick(void);
+
+/* Advance the operational mode to `next` (with `reason`) AND persist the new
+ * (state, reason) to progress.kv as a single call. This is the atomic pairing
+ * of service_state_advance() + service_state_persist_to_progress_store(): use
+ * it everywhere a transition must survive a restart, so a transition can never
+ * be left un-persisted by a missing second call.
+ *
+ * Atomicity note: the in-RAM advance is published before the persist runs.
+ * The persist itself is internally atomic (one BEGIN IMMEDIATE wraps both meta
+ * rows); a persist failure is logged + swallowed (the RAM state still advanced)
+ * — matching the prior `(void)`-ignored persist call sites. Never aborts.
+ *
+ * Lives in the driver (not service_state.c) because persistence depends on
+ * progress.kv, which the pure service_state primitive must not know about. */
+void service_state_transition_and_persist(enum service_state next,
+                                          const char *reason);
 
 /* Write the current service_state id + reason to progress.kv. Returns a non-ok
  * zcl_result (already logged) carrying a self-describing reason if the store is
