@@ -26,6 +26,7 @@
 
 struct sqlite3;
 struct coins;
+struct utxo_projection;
 
 /* CREATE TABLE IF NOT EXISTS coins(...). Idempotent. */
 bool coins_kv_ensure_schema(struct sqlite3 *db);
@@ -60,5 +61,15 @@ bool coins_kv_setinfo(struct sqlite3 *db, int64_t *num_txs,
  * relies on this matching the oracle gettxoutsetinfo commitment). Returns 0 on
  * success, -1 on error. */
 int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
+
+/* One-shot idempotent boot migration: if coins_kv is empty AND the projection
+ * holds the live set, bulk-copy the projection's UTXOs into coins_kv (atomic)
+ * so the read-flip has data on existing / snapshot-seeded datadirs. No-op (and
+ * NOT marked done) when the projection is still empty, so a pre-snapshot-seed
+ * call safely retries after the seed. Non-fatal: returns false on error and the
+ * next boot retries. Safe to call before progress_store is open (returns true,
+ * no-op). */
+bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
+                                     struct utxo_projection *proj);
 
 #endif /* STORAGE_COINS_KV_H */

@@ -121,6 +121,10 @@ bool utxo_projection_get_coins(utxo_projection_t *p,
  * given we run with WITHOUT ROWID and SQLite caches the count. */
 uint64_t utxo_projection_count(utxo_projection_t *p);
 
+/* The projection's on-disk db path (for a one-shot read-only ATTACH bulk copy,
+ * e.g. the coins_kv boot migration). NULL if unavailable. */
+const char *utxo_projection_path(const utxo_projection_t *p);
+
 /* gettxoutsetinfo aggregate over the projection: distinct txids, total UTXO
  * outputs, summed value (zatoshi). Byte-compatible with the legacy coins.db
  * query so the projection-backed RPC matches exactly. Returns false if the

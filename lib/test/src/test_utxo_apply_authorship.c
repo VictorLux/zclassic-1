@@ -250,6 +250,61 @@ done:
     return failures;
 }
 
+/* ── Test 3: coins_kv boot rebuild (step-3 migration) ──────────────────
+ *
+ * An existing datadir has data ONLY in the projection (coins_kv empty). The
+ * boot rebuild must copy it into coins_kv so the read-flip has data, and be
+ * idempotent (second call no-ops). */
+static int run_coins_kv_boot_rebuild(int *failures_out)
+{
+    int failures = 0;
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "coins_kv_rebuild", "main");
+
+    UA_CHECK("rebuild: progress_store opens", progress_store_open(dir));
+    sqlite3 *db = progress_store_db();
+    UA_CHECK("rebuild: coins_kv schema", db && coins_kv_ensure_schema(db));
+
+    char logp[512], projp[512];
+    snprintf(logp,  sizeof(logp),  "%s/r.log", dir);
+    snprintf(projp, sizeof(projp), "%s/r.db",  dir);
+    event_log_t *lp = event_log_open(logp);
+    utxo_projection_t *pp = utxo_projection_open(projp, lp);
+    UA_CHECK("rebuild: open log/proj", lp && pp);
+    if (!db || !lp || !pp) goto done;
+
+    /* Populate the PROJECTION ONLY (simulate a pre-flip datadir). */
+    utxo_projection_set_event_log(lp);
+    UA_CHECK("rebuild: proj add o0", emit_add(0xB0, 0, 4200000000LL, 50, true, 20));
+    UA_CHECK("rebuild: proj add o1", emit_add(0xB1, 0, 1234, 50, false, 7));
+    UA_CHECK("rebuild: proj add o2", emit_add(0xB2, 0, 99, 51, false, 0));
+    UA_CHECK("rebuild: proj catch_up", utxo_projection_catch_up(pp) != UINT64_MAX);
+    UA_CHECK("rebuild: coins_kv empty before", coins_kv_count(db) == 0);
+
+    /* Migrate. */
+    UA_CHECK("rebuild: boot_rebuild ok", coins_kv_boot_rebuild_if_needed(db, pp));
+    UA_CHECK("rebuild: coins_kv count == projection count",
+             (uint64_t)coins_kv_count(db) == utxo_projection_count(pp));
+    uint8_t ck[32], pj[32];
+    UA_CHECK("rebuild: coins_kv commitment", coins_kv_commitment(db, ck) == 0);
+    UA_CHECK("rebuild: projection commitment", utxo_projection_commitment(pp, pj) == 0);
+    UA_CHECK("rebuild: commitments byte-identical", memcmp(ck, pj, 32) == 0);
+
+    /* Idempotent: second call no-ops (count unchanged). */
+    int64_t before = coins_kv_count(db);
+    UA_CHECK("rebuild: second call ok", coins_kv_boot_rebuild_if_needed(db, pp));
+    UA_CHECK("rebuild: idempotent (count unchanged)", coins_kv_count(db) == before);
+
+    utxo_projection_set_event_log(NULL);
+    utxo_projection_close(pp);
+    event_log_close(lp);
+    progress_store_close();
+done:
+    test_cleanup_tmpdir(dir);
+    *failures_out += failures;
+    return failures;
+}
+
 int test_utxo_apply_authorship(void);
 int test_utxo_apply_authorship(void)
 {
@@ -257,6 +312,7 @@ int test_utxo_apply_authorship(void)
     printf("test_utxo_apply_authorship: STAGE projection ordering equivalence\n");
     run_ordering_equivalence(&failures);
     run_coins_kv_parity(&failures);
+    run_coins_kv_boot_rebuild(&failures);
     if (failures == 0)
         printf("  all utxo_apply authorship checks passed\n");
     return failures;

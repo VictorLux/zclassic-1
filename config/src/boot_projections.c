@@ -15,8 +15,10 @@
  */
 
 #include "config/boot_internal.h"
+#include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/event_log_singleton.h"
+#include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
@@ -99,6 +101,13 @@ utxo_projection_t *boot_ensure_log_and_utxo_projection(const char *datadir)
                 "[phase4] utxo_projection caught up to offset=%llu\n",
                 (unsigned long long)uoff);
     }
+    /* Populate the atomic coins set (progress.kv) from the caught-up projection
+     * on existing datadirs so the coins_kv read path has data. No-op on fresh /
+     * forward-built coins_kv, and a no-op-without-stamp if the projection is
+     * still pre-seed (a fast-sync snapshot seed re-runs this from
+     * snapshot_apply). docs/work/tip-durability-collapse.md. */
+    (void)coins_kv_boot_rebuild_if_needed(progress_store_db(),
+                                          g_phase4_utxo_projection);
     return g_phase4_utxo_projection;
 }
 

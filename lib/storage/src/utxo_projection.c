@@ -699,6 +699,11 @@ bool utxo_projection_get_coins(utxo_projection_t *p,
     return true;
 }
 
+const char *utxo_projection_path(const utxo_projection_t *p)
+{
+    return p ? p->path : NULL;
+}
+
 uint64_t utxo_projection_count(utxo_projection_t *p)
 {
     if (!p || !p->db) return 0;

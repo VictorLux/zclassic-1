@@ -21,6 +21,8 @@
 #include "chain/chain.h"
 #include "chain/pow.h"
 #include "coins/utxo_commitment.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "config/runtime.h"
@@ -65,6 +67,10 @@ static void snapsync_seed_projection_boot(struct node_db *ndb,
                      "event-log seed: utxo projection seed failed "
                      "(h=%d) — legacy node.db utxos still authoritative",
                      svc->offered_height);
+        /* Mirror the seed into the atomic coins set (progress.kv) so the
+         * coins_kv read path matches the snapshot-seeded projection.
+         * docs/work/tip-durability-collapse.md. */
+        (void)coins_kv_boot_rebuild_if_needed(progress_store_db(), proj);
     }
 
     /* (2) One anchor EV_BLOCK_HEADER. We carry only the anchor hash +
