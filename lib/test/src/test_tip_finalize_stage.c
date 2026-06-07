@@ -144,6 +144,39 @@ static bool seed_utxo_apply(sqlite3 *db, int n, int upstream_fail_height)
     return ok;
 }
 
+/* Seed a script_validate_log row (the reducer's authoritative script verdict)
+ * with an explicit ok and block_hash, so the tip_finalize hash-guarded fallback
+ * can be exercised: a matching hash + ok=1 heals a drifted block_index bit; a
+ * mismatched hash (stale orphan row) or ok=0 must be rejected. */
+static bool seed_script_log(sqlite3 *db, int height, int ok,
+                            const struct uint256 *block_hash)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "  tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        "  first_failure_txid BLOB, first_failure_vin INTEGER,"
+        "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        "  block_hash BLOB)"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, block_hash) "
+        "VALUES (?, 'verified', ?, 1, 0, 1, ?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok);
+    if (block_hash)
+        sqlite3_bind_blob(st, 3, block_hash->data, 32, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(st, 3);
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return done;
+}
+
 static bool log_row_at(sqlite3 *db, int height, int *out_ok,
                        char *out_status, size_t status_size,
                        int *out_reorg_depth, int64_t *out_utxo_size)
@@ -470,6 +503,70 @@ int test_tip_finalize_stage(void)
         TF_CHECK("precondition: drains 1 and 2 once successor lands",
                  tip_finalize_stage_drain(100) == 2 &&
                  tip_finalize_stage_cursor() == 3);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* The block_index BLOCK_VALID_SCRIPTS mirror drifted CLEAR for the
+         * lookahead (block[2]) — the live 3134954 wedge. The reducer's
+         * hash-bound script_validate_log proves the scripts WERE validated, so
+         * the gate trusts the log, finalizes past it, and heals the bit. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("script_log_heal: setup",
+                 tf_setup("script_log_heal", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sc.blocks[2].nStatus = BLOCK_HAVE_DATA;  /* VALID_SCRIPTS cleared */
+        TF_CHECK("script_log_heal: seed matching ok=1 row",
+                 seed_script_log(progress_store_db(), 2, 1,
+                                 sc.blocks[2].phashBlock));
+        TF_CHECK("script_log_heal: drains all 3 via authoritative log",
+                 tip_finalize_stage_drain(100) == 3);
+        TF_CHECK("script_log_heal: cursor at 3",
+                 tip_finalize_stage_cursor() == 3);
+        TF_CHECK("script_log_heal: drifted bit healed on block[2]",
+                 (sc.blocks[2].nStatus & BLOCK_VALID_MASK) >=
+                     BLOCK_VALID_SCRIPTS);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* REORG SAFETY: a stale ok=1 row left by an orphaned block that once
+         * held height 2 carries a DIFFERENT block_hash. The height-keyed log
+         * must NOT be trusted — finalizing the active (unvalidated) block here
+         * would be a consensus break. The gate rejects the mismatch and holds. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("script_log_stale_reorg: setup",
+                 tf_setup("script_log_stale", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sc.blocks[2].nStatus = BLOCK_HAVE_DATA;  /* VALID_SCRIPTS cleared */
+        struct uint256 wrong; uint256_set_null(&wrong); wrong.data[0] = 0x11;
+        TF_CHECK("script_log_stale_reorg: seed mismatched-hash ok=1 row",
+                 seed_script_log(progress_store_db(), 2, 1, &wrong));
+        TF_CHECK("script_log_stale_reorg: finalizes only h0, holds at 1",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("script_log_stale_reorg: cursor held at 1 (no false finalize)",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("script_log_stale_reorg: block[2] bit NOT healed",
+                 (sc.blocks[2].nStatus & BLOCK_VALID_MASK) <
+                     BLOCK_VALID_SCRIPTS);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* ok=0 must never heal even with a matching hash: a recorded script
+         * FAILURE is authoritative too — finalizing over it is forbidden. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("script_log_ok0: setup",
+                 tf_setup("script_log_ok0", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sc.blocks[2].nStatus = BLOCK_HAVE_DATA;  /* VALID_SCRIPTS cleared */
+        TF_CHECK("script_log_ok0: seed matching-hash ok=0 row",
+                 seed_script_log(progress_store_db(), 2, 0,
+                                 sc.blocks[2].phashBlock));
+        TF_CHECK("script_log_ok0: finalizes only h0, holds at 1",
+                 tip_finalize_stage_drain(100) == 1);
+        TF_CHECK("script_log_ok0: cursor held at 1",
+                 tip_finalize_stage_cursor() == 1);
         tf_teardown(dir, &ms, &sc);
     }
 

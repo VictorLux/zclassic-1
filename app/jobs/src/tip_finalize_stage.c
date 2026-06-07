@@ -5,6 +5,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_anchor.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/block_header_emit.h"
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
 
@@ -162,6 +163,49 @@ static const char *precondition_block_reason(const struct block_index *bi)
     if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_HEADER)
         return "not_header_valid";
     return NULL;
+}
+
+/* Authoritative, reorg-safe script-validity check for the finalize gate.
+ *
+ * The block_index BLOCK_VALID_SCRIPTS bit consulted by precondition_block_reason
+ * is a best-effort in-RAM mirror (set + emitted opportunistically by
+ * script_validate_stage) that can drift CLEAR on a restored datadir — stranding
+ * tip_finalize on a block whose scripts the reducer DID validate. The reducer's
+ * script_validate_log is the authority: ok=1 is written only after the consensus
+ * verifier passed every input (no assumevalid/checkpoint shortcut).
+ *
+ * The log is keyed by height, so a height-only read is reorg-UNSAFE: an orphaned
+ * block that once held this height left an ok=1 row under a DIFFERENT hash.
+ * We therefore trust ok=1 ONLY when the row's block_hash equals the hash of the
+ * block being finalized — the same hash-identity guard reducer_read_back_verdict
+ * applies to tip_finalize_log. Rows predating the block_hash column are NULL and
+ * are never trusted. Returns 1 iff ok=1 AND block_hash == want_hash; else 0. */
+static int finalize_script_log_ok(sqlite3 *db, int height,
+                                  const struct uint256 *want_hash)
+{
+    if (!db || !want_hash)
+        return 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] script_validate_log prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return 0;  // raw-return-ok:logged-above
+    }
+    sqlite3_bind_int(st, 1, height);
+    int verdict = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        int ok = sqlite3_column_int(st, 0);
+        const void *blob = sqlite3_column_blob(st, 1);
+        int blen = sqlite3_column_bytes(st, 1);
+        if (ok == 1 && blob && blen == 32 &&
+            memcmp(blob, want_hash->data, 32) == 0)
+            verdict = 1;
+    }
+    sqlite3_finalize(st);
+    return verdict;
 }
 
 static void record_precondition_block(int height, const char *reason)
@@ -357,6 +401,25 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      *      ok=0 row, count it, emit the reject, and ADVANCE past it so the
      *      pipeline cannot deadlock on an unfinalizable lighter candidate. */
     const char *transient_reason = precondition_block_reason(new_tip);
+    /* not_script_valid from the block_index mirror is NOT authoritative: the bit
+     * can drift CLEAR on a restored datadir while the reducer's hash-bound
+     * script_validate_log still proves THIS block's scripts were verified. When
+     * (and only when) the reason is the script-validity level, the candidate is
+     * not a failed block, and the log carries a hash-matched ok=1 row, treat the
+     * scripts as valid and heal the in-RAM bit so other nStatus readers + the
+     * persisted projection converge. The have_data_missing / not_header_valid /
+     * block_missing reasons are unchanged — only the script-validity source is
+     * rerouted to the authority. */
+    if (transient_reason != NULL &&
+        strcmp(transient_reason, "not_script_valid") == 0 &&
+        !(new_tip->nStatus & BLOCK_FAILED_MASK) &&
+        finalize_script_log_ok(db, new_tip->nHeight, new_tip->phashBlock) == 1) {
+        new_tip->nStatus = (new_tip->nStatus & ~(unsigned)BLOCK_VALID_MASK)
+                           | BLOCK_VALID_SCRIPTS;
+        block_index_emit_header_event(new_tip, "tip_finalize_selfheal",
+                                      NULL, NULL);
+        transient_reason = NULL;
+    }
     if (transient_reason != NULL) {
         atomic_fetch_add(&g_successor_pending_total, 1);
         record_precondition_block(next_h, transient_reason);

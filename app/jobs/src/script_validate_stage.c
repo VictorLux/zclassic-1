@@ -195,6 +195,22 @@ static bool created_index_prevout(const struct outpoint *prevout,
     return false;
 }
 
+/* Idempotent ADD COLUMN: tolerate "duplicate column name" (already migrated),
+ * fail loud on any other error. */
+static bool add_column_if_missing(sqlite3 *db, const char *alter_sql)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, alter_sql, NULL, NULL, &err) == SQLITE_OK)
+        return true;
+    bool dup = err && strstr(err, "duplicate column name") != NULL;
+    if (!dup)
+        LOG_WARN("script_validate",
+                 "[script_validate] schema alter failed: %s",
+                 err ? err : "(no message)");
+    if (err) sqlite3_free(err);
+    return dup;
+}
+
 static bool ensure_log_schema(sqlite3 *db)
 {
     static const char *const sql =
@@ -207,7 +223,8 @@ static bool ensure_log_schema(sqlite3 *db)
         "  first_failure_txid BLOB,"
         "  first_failure_vin  INTEGER,"
         "  first_failure_serror INTEGER,"
-        "  validated_at       INTEGER NOT NULL"
+        "  validated_at       INTEGER NOT NULL,"
+        "  block_hash         BLOB"
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
@@ -215,17 +232,14 @@ static bool ensure_log_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    /* Idempotent migration for datadirs predating the ScriptError column. */
-    if (sqlite3_exec(db,
-        "ALTER TABLE script_validate_log ADD COLUMN first_failure_serror INTEGER",
-        NULL, NULL, &err) != SQLITE_OK) {
-        if (!err || strstr(err, "duplicate column name") == NULL) {
-            LOG_WARN("script_validate", "[script_validate] schema alter failed: %s", err ? err : "(no message)");
-            if (err) sqlite3_free(err);
-            return false;
-        }
-        sqlite3_free(err);
-    }
+    /* Idempotent migrations. block_hash binds an ok=1 row to its block so
+     * tip_finalize can reject a stale height-keyed orphan row (different hash). */
+    if (!add_column_if_missing(db,
+            "ALTER TABLE script_validate_log ADD COLUMN first_failure_serror INTEGER"))
+        return false;
+    if (!add_column_if_missing(db,
+            "ALTER TABLE script_validate_log ADD COLUMN block_hash BLOB"))
+        return false;
     return true;
 }
 
@@ -260,14 +274,15 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
                        size_t tx_count, size_t input_count,
                        const struct uint256 *first_failure_txid,
                        int first_failure_vin,
-                       ScriptError first_failure_serror)
+                       ScriptError first_failure_serror,
+                       const struct uint256 *block_hash)
 {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO script_validate_log "
         "(height, status, ok, tx_count, input_count, first_failure_txid, "
-        " first_failure_vin, first_failure_serror, validated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        " first_failure_vin, first_failure_serror, validated_at, block_hash) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("script_validate", "[script_validate] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -293,6 +308,12 @@ static bool log_insert(sqlite3 *db, int height, const char *status, bool ok,
     else
         sqlite3_bind_null(stmt, 8);
     sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
+    /* Bind the block's own hash so tip_finalize can prove an ok=1 row is THIS
+     * block's verdict (reorg-safe); NULL before the candidate is resolved. */
+    if (block_hash)
+        sqlite3_bind_blob(stmt, 10, block_hash->data, 32, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 10);
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {
@@ -433,7 +454,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 
     if (upstream.ok == 0) {
         if (!log_insert(db, next_h, "upstream_failed", false, 0, 0,
-                        NULL, -1, SCRIPT_ERR_OK))
+                        NULL, -1, SCRIPT_ERR_OK, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -515,7 +536,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     if (!log_insert(db, next_h, status, ok, summary.tx_count,
-                    summary.input_count, fail_txid, fail_vin, fail_serror))
+                    summary.input_count, fail_txid, fail_vin, fail_serror,
+                    bi->phashBlock))
         return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
