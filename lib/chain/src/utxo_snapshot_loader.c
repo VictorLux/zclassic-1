@@ -159,7 +159,7 @@ int64_t uss_iter(struct uss_handle *h, uss_record_cb cb, void *ctx)
         r.vout = rd_le32(p); p += 4;
         r.value = (int64_t)rd_le64(p); p += 8;
         r.script_len = rd_le32(p); p += 4;
-        if ((size_t)(end - p) < r.script_len + 4 + 1) return -1;
+        if ((uint64_t)(end - p) < (uint64_t)r.script_len + 4 + 1) return -1;
         r.script = r.script_len ? p : NULL;
         p += r.script_len;
         r.height = rd_le32(p); p += 4;

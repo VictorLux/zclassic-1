@@ -79,37 +79,37 @@ legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
     g_lms.lag_sla = lms_env_int("ZCL_MIRROR_LAG_SLA",
                                 g_lms.lag_sla, 0, 10000);
 
-    g_lms.lag_sla_breach_blocks =
+    atomic_store(&g_lms.lag_sla_breach_blocks,
         (cfg && cfg->lag_sla_breach_blocks > 0)
         ? cfg->lag_sla_breach_blocks
-        : LMS_DEFAULT_LAG_SLA_BREACH_BLOCKS;
-    g_lms.lag_sla_breach_blocks =
+        : LMS_DEFAULT_LAG_SLA_BREACH_BLOCKS);
+    atomic_store(&g_lms.lag_sla_breach_blocks,
         lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_BLOCKS",
-                    g_lms.lag_sla_breach_blocks, 1, 100000);
+                    atomic_load(&g_lms.lag_sla_breach_blocks), 1, 100000));
 
-    g_lms.lag_sla_breach_secs =
+    atomic_store(&g_lms.lag_sla_breach_secs,
         (cfg && cfg->lag_sla_breach_secs > 0)
         ? cfg->lag_sla_breach_secs
-        : LMS_DEFAULT_LAG_SLA_BREACH_SECS;
-    g_lms.lag_sla_breach_secs =
+        : LMS_DEFAULT_LAG_SLA_BREACH_SECS);
+    atomic_store(&g_lms.lag_sla_breach_secs,
         lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_SECS",
-                    g_lms.lag_sla_breach_secs, 1, 86400);
+                    atomic_load(&g_lms.lag_sla_breach_secs), 1, 86400));
 
-    g_lms.lag_sla_critical_blocks =
+    atomic_store(&g_lms.lag_sla_critical_blocks,
         (cfg && cfg->lag_sla_critical_blocks > 0)
         ? cfg->lag_sla_critical_blocks
-        : LMS_DEFAULT_LAG_SLA_CRITICAL_BLOCKS;
-    g_lms.lag_sla_critical_blocks =
+        : LMS_DEFAULT_LAG_SLA_CRITICAL_BLOCKS);
+    atomic_store(&g_lms.lag_sla_critical_blocks,
         lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_BLOCKS",
-                    g_lms.lag_sla_critical_blocks, 1, 1000000);
+                    atomic_load(&g_lms.lag_sla_critical_blocks), 1, 1000000));
 
-    g_lms.lag_sla_critical_secs =
+    atomic_store(&g_lms.lag_sla_critical_secs,
         (cfg && cfg->lag_sla_critical_secs > 0)
         ? cfg->lag_sla_critical_secs
-        : LMS_DEFAULT_LAG_SLA_CRITICAL_SECS;
-    g_lms.lag_sla_critical_secs =
+        : LMS_DEFAULT_LAG_SLA_CRITICAL_SECS);
+    atomic_store(&g_lms.lag_sla_critical_secs,
         lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_SECS",
-                    g_lms.lag_sla_critical_secs, 1, 86400);
+                    atomic_load(&g_lms.lag_sla_critical_secs), 1, 86400));
 
     g_lms.ms = ms;
     g_lms.coins_tip = coins_tip;
@@ -124,24 +124,13 @@ legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
         snprintf(g_lms.rpc_password, sizeof(g_lms.rpc_password), "%s",
                  cfg->rpc_password);
 
-    bool need_user = (g_lms.rpc_user[0] == '\0');
-    bool need_pass = (g_lms.rpc_password[0] == '\0');
-    if (need_user || need_pass) {
-        int conf_port = g_lms.rpc_port;
-        char u[64] = {0}, p[128] = {0};
-        if (legacy_rpc_parse_conf(u, sizeof(u), p, sizeof(p),
-                                  &conf_port)) {
-            if (need_user)
-                snprintf(g_lms.rpc_user, sizeof(g_lms.rpc_user), "%s", u);
-            if (need_pass)
-                snprintf(g_lms.rpc_password, sizeof(g_lms.rpc_password),
-                         "%s", p);
-            if (!cfg || cfg->rpc_port <= 0)
-                g_lms.rpc_port = conf_port;
-        }
-    }
-
-    bool have_creds = g_lms.rpc_user[0] && g_lms.rpc_password[0];
+    /* Fill any missing credential from zclassic.conf; an explicit port
+     * (cfg->rpc_port > 0) is never overridden. A missing set is not
+     * fatal here — the have-creds check below decides enablement. */
+    bool have_creds = legacy_rpc_fill_missing_creds(
+        g_lms.rpc_user, sizeof(g_lms.rpc_user),
+        g_lms.rpc_password, sizeof(g_lms.rpc_password),
+        &g_lms.rpc_port, cfg && cfg->rpc_port > 0);
     g_lms.enabled = (cfg ? cfg->enabled : true) && have_creds &&
                     !lms_env_disabled();
     mirror_consensus_set_enabled(g_lms.enabled);
@@ -166,18 +155,18 @@ void legacy_mirror_sync_reload_from_env(void)
                                         g_lms.max_blocks_tick, 1, 20000);
     g_lms.lag_sla = lms_env_int("ZCL_MIRROR_LAG_SLA",
                                 g_lms.lag_sla, 0, 10000);
-    g_lms.lag_sla_breach_blocks =
+    atomic_store(&g_lms.lag_sla_breach_blocks,
         lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_BLOCKS",
-                    g_lms.lag_sla_breach_blocks, 1, 100000);
-    g_lms.lag_sla_breach_secs =
+                    atomic_load(&g_lms.lag_sla_breach_blocks), 1, 100000));
+    atomic_store(&g_lms.lag_sla_breach_secs,
         lms_env_int("ZCL_MIRROR_LAG_SLA_BREACH_SECS",
-                    g_lms.lag_sla_breach_secs, 1, 86400);
-    g_lms.lag_sla_critical_blocks =
+                    atomic_load(&g_lms.lag_sla_breach_secs), 1, 86400));
+    atomic_store(&g_lms.lag_sla_critical_blocks,
         lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_BLOCKS",
-                    g_lms.lag_sla_critical_blocks, 1, 1000000);
-    g_lms.lag_sla_critical_secs =
+                    atomic_load(&g_lms.lag_sla_critical_blocks), 1, 1000000));
+    atomic_store(&g_lms.lag_sla_critical_secs,
         lms_env_int("ZCL_MIRROR_LAG_SLA_CRITICAL_SECS",
-                    g_lms.lag_sla_critical_secs, 1, 86400);
+                    atomic_load(&g_lms.lag_sla_critical_secs), 1, 86400));
     pthread_mutex_unlock(&g_lms.lock);
 }
 
@@ -306,10 +295,10 @@ void legacy_mirror_sync_stats_snapshot(
         out->activation_blocker_class = BLOCKER_TRANSIENT;
     if (!out->last_blocker_id[0])
         out->last_blocker_class = BLOCKER_TRANSIENT;
-    out->lag_sla_breach_blocks   = g_lms.lag_sla_breach_blocks;
-    out->lag_sla_breach_secs     = g_lms.lag_sla_breach_secs;
-    out->lag_sla_critical_blocks = g_lms.lag_sla_critical_blocks;
-    out->lag_sla_critical_secs   = g_lms.lag_sla_critical_secs;
+    out->lag_sla_breach_blocks   = atomic_load(&g_lms.lag_sla_breach_blocks);
+    out->lag_sla_breach_secs     = atomic_load(&g_lms.lag_sla_breach_secs);
+    out->lag_sla_critical_blocks = atomic_load(&g_lms.lag_sla_critical_blocks);
+    out->lag_sla_critical_secs   = atomic_load(&g_lms.lag_sla_critical_secs);
     out->lag_breach_since        = atomic_load(&g_lms.lag_breach_since);
     out->lag_critical_since      = atomic_load(&g_lms.lag_critical_since);
     {

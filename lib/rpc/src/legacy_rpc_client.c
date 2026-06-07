@@ -80,6 +80,29 @@ bool legacy_rpc_parse_conf(char *out_user, size_t user_sz,
     return got_user && got_pass;
 }
 
+bool legacy_rpc_fill_missing_creds(char *user, size_t user_sz,
+                                   char *pass, size_t pass_sz,
+                                   int *port, bool port_is_explicit)
+{
+    bool need_user = !user || user_sz == 0 || user[0] == '\0';
+    bool need_pass = !pass || pass_sz == 0 || pass[0] == '\0';
+    if (!need_user && !need_pass)
+        return true;
+
+    int conf_port = port ? *port : 0;
+    char u[64] = {0}, p[128] = {0};
+    if (legacy_rpc_parse_conf(u, sizeof(u), p, sizeof(p), &conf_port)) {
+        if (need_user && user && user_sz)
+            snprintf(user, user_sz, "%s", u);
+        if (need_pass && pass && pass_sz)
+            snprintf(pass, pass_sz, "%s", p);
+        if (port && !port_is_explicit)
+            *port = conf_port;
+    }
+
+    return user && user[0] != '\0' && pass && pass[0] != '\0';
+}
+
 /* ── HTTP/1.1 JSON-RPC call ────────────────────────────────────── */
 
 bool legacy_rpc_call(const char *host, int port,

@@ -77,51 +77,21 @@ static int64_t zclassicd_oracle_progress_marker(void)
     return atomic_load(&g_oracle.probes_total);
 }
 
-/* Split HTTP head/body and parse JSON-RPC result. Returns the hex
- * string from .result on success. On error, writes a message to err.
- * out_hex must be >= 65 bytes. */
+/* Parse a JSON-RPC `.result` string and require exactly 64 hex chars
+ * (a block hash). Thin wrapper over the shared transport parser so the
+ * "getblockhash result + 64-hex validation" idiom lives in one place
+ * (legacy_chain_oracle.c uses the same shape). out_hex must be >= 65
+ * bytes. */
 static bool parse_rpc_hex_result(const char *raw, char *out_hex,
                                  char *err, size_t err_sz)
 {
-    const char *body = strstr(raw, "\r\n\r\n");
-    if (!body) {
-        snprintf(err, err_sz, "no http body separator");
+    if (!legacy_rpc_parse_result_string(raw, out_hex, 65, err, err_sz))
+        return false;
+    if (strlen(out_hex) != 64) {
+        snprintf(err, err_sz, "result not 64 hex chars (got %zu)",
+                 strlen(out_hex));
         return false;
     }
-    body += 4;
-
-    struct json_value v = {0};
-    if (!json_read(&v, body, strlen(body))) {
-        snprintf(err, err_sz, "json parse failed");
-        json_free(&v);
-        return false;
-    }
-    const struct json_value *result = json_get(&v, "result");
-    if (!result || result->type != JSON_STR) {
-        /* Try error.message for diagnostics */
-        const struct json_value *jerr = json_get(&v, "error");
-        if (jerr && jerr->type == JSON_OBJ) {
-            const struct json_value *msg = json_get(jerr, "message");
-            if (msg && msg->type == JSON_STR) {
-                snprintf(err, err_sz, "rpc error: %s", json_get_str(msg));
-                json_free(&v);
-                return false;
-            }
-        }
-        snprintf(err, err_sz, "no .result or not a string");
-        json_free(&v);
-        return false;
-    }
-    const char *s = json_get_str(result);
-    size_t slen = s ? strlen(s) : 0;
-    if (slen != 64) {
-        snprintf(err, err_sz, "result not 64 hex chars (got %zu)", slen);
-        json_free(&v);
-        return false;
-    }
-    memcpy(out_hex, s, 64);
-    out_hex[64] = '\0';
-    json_free(&v);
     return true;
 }
 
@@ -324,27 +294,15 @@ struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cf
                  "%s", cfg->rpc_password);
     }
 
-    bool need_user = (g_oracle.rpc_user[0] == '\0');
-    bool need_pass = (g_oracle.rpc_password[0] == '\0');
-    if (need_user || need_pass) {
-        int port_from_conf = g_oracle.rpc_port;
-        char u[64] = {0}, p[128] = {0};
-        if (legacy_rpc_parse_conf(u, sizeof(u), p, sizeof(p),
-                                  &port_from_conf)) {
-            if (need_user)
-                snprintf(g_oracle.rpc_user, sizeof(g_oracle.rpc_user),
-                         "%s", u);
-            if (need_pass)
-                snprintf(g_oracle.rpc_password,
-                         sizeof(g_oracle.rpc_password), "%s", p);
-            /* Don't override an explicitly-provided port. */
-            if (!cfg || cfg->rpc_port <= 0)
-                g_oracle.rpc_port = port_from_conf;
-        } else if (need_user || need_pass) {
-            pthread_mutex_unlock(&g_oracle.lock);
-            return ZCL_ERR(-1,
-                "zclassicd_oracle_init: no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
-        }
+    /* Fill any missing credential from zclassic.conf; an explicit port
+     * (cfg->rpc_port > 0) is never overridden. */
+    if (!legacy_rpc_fill_missing_creds(
+            g_oracle.rpc_user, sizeof(g_oracle.rpc_user),
+            g_oracle.rpc_password, sizeof(g_oracle.rpc_password),
+            &g_oracle.rpc_port, cfg && cfg->rpc_port > 0)) {
+        pthread_mutex_unlock(&g_oracle.lock);
+        return ZCL_ERR(-1,
+            "zclassicd_oracle_init: no RPC credentials: pass via config or ~/.zclassic/zclassic.conf");
     }
 
     g_oracle.initialized = true;

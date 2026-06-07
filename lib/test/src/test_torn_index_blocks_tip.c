@@ -76,10 +76,10 @@ static bool torn_fixture_init(struct torn_fixture *f)
         f->blocks[i].nStatus = BLOCK_VALID_TREE;
         arith_uint256_set_u64(&f->blocks[i].nChainWork, (uint64_t)i + 1);
         block_map_insert(&f->bm, &f->hashes[i], &f->blocks[i]);
-        const struct uint256 *canon =
-            block_map_find_hash(&f->bm, &f->hashes[i]);
+        const struct block_index *canon =
+            block_map_find(&f->bm, &f->hashes[i]);
         if (canon)
-            f->blocks[i].phashBlock = canon;
+            f->blocks[i].phashBlock = canon->phashBlock;
     }
 
     csr_init(&f->csr, &f->bm, &f->chain, &f->header_tip,

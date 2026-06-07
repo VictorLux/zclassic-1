@@ -34,6 +34,23 @@ bool legacy_rpc_parse_conf(char *out_user, size_t user_sz,
                            char *out_pass, size_t pass_sz,
                            int *out_port);
 
+/* Fill any empty credential field from ~/.zclassic/zclassic.conf.
+ *
+ * If `user` and `pass` are both already non-empty, this is a no-op and
+ * returns true. Otherwise it parses the conf and copies only the
+ * missing field(s) — a caller-supplied credential always wins. When
+ * `port` is non-NULL and `port_is_explicit` is false, *port is also
+ * updated from the conf's rpcport (if present); an explicit port is
+ * never overridden.
+ *
+ * Returns true iff, after the fill attempt, both `user` and `pass` are
+ * non-empty. Callers decide for themselves whether an incomplete set
+ * is fatal (the oracle treats it as an init error; the mirror defers
+ * to a later have-creds check). */
+bool legacy_rpc_fill_missing_creds(char *user, size_t user_sz,
+                                   char *pass, size_t pass_sz,
+                                   int *port, bool port_is_explicit);
+
 /* POST `body_json` to host:port with HTTP Basic auth user:pass and
  * receive the full response body into a newly malloc'd buffer.
  *

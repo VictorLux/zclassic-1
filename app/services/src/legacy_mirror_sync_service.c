@@ -158,35 +158,19 @@ static bool lms_parse_int_result(const char *raw, const char *key,
     return true;
 }
 
+/* Parse a JSON-RPC `.result` string and require exactly 64 hex chars
+ * (a block hash). Thin wrapper over the shared transport parser so the
+ * "getblockhash result + 64-hex validation" idiom is not reimplemented
+ * here. */
 static bool lms_parse_hash_result(const char *raw, char out_hex[65],
                                   char *err, size_t err_sz)
 {
-    const char *body = legacy_rpc_http_body(raw);
-    if (!body) {
-        snprintf(err, err_sz, "no http body separator");
+    if (!legacy_rpc_parse_result_string(raw, out_hex, 65, err, err_sz))
         return false;
-    }
-    struct json_value v = {0};
-    if (!json_read(&v, body, strlen(body))) {
-        snprintf(err, err_sz, "json parse failed");
-        json_free(&v);
-        return false;
-    }
-    const struct json_value *result = json_get(&v, "result");
-    if (!result || result->type != JSON_STR) {
-        snprintf(err, err_sz, "missing string result");
-        json_free(&v);
-        return false;
-    }
-    const char *s = json_get_str(result);
-    if (!s || strlen(s) != 64) {
+    if (strlen(out_hex) != 64) {
         snprintf(err, err_sz, "hash result is not 64 hex chars");
-        json_free(&v);
         return false;
     }
-    memcpy(out_hex, s, 64);
-    out_hex[64] = '\0';
-    json_free(&v);
     return true;
 }
 
@@ -394,10 +378,10 @@ static void lms_record_stuck_status(int height)
 static void lms_evaluate_lag_slo(int lag, int legacy_height, int local_height,
                                  int64_t now)
 {
-    int breach_blocks   = g_lms.lag_sla_breach_blocks;
-    int breach_secs     = g_lms.lag_sla_breach_secs;
-    int critical_blocks = g_lms.lag_sla_critical_blocks;
-    int critical_secs   = g_lms.lag_sla_critical_secs;
+    int breach_blocks   = atomic_load(&g_lms.lag_sla_breach_blocks);
+    int breach_secs     = atomic_load(&g_lms.lag_sla_breach_secs);
+    int critical_blocks = atomic_load(&g_lms.lag_sla_critical_blocks);
+    int critical_secs   = atomic_load(&g_lms.lag_sla_critical_secs);
 
     if (breach_blocks <= 0) {
         atomic_store(&g_lms.lag_breach_since, 0);

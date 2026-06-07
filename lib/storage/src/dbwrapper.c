@@ -409,6 +409,10 @@ const char *db_iter_value(struct db_iterator *it, size_t *vallen)
         free(it->deobf_buf);
         it->deobf_cap = *vallen + 256;
         it->deobf_buf = zcl_malloc(it->deobf_cap, "dbwrapper_deobf_buf");
+        if (!it->deobf_buf) {
+            it->deobf_cap = 0;
+            return NULL;
+        }
     }
     db_deobfuscate(it->deobf_buf, raw, *vallen,
                    it->obfuscate_key, it->obfuscate_key_len);

@@ -254,8 +254,11 @@ bool progress_meta_delete_in_tx(sqlite3 *db, const char *key)
     return progress_meta_delete_stmt(db, key);
 }
 
-bool progress_meta_set(sqlite3 *db, const char *key,
-                       const void *value, size_t value_len)
+/* Single-source the transaction discipline shared by progress_meta_set and
+ * progress_meta_delete: lock, BEGIN IMMEDIATE, run op, COMMIT on success /
+ * ROLLBACK on failure, unlock. op binds and steps its own statement. */
+static bool progress_meta_run_in_tx(sqlite3 *db,
+                                    bool (*op)(sqlite3 *, void *), void *arg)
 {
     if (!db) return false;
     progress_store_tx_lock();
@@ -265,7 +268,7 @@ bool progress_meta_set(sqlite3 *db, const char *key,
         progress_store_tx_unlock();
         return false;
     }
-    bool ok = progress_meta_set_stmt(db, key, value, value_len);
+    bool ok = op(db, arg);
     const char *fini = ok ? "COMMIT" : "ROLLBACK";
     if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
@@ -276,25 +279,33 @@ bool progress_meta_set(sqlite3 *db, const char *key,
     return ok;
 }
 
+struct progress_meta_set_args {
+    const char *key;
+    const void *value;
+    size_t value_len;
+};
+
+static bool progress_meta_set_op(sqlite3 *db, void *arg)
+{
+    struct progress_meta_set_args *a = arg;
+    return progress_meta_set_stmt(db, a->key, a->value, a->value_len);
+}
+
+static bool progress_meta_delete_op(sqlite3 *db, void *arg)
+{
+    return progress_meta_delete_stmt(db, (const char *)arg);
+}
+
+bool progress_meta_set(sqlite3 *db, const char *key,
+                       const void *value, size_t value_len)
+{
+    struct progress_meta_set_args a = { key, value, value_len };
+    return progress_meta_run_in_tx(db, progress_meta_set_op, &a);
+}
+
 bool progress_meta_delete(sqlite3 *db, const char *key)
 {
-    if (!db) return false;
-    progress_store_tx_lock();
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        if (err) sqlite3_free(err);
-        progress_store_tx_unlock();
-        return false;
-    }
-    bool ok = progress_meta_delete_stmt(db, key);
-    const char *fini = ok ? "COMMIT" : "ROLLBACK";
-    if (sqlite3_exec(db, fini, NULL, NULL, &err) != SQLITE_OK) {
-        if (err) sqlite3_free(err);
-        progress_store_tx_unlock();
-        return false;
-    }
-    progress_store_tx_unlock();
-    return ok;
+    return progress_meta_run_in_tx(db, progress_meta_delete_op, (void *)key);
 }
 
 bool progress_meta_get(sqlite3 *db, const char *key,

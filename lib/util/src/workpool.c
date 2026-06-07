@@ -9,6 +9,8 @@
 #include "util/safe_alloc.h"
 #include "util/util.h"
 
+static void workpool_teardown(struct workpool *wp);
+
 static void *worker_thread(void *arg)
 {
     struct workpool *wp = (struct workpool *)arg;
@@ -98,18 +100,22 @@ bool workpool_init(struct workpool *wp, int num_threads, size_t queue_cap,
     }
 
     if (wp->num_threads == 0) {
-        free(wp->items);
+        /* No workers spawned: tear down the sync primitives + queue we
+         * already created (mutex/conds at init, plus any partially-started
+         * threads) before failing, so init failure leaks nothing. */
+        workpool_teardown(wp);
         return false;
     }
 
     return true;
 }
 
-void workpool_destroy(struct workpool *wp)
+/* Shared teardown: signal shutdown, join started threads, free the queue,
+ * and destroy the sync primitives. Used by both workpool_destroy and the
+ * workpool_init failure path. Safe when num_threads == 0 (join loop no-ops).
+ * Requires mutex/conds to have been initialized. */
+static void workpool_teardown(struct workpool *wp)
 {
-    if (!wp)
-        return;
-
     zcl_mutex_lock(&wp->mutex);
     wp->shutdown = true;
     zcl_cond_broadcast(&wp->cond_work);
@@ -122,6 +128,14 @@ void workpool_destroy(struct workpool *wp)
     zcl_cond_destroy(&wp->cond_work);
     zcl_cond_destroy(&wp->cond_done);
     zcl_mutex_destroy(&wp->mutex);
+}
+
+void workpool_destroy(struct workpool *wp)
+{
+    if (!wp)
+        return;
+
+    workpool_teardown(wp);
 }
 
 void workpool_submit(struct workpool *wp, void **items, size_t count)

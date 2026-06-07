@@ -138,8 +138,8 @@ static struct block_index *csr_fix_add(struct csr_fixture *f, uint8_t seed)
     /* block_map_insert keeps the index pointer but a future grow
      * could relocate the bucket; re-point phashBlock so identity
      * stays stable across rehashes. */
-    const struct uint256 *canon = block_map_find_hash(&f->bm, &f->hashes[idx]);
-    if (canon) f->blocks[idx].phashBlock = canon;
+    const struct block_index *canon = block_map_find(&f->bm, &f->hashes[idx]);
+    if (canon) f->blocks[idx].phashBlock = canon->phashBlock;
     return &f->blocks[idx];
 }
 

@@ -238,7 +238,8 @@ static int test_execute_found_in_index(void) {
         existing->nHeight = 300000;
         existing->nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
         block_map_insert(&ms.map_block_index, &hash, existing);
-        existing->phashBlock = block_map_find_hash(&ms.map_block_index, &hash);
+        existing->hashBlock = hash;
+        existing->phashBlock = &existing->hashBlock;
 
         struct chain_restore_input in = {0};
         in.coins_best_hash = hash;

@@ -1092,9 +1092,14 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
     if (!wallet_add_to_wallet(w, wtx))
         return false;
 
+    /* Mutate the spent set under a brief w->cs hold so concurrent readers
+     * (under w->cs) never race the writes. w->cs is non-recursive, so it is
+     * never held across wallet_add_to_wallet (above) or the mempool add. */
+    zcl_mutex_lock(&w->cs);
     for (size_t i = 0; i < wtx->tx.num_vin; i++)
         wallet_mark_outpoint_spent(w, &wtx->tx.vin[i].prevout.hash,
                                     wtx->tx.vin[i].prevout.n);
+    zcl_mutex_unlock(&w->cs);
 
     struct validation_state vs;
     validation_state_init(&vs);
@@ -1106,7 +1111,11 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
         fee = value_in - value_out;
 
     const struct chain_params *cp = chain_params_get();
+    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
+     * w->cs hold for an atomic read; never held across the mempool add. */
+    zcl_mutex_lock(&w->cs);
     int height = w->best_block_height;
+    zcl_mutex_unlock(&w->cs);
     uint32_t branch_id = consensus_current_epoch_branch_id(height, &cp->consensus);
 
     struct mempool_entry entry;

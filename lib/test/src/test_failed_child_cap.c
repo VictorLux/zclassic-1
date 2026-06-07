@@ -54,10 +54,10 @@ static void p146_fixture_init(struct p146_fixture *fx)
         /* Unique per-height hash: 0xA0..0xA4 filled. */
         memset(fx->hashes[h].data, 0xA0 + h, sizeof(fx->hashes[h].data));
         block_map_insert(&fx->map, &fx->hashes[h], &fx->blocks[h]);
-        /* block_map_insert stamps the hash into a bucket; wire
-         * phashBlock to the canonical location. */
-        fx->blocks[h].phashBlock =
-            block_map_find_hash(&fx->map, &fx->hashes[h]);
+        /* Option A: phashBlock references stable per-node hashBlock
+         * storage (never relocated by a bucket-array grow). */
+        fx->blocks[h].hashBlock = fx->hashes[h];
+        fx->blocks[h].phashBlock = &fx->blocks[h].hashBlock;
     }
 }
 

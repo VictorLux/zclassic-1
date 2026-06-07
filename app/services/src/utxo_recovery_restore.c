@@ -49,6 +49,10 @@ static struct zcl_result recovery_status_ok(void)
     return ZCL_OK;
 }
 
+/* MAX(height) over the utxos table; defined below, forward-declared here
+ * so the LDB-import path above can share the single SELECT. */
+static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx);
+
 /* ── LDB→SQLite UTXO import ─────────────────────────────────── */
 
 struct utxo_import_result utxo_recovery_import_ldb(
@@ -181,19 +185,10 @@ struct utxo_import_result utxo_recovery_import_ldb(
         }
 
         /* Discover LDB height from imported UTXOs */
-        int ldb_height = 0;
-        if (ctx->ndb->open) {
-            sqlite3_stmt *hstmt = NULL;
-            sqlite3_prepare_v2(ctx->ndb->db,
-                "SELECT MAX(height) FROM utxos",
-                -1, &hstmt, NULL);
-            if (hstmt && AR_STEP_ROW_READONLY(hstmt) == SQLITE_ROW)
-                ldb_height = sqlite3_column_int(hstmt, 0);
-            if (hstmt) sqlite3_finalize(hstmt);
-            if (ldb_height > 0)
-                printf("LDB import: height %d (from UTXO heights)\n",
-                       ldb_height);
-        }
+        int ldb_height = utxo_recovery_max_utxo_height(ctx);
+        if (ldb_height > 0)
+            printf("LDB import: height %d (from UTXO heights)\n",
+                   ldb_height);
         res.height = ldb_height;
 
         /* Set coins_best_block from LDB */
@@ -600,15 +595,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     printf("Coins DB best block %s not in index (block_map size=%zu).\n",
            hex, ctx->state->map_block_index.size);
 
-    int utxo_max_height = 0;
-    if (ctx->ndb->open) {
-        sqlite3_stmt *hstmt = NULL;
-        sqlite3_prepare_v2(ctx->ndb->db,
-            "SELECT MAX(height) FROM utxos", -1, &hstmt, NULL);
-        if (hstmt && AR_STEP_ROW_READONLY(hstmt) == SQLITE_ROW)
-            utxo_max_height = sqlite3_column_int(hstmt, 0);
-        if (hstmt) sqlite3_finalize(hstmt);
-    }
+    int utxo_max_height = utxo_recovery_max_utxo_height(ctx);
 
     if (utxo_max_height > 0) {
         struct block_index *anchor =

@@ -30,10 +30,14 @@ struct legacy_mirror_sync_runtime {
     int  cadence_secs;
     int  max_blocks_tick;
     int  lag_sla;
-    int  lag_sla_breach_blocks;
-    int  lag_sla_breach_secs;
-    int  lag_sla_critical_blocks;
-    int  lag_sla_critical_secs;
+    /* SLA thresholds: written under g_lms.lock by init/reload_from_env,
+     * read lock-free by lms_evaluate_lag_slo (catchup tick) and the
+     * stats snapshot. _Atomic to make those cross-thread reads/writes
+     * data-race-free. */
+    _Atomic int lag_sla_breach_blocks;
+    _Atomic int lag_sla_breach_secs;
+    _Atomic int lag_sla_critical_blocks;
+    _Atomic int lag_sla_critical_secs;
     _Atomic int64_t lag_breach_since;
     _Atomic int64_t lag_critical_since;
     _Atomic int lag_breach_emitted;

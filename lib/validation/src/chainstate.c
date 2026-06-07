@@ -173,27 +173,6 @@ bool block_map_insert(struct block_map *m, const struct uint256 *hash,
     return true;
 }
 
-const struct uint256 *block_map_find_hash(const struct block_map *m,
-                                           const struct uint256 *hash)
-{
-    if (m->capacity == 0) return NULL;
-    pthread_rwlock_rdlock((pthread_rwlock_t *)&m->rwlock);
-    uint64_t h = block_map_hash(hash);
-    size_t idx = h & (m->capacity - 1);
-    const struct uint256 *result = NULL;
-    for (size_t i = 0; i < m->capacity; i++) {
-        size_t slot = (idx + i) & (m->capacity - 1);
-        if (!m->buckets[slot].occupied)
-            break;
-        if (uint256_eq(&m->buckets[slot].hash, hash)) {
-            result = &m->buckets[slot].hash;
-            break;
-        }
-    }
-    pthread_rwlock_unlock((pthread_rwlock_t *)&m->rwlock);
-    return result;
-}
-
 size_t block_map_count(const struct block_map *m)
 {
     return m->size;

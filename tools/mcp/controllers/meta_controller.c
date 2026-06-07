@@ -214,14 +214,21 @@ static int h_zcl_logtail(const struct mcp_request *req,
             if (!tstr) continue;
             if (strncmp(tstr, dom, dlen) != 0) continue;
 
-            /* Write this event object */
+            /* Write this event object. Reserve headroom for a possible
+             * leading comma and the trailing "],\"matched\":N}" suffix. */
             if (pos + 2048 >= out_cap) break;
+            size_t avail = out_cap - pos - (first ? 0 : 1);
+            size_t need = json_write(ev, NULL, 0); /* sizing probe */
+            if (need >= avail) continue; /* drop this event, don't overrun */
             if (!first) out[pos++] = ',';
             first = false;
             pos += json_write(ev, out + pos, out_cap - pos);
             matched++;
         }
     }
+    /* Belt-and-suspenders: never let the trailing snprintf write past the
+     * buffer (out_cap - pos must stay a valid, non-underflowing size). */
+    if (pos >= out_cap) pos = out_cap - 1;
     pos += (size_t)snprintf(out + pos, out_cap - pos,
                             "],\"matched\":%zu}", matched);
 

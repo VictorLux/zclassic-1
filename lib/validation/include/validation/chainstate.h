@@ -75,8 +75,6 @@ void block_map_init(struct block_map *m);
 void block_map_free(struct block_map *m);
 struct block_index *block_map_find(const struct block_map *m,
                                     const struct uint256 *hash);
-const struct uint256 *block_map_find_hash(const struct block_map *m,
-                                           const struct uint256 *hash);
 bool block_map_insert(struct block_map *m, const struct uint256 *hash,
                       struct block_index *index);
 bool block_map_reserve(struct block_map *m, size_t expected_count);
