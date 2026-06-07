@@ -15,8 +15,11 @@
 #include "crypto/sha3.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
+#include "storage/progress_store.h"
+#include "util/log_macros.h"
 
 #include <sqlite3.h>
+#include <stdint.h>
 #include <string.h>
 
 bool coins_kv_ensure_schema(sqlite3 *db)
@@ -258,4 +261,143 @@ int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
 
     sha3_256_finalize(&ctx, out);
     return 0;
+}
+
+/* ── coins_applied_height — contiguous applied-frontier counter ──────────
+ *
+ * Stored as a stable 8-byte little-endian int64 blob under
+ * COINS_APPLIED_HEIGHT_KEY in progress_meta. LE so a value written on one
+ * machine reads back identically on any host (the blob is opaque to the
+ * progress_meta layer, which owns no integer encoding). */
+
+static void le64_put(uint8_t b[8], int64_t v)
+{
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++)
+        b[i] = (uint8_t)(u >> (8 * i));
+}
+
+static int64_t le64_get(const uint8_t b[8])
+{
+    uint64_t u = 0;
+    for (int i = 0; i < 8; i++)
+        u |= (uint64_t)b[i] << (8 * i);
+    return (int64_t)u;
+}
+
+bool coins_kv_set_applied_height_in_tx(sqlite3 *db, int32_t height)
+{
+    if (!db) return false;
+    /* Joins the caller's ALREADY-OPEN txn (progress_meta_set_in_tx issues NO
+     * inner BEGIN/COMMIT). A PLAIN set — the reorg path legitimately decreases
+     * the frontier, so NO monotonic-floor guard. */
+    uint8_t blob[8];
+    le64_put(blob, (int64_t)height);
+    return progress_meta_set_in_tx(db, COINS_APPLIED_HEIGHT_KEY,
+                                   blob, sizeof(blob));
+}
+
+bool coins_kv_get_applied_height(sqlite3 *db, int32_t *out, bool *found)
+{
+    if (found) *found = false;
+    if (!db) return false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    bool f = false;
+    if (!progress_meta_get(db, COINS_APPLIED_HEIGHT_KEY,
+                           blob, sizeof(blob), &n, &f))
+        return false;
+    if (!f) {
+        /* Absent → clean "unknown"; a fresh datadir is NOT 0-as-applied. */
+        return true;
+    }
+    if (n != sizeof(blob)) {
+        /* A row exists but the blob is the wrong width — malformed; treat as a
+         * hard read error rather than silently mis-decode a frontier. */
+        LOG_WARN("coins_kv",
+                 "[coins_kv] applied_height blob malformed (len=%zu)", n);
+        return false;
+    }
+    if (out) *out = (int32_t)le64_get(blob);
+    if (found) *found = true;
+    return true;
+}
+
+/* Read the durably committed utxo_apply stage cursor straight off the
+ * stage_cursor table on the progress.kv handle. Kept in the storage layer (a
+ * raw kernel-store read, same hatch as coins_kv_count) so the backfill below
+ * does not pull in the app/jobs stage_helpers inline. Returns false with
+ * *found=false when the row is absent (a brand-new datadir). */
+static bool utxo_apply_cursor_persisted(sqlite3 *db, int64_t *out, bool *found)
+{
+    if (found) *found = false;
+    if (!db || !out) return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = 'utxo_apply'",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bool ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int64(st, 0);
+        if (found) *found = true;
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool coins_kv_backfill_applied_height_if_absent(sqlite3 *db)
+{
+    if (!db) return true;  /* store not open yet → no-op, retried later */
+
+    bool present = false;
+    int32_t cur = 0;
+    if (!coins_kv_get_applied_height(db, &cur, &present))
+        return false;
+    if (present)
+        return true;  /* already seeded — never re-seed (allows later rewind) */
+
+    /* Derive the seed from the already-trusted utxo_apply cursor — NEVER from
+     * MAX(coins.height) (which cannot see an interior hole). A brand-new
+     * (virgin) datadir has no cursor row yet: leave the key ABSENT so the
+     * first forward apply writes it in lockstep with the cursor. */
+    int64_t cursor = 0;
+    bool have_cursor = false;
+    progress_store_tx_lock();
+    if (!utxo_apply_cursor_persisted(db, &cursor, &have_cursor)) {
+        progress_store_tx_unlock();
+        LOG_WARN("coins_kv", "[coins_kv] applied_height backfill: cursor read failed");
+        return false;
+    }
+    if (!have_cursor) {
+        progress_store_tx_unlock();
+        return true;  /* virgin datadir — nothing durable to seed from yet */
+    }
+
+    /* The ONE allowed standalone txn: a pure backfill of a derived value that
+     * already equals the durable cursor, with NO coin mutation. */
+    char *err = NULL;
+    bool ok = true;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && !coins_kv_set_applied_height_in_tx(db, (int32_t)cursor))
+        ok = false;
+    if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        if (err) LOG_WARN("coins_kv",
+                          "[coins_kv] applied_height backfill failed: %s", err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+
+    if (ok)
+        LOG_INFO("coins_kv",
+                 "[coins_kv] backfilled applied_height=%lld from utxo_apply cursor",
+                 (long long)cursor);
+    return ok;
 }

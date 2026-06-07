@@ -371,6 +371,17 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
     }
+    /* Pull the contiguous applied frontier BACK to fork_plus1 in THIS unwind
+     * txn — the exact value just written to the cursor — so coins_applied_height
+     * == utxo_apply cursor stays true across a reorg. A PLAIN set (allows the
+     * decrease): a monotonic-floor helper would BLOCK the legitimate rewind and
+     * strand the frontier ABOVE the rewound coins (a phantom-forward frontier
+     * the self-heal would wrongly trust). Co-committed with the inverse delta +
+     * cursor; ROLLBACK on failure like the surrounding writes. */
+    if (!coins_kv_set_applied_height_in_tx(db, fork_plus1)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
     if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] unwind COMMIT failed: %s", err ? err : "(no message)");
         if (err) sqlite3_free(err);

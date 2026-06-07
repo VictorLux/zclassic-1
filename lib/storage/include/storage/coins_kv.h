@@ -82,4 +82,40 @@ int coins_kv_commitment(struct sqlite3 *db, uint8_t out[32]);
 bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
                                      struct utxo_projection *proj);
 
+/* ── coins_applied_height — the canonical contiguous applied-frontier ──
+ *
+ * A single progress_meta key recording the contiguous applied frontier of the
+ * coins_kv UTXO set: it ALWAYS equals the utxo_apply stage cursor by
+ * construction (see docs/work/self-healing-reducer-plan.md). It is co-committed
+ * inside the SAME transaction as every coin mutation (forward apply, upstream-
+ * failed advance, and reorg unwind) so a missing-fsync interior drop can never
+ * leave the frontier ahead of the coins — unlike MAX(coins.height), which is
+ * only the most-recent surviving coin's creation height and cannot see an
+ * interior hole. This gives the self-heal a single non-divergent coins-frontier
+ * input with a stage-name-independent name. The value is stored as a stable
+ * little-endian int64 blob under this key. */
+#define COINS_APPLIED_HEIGHT_KEY "coins_applied_height"
+
+/* Write the applied frontier inside the caller's ALREADY-OPEN transaction
+ * (forward = stage_run_once's BEGIN IMMEDIATE; reorg = the unwind's own BEGIN
+ * IMMEDIATE). Wraps progress_meta_set_in_tx — NO inner BEGIN/COMMIT — so the
+ * height commits or rolls back as ONE unit with the coin mutation + cursor.
+ * This is a PLAIN set (allows decrease): the reorg path must pull the frontier
+ * BACK to fork+1, so a monotonic-floor helper must NEVER be used here.
+ * Returns false on failure so the caller can ROLLBACK. */
+bool coins_kv_set_applied_height_in_tx(struct sqlite3 *db, int32_t height);
+
+/* Read the applied frontier. *found is false (a clean "unknown") when the row
+ * is absent — a fresh / un-synced datadir reports ABSENT, never 0-as-applied.
+ * Returns false only on a hard read error (db NULL / malformed blob). */
+bool coins_kv_get_applied_height(struct sqlite3 *db, int32_t *out, bool *found);
+
+/* One-time idempotent boot backfill for existing datadirs that predate this
+ * key: if coins_applied_height is ABSENT, seed it (in its OWN BEGIN IMMEDIATE —
+ * the one allowed standalone txn, since it backfills a derived value that
+ * already equals the durable cursor with NO coin mutation) from the trusted
+ * utxo_apply stage cursor. NEVER seeds from MAX(coins.height). No-op once the
+ * key exists. Returns false on error (next boot retries). */
+bool coins_kv_backfill_applied_height_if_absent(struct sqlite3 *db);
+
 #endif /* STORAGE_COINS_KV_H */

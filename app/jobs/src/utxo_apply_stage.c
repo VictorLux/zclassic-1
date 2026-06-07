@@ -132,6 +132,13 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         if (!utxo_apply_log_insert(db, next_h, "upstream_failed", false,
                         0, 0, 0, NULL, NULL))
             return JOB_FATAL;
+        /* Advance the contiguous frontier in lockstep with the cursor on the
+         * no-coin-mutation skip path: coins_applied_height == utxo_apply cursor
+         * by construction, so the frontier never holes past a skipped height.
+         * In the SAME stage_run_once BEGIN IMMEDIATE → rolls back with the log
+         * row + cursor on failure. */
+        if (!coins_kv_set_applied_height_in_tx(db, (int32_t)(c->cursor_in + 1)))
+            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
         c->cursor_out = c->cursor_in + 1;
@@ -218,6 +225,16 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
                     summary.ok ? NULL : summary.failure_detail))
+        return JOB_FATAL;
+
+    /* Co-commit the contiguous applied frontier = the SAME value written to the
+     * stage cursor (cursor_in + 1), so coins_applied_height == utxo_apply cursor
+     * by construction on every advancing path that reaches here (a successful
+     * apply OR a non-fatal reject that still advances). Written in the SAME
+     * stage_run_once BEGIN IMMEDIATE that commits the coins delta + cursor +
+     * inverse-delta + log row, so a meta-write failure rolls back the whole
+     * step exactly like the apply_coins_kv failure handling. */
+    if (!coins_kv_set_applied_height_in_tx(db, (int32_t)(c->cursor_in + 1)))
         return JOB_FATAL;
 
     atomic_store(&g_last_advance_height, (int64_t)next_h);
@@ -319,6 +336,16 @@ bool utxo_apply_stage_init(struct main_state *ms)
         return false;
     }
     if (!coins_kv_ensure_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    /* One-time backfill for existing datadirs that predate coins_applied_height:
+     * seed the canonical contiguous frontier from the already-trusted utxo_apply
+     * cursor (NEVER from MAX(coins.height)). No-op once the key exists; a virgin
+     * datadir (no cursor row) is left ABSENT so the first forward apply writes it
+     * in lockstep with the cursor. Non-fatal — next boot retries. */
+    if (!coins_kv_backfill_applied_height_if_absent(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

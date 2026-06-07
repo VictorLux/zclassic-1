@@ -122,6 +122,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(snark_kat) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \
     X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
+    X(coins_applied_frontier) \
     X(connect_block_self_write) X(invalidateblock) \
     X(key_scrub) X(block_index_loader) X(chain_state_validator) \
     X(utxo_recovery_service) X(utxo_reimport_flag) \

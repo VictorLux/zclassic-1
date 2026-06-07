@@ -399,6 +399,7 @@ int test_invalidateblock(void);
 int test_reorg_parity(void);
 int test_reorg_projection_parity(void);
 int test_stage_reorg_unwind_parity(void);
+int test_coins_applied_frontier(void);
 int test_reducer_ingest_e2e(void);
 int test_reducer_step_drain_harness(void);
 int test_stage_reducer_unwedge(void);
