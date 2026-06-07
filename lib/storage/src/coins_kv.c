@@ -11,6 +11,7 @@
 #include "storage/coins_kv.h"
 
 #include "coins/coins_view.h"
+#include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
@@ -212,34 +213,14 @@ int coins_kv_commitment(sqlite3 *db, uint8_t out[32])
         int32_t  height = sqlite3_column_int(s, 4);
         int cb_int = sqlite3_column_int(s, 5);
 
-        /* BYTE-IDENTICAL to utxo_projection_commitment: txid(32) || vout(LE4)
-         * || value(LE8) || script_len(LE4) || script || height(LE4) || cb(1). */
-        sha3_256_write(&ctx, txid, 32);
-
-        uint8_t le4[4];
-        le4[0] = (uint8_t)(vout);       le4[1] = (uint8_t)(vout >>  8);
-        le4[2] = (uint8_t)(vout >> 16); le4[3] = (uint8_t)(vout >> 24);
-        sha3_256_write(&ctx, le4, 4);
-
-        uint8_t le8[8];
-        uint64_t v = (uint64_t)value;
-        for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
-        sha3_256_write(&ctx, le8, 8);
-
-        uint32_t slen = (uint32_t)(script_len > 0 ? script_len : 0);
-        le4[0] = (uint8_t)(slen);       le4[1] = (uint8_t)(slen >>  8);
-        le4[2] = (uint8_t)(slen >> 16); le4[3] = (uint8_t)(slen >> 24);
-        sha3_256_write(&ctx, le4, 4);
-        if (script && script_len > 0)
-            sha3_256_write(&ctx, script, (size_t)script_len);
-
-        uint32_t ht = (uint32_t)height;
-        le4[0] = (uint8_t)(ht);       le4[1] = (uint8_t)(ht >>  8);
-        le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
-        sha3_256_write(&ctx, le4, 4);
-
-        uint8_t cb_byte = (uint8_t)(cb_int ? 1 : 0);
-        sha3_256_write(&ctx, &cb_byte, 1);
+        /* Canonical must-never-fork record — see utxo_commitment.h. This is
+         * BYTE-IDENTICAL to utxo_projection_commitment / the legacy `utxos`
+         * commitment because all three share this single encoder. */
+        utxo_commitment_sha3_write_record(&ctx, txid, vout, value,
+                                          (script_len > 0) ? script : NULL,
+                                          (uint32_t)(script_len > 0 ? script_len : 0),
+                                          (uint32_t)height,
+                                          (uint8_t)(cb_int ? 1 : 0));
     }
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE)

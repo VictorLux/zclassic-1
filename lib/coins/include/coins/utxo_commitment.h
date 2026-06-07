@@ -106,6 +106,52 @@ bool utxo_commitment_load_checkpoint(struct sqlite3 *db,
 
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
+/* Single-source per-record serializer for the SHA3 UTXO commitment.
+ *
+ * Emits ONE record in the must-never-fork consensus byte layout:
+ *   txid(32) || vout_le(4) || value_le(8) || script_len_le(4) ||
+ *   script(var) || height_le(4) || is_coinbase(1)
+ * into `buf`, writing the total length to *out_len. `script_len` is
+ * the count actually emitted (0 if script==NULL). is_coinbase is
+ * normalized to 0/1.
+ *
+ * This is the authoritative encoder behind utxo_commitment_sha3_compute_table,
+ * utxo_projection_commitment, and coins_kv_commitment — feeding *buf into a
+ * SHA3-256 sponge in (txid,vout) row order is byte-for-byte equivalent to the
+ * separate per-field writes those callers historically did (a sponge does not
+ * distinguish write boundaries). A single endianness/field-order divergence
+ * here silently FORKS the chain, so this MUST stay the only copy.
+ *
+ * The caller's `buf` must hold at least UTXO_SHA3_RECORD_MAX(script_len)
+ * bytes. Returns false (and leaves *out_len 0) if buf_cap is too small or
+ * any pointer arg is NULL — callers fall back to streaming the fields
+ * directly when they cannot size a buffer for a pathological script. */
+#define UTXO_SHA3_RECORD_HDR  (32 + 4 + 8 + 4)   /* txid+vout+value+slen */
+#define UTXO_SHA3_RECORD_TRL  (4 + 1)            /* height+is_coinbase   */
+#define UTXO_SHA3_RECORD_MAX(script_len) \
+    ((size_t)UTXO_SHA3_RECORD_HDR + (size_t)(script_len) + UTXO_SHA3_RECORD_TRL)
+
+bool utxo_sha3_serialize_record(uint8_t *buf, size_t buf_cap, size_t *out_len,
+                                const uint8_t txid[32], uint32_t vout,
+                                int64_t value,
+                                const uint8_t *script, uint32_t script_len,
+                                uint32_t height, uint8_t is_coinbase);
+
+/* Absorb one canonical UTXO record into an in-progress SHA3-256 context.
+ * This is the streaming front-end every full-set commitment loop should use:
+ * it serializes the record (utxo_sha3_serialize_record) into a stack buffer
+ * and does ONE sha3_256_write, falling back to field-by-field writes through
+ * the identical layout only for the rare script too large for the buffer.
+ * `ctx` is a `struct sha3_256_ctx *` (opaque here to keep this header free of
+ * the crypto include); pass NULL script for an empty script. */
+struct sha3_256_ctx;
+void utxo_commitment_sha3_write_record(struct sha3_256_ctx *ctx,
+                                       const uint8_t txid[32], uint32_t vout,
+                                       int64_t value,
+                                       const uint8_t *script,
+                                       uint32_t script_len,
+                                       uint32_t height, uint8_t is_coinbase);
+
 /* Deterministic SHA3-256 hash over the canonically ordered UTXO set.
  * ORDER-DEPENDENT (unlike the XOR accumulator): rows are streamed in
  * (txid, vout) order into ONE SHA3 context, so the result is sensitive to

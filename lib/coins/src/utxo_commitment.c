@@ -224,6 +224,89 @@ bool utxo_commitment_load_checkpoint(sqlite3 *db,
 
 /* ── SHA3-256 full-set commitment ────────────────────────── */
 
+bool utxo_sha3_serialize_record(uint8_t *buf, size_t buf_cap, size_t *out_len,
+                                const uint8_t txid[32], uint32_t vout,
+                                int64_t value,
+                                const uint8_t *script, uint32_t script_len,
+                                uint32_t height, uint8_t is_coinbase)
+{
+    if (out_len) *out_len = 0;
+    if (!buf || !out_len || !txid) return false;
+
+    /* Emit nothing for the script if the pointer is NULL (matches the
+     * legacy callers, which gated the script write on `script && len>0`). */
+    uint32_t slen = (script != NULL) ? script_len : 0;
+    if (buf_cap < UTXO_SHA3_RECORD_MAX(slen)) return false;
+
+    uint8_t *p = buf;
+    memcpy(p, txid, 32);                                       p += 32;
+    *p++ = (uint8_t)(vout);       *p++ = (uint8_t)(vout >> 8);
+    *p++ = (uint8_t)(vout >> 16); *p++ = (uint8_t)(vout >> 24);
+    uint64_t v = (uint64_t)value;
+    for (int i = 0; i < 8; i++) *p++ = (uint8_t)(v >> (8 * i));
+    *p++ = (uint8_t)(slen);       *p++ = (uint8_t)(slen >> 8);
+    *p++ = (uint8_t)(slen >> 16); *p++ = (uint8_t)(slen >> 24);
+    if (slen > 0) { memcpy(p, script, slen); p += slen; }
+    uint32_t ht = height;
+    *p++ = (uint8_t)(ht);       *p++ = (uint8_t)(ht >> 8);
+    *p++ = (uint8_t)(ht >> 16); *p++ = (uint8_t)(ht >> 24);
+    *p++ = (uint8_t)(is_coinbase ? 1 : 0);
+
+    *out_len = (size_t)(p - buf);
+    return true;
+}
+
+void utxo_commitment_sha3_write_record(struct sha3_256_ctx *ctx,
+                                       const uint8_t txid[32], uint32_t vout,
+                                       int64_t value,
+                                       const uint8_t *script,
+                                       uint32_t script_len,
+                                       uint32_t height, uint8_t is_coinbase)
+{
+    if (!ctx || !txid) return;
+
+    uint32_t slen = (script != NULL) ? script_len : 0;
+
+    /* Pack the record into one stack buffer and absorb it in a single write.
+     * A sponge does not distinguish write boundaries, so this is byte-for-byte
+     * identical to streaming the fields separately — but does one write instead
+     * of seven in the hot loop over ~1.3M UTXOs. Real ZCL output scripts fit
+     * easily in SCRIPT_INLINE_CAP; the rare oversized script streams the fields
+     * field-by-field through the same canonical layout so behavior stays
+     * unconditional. */
+    enum { SCRIPT_INLINE_CAP = 1024 };
+    uint8_t rec[UTXO_SHA3_RECORD_MAX(SCRIPT_INLINE_CAP)];
+    size_t rec_len = 0;
+    if (utxo_sha3_serialize_record(rec, sizeof(rec), &rec_len,
+                                   txid, vout, value, script, slen,
+                                   height, is_coinbase)) {
+        sha3_256_write(ctx, rec, rec_len);
+        return;
+    }
+
+    /* Script too large for the inline buffer: stream the fields in the SAME
+     * canonical order. */
+    sha3_256_write(ctx, txid, 32);
+    uint8_t le4[4];
+    le4[0] = (uint8_t)(vout);       le4[1] = (uint8_t)(vout >>  8);
+    le4[2] = (uint8_t)(vout >> 16); le4[3] = (uint8_t)(vout >> 24);
+    sha3_256_write(ctx, le4, 4);
+    uint8_t le8[8];
+    uint64_t v = (uint64_t)value;
+    for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
+    sha3_256_write(ctx, le8, 8);
+    le4[0] = (uint8_t)(slen);       le4[1] = (uint8_t)(slen >>  8);
+    le4[2] = (uint8_t)(slen >> 16); le4[3] = (uint8_t)(slen >> 24);
+    sha3_256_write(ctx, le4, 4);
+    if (slen > 0)
+        sha3_256_write(ctx, script, (size_t)slen);
+    le4[0] = (uint8_t)(height);       le4[1] = (uint8_t)(height >>  8);
+    le4[2] = (uint8_t)(height >> 16); le4[3] = (uint8_t)(height >> 24);
+    sha3_256_write(ctx, le4, 4);
+    uint8_t cb = (uint8_t)(is_coinbase ? 1 : 0);
+    sha3_256_write(ctx, &cb, 1);
+}
+
 void utxo_commitment_sha3_compute_table(sqlite3 *db, const char *table,
                                         uint8_t out[32],
                                         uint64_t *utxo_count)
@@ -264,62 +347,11 @@ void utxo_commitment_sha3_compute_table(sqlite3 *db, const char *table,
         int32_t height = sqlite3_column_int(s, 4);
         int is_coinbase = sqlite3_column_int(s, 5);
 
-        /* Serialize: txid(32) || vout_le(4) || value_le(8) ||
-         *            script_len_le(4) || script(var) ||
-         *            height_le(4) || is_coinbase(1)
-         *
-         * Pack the whole fixed-layout record into one stack buffer and
-         * feed it to the sponge with a single sha3_256_write. This is
-         * byte-for-byte identical to the prior seven separate writes
-         * (verified against the committed UTXO-set seals + the streamed-
-         * vs-oneshot SHA3 test), but does one absorb call instead of
-         * seven per UTXO — fewer branches and partial-lane memcpys in
-         * the hot loop over ~1.3M UTXOs. Real ZCL output scripts fit
-         * easily in SCRIPT_INLINE_CAP; the rare oversized script falls
-         * back to the original multi-write so behavior is unconditional.
-         */
-        uint32_t slen = (uint32_t)(script_len > 0 ? script_len : 0);
-        enum { SCRIPT_INLINE_CAP = 1024,
-               REC_HDR = 32 + 4 + 8 + 4, REC_TRL = 4 + 1 };
-
-        if (script_len <= SCRIPT_INLINE_CAP) {
-            uint8_t rec[REC_HDR + SCRIPT_INLINE_CAP + REC_TRL];
-            uint8_t *p = rec;
-            memcpy(p, txid, 32);                                p += 32;
-            *p++ = (uint8_t)(vout);       *p++ = (uint8_t)(vout >> 8);
-            *p++ = (uint8_t)(vout >> 16); *p++ = (uint8_t)(vout >> 24);
-            uint64_t v = (uint64_t)value;
-            for (int i = 0; i < 8; i++) *p++ = (uint8_t)(v >> (8 * i));
-            *p++ = (uint8_t)(slen);       *p++ = (uint8_t)(slen >> 8);
-            *p++ = (uint8_t)(slen >> 16); *p++ = (uint8_t)(slen >> 24);
-            if (script && script_len > 0) { memcpy(p, script, slen); p += slen; }
-            uint32_t ht = (uint32_t)height;
-            *p++ = (uint8_t)(ht);       *p++ = (uint8_t)(ht >> 8);
-            *p++ = (uint8_t)(ht >> 16); *p++ = (uint8_t)(ht >> 24);
-            *p++ = (uint8_t)(is_coinbase ? 1 : 0);
-            sha3_256_write(&ctx, rec, (size_t)(p - rec));
-        } else {
-            sha3_256_write(&ctx, txid, 32);
-            uint8_t le4[4];
-            le4[0] = (uint8_t)(vout); le4[1] = (uint8_t)(vout >> 8);
-            le4[2] = (uint8_t)(vout >> 16); le4[3] = (uint8_t)(vout >> 24);
-            sha3_256_write(&ctx, le4, 4);
-            uint8_t le8[8];
-            uint64_t v = (uint64_t)value;
-            for (int i = 0; i < 8; i++) le8[i] = (uint8_t)(v >> (8 * i));
-            sha3_256_write(&ctx, le8, 8);
-            le4[0] = (uint8_t)(slen); le4[1] = (uint8_t)(slen >> 8);
-            le4[2] = (uint8_t)(slen >> 16); le4[3] = (uint8_t)(slen >> 24);
-            sha3_256_write(&ctx, le4, 4);
-            if (script && script_len > 0)
-                sha3_256_write(&ctx, script, (size_t)script_len);
-            uint32_t ht = (uint32_t)height;
-            le4[0] = (uint8_t)(ht); le4[1] = (uint8_t)(ht >> 8);
-            le4[2] = (uint8_t)(ht >> 16); le4[3] = (uint8_t)(ht >> 24);
-            sha3_256_write(&ctx, le4, 4);
-            uint8_t cb = (uint8_t)(is_coinbase ? 1 : 0);
-            sha3_256_write(&ctx, &cb, 1);
-        }
+        utxo_commitment_sha3_write_record(&ctx, txid, vout, value,
+                                          (script_len > 0) ? script : NULL,
+                                          (uint32_t)(script_len > 0 ? script_len : 0),
+                                          (uint32_t)height,
+                                          (uint8_t)(is_coinbase ? 1 : 0));
 
         count++;
     }
