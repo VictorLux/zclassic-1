@@ -502,6 +502,7 @@ int test_validate_headers_stage(void);
 int test_body_fetch_stage(void);
 int test_body_persist_stage(void);
 int test_created_outputs_index(void);
+int test_coins_kv(void);
 int test_stage_repair(void);
 int test_script_validate_stage(void);
 int test_proof_validate_stage(void);
