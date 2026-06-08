@@ -17,7 +17,104 @@
 static _Atomic int g_local_height_at_detect = -1;
 static _Atomic int g_hstar_at_detect = -1;
 static _Atomic int g_sweep_top_at_detect = -1;
+static _Atomic int g_validate_headers_cursor_at_detect = -1;
+static _Atomic int g_body_fetch_cursor_at_detect = -1;
+static _Atomic int g_body_persist_cursor_at_detect = -1;
+static _Atomic int g_script_validate_cursor_at_detect = -1;
+static _Atomic int g_proof_validate_cursor_at_detect = -1;
+static _Atomic int g_utxo_apply_cursor_at_detect = -1;
+static _Atomic int g_tip_finalize_cursor_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
+
+static bool read_reducer_cursor(sqlite3 *db, const char *name, int *out)
+{
+    if (out)
+        *out = -1;
+    if (!db || !name || !name[0] || !out)
+        return false;
+
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT cursor FROM stage_cursor WHERE name = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] cursor "
+                 "prepare failed stage=%s: %s",
+                 name, sqlite3_errmsg(db));
+        progress_store_tx_unlock();
+        return false;
+    }
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] cursor "
+                 "step failed stage=%s rc=%d: %s",
+                 name, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return true;
+}
+
+static void snapshot_reducer_cursors(sqlite3 *db)
+{
+    int cursor = -1;
+
+    if (read_reducer_cursor(db, "validate_headers", &cursor))
+        atomic_store(&g_validate_headers_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "body_fetch", &cursor))
+        atomic_store(&g_body_fetch_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "body_persist", &cursor))
+        atomic_store(&g_body_persist_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "script_validate", &cursor))
+        atomic_store(&g_script_validate_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "proof_validate", &cursor))
+        atomic_store(&g_proof_validate_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "utxo_apply", &cursor))
+        atomic_store(&g_utxo_apply_cursor_at_detect, cursor);
+    if (read_reducer_cursor(db, "tip_finalize", &cursor))
+        atomic_store(&g_tip_finalize_cursor_at_detect, cursor);
+}
+
+static bool cursor_changed(sqlite3 *db, const char *name,
+                           const _Atomic int *captured)
+{
+    int before = atomic_load(captured);
+    if (before < 0)
+        return false;
+
+    int now = -1;
+    if (!read_reducer_cursor(db, name, &now))
+        return false;
+    return now >= 0 && now != before;
+}
+
+static bool reducer_cursor_witnessed(sqlite3 *db)
+{
+    return cursor_changed(db, "validate_headers",
+                          &g_validate_headers_cursor_at_detect) ||
+           cursor_changed(db, "body_fetch",
+                          &g_body_fetch_cursor_at_detect) ||
+           cursor_changed(db, "body_persist",
+                          &g_body_persist_cursor_at_detect) ||
+           cursor_changed(db, "script_validate",
+                          &g_script_validate_cursor_at_detect) ||
+           cursor_changed(db, "proof_validate",
+                          &g_proof_validate_cursor_at_detect) ||
+           cursor_changed(db, "utxo_apply",
+                          &g_utxo_apply_cursor_at_detect) ||
+           cursor_changed(db, "tip_finalize",
+                          &g_tip_finalize_cursor_at_detect);
+}
 
 static bool peer_lag_allows_repair(struct main_state *ms)
 {
@@ -62,6 +159,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
                  active_chain_height(&ms->chain_active));
     atomic_store(&g_hstar_at_detect, rr.hstar);
     atomic_store(&g_sweep_top_at_detect, rr.sweep_top);
+    snapshot_reducer_cursors(db);
     return rr.refused_coin_tear || rr.repaired;
 }
 
@@ -90,18 +188,31 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                  rr.coins_applied_height, rr.hstar);
         return COND_REMEDY_FAILED;
     }
+    if (rr.value_overflow_repair_owner_refused) {
+        LOG_WARN("condition",
+                 "[condition:reducer_frontier_reconcile_light] refused "
+                 "value_overflow repair h=%d: owner ack missing",
+                 rr.value_overflow_repair_height);
+        return COND_REMEDY_FAILED;
+    }
     if (!rr.repaired)
         return COND_REMEDY_SKIP;
 
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] hstar=%d "
-             "coins_applied=%d sweep_top=%d body_fetch=%d->%d "
+             "coins_applied=%d sweep_top=%d validate_headers=%d->%d "
+             "body_fetch=%d->%d body_persist=%d->%d "
              "tip_finalize=%d->%d scripts_set=%d have_data_set=%d "
-             "have_data_cleared=%d failed_mask_cleared=%d",
+             "have_data_cleared=%d validate_hash_split=%d "
+             "failed_mask_cleared=%d",
              rr.hstar, rr.coins_applied_height, rr.sweep_top,
+             rr.validate_headers_cursor_before,
+             rr.validate_headers_cursor_after,
              rr.body_fetch_cursor_before, rr.body_fetch_cursor_after,
+             rr.body_persist_cursor_before, rr.body_persist_cursor_after,
              rr.tip_finalize_cursor_before, rr.tip_finalize_cursor_after,
              rr.scripts_set, rr.have_data_set, rr.have_data_cleared,
+             rr.lowest_validate_headers_hash_split,
              rr.failed_mask_cleared);
     return COND_REMEDY_OK;
 }
@@ -119,7 +230,11 @@ static bool witness_reducer_frontier_reconcile_light(int64_t target_at_detect)
         return false;
 
     int now = active_chain_height(&ms->chain_active);
-    return now > before;
+    if (now > before)
+        return true;
+
+    sqlite3 *db = progress_store_db();
+    return reducer_cursor_witnessed(db);
 }
 
 static struct condition c_reducer_frontier_reconcile_light = {
@@ -146,6 +261,13 @@ void reducer_frontier_reconcile_light_test_reset(void)
     atomic_store(&g_local_height_at_detect, -1);
     atomic_store(&g_hstar_at_detect, -1);
     atomic_store(&g_sweep_top_at_detect, -1);
+    atomic_store(&g_validate_headers_cursor_at_detect, -1);
+    atomic_store(&g_body_fetch_cursor_at_detect, -1);
+    atomic_store(&g_body_persist_cursor_at_detect, -1);
+    atomic_store(&g_script_validate_cursor_at_detect, -1);
+    atomic_store(&g_proof_validate_cursor_at_detect, -1);
+    atomic_store(&g_utxo_apply_cursor_at_detect, -1);
+    atomic_store(&g_tip_finalize_cursor_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     condition_reset_state(&c_reducer_frontier_reconcile_light);
     atomic_store(&s->last_remedy_unix, (int64_t)0);

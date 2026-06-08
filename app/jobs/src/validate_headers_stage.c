@@ -111,7 +111,9 @@ static char            g_datadir[2048] = {0};
  * forward-progress behavior identical to before for genuine rejections. */
 static inline bool vh_failure_is_repairable(const char *reason)
 {
-    return reason && strcmp(reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0;
+    return reason &&
+           (strcmp(reason, STAGE_REPAIR_SOLUTIONLESS_REASON) == 0 ||
+            strcmp(reason, "header-source-hash-mismatch") == 0);
 }
 
 /* ── Worker pool ──────────────────────────────────────────────────── */

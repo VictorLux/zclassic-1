@@ -50,6 +50,10 @@ static bool seed_schema(sqlite3 *db)
 {
     return
         exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS header_admit_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+            "parent_hash BLOB, admitted_at INTEGER NOT NULL)") &&
+        exec_sql(db,
             "CREATE TABLE IF NOT EXISTS validate_headers_log ("
             "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
             "fail_reason TEXT, validated_at INTEGER)") &&
@@ -61,6 +65,11 @@ static bool seed_schema(sqlite3 *db)
             "CREATE TABLE IF NOT EXISTS body_persist_log ("
             "height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL)") &&
         exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS body_fetch_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB, source TEXT,"
+            "bytes INTEGER, fetched_at INTEGER, ok INTEGER,"
+            "fail_reason TEXT)") &&
+        exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
         exec_sql(db,
@@ -70,6 +79,44 @@ static bool seed_schema(sqlite3 *db)
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
             "tip_hash BLOB)");
+}
+
+static bool put_body_fetch_ok(sqlite3 *db, int height,
+                              const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO body_fetch_log"
+            "(height,hash,source,bytes,fetched_at,ok,fail_reason) "
+            "VALUES(?,?,'disk',0,1,1,NULL)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_header_admit(sqlite3 *db, int height,
+                             const struct uint256 *hash,
+                             const struct uint256 *parent_hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    if (parent_hash)
+        sqlite3_bind_blob(st, 3, parent_hash->data, 32, SQLITE_STATIC);
+    else
+        sqlite3_bind_null(st, 3);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 static bool seed_cursor(sqlite3 *db, const char *name, int cursor)
@@ -145,6 +192,20 @@ static bool put_simple_log(sqlite3 *db, const char *table, int height,
         return false;
     sqlite3_bind_int(st, 1, height);
     sqlite3_bind_int(st, 2, ok_flag);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool delete_height(sqlite3 *db, const char *table, int height)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height=?", table);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -247,13 +308,20 @@ static bool setup_fixture(struct rfrl_fixture *fx, const char *tag)
     if (!fx->idx[1] || !fx->idx[2] || !fx->idx[3])
         return false;
 
+    if (!put_header_admit(progress_store_db(), A + 1, &fx->hashes[1], NULL) ||
+        !put_header_admit(progress_store_db(), A + 2, &fx->hashes[2],
+                          &fx->hashes[1]) ||
+        !put_header_admit(progress_store_db(), A + 3, &fx->hashes[3],
+                          &fx->hashes[2]))
+        return false;
+
     if (!put_upstream_ok(progress_store_db(), A + 1, &fx->hashes[1]) ||
         !put_upstream_ok(progress_store_db(), A + 2, &fx->hashes[2]) ||
         !put_upstream_ok(progress_store_db(), A + 3, &fx->hashes[3]))
         return false;
     if (!put_tip_log(progress_store_db(), A + 1, 1, &fx->hashes[1]))
         return false;
-    if (!seed_coins_applied(progress_store_db(), A + 1))
+    if (!seed_coins_applied(progress_store_db(), A + 2))
         return false;
     return true;
 }
@@ -303,14 +371,22 @@ int test_reducer_frontier_reconcile_light(void)
                    dry.repaired && dry.hstar == A + 1 &&
                    dry.sweep_top == A + 3 &&
                    dry.lowest_have_data_cleared == A + 2 &&
+                   dry.lowest_validate_headers_refill_hole == -1 &&
+                   dry.lowest_body_fetch_refill_hole == A + 2 &&
+                   dry.lowest_body_persist_refill_hole == -1 &&
+                   dry.validate_headers_cursor_before == A + 4 &&
+                   dry.validate_headers_cursor_after == A + 4 &&
                    dry.body_fetch_cursor_before == A + 4 &&
                    dry.body_fetch_cursor_after == A + 2 &&
                    dry.clamped_body_fetch &&
+                   !dry.clamped_body_persist &&
                    dry.tip_finalize_cursor_after == A + 2);
         RFRL_CHECK("dry-run does not mutate",
                    fx.idx[2]->nStatus == before2 &&
                    fx.idx[3]->nStatus == before3 &&
+                   cursor_value(db, "validate_headers") == A + 4 &&
                    cursor_value(db, "body_fetch") == A + 4 &&
+                   cursor_value(db, "body_persist") == A + 4 &&
                    cursor_value(db, "tip_finalize") == A + 4);
 
         struct stage_reducer_frontier_reconcile_result applied;
@@ -319,9 +395,12 @@ int test_reducer_frontier_reconcile_light(void)
                        db, &fx.ms, &applied));
         RFRL_CHECK("apply clamps body_fetch and tip_finalize",
                    cursor_value(db, "tip_finalize") == A + 2 &&
+                   cursor_value(db, "validate_headers") == A + 4 &&
                    cursor_value(db, "body_fetch") == A + 2 &&
+                   cursor_value(db, "body_persist") == A + 4 &&
                    cursor_value(db, "utxo_apply") == A + 4 &&
                    applied.clamped_body_fetch &&
+                   !applied.clamped_body_persist &&
                    applied.clamped_tip_finalize);
         RFRL_CHECK("script bits restored",
                    (fx.idx[2]->nStatus & BLOCK_VALID_MASK) ==
@@ -336,6 +415,105 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("proved stale failure mask cleared",
                    (fx.idx[3]->nStatus & BLOCK_FAILED_MASK) == 0 &&
                    applied.failed_mask_cleared == 1);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup validate-refill-hole fixture",
+                   setup_fixture(&fx, "validate_refill_hole"));
+        sqlite3 *db = progress_store_db();
+
+        fx.idx[2]->nStatus = BLOCK_VALID_SCRIPTS;
+        fx.idx[3]->nStatus = BLOCK_VALID_SCRIPTS;
+        RFRL_CHECK("validate-refill-hole: seed later body_fetch row",
+                   put_body_fetch_ok(db, A + 3, &fx.hashes[3]));
+        RFRL_CHECK("validate-refill-hole: delete reducer rows at hole",
+                   delete_height(db, "validate_headers_log", A + 2) &&
+                   delete_height(db, "body_fetch_log", A + 2) &&
+                   delete_height(db, "body_persist_log", A + 2) &&
+                   delete_height(db, "script_validate_log", A + 2) &&
+                   delete_height(db, "proof_validate_log", A + 2) &&
+                   delete_height(db, "utxo_apply_log", A + 2));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("validate-refill-hole: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("validate-refill-hole: clamps upstream refill cursors",
+                   rr.lowest_validate_headers_refill_hole == A + 2 &&
+                   rr.lowest_body_fetch_refill_hole == -1 &&
+                   rr.lowest_body_persist_refill_hole == -1 &&
+                   rr.clamped_validate_headers &&
+                   rr.clamped_body_fetch &&
+                   rr.clamped_body_persist &&
+                   cursor_value(db, "validate_headers") == A + 2 &&
+                   cursor_value(db, "body_fetch") == A + 2 &&
+                   cursor_value(db, "body_persist") == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 2);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup validate-hash-split fixture",
+                   setup_fixture(&fx, "validate_hash_split"));
+        sqlite3 *db = progress_store_db();
+
+        struct uint256 stale = fx.hashes[2];
+        stale.data[0] ^= 0x5a;
+        RFRL_CHECK("validate-hash-split: seed stale validate hash",
+                   put_hash_log(db, "validate_headers_log", "hash",
+                                A + 2, 1, &stale));
+        RFRL_CHECK("validate-hash-split: seed coins above split hstar",
+                   seed_coins_applied(db, A + 3));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("validate-hash-split: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("validate-hash-split: clamps validate before coin refusal",
+                   rr.repaired &&
+                   !rr.refused_coin_tear &&
+                   rr.lowest_validate_headers_hash_split == A + 2 &&
+                   rr.lowest_validate_headers_refill_hole == -1 &&
+                   rr.clamped_validate_headers &&
+                   !rr.clamped_body_fetch &&
+                   !rr.clamped_body_persist &&
+                   cursor_value(db, "validate_headers") == A + 2 &&
+                   cursor_value(db, "body_fetch") == A + 4 &&
+                   cursor_value(db, "body_persist") == A + 4 &&
+                   cursor_value(db, "tip_finalize") == A + 4);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup body-refill-hole fixture",
+                   setup_fixture(&fx, "body_refill_hole"));
+        sqlite3 *db = progress_store_db();
+
+        fx.idx[2]->nStatus = BLOCK_VALID_SCRIPTS;
+        fx.idx[3]->nStatus = BLOCK_VALID_SCRIPTS;
+        RFRL_CHECK("body-refill-hole: seed body_fetch rows around hole",
+                   put_body_fetch_ok(db, A + 1, &fx.hashes[1]) &&
+                   put_body_fetch_ok(db, A + 3, &fx.hashes[3]));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("body-refill-hole: apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("body-refill-hole: clamps to missing body_fetch row",
+                   rr.lowest_have_data_cleared == -1 &&
+                   rr.lowest_validate_headers_refill_hole == -1 &&
+                   rr.lowest_body_fetch_refill_hole == A + 2 &&
+                   rr.lowest_body_persist_refill_hole == -1 &&
+                   rr.clamped_body_fetch &&
+                   !rr.clamped_body_persist &&
+                   cursor_value(db, "body_fetch") == A + 2);
 
         teardown_fixture(&fx);
     }
@@ -375,7 +553,7 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("served-floor cannot override coins cap",
                    rr.hstar == A + 1 &&
                    rr.served_floor == A + 3 &&
-                   rr.coins_applied_height == A + 1 &&
+                   rr.coins_applied_height == A + 2 &&
                    rr.tip_finalize_cursor_after == A + 2 &&
                    cursor_value(db, "tip_finalize") == A + 2 &&
                    rr.clamped_tip_finalize);
@@ -391,7 +569,7 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("seed contiguous hstar above coins_applied",
                    put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
                    put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
-                   seed_coins_applied(db, A + 2));
+                   seed_coins_applied(db, A + 3));
 
         struct stage_reducer_frontier_reconcile_result rr;
         RFRL_CHECK("coin-lag apply succeeds",
@@ -399,7 +577,7 @@ int test_reducer_frontier_reconcile_light(void)
                        db, &fx.ms, &rr));
         RFRL_CHECK("coin-lag caps tip_finalize at coins_applied + 1",
                    rr.hstar == A + 3 &&
-                   rr.coins_applied_height == A + 2 &&
+                   rr.coins_applied_height == A + 3 &&
                    rr.tip_finalize_cursor_after == A + 3 &&
                    cursor_value(db, "tip_finalize") == A + 3 &&
                    rr.clamped_tip_finalize);
@@ -454,9 +632,10 @@ int test_reducer_frontier_reconcile_light(void)
                   reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
                   cursor_value(db, "body_fetch") == A + 2 &&
                   cursor_value(db, "tip_finalize") == A + 2 &&
-                  snap.currently_active &&
-                  snap.attempts == 1 &&
-                  snap.last_outcome == COND_REMEDY_UNWITNESSED &&
+                  !snap.currently_active &&
+                  snap.attempts == 0 &&
+                  snap.last_outcome == COND_REMEDY_SKIP &&
+                  snap.cleared_count == 1 &&
                   !snap.operator_needed_emitted;
 
         condition_engine_tick();
@@ -464,9 +643,11 @@ int test_reducer_frontier_reconcile_light(void)
             "reducer_frontier_reconcile_light", &snap);
         ok = ok && got &&
              reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
-             snap.attempts == 1 &&
+             !snap.currently_active &&
+             snap.attempts == 0 &&
+             snap.cleared_count == 1 &&
              !snap.operator_needed_emitted;
-        RFRL_CHECK("zero-peer condition repairs once without paging", ok);
+        RFRL_CHECK("zero-peer condition witnesses cursor repair", ok);
 
         sync_monitor_set_context(NULL, NULL, NULL);
         sync_monitor_test_set_tip_advance_ts(0);

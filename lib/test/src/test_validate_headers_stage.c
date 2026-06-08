@@ -17,6 +17,7 @@
 
 #include "chain/chain.h"
 #include "core/uint256.h"
+#include "domain/consensus/verify.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "primitives/block.h"
@@ -24,6 +25,7 @@
 #include "jobs/stage_repair.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/block_index_db.h"
+#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/txdb.h"
 #include "util/blocker.h"
@@ -83,6 +85,113 @@ static bool vh_db_put_block(struct node_db *ndb, int height,
     blk.solution = (uint8_t *)sol;           /* may be NULL → empty col */
     blk.solution_len = sol_len;
     return db_block_save(ndb, &blk);
+}
+
+static bool vh_header_from_bi_solution(const struct block_index *bi,
+                                       const unsigned char *sol,
+                                       size_t sol_len,
+                                       struct block_header *out)
+{
+    if (!bi || !out || (!sol && sol_len > 0) ||
+        sol_len > MAX_SOLUTION_SIZE)
+        return false;
+    if (bi->nHeight > 0 && (!bi->pprev || !bi->pprev->phashBlock))
+        return false;
+
+    block_header_init(out);
+    out->nVersion = bi->nVersion;
+    if (bi->pprev && bi->pprev->phashBlock)
+        out->hashPrevBlock = *bi->pprev->phashBlock;
+    out->hashMerkleRoot = bi->hashMerkleRoot;
+    out->hashFinalSaplingRoot = bi->hashFinalSaplingRoot;
+    out->nTime = bi->nTime;
+    out->nBits = bi->nBits;
+    out->nNonce = bi->nNonce;
+    if (sol_len > 0) {
+        memcpy(out->nSolution, sol, sol_len);
+        out->nSolutionSize = sol_len;
+    }
+    return true;
+}
+
+static bool vh_set_bi_hash_for_solution(struct block_index *bi,
+                                        struct uint256 *hash_slot,
+                                        const unsigned char *sol,
+                                        size_t sol_len)
+{
+    struct block_header h;
+    if (!vh_header_from_bi_solution(bi, sol, sol_len, &h))
+        return false;
+    block_header_get_hash(&h, hash_slot);
+    bi->phashBlock = hash_slot;
+    return true;
+}
+
+static bool vh_grind_pow(struct block_header *h, struct uint256 *hash_out,
+                         uint32_t max_trials)
+{
+    const struct chain_params *cp = chain_params_get();
+    if (!h || !hash_out || !cp)
+        return false;
+    for (uint32_t i = 0; i < max_trials; i++) {
+        memcpy(h->nNonce.data, &i, sizeof(i));
+        block_header_get_hash(h, hash_out);
+        if (domain_consensus_verify_pow_solution(hash_out, h->nBits,
+                                                 &cp->consensus).ok)
+            return true;
+    }
+    return false;
+}
+
+static bool vh_db_put_header(struct node_db *ndb, int height,
+                             const struct block_header *h,
+                             const struct uint256 *hash)
+{
+    if (!ndb || !h || !hash)
+        return false;
+    struct db_block blk;
+    memset(&blk, 0, sizeof(blk));
+    memcpy(blk.hash, hash->data, 32);
+    blk.height = height;
+    memcpy(blk.prev_hash, h->hashPrevBlock.data, 32);
+    blk.version = h->nVersion;
+    memcpy(blk.merkle_root, h->hashMerkleRoot.data, 32);
+    blk.time = h->nTime;
+    blk.bits = h->nBits;
+    memcpy(blk.nonce, h->nNonce.data, 32);
+    blk.solution = (uint8_t *)h->nSolution;
+    blk.solution_len = h->nSolutionSize;
+    memset(blk.chain_work, 0x44, 32);
+    blk.status = 3;
+    blk.num_tx = 1;
+    memcpy(blk.sapling_root, h->hashFinalSaplingRoot.data, 32);
+    return db_block_save(ndb, &blk);
+}
+
+static bool vh_write_disk_block_for_index(const char *datadir,
+                                          const struct block_header *h,
+                                          struct block_index *bi,
+                                          struct uint256 *hash_slot)
+{
+    const struct chain_params *cp = chain_params_get();
+    if (!datadir || !h || !bi || !hash_slot || !cp)
+        return false;
+
+    struct block b;
+    block_init(&b);
+    b.header = *h;
+
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    if (!write_block_to_disk(&b, &pos, datadir, cp->pchMessageStart))
+        return false;
+
+    block_header_get_hash(h, hash_slot);
+    bi->phashBlock = hash_slot;
+    bi->nStatus |= BLOCK_HAVE_DATA;
+    bi->nFile = pos.nFile;
+    bi->nDataPos = pos.nPos;
+    return true;
 }
 
 static int mkdir_p_vh(const char *p)
@@ -212,7 +321,10 @@ static bool reason_is_pre_pow(const char *reason)
            strcmp(reason, "no-header-solution-backfill-required") == 0 ||
            strcmp(reason, "disk-read-failed") == 0 ||
            strcmp(reason, "no-repair-store") == 0 ||
-           strcmp(reason, "no-repair-header") == 0;
+           strcmp(reason, "no-repair-header") == 0 ||
+           strcmp(reason, "no-node-db-header") == 0 ||
+           strcmp(reason, "header-source-hash-mismatch") == 0 ||
+           strstr(reason, "-hash-mismatch") != NULL;
 }
 
 /* Insert a failed (ok=0) validate_headers_log row at `height` carrying
@@ -552,6 +664,10 @@ int test_validate_headers_stage(void)
                  sc.blocks[0].nSolution != NULL);
         if (sc.blocks[0].nSolution)
             memset(sc.blocks[0].nSolution, 0, sc.blocks[0].nSolutionSize);
+        VH_CHECK("index-header: bind phashBlock to index header",
+                 vh_set_bi_hash_for_solution(&sc.blocks[0], &sc.hashes[0],
+                                             sc.blocks[0].nSolution,
+                                             sc.blocks[0].nSolutionSize));
 
         header_admit_stage_drain(10);
         VH_CHECK("index-header: validate one row",
@@ -749,6 +865,9 @@ int test_validate_headers_stage(void)
                           dir, sizeof(dir), &ms, &sc) == 0);
         /* Leave sc.blocks[0].nSolution NULL (index empty) and inject the
          * fixture node.db so the fallback resolves it. */
+        VH_CHECK("fallback: bind phashBlock to solution fallback header",
+                 vh_set_bi_hash_for_solution(&sc.blocks[0], &sc.hashes[0],
+                                             sol, sizeof(sol)));
         validate_headers_validator_set_node_db(&ndb);
 
         header_admit_stage_drain(10);
@@ -772,6 +891,108 @@ int test_validate_headers_stage(void)
         validate_headers_validator_set_node_db(NULL);
         vh_teardown(dir, &ms, &sc);
         node_db_close(&ndb);
+    }
+
+    /* ── full node.db header source wins over stale block_index fields ─ */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("node-db-header: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        chain_params_select(CHAIN_REGTEST);
+        VH_CHECK("node-db-header: setup default validator",
+                 vh_setup("node_db_header", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        struct block_header h;
+        block_header_init(&h);
+        h.nVersion = 4;
+        h.hashMerkleRoot.data[0] = 0x31;
+        h.hashFinalSaplingRoot.data[0] = 0x32;
+        h.nTime = 1700000300u;
+        h.nBits = 0x200f0f0f; /* regtest powLimit compact */
+        h.nSolutionSize = 32;
+        memset(h.nSolution, 0x42, h.nSolutionSize);
+        struct uint256 hash;
+        VH_CHECK("node-db-header: grind PoW-valid synthetic header",
+                 vh_grind_pow(&h, &hash, 100000));
+        VH_CHECK("node-db-header: save full node.db header",
+                 vh_db_put_header(&ndb, 0, &h, &hash));
+
+        sc.hashes[0] = hash;
+        sc.blocks[0].phashBlock = &sc.hashes[0];
+        sc.blocks[0].nBits = 0x1f07ffff;
+        sc.blocks[0].nNonce.data[0] ^= 0x7f;
+        sc.blocks[0].nSolutionSize = 32;
+        sc.blocks[0].nSolution = zcl_malloc(sc.blocks[0].nSolutionSize,
+                                            "vh_stale_index_solution");
+        VH_CHECK("node-db-header: alloc stale index solution",
+                 sc.blocks[0].nSolution != NULL);
+        if (sc.blocks[0].nSolution)
+            memset(sc.blocks[0].nSolution, 0xEE,
+                   sc.blocks[0].nSolutionSize);
+
+        validate_headers_validator_set_node_db(&ndb);
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("node-db-header: full header reaches Equihash verdict",
+                 !ok && strcmp(reason, "invalid-solution") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+        chain_params_select(CHAIN_MAIN);
+    }
+
+    /* ── disk block source covers stale / empty SQL header sources ───── */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct node_db ndb;
+        VH_CHECK("disk-block: node.db opens",
+                 node_db_open(&ndb, ":memory:"));
+
+        chain_params_select(CHAIN_REGTEST);
+        VH_CHECK("disk-block: setup default validator",
+                 vh_setup("disk_block_source", 1, NULL, NULL,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+
+        struct block_header h;
+        block_header_init(&h);
+        h.nVersion = 4;
+        h.hashMerkleRoot.data[0] = 0x51;
+        h.hashFinalSaplingRoot.data[0] = 0x52;
+        h.nTime = 1700000400u;
+        h.nBits = 0x200f0f0f; /* regtest powLimit compact */
+        h.nSolutionSize = 32;
+        memset(h.nSolution, 0x5A, h.nSolutionSize);
+        struct uint256 hash;
+        VH_CHECK("disk-block: grind PoW-valid synthetic header",
+                 vh_grind_pow(&h, &hash, 100000));
+        VH_CHECK("disk-block: write full block to disk",
+                 vh_write_disk_block_for_index(dir, &h, &sc.blocks[0],
+                                               &sc.hashes[0]));
+
+        /* Force earlier index/SQL sources to be unusable; the disk block is
+         * the only source carrying bytes that hash-bind to phashBlock. */
+        sc.blocks[0].nBits = 0x1f07ffff;
+        sc.blocks[0].nNonce.data[0] ^= 0x9b;
+        free(sc.blocks[0].nSolution);
+        sc.blocks[0].nSolution = NULL;
+        sc.blocks[0].nSolutionSize = 0;
+        validate_headers_validator_set_node_db(&ndb);
+
+        char reason[VH_MAX_REASON] = {0};
+        bool ok = validate_headers_default_validator(
+            &sc.blocks[0], dir, reason, sizeof(reason), NULL);
+        VH_CHECK("disk-block: full block header reaches validation",
+                 !ok && strcmp(reason, "invalid-solution") == 0);
+
+        validate_headers_validator_set_node_db(NULL);
+        vh_teardown(dir, &ms, &sc);
+        node_db_close(&ndb);
+        chain_params_select(CHAIN_MAIN);
     }
 
     /* ── Item 2: node.db ALSO empty → fail with backfill reason (b) ── *
@@ -1201,6 +1422,9 @@ int test_validate_headers_stage(void)
         VH_CHECK("clamp: seed frontier ok=0",
                  seed_failed_vh_row(db, 4, sc.blocks[4].phashBlock,
                                     "no-header-solution-backfill-required"));
+        VH_CHECK("clamp: seed frontier hash-mismatch ok=0",
+                 seed_failed_vh_row(db, 5, sc.blocks[5].phashBlock,
+                                    "header-source-hash-mismatch"));
 
         /* Forward drain caught up (validate==header_admit==6 ⇒ step_once runs
          * the recheck), and the pipeline is durably BLOCKED at height 4
@@ -1234,6 +1458,9 @@ int test_validate_headers_stage(void)
         int ok = -1;
         VH_CHECK("clamp: frontier h=4 now ok=1",
                  log_row_at(db, 4, &ok, NULL, 0) && ok == 1);
+        ok = -1;
+        VH_CHECK("clamp: hash-mismatch frontier h=5 now ok=1",
+                 log_row_at(db, 5, &ok, NULL, 0) && ok == 1);
 
         /* Load-bearing assertion: the ancient h=1 row was clamped OUT of the
          * scan window, so it is untouched — still ok=0. Without the clamp the

@@ -9,7 +9,9 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
+#include "jobs/created_outputs_index.h"
 #include "jobs/script_validate_stage.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -173,6 +175,39 @@ static bool fake_prevout(const struct outpoint *prevout, struct tx_out *out,
         }
     }
     return false;
+}
+
+static bool retarget_spend(struct synth_chain_sv *sc, int spend_h,
+                           int created_h)
+{
+    if (!sc || spend_h < 0 || spend_h >= sc->n ||
+        created_h < 0 || created_h >= sc->n)
+        return false;
+    struct block *b = &sc->bodies[spend_h];
+    b->vtx[1].vin[0].prevout.hash = sc->prev_hashes[created_h];
+    b->vtx[1].vin[0].prevout.n = 0;
+    transaction_compute_hash(&b->vtx[1]);
+    struct uint256 txids[2] = { b->vtx[0].hash, b->vtx[1].hash };
+    b->header.hashMerkleRoot = compute_merkle_root(txids, 2);
+    block_header_get_hash(&b->header, &sc->hashes[spend_h]);
+    sc->blocks[spend_h].hashMerkleRoot = b->header.hashMerkleRoot;
+    return true;
+}
+
+static bool seed_coins_frontier(sqlite3 *db, int32_t frontier)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = coins_kv_set_applied_height_in_tx(db, frontier);
+    if (ok)
+        ok = sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err) sqlite3_free(err);
+    return ok;
 }
 
 static bool exec_sql(sqlite3 *db, const char *sql)
@@ -368,6 +403,79 @@ int test_script_validate_stage(void)
         SV_CHECK("internal_error: h=1 status",
                  strcmp(status, "prevout_unresolved") == 0);
         sv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct synth_chain_sv sc;
+        test_fmt_tmpdir(dir, sizeof(dir), "script_validate",
+                        "bounded_created");
+        mkdir_p_sv("./test-tmp");
+        mkdir_p_sv(dir);
+        SV_CHECK("bounded_created: progress opens",
+                 progress_store_open(dir));
+        SV_CHECK("bounded_created: chain builds",
+                 synth_chain_sv_build(&sc, 3));
+        SV_CHECK("bounded_created: block2 spends block1 output",
+                 retarget_spend(&sc, 2, 1));
+        SV_CHECK("bounded_created: index schema",
+                 created_outputs_index_ensure_schema(progress_store_db()));
+        SV_CHECK("bounded_created: index block1",
+                 created_outputs_index_put_block(progress_store_db(),
+                                                 &sc.bodies[1], 1));
+        SV_CHECK("bounded_created: seed frontier",
+                 seed_coins_frontier(progress_store_db(), 1));
+        struct script_validate_dry_run_report dry;
+        SV_CHECK("bounded_created: dry-run resolves above-frontier coin",
+                 script_validate_stage_dry_run_block(&sc.bodies[2], 2,
+                                                     &dry) &&
+                 dry.ok && strcmp(dry.status, "verified") == 0);
+        synth_chain_sv_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    {
+        char dir[256]; struct synth_chain_sv sc;
+        test_fmt_tmpdir(dir, sizeof(dir), "script_validate",
+                        "bounded_future_coin");
+        mkdir_p_sv("./test-tmp");
+        mkdir_p_sv(dir);
+        SV_CHECK("bounded_future_coin: progress opens",
+                 progress_store_open(dir));
+        SV_CHECK("bounded_future_coin: chain builds",
+                 synth_chain_sv_build(&sc, 3));
+        struct uint256 future_txid;
+        uint256_set_null(&future_txid);
+        future_txid.data[0] = 0x77;
+        future_txid.data[31] = 0x88;
+        sc.bodies[2].vtx[1].vin[0].prevout.hash = future_txid;
+        sc.bodies[2].vtx[1].vin[0].prevout.n = 0;
+        transaction_compute_hash(&sc.bodies[2].vtx[1]);
+        struct uint256 txids[2] = {
+            sc.bodies[2].vtx[0].hash,
+            sc.bodies[2].vtx[1].hash,
+        };
+        sc.bodies[2].header.hashMerkleRoot = compute_merkle_root(txids, 2);
+        SV_CHECK("bounded_future_coin: index schema",
+                 created_outputs_index_ensure_schema(progress_store_db()));
+        SV_CHECK("bounded_future_coin: coin schema",
+                 coins_kv_ensure_schema(progress_store_db()));
+        unsigned char sc_true[1] = { OP_TRUE };
+        SV_CHECK("bounded_future_coin: seed live future coin",
+                 coins_kv_add(progress_store_db(), future_txid.data, 0,
+                              100000000, 3, false, sc_true,
+                              sizeof(sc_true)));
+        SV_CHECK("bounded_future_coin: seed frontier ahead of block",
+                 seed_coins_frontier(progress_store_db(), 4));
+        struct script_validate_dry_run_report dry;
+        SV_CHECK("bounded_future_coin: dry-run rejects future coin",
+                 script_validate_stage_dry_run_block(&sc.bodies[2], 2,
+                                                     &dry) &&
+                 !dry.ok &&
+                 strcmp(dry.status, "prevout_unresolved") == 0);
+        synth_chain_sv_free(&sc);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
     }
 
     {

@@ -50,6 +50,7 @@
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define UAVB_CHECK(name, expr) do {                  \
@@ -373,6 +374,7 @@ int test_utxo_apply_value_balance(void)
                 uavb_set_cursor_and_frontier(db, 3);
             UAVB_CHECK("(d) repair stale rows seeded", seeded);
 
+            setenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK", "1", 1);
             struct utxo_apply_value_overflow_repair_result rr;
             bool ok = utxo_apply_repair_value_overflow_hole(
                 db, 1, 3, &block_hash, &b, &rr);
@@ -404,6 +406,7 @@ int test_utxo_apply_value_balance(void)
             UAVB_CHECK("(d) marker guard stops second attempt",
                        ok && rr.marker_seen && !rr.repaired &&
                        stage_cursor_persisted(db, "utxo_apply", "uavb") == 3);
+            unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
         }
         block_free(&b);
         uavb_repair_fixture_close(dir);
@@ -427,6 +430,7 @@ int test_utxo_apply_value_balance(void)
                           uavb_set_cursor_and_frontier(db, 3);
             UAVB_CHECK("(e) author guard rows seeded", seeded);
 
+            unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
             utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
             struct utxo_apply_value_overflow_repair_result rr;
             bool ok = utxo_apply_repair_value_overflow_hole(
@@ -436,6 +440,14 @@ int test_utxo_apply_value_balance(void)
                        stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
                        uavb_row_exists(db, "utxo_apply_log", 1));
             utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+
+            memset(&rr, 0, sizeof(rr));
+            ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            UAVB_CHECK("(e) owner gate refuses without mutation",
+                       ok && rr.owner_refused && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
+                       uavb_row_exists(db, "utxo_apply_log", 1));
         }
         block_free(&b);
 
@@ -445,6 +457,7 @@ int test_utxo_apply_value_balance(void)
         if (built) {
             struct uint256 bad_hash;
             block_get_hash(&bad, &bad_hash);
+            setenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK", "1", 1);
             struct utxo_apply_value_overflow_repair_result rr;
             bool ok = utxo_apply_repair_value_overflow_hole(
                 db, 1, 3, &bad_hash, &bad, &rr);
@@ -452,6 +465,7 @@ int test_utxo_apply_value_balance(void)
                        ok && rr.genuinely_invalid && !rr.repaired &&
                        stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
                        uavb_row_exists(db, "utxo_apply_log", 1));
+            unsetenv("ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK");
         }
         block_free(&bad);
         utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);

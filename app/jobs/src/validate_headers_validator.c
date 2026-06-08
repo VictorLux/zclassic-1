@@ -16,6 +16,7 @@
 #include "jobs/stage_repair.h"
 #include "models/block.h"
 #include "primitives/block.h"
+#include "storage/disk_block_io.h"
 #include "storage/block_index_db.h"
 #include "storage/progress_store.h"
 #include "validation/check_block.h"
@@ -168,6 +169,90 @@ static bool header_from_node_db_solution(const struct block_index *bi,
     return true;
 }
 
+static bool header_from_node_db_block(const struct block_index *bi,
+                                      struct block_header *out,
+                                      char *out_reason,
+                                      size_t out_reason_size)
+{
+    struct node_db *ndb = fallback_node_db();
+    if (!ndb) {
+        snprintf(out_reason, out_reason_size, "no-node-db-header");
+        return false;
+    }
+    if (!bi || !bi->phashBlock || !out) {
+        snprintf(out_reason, out_reason_size, "null-block-index");
+        return false;
+    }
+    if (!db_block_load_header_by_hash_height(ndb, bi->nHeight,
+                                             bi->phashBlock->data, out)) {
+        snprintf(out_reason, out_reason_size, "no-node-db-header");
+        return false;
+    }
+    return true;
+}
+
+static bool validate_header_fields(const struct block_header *header,
+                                   const struct chain_params *cp,
+                                   char *out_reason,
+                                   size_t out_reason_size);
+
+static bool header_hash_matches_index(const struct block_header *header,
+                                      const struct block_index *bi);
+
+static bool header_from_disk_block_file(const struct block_index *bi,
+                                        const char *datadir,
+                                        struct block_header *out,
+                                        char *out_reason,
+                                        size_t out_reason_size)
+{
+    if (!bi || !out || !datadir || datadir[0] == 0) {
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+    if (!(bi->nStatus & BLOCK_HAVE_DATA) || bi->nFile < 0) {
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_index_pread(&blk, bi, datadir)) {
+        block_free(&blk);
+        snprintf(out_reason, out_reason_size, "no-disk-block-header");
+        return false;
+    }
+
+    *out = blk.header;
+    block_free(&blk);
+    return true;
+}
+
+static bool validate_from_disk_block_file(
+    const struct block_index *bi,
+    const char *datadir,
+    const struct chain_params *cp,
+    char *out_reason,
+    size_t out_reason_size,
+    bool *had_hash_bound_header)
+{
+    if (had_hash_bound_header)
+        *had_hash_bound_header = false;
+
+    struct block_header h;
+    if (!header_from_disk_block_file(bi, datadir, &h, out_reason,
+                                     out_reason_size))
+        return false;
+
+    if (!header_hash_matches_index(&h, bi)) {
+        snprintf(out_reason, out_reason_size, "disk-block-hash-mismatch");
+        return false;
+    }
+
+    if (had_hash_bound_header)
+        *had_hash_bound_header = true;
+    return validate_header_fields(&h, cp, out_reason, out_reason_size);
+}
+
 /* ── Default validator: PoW target + Equihash ────────────────────── */
 
 static bool header_from_block_index(const struct block_index *bi,
@@ -282,6 +367,50 @@ static bool validate_header_fields(const struct block_header *header,
     return true;
 }
 
+static bool header_hash_matches_index(const struct block_header *header,
+                                      const struct block_index *bi)
+{
+    if (!header || !bi || !bi->phashBlock)
+        return false;
+    struct uint256 hash;
+    block_header_get_hash(header, &hash);
+    return uint256_eq(&hash, bi->phashBlock);
+}
+
+typedef bool (*header_source_fn)(const struct block_index *bi,
+                                 struct block_header *out,
+                                 char *out_reason,
+                                 size_t out_reason_size);
+
+static bool validate_from_source(header_source_fn fn,
+                                 const char *source_name,
+                                 const struct block_index *bi,
+                                 const struct chain_params *cp,
+                                 char *out_reason,
+                                 size_t out_reason_size,
+                                 bool *had_hash_bound_header,
+                                 bool *had_hash_mismatch)
+{
+    if (had_hash_bound_header)
+        *had_hash_bound_header = false;
+
+    struct block_header h;
+    if (!fn(bi, &h, out_reason, out_reason_size))
+        return false;
+
+    if (!header_hash_matches_index(&h, bi)) {
+        if (had_hash_mismatch)
+            *had_hash_mismatch = true;
+        snprintf(out_reason, out_reason_size,
+                 "%s-hash-mismatch", source_name);
+        return false;
+    }
+
+    if (had_hash_bound_header)
+        *had_hash_bound_header = true;
+    return validate_header_fields(&h, cp, out_reason, out_reason_size);
+}
+
 bool validate_headers_default_validator(const struct block_index *bi,
                                         const char *datadir,
                                         char *out_reason,
@@ -308,8 +437,10 @@ bool validate_headers_default_validator(const struct block_index *bi,
         return false;
     }
 
-    /* (3) Header source resolution — ONE ordered resolver, four sources,
-     * EVERY one funneling through the SAME validate_header_fields below.
+    /* (3) Header source resolution — ONE ordered resolver, five sources.
+     * A source can produce a terminal PoW/Equihash verdict only after its
+     * assembled header hashes back to bi->phashBlock. A mismatch is treated
+     * as a stale/corrupt source and falls through to the next candidate.
      *
      * FIRST source: the progress.kv header_solution_repair side-table.
      * header_probe writes this row at accept_block_header time for the
@@ -317,31 +448,63 @@ bool validate_headers_default_validator(const struct block_index *bi,
      * the persisted node.db tip (the wedge). When it holds a (hash-bound)
      * solution it hashes to bi->phashBlock identically to every other
      * source, so the PoW/Equihash verdict is source-independent. */
-    struct block_header index_header;
-    if (header_from_repair_table(bi, &index_header,
-                                 out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
+    bool had_hash_mismatch = false;
+    bool had_hash_bound_header = false;
+    if (validate_from_source(header_from_repair_table, "repair-header",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* node.db blocks rows are keyed by the active-chain hash/height pair
+     * and carry the full stored header. This source must precede the
+     * in-memory index: after a stale block-index load, the index fields can
+     * be inconsistent with phashBlock even though node.db has the canonical
+     * connected header. */
+    if (validate_from_source(header_from_node_db_block, "node-db-header",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
+
+    /* Full block files are the next strongest source on a full datadir copy:
+     * read the indexed block, hash-bind it to bi->phashBlock, then validate
+     * the exact on-disk header. This covers node.db rows with missing/stale
+     * solution bytes without trusting the body source blindly. */
+    if (validate_from_disk_block_file(bi, datadir, cp, out_reason,
+                                      out_reason_size,
+                                      &had_hash_bound_header))
+        return true;
+    if (had_hash_bound_header)
+        return false;
 
     /* The block index stores full header fields, including nonce and
      * Equihash solution, for headers admitted through normal P2P/RPC
      * paths. Validate from that header snapshot next. */
-    if (header_from_block_index(bi, &index_header,
-                                out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
+    if (validate_from_source(header_from_block_index, "block-index",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
 
     /* Restart/load paths deliberately keep the Equihash solution out
      * of the hot in-memory index to save RAM. The persisted block-index
      * record still owns it, so load that compact header record instead
      * of making header validation depend on readable block bodies. */
-    if (header_from_persisted_block_index(bi, &index_header,
-                                          out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
+    if (validate_from_source(header_from_persisted_block_index,
+                             "persisted-index", bi, cp,
+                             out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
 
     /* Final source: the node.db blocks.solution BLOB. A cold-imported /
      * near-empty LevelDB leaves both index paths solution-less even though
@@ -350,11 +513,15 @@ bool validate_headers_default_validator(const struct block_index *bi,
      * + check_equihash_solution). On a node.db that ALSO lacks the solution
      * this still FAILS with "no-header-solution-backfill-required" — never a
      * false pass. */
-    if (header_from_node_db_solution(bi, &index_header,
-                                     out_reason, out_reason_size)) {
-        return validate_header_fields(&index_header, cp,
-                                      out_reason, out_reason_size);
-    }
+    if (validate_from_source(header_from_node_db_solution, "node-db-solution",
+                             bi, cp, out_reason, out_reason_size,
+                             &had_hash_bound_header,
+                             &had_hash_mismatch))
+        return true;
+    if (had_hash_bound_header)
+        return false;
 
+    if (had_hash_mismatch)
+        snprintf(out_reason, out_reason_size, "header-source-hash-mismatch");
     return false;
 }

@@ -137,6 +137,73 @@ static bool cursor_at(sqlite3 *db, const char *name, int64_t *out)
     return rc_ok;
 }
 
+/* A tip_finalize status="anchor" row written by tip_finalize_stage_seed_anchor()
+ * is the durable marker for a logless trusted reducer base. Generic active-tip
+ * reanchors use the same row shape, so a candidate is trusted only when every
+ * reducer stage cursor has reached at least H+1 and, if it has advanced beyond
+ * H+1, the first row above the anchor is ok=1. That accepts fresh seed anchors
+ * with no rows yet while rejecting stale served-tip anchors above the upstream
+ * reducer frontier. */
+static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
+{
+    int64_t first = (int64_t)height + 1;
+    if (first > INT32_MAX)
+        return false;
+
+    for (int i = 0; i < k_logs_n; i++) {
+        int64_t cursor = 0;
+        if (!cursor_at(db, k_logs[i].cursor_name, &cursor))
+            return false;
+        if (cursor < first)
+            return false;
+        if (cursor == first)
+            continue;
+
+        enum log_row_state row;
+        if (!log_ok_at(db, k_logs[i].log_table, (int32_t)first, &row))
+            return false;
+        if (row != LOG_ROW_OK)
+            return false;
+    }
+    return true;
+}
+
+static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
+                                   int32_t *out)
+{
+    *out = compiled_anchor;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height FROM tip_finalize_log "
+            "WHERE ok = 1 AND status = 'anchor' AND height >= ? "
+            "ORDER BY height DESC",
+            -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("reducer", "prepare trusted anchor failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, compiled_anchor);
+
+    bool rc_ok = true;
+    while (true) {
+        int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+        if (rc == SQLITE_ROW) {
+            int32_t h = (int32_t)sqlite3_column_int64(st, 0);
+            if (reducer_anchor_candidate_ok(db, h)) {
+                *out = h;
+                break;
+            }
+        } else if (rc == SQLITE_DONE) {
+            break;
+        } else {
+            LOG_WARN("reducer", "step trusted anchor failed: %s",
+                     sqlite3_errmsg(db));
+            rc_ok = false;
+            break;
+        }
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
 /* served_floor = MAX(height FROM tip_finalize_log WHERE ok=1), or 0.
  * Scans the WHOLE log (including stale-debris rows below H*): served_floor
  * is reported independently of H* precisely so a torn view (a tip finalized
@@ -243,7 +310,10 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
      * the compiled constant if the checkpoint table is somehow empty, so H*
      * still has a hard floor. */
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-    int32_t anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t compiled_anchor = cp ? cp->height : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t anchor = compiled_anchor;
+    if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
+        LOG_FAIL("reducer", "trusted anchor read failed");
 
     *served_floor = 0;
     /* served_floor is independent of H* (C-served): report the deepest
@@ -294,10 +364,10 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     int32_t coins_applied = 0;
     bool coins_found = false;
     if (coins_kv_get_applied_height(progress_db, &coins_applied, &coins_found)
-        && coins_found && coins_applied > hs) {
+        && coins_found && coins_applied > hs + 1) {
         LOG_WARN("reducer",
-                 "coins_applied=%d > hstar=%d (possible coin tear)",
-                 coins_applied, hs);
+                 "coins_applied=%d > hstar_cursor=%d (possible coin tear)",
+                 coins_applied, hs + 1);
     }
 
     /* HARD GUARD — never rewind across finality. */

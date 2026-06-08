@@ -19,7 +19,17 @@
 
 #include <sqlite3.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+#define VALUE_OVERFLOW_REPAIR_ACK_ENV \
+    "ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK"
+
+static bool owner_ack_value_overflow_repair(void)
+{
+    const char *v = getenv(VALUE_OVERFLOW_REPAIR_ACK_ENV);
+    return v && strcmp(v, "1") == 0;
+}
 
 static int repair_row_still_present(sqlite3 *db, int height,
                                     const char *want_status)
@@ -189,6 +199,17 @@ bool utxo_apply_repair_value_overflow_hole(
                  "[utxo_apply] value_overflow repair refused h=%d: "
                  "utxo author is not stage",
                  height);
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    if (!owner_ack_value_overflow_repair()) {
+        local.owner_refused = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair owner-gated h=%d: "
+                 "set %s=1 only on an operator-approved datadir copy",
+                 height, VALUE_OVERFLOW_REPAIR_ACK_ENV);
         if (out)
             *out = local;
         return true;

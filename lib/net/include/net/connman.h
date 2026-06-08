@@ -114,9 +114,10 @@ void connman_open_connection(struct connman *cm,
                               const struct net_address *addr);
 
 /* Kick the seed-discovery loop: re-add fixed seeds + retry DNS resolve.
- * Safe to call from any thread; idempotent. Used by the sync watchdog
- * when it detects a peer-floor breach or single-peer recovery state to
- * widen the addrman selection without waiting for the adaptive timer. */
+ * Safe to call from any thread; idempotent. In -connect mode this is a no-op:
+ * explicit peers are the entire outbound universe. Used by the sync watchdog
+ * when it detects a peer-floor breach or single-peer recovery state to widen
+ * the addrman selection without waiting for the adaptive timer. */
 void connman_kick_seed_discovery(struct connman *cm);
 
 void connman_set_onion_peer_discovery(struct connman *cm,

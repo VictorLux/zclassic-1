@@ -14,6 +14,7 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
+#include "coins/coins.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "json/json.h"
@@ -30,7 +31,6 @@
 #include "script/script.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
-#include "storage/txdb.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -50,8 +50,6 @@
 #include <time.h>
 
 #define STAGE_NAME "script_validate"
-
-extern struct block_tree_db *g_active_block_tree;
 
 /* struct body_persist_row + the script_validate_log schema/migrations/read/
  * write helpers live in script_validate_log_store.c (pure sqlite kernel
@@ -97,59 +95,12 @@ static _Atomic int64_t  g_last_advance_height = -1;
 static _Atomic uint64_t g_header_event_emit_total = 0;
 static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 
-static bool read_tx_from_index(const struct uint256 *txid,
-                               struct transaction *tx)
-{
-    if (!g_active_block_tree || !g_ms || !g_ms->fTxIndex)
-        return false;
-
-    struct disk_tx_pos pos;
-    disk_tx_pos_init(&pos);
-    if (!block_tree_db_read_tx_index(g_active_block_tree, txid, &pos))
-        return false;
-
-    disk_block_io_lock();
-    FILE *f = open_block_file(g_datadir, &pos.block_pos, true);
-    if (!f) {
-        disk_block_io_unlock();
-        return false;
-    }
-
-    bool ok = false;
-    if (fseek(f, (long)pos.block_pos.nPos + (long)pos.nTxOffset,
-              SEEK_SET) == 0) {
-        unsigned char tx_buf[2 * 1024 * 1024];
-        size_t tx_read = fread(tx_buf, 1, sizeof(tx_buf), f); // disk-io-lock: held
-        if (tx_read > 0) {
-            struct byte_stream s;
-            stream_init_from_data(&s, tx_buf, tx_read);
-            transaction_free(tx);
-            transaction_init(tx);
-            ok = transaction_deserialize(tx, &s);
-        }
-    }
-    disk_block_io_release_handle(f);
-    disk_block_io_unlock();
-    return ok;
-}
-
-static bool default_prevout(const struct outpoint *prevout,
-                            struct tx_out *out, void *user)
-{
-    (void)user;
-    if (!prevout || !out)
-        return false;
-    struct transaction tx;
-    transaction_init(&tx);
-    bool ok = read_tx_from_index(&prevout->hash, &tx);
-    if (ok && prevout->n < tx.num_vout) {
-        *out = tx.vout[prevout->n];
-    } else {
-        ok = false;
-    }
-    transaction_free(&tx);
-    return ok;
-}
+struct created_prevout_view {
+    sqlite3 *db;
+    int height;
+    int frontier;
+    bool have_frontier;
+};
 
 /* Production prevout resolver (P0 §2.1) — resolves an outpoint to its spent
  * output WITHOUT requiring -txindex, correct at the script_validate frontier
@@ -166,7 +117,6 @@ static bool default_prevout(const struct outpoint *prevout,
 static bool created_index_prevout(const struct outpoint *prevout,
                                   struct tx_out *out, void *user)
 {
-    (void)user;
     if (!prevout || !out)
         return false;
 
@@ -174,9 +124,50 @@ static bool created_index_prevout(const struct outpoint *prevout,
     unsigned char script[MAX_SCRIPT_SIZE];
     size_t slen = 0;
 
-    sqlite3 *db = progress_store_db();
-    if (db && created_outputs_index_get(db, prevout->hash.data, prevout->n,
-                                        &value, script, sizeof(script), &slen)) {
+    const struct created_prevout_view *view = user;
+    sqlite3 *db = view && view->db ? view->db : progress_store_db();
+    if (!db)
+        return false;
+
+    if (view && view->have_frontier) {
+        int min_created = view->frontier <= view->height ? view->frontier : 0;
+        int created_h = -1;
+        if (created_outputs_index_get_bounded(
+                db, prevout->hash.data, prevout->n, min_created,
+                view->height, &value, script, sizeof(script), &slen,
+                &created_h)) {
+            if (slen > MAX_SCRIPT_SIZE)
+                return false;
+            out->value = value;
+            script_set(&out->script_pub_key, script, slen);
+            return true;
+        }
+
+        struct coins c;
+        coins_init(&c);
+        if (coins_kv_get_coins(db, prevout->hash.data, &c)) {
+            bool usable = c.height < view->frontier &&
+                          c.height <= view->height &&
+                          prevout->n < c.num_vout &&
+                          !tx_out_is_null(&c.vout[prevout->n]);
+            if (usable) {
+                const struct tx_out *src = &c.vout[prevout->n];
+                size_t src_len = src->script_pub_key.size;
+                if (src_len <= MAX_SCRIPT_SIZE) {
+                    out->value = src->value;
+                    script_set(&out->script_pub_key,
+                               src->script_pub_key.data, src_len);
+                    coins_free(&c);
+                    return true;
+                }
+            }
+            coins_free(&c);
+        }
+        return false;
+    }
+
+    if (created_outputs_index_get(db, prevout->hash.data, prevout->n,
+                                  &value, script, sizeof(script), &slen)) {
         if (slen > MAX_SCRIPT_SIZE)
             return false;  /* never silently truncate a scriptPubKey */
         out->value = value;
@@ -196,6 +187,25 @@ static bool created_index_prevout(const struct outpoint *prevout,
     return false;
 }
 
+static void created_prevout_view_init(struct created_prevout_view *view,
+                                      int height)
+{
+    memset(view, 0, sizeof(*view));
+    view->db = progress_store_db();
+    view->height = height;
+    view->frontier = 0;
+    view->have_frontier = false;
+    if (!view->db)
+        return;
+
+    int32_t frontier = 0;
+    bool found = false;
+    if (coins_kv_get_applied_height(view->db, &frontier, &found) && found) {
+        view->frontier = frontier;
+        view->have_frontier = true;
+    }
+}
+
 static void validate_summary_init(struct validate_summary *s)
 {
     memset(s, 0, sizeof(*s));
@@ -206,9 +216,13 @@ static void validate_summary_init(struct validate_summary *s)
     uint256_set_null(&s->first_failure_txid);
 }
 
-static void validate_block_scripts(const struct block *blk, int height,
-                                   bool count_counters,
-                                   struct validate_summary *out)
+static void validate_block_scripts_with_prevout(
+    const struct block *blk,
+    int height,
+    bool count_counters,
+    script_validate_prevout_fn override_prevout,
+    void *override_user,
+    struct validate_summary *out)
 {
     validate_summary_init(out);
     if (!blk) {
@@ -225,6 +239,14 @@ static void validate_block_scripts(const struct block *blk, int height,
     uint32_t branch_id = consensus_current_epoch_branch_id(
         height, &chain_params_get()->consensus);
 
+    struct created_prevout_view default_view;
+    created_prevout_view_init(&default_view, height);
+    script_validate_prevout_fn default_resolver =
+        g_prevout ? g_prevout : created_index_prevout;
+    void *default_user = g_prevout_user;
+    if (default_resolver == created_index_prevout && !default_user)
+        default_user = &default_view;
+
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
         const struct transaction *tx = &blk->vtx[ti];
         out->tx_count++;
@@ -238,8 +260,10 @@ static void validate_block_scripts(const struct block *blk, int height,
             struct tx_out prev;
             tx_out_set_null(&prev);
             script_validate_prevout_fn resolver =
-                g_prevout ? g_prevout : default_prevout;
-            if (!resolver(&tx->vin[vi].prevout, &prev, g_prevout_user)) {
+                override_prevout ? override_prevout : default_resolver;
+            void *resolver_user =
+                override_prevout ? override_user : default_user;
+            if (!resolver(&tx->vin[vi].prevout, &prev, resolver_user)) {
                 out->ok = 0;
                 out->internal_error = 1;
                 if (out->first_failure_vin < 0) {
@@ -301,16 +325,19 @@ static void validate_block_scripts(const struct block *blk, int height,
     }
 }
 
-bool script_validate_stage_dry_run_block(
+static bool dry_run_block_impl(
     const struct block *blk,
     int height,
+    script_validate_prevout_fn prevout,
+    void *prevout_user,
     struct script_validate_dry_run_report *out)
 {
     if (!blk || !out)
         LOG_FAIL("script_validate", "dry_run_block: bad input");
 
     struct validate_summary summary;
-    validate_block_scripts(blk, height, false, &summary);
+    validate_block_scripts_with_prevout(blk, height, false, prevout,
+                                        prevout_user, &summary);
 
     memset(out, 0, sizeof(*out));
     out->ok = summary.ok != 0;
@@ -332,6 +359,26 @@ bool script_validate_stage_dry_run_block(
     }
     snprintf(out->status, sizeof(out->status), "%s", status);
     return true;
+}
+
+bool script_validate_stage_dry_run_block(
+    const struct block *blk,
+    int height,
+    struct script_validate_dry_run_report *out)
+{
+    return dry_run_block_impl(blk, height, NULL, NULL, out);
+}
+
+bool script_validate_stage_dry_run_block_with_prevout(
+    const struct block *blk,
+    int height,
+    script_validate_prevout_fn prevout,
+    void *prevout_user,
+    struct script_validate_dry_run_report *out)
+{
+    if (!prevout)
+        LOG_FAIL("script_validate", "dry_run_block_with_prevout: NULL resolver");
+    return dry_run_block_impl(blk, height, prevout, prevout_user, out);
 }
 
 static job_result_t step_validate(struct stage_step_ctx *c)
@@ -388,7 +435,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct validate_summary summary;
-    validate_block_scripts(&blk, next_h, true, &summary);
+    validate_block_scripts_with_prevout(&blk, next_h, true, NULL, NULL,
+                                        &summary);
     block_free(&blk);
 
     const char *status = "verified";
@@ -488,8 +536,7 @@ bool script_validate_stage_init(struct main_state *ms)
     g_ms = ms;
     g_stage = s;
     /* Wire the production prevout resolver (P0 §2.1) unless a caller (e.g. a
-     * test) already installed one. Without this the resolver falls back to the
-     * -txindex-only default_prevout and every transparent spend fails. */
+     * test) already installed one. */
     if (!g_prevout)
         g_prevout = created_index_prevout;
     pthread_mutex_unlock(&g_lock);

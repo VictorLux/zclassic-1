@@ -82,6 +82,24 @@ int test_created_outputs_index(void)
     CO_CHECK("put_block height=100",
              created_outputs_index_put_block(db, &blk, 100));
 
+    {
+        int64_t v = 0; unsigned char sc[MAX_SCRIPT_SIZE]; size_t sl = 0;
+        int created_h = -1;
+        CO_CHECK("bounded get includes creator height",
+                 created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 90, 100, &v, sc,
+                     sizeof(sc), &sl, &created_h) &&
+                 created_h == 100 && v == blk.vtx[0].vout[0].value);
+        CO_CHECK("bounded get rejects below window",
+                 !created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 101, 110, &v, sc,
+                     sizeof(sc), &sl, &created_h));
+        CO_CHECK("bounded get rejects future window",
+                 !created_outputs_index_get_bounded(
+                     db, blk.vtx[0].hash.data, 0, 1, 99, &v, sc,
+                     sizeof(sc), &sl, &created_h));
+    }
+
     /* Round-trip every output: value + scriptPubKey exact. */
     for (size_t ti = 0; ti < blk.num_vtx; ti++) {
         struct transaction *tx = &blk.vtx[ti];

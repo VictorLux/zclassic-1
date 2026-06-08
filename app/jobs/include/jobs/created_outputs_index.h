@@ -41,6 +41,17 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
                                uint8_t *script_out, size_t script_cap,
                                size_t *script_len_out);
 
+/* Resolve one outpoint only when its creator height is inside
+ * [min_height, max_height]. This is used by repair replay to build a bounded
+ * parent-height view above the durable coins frontier without accidentally
+ * authorizing outputs from future or unrelated sparse-log islands. */
+bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
+                                       uint32_t vout, int min_height,
+                                       int max_height, int64_t *value_out,
+                                       uint8_t *script_out, size_t script_cap,
+                                       size_t *script_len_out,
+                                       int *height_out);
+
 /* Prune all rows with height < floor (finality pruning). UNWIRED in v1 —
  * exported for a follow-up once on-disk storage is measured. Returns false
  * on a real SQLite error. */

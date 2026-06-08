@@ -97,13 +97,23 @@ struct stage_reducer_frontier_reconcile_result {
     int hstar;
     int served_floor;
     int coins_applied_height;
+    bool clamped_validate_headers;
+    int validate_headers_cursor_before;
+    int validate_headers_cursor_after;
     bool clamped_body_fetch;
     int body_fetch_cursor_before;
     int body_fetch_cursor_after;
+    bool clamped_body_persist;
+    int body_persist_cursor_before;
+    int body_persist_cursor_after;
     int tip_finalize_cursor_before;
     int tip_finalize_cursor_after;
     int sweep_top;
     int lowest_have_data_cleared;
+    int lowest_validate_headers_refill_hole;
+    int lowest_validate_headers_hash_split;
+    int lowest_body_fetch_refill_hole;
+    int lowest_body_persist_refill_hole;
     int scripts_set;
     int have_data_set;
     int have_data_cleared;
@@ -111,6 +121,7 @@ struct stage_reducer_frontier_reconcile_result {
     int header_events_emitted;
     bool value_overflow_repair_attempted;
     bool value_overflow_repaired;
+    bool value_overflow_repair_owner_refused;
     bool value_overflow_repair_marker_seen;
     bool value_overflow_repair_genuinely_invalid;
     int value_overflow_repair_height;
@@ -162,12 +173,13 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     struct stage_reconcile_result *out);
 
 /* L1 reducer-frontier reconcile: repair block_index mirror flags from
- * hash-bound durable reducer logs, rewind body_fetch to the lowest cleared
- * HAVE_DATA hole so bodies can be re-requested, then clamp tip_finalize to the
- * coin-capped H*+1 floor so tip_finalize can replay forward. This is a
- * flag/cursor repair only: it never deletes log rows and never mutates coins.
- * If coins_applied_height is absent or present above H*, the helper refuses
- * (unknown/L2 coin-tear domain). */
+ * hash-bound durable reducer logs, rewind validate_headers/body_fetch/
+ * body_persist to the lowest missing admitted/validated/body row or cleared
+ * HAVE_DATA hole so forward-only stages can refill the gap, then clamp
+ * tip_finalize to the coin-capped H*+1 floor so tip_finalize can replay
+ * forward. This is a flag/cursor repair only: it never deletes log rows and
+ * never mutates coins. If coins_applied_height is absent or present above H*,
+ * the helper refuses (unknown/L2 coin-tear domain). */
 bool stage_reducer_frontier_reconcile_light_needed(
     struct sqlite3 *db,
     struct main_state *ms,

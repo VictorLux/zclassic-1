@@ -8,6 +8,7 @@
 
 #include "stage_repair_reducer_frontier_internal.h"
 
+#include "coins/coins.h"
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
 #include "jobs/created_outputs_index.h"
@@ -18,6 +19,7 @@
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
+#include "script/script.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -28,6 +30,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+struct repair_prevout_view {
+    sqlite3 *db;
+    int created_first;
+    int created_last;
+    int coin_frontier;
+};
 
 static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
                                        const char *status, int *out_height)
@@ -305,6 +314,8 @@ static bool backfill_created_outputs_range(sqlite3 *db, struct main_state *ms,
 {
     if (!created_outputs_index_ensure_schema(db))
         return false;
+    if (first_h > last_h)
+        return true;
 
     for (int h = first_h; h <= last_h; h++) {
         bool indexed = false;
@@ -328,6 +339,51 @@ static bool backfill_created_outputs_range(sqlite3 *db, struct main_state *ms,
         }
     }
     return true;
+}
+
+static bool repair_prevout_resolver(const struct outpoint *prevout,
+                                    struct tx_out *out, void *user)
+{
+    const struct repair_prevout_view *view = user;
+    if (!prevout || !out || !view || !view->db)
+        return false;
+
+    int64_t value = 0;
+    unsigned char script[MAX_SCRIPT_SIZE];
+    size_t slen = 0;
+    int created_h = -1;
+    if (created_outputs_index_get_bounded(
+            view->db, prevout->hash.data, prevout->n, view->created_first,
+            view->created_last, &value, script, sizeof(script), &slen,
+            &created_h)) {
+        if (slen > MAX_SCRIPT_SIZE)
+            return false;
+        out->value = value;
+        script_set(&out->script_pub_key, script, slen);
+        return true;
+    }
+
+    struct coins c;
+    coins_init(&c);
+    if (coins_kv_get_coins(view->db, prevout->hash.data, &c)) {
+        bool usable = c.height < view->coin_frontier &&
+                      c.height <= view->created_last &&
+                      prevout->n < c.num_vout &&
+                      !tx_out_is_null(&c.vout[prevout->n]);
+        if (usable) {
+            const struct tx_out *src = &c.vout[prevout->n];
+            size_t src_len = src->script_pub_key.size;
+            if (src_len <= MAX_SCRIPT_SIZE) {
+                out->value = src->value;
+                script_set(&out->script_pub_key, src->script_pub_key.data,
+                           src_len);
+                coins_free(&c);
+                return true;
+            }
+        }
+        coins_free(&c);
+    }
+    return false;
 }
 
 static bool delete_log_range(sqlite3 *db, const char *table,
@@ -368,6 +424,7 @@ static bool dry_run_stale_script_replay(
     sqlite3 *db,
     struct main_state *ms,
     int height,
+    int replay_first,
     int utxo_cursor,
     int backfill_top,
     const struct block *blk,
@@ -381,9 +438,18 @@ static bool dry_run_stale_script_replay(
         if (err) sqlite3_free(err);
         return false;
     }
-    bool ok = backfill_created_outputs_range(db, ms, height, backfill_top) &&
-              inverse_checked(db, height, utxo_cursor) &&
-              script_validate_stage_dry_run_block(blk, height, dry);
+    struct repair_prevout_view view = {
+        .db = db,
+        .created_first = replay_first,
+        .created_last = height,
+        .coin_frontier = replay_first,
+    };
+    bool ok = backfill_created_outputs_range(db, ms, replay_first,
+                                             backfill_top) &&
+              (utxo_cursor <= replay_first ||
+               inverse_checked(db, replay_first, utxo_cursor)) &&
+              script_validate_stage_dry_run_block_with_prevout(
+                  blk, height, repair_prevout_resolver, &view, dry);
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
     return ok;
 }
@@ -392,6 +458,7 @@ static bool stale_script_replay_tx(
     sqlite3 *db,
     struct main_state *ms,
     int height,
+    int replay_first,
     int script_cursor,
     int proof_cursor,
     int utxo_cursor,
@@ -408,16 +475,22 @@ static bool stale_script_replay_tx(
         return false;
     }
 
-    if (!backfill_created_outputs_range(db, ms, height, backfill_top) ||
-        !inverse_checked(db, height, utxo_cursor) ||
-        !delete_log_range(db, "script_validate_log", height, script_cursor) ||
-        !delete_log_range(db, "proof_validate_log", height, proof_cursor) ||
-        !utxo_apply_delete_rows_above(db, height, utxo_cursor - 1) ||
-        !stage_repair_force_stage_cursor(db, "script_validate", height) ||
-        !stage_repair_force_stage_cursor(db, "proof_validate", height) ||
-        !stage_repair_force_stage_cursor(db, "tip_finalize", height) ||
-        !utxo_apply_unwind_write_cursor(db, (uint64_t)height) ||
-        !coins_kv_set_applied_height_in_tx(db, height) ||
+    bool rewind_coins = utxo_cursor > replay_first;
+    if (!backfill_created_outputs_range(db, ms, replay_first, backfill_top) ||
+        (rewind_coins && !inverse_checked(db, replay_first, utxo_cursor)) ||
+        !delete_log_range(db, "script_validate_log", replay_first,
+                          script_cursor) ||
+        !delete_log_range(db, "proof_validate_log", replay_first,
+                          proof_cursor) ||
+        (rewind_coins &&
+         !utxo_apply_delete_rows_above(db, replay_first, utxo_cursor - 1)) ||
+        !stage_repair_force_stage_cursor(db, "script_validate", replay_first) ||
+        !stage_repair_force_stage_cursor(db, "proof_validate", replay_first) ||
+        !stage_repair_force_stage_cursor(db, "tip_finalize", replay_first) ||
+        (rewind_coins &&
+         !utxo_apply_unwind_write_cursor(db, (uint64_t)replay_first)) ||
+        (rewind_coins &&
+         !coins_kv_set_applied_height_in_tx(db, replay_first)) ||
         !reducer_repair_marker_record_in_tx(db, marker)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         return false;
@@ -483,6 +556,7 @@ static bool maybe_repair_value_overflow(
 
     out->value_overflow_repair_attempted = rr.attempted;
     out->value_overflow_repaired = rr.repaired;
+    out->value_overflow_repair_owner_refused = rr.owner_refused;
     out->value_overflow_repair_marker_seen = rr.marker_seen;
     out->value_overflow_repair_genuinely_invalid = rr.genuinely_invalid;
     out->value_overflow_cursor_after = (int)rr.cursor_after;
@@ -505,6 +579,8 @@ static bool maybe_repair_stale_script(
     int tip_cursor = -1;
     int body_cursor = -1;
     int height = -1;
+    int32_t coins_frontier = -1;
+    bool coins_found = false;
 
     progress_store_tx_lock();
     bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
@@ -517,21 +593,26 @@ static bool maybe_repair_stale_script(
                                               &tip_cursor) &&
               stage_repair_cursor_at_unlocked(db, "body_persist",
                                               &body_cursor) &&
+              coins_kv_get_applied_height(db, &coins_frontier,
+                                           &coins_found) &&
               stale_script_hole_unlocked(db, script_cursor, &height);
     progress_store_tx_unlock();
     if (!ok)
         return false;
 
+    int replay_first = (coins_found && coins_frontier >= 0 &&
+                        coins_frontier < height)
+                           ? coins_frontier
+                           : height;
     out->stale_script_repair_height = height;
     out->stale_script_cursor_before = script_cursor;
     out->stale_script_cursor_after = script_cursor;
     out->stale_script_utxo_cursor_before = utxo_cursor;
     out->stale_script_tip_cursor_before = tip_cursor;
-    out->stale_script_backfill_first = height;
+    out->stale_script_backfill_first = replay_first;
     out->stale_script_backfill_last = body_cursor > 0 ? body_cursor - 1 : -1;
     if (height < 0 || script_cursor <= 0 || height >= script_cursor ||
-        proof_cursor <= height || utxo_cursor <= height ||
-        body_cursor <= height)
+        proof_cursor <= height || body_cursor <= height || !coins_found)
         return true;
     if (!apply) {
         out->repaired = true;
@@ -564,7 +645,7 @@ static bool maybe_repair_stale_script(
 
     struct script_validate_dry_run_report dry;
     int backfill_top = body_cursor - 1;
-    if (!dry_run_stale_script_replay(db, ms, height, utxo_cursor,
+    if (!dry_run_stale_script_replay(db, ms, height, replay_first, utxo_cursor,
                                      backfill_top, &blk, &dry)) {
         progress_store_tx_unlock();
         block_free(&blk);
@@ -608,24 +689,24 @@ static bool maybe_repair_stale_script(
         return true;
     }
 
-    ok = stale_script_replay_tx(db, ms, height, script_cursor, proof_cursor,
-                                utxo_cursor, tip_cursor, backfill_top,
-                                marker);
+    ok = stale_script_replay_tx(db, ms, height, replay_first, script_cursor,
+                                proof_cursor, utxo_cursor, tip_cursor,
+                                backfill_top, marker);
     progress_store_tx_unlock();
     block_free(&blk);
     if (!ok)
         return false;
 
     out->stale_script_repaired = true;
-    out->stale_script_cursor_after = height;
+    out->stale_script_cursor_after = replay_first;
     out->refused_coin_tear = false;
     out->repaired = true;
     LOG_WARN("stage_repair",
              "[stage_repair] stale script repair rewound replay cursors to "
-             "h=%d (script=%d proof=%d utxo=%d tip=%d; "
-             "created_outputs backfilled %d..%d)",
-             height, script_cursor, proof_cursor, utxo_cursor, tip_cursor,
-             height, backfill_top);
+             "h=%d for stale hole h=%d (script=%d proof=%d utxo=%d tip=%d; "
+             "coins_frontier=%d created_outputs backfilled %d..%d)",
+             replay_first, height, script_cursor, proof_cursor, utxo_cursor,
+             tip_cursor, coins_frontier, replay_first, backfill_top);
     return true;
 }
 

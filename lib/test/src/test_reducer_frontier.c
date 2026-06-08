@@ -156,7 +156,12 @@ static bool put_consistent_height(sqlite3 *db, int32_t h)
         && put_log_row(db, "body_persist_log", NULL, h, 1, NULL, NULL)
         && put_log_row(db, "proof_validate_log", NULL, h, 1, NULL, NULL)
         && put_log_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
-        && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+	        && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
+}
+
+static bool put_tip_anchor(sqlite3 *db, int32_t h)
+{
+    return put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "anchor");
 }
 
 static bool set_all_cursors(sqlite3 *db, int64_t c)
@@ -280,6 +285,39 @@ static int case_torn(void)
     RF_CHECK("torn: served_floor == A+3", served == A + 3);
     /* H* must never exceed served_floor in a torn view (invariant). */
     RF_CHECK("torn: hstar <= served_floor", hstar <= served);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* (b2) Sparse imported base: the reducer logs are intentionally absent across
+ *      the imported/checkpointed middle, then a seed-anchor row marks a later
+ *      trusted base and dense rows continue above it. H* must start from that
+ *      valid seed anchor, not the compiled SHA3 checkpoint, and must ignore a
+ *      stale higher active-tip anchor whose upstream cursors never reached it. */
+static int case_sparse_seed_anchor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("sparse-anchor: schema", build_schema(db));
+
+    const int32_t base = A + 100;
+    const int32_t stale_high = A + 200;
+    const int32_t tip = base + 5;
+    bool built = put_tip_anchor(db, stale_high) && put_tip_anchor(db, base);
+    for (int32_t h = base + 1; h <= tip; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("sparse-anchor: rows built", built);
+    RF_CHECK("sparse-anchor: cursors", set_all_cursors(db, tip + 1));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("sparse-anchor: returns true", ok);
+    RF_CHECK("sparse-anchor: hstar reaches dense tip", hstar == tip);
+    RF_CHECK("sparse-anchor: stale high anchor ignored", hstar < stale_high);
+    RF_CHECK("sparse-anchor: served_floor sees stale public anchor",
+             served == stale_high);
 
     sqlite3_close(db);
     return failures;
@@ -416,6 +454,7 @@ int test_reducer_frontier(void)
     printf("\n--- reducer_frontier (L0 H* authority) ---\n");
     failures += case_consistent();
     failures += case_torn();
+    failures += case_sparse_seed_anchor();
     failures += case_clamp_up();
     failures += case_hash_split();
     failures += case_split_at_floor();

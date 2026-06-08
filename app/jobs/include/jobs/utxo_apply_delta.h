@@ -113,6 +113,7 @@ struct utxo_apply_value_overflow_repair_result {
     bool attempted;
     bool repaired;
     bool author_refused;
+    bool owner_refused;
     bool marker_seen;
     bool genuinely_invalid;
     bool dry_run_ok;
@@ -127,9 +128,10 @@ struct utxo_apply_value_overflow_repair_result {
  * This function reasserts every consensus guard itself: STAGE author, row still
  * ok=0/status=value_overflow below cursor, current-binary dry-run succeeds, and
  * (height,block_hash) marker has not been attempted. On success it uses the
- * same inverse-delta machinery as reorg unwind in one BEGIN IMMEDIATE, rewinds
- * the cursor/frontier to `height` (stage cursor == next height to apply), and
- * records the marker in the same transaction. */
+ * same inverse-delta machinery as reorg unwind in one BEGIN IMMEDIATE. The
+ * stage cursor is "next height to apply", so rewinding cursor/frontier to
+ * `height` leaves coins applied through height-1 and makes forward apply
+ * re-run the stale hole. Records the marker in the same transaction. */
 bool utxo_apply_repair_value_overflow_hole(
     sqlite3 *db,
     int height,

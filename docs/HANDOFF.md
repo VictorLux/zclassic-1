@@ -6,6 +6,66 @@ State at handoff: main worktree. Verify HEAD with `git status --short --branch`.
 
 ---
 
+## 2026-06-08 checkpoint — reducer L1/stale-replay work pushed; live wedge still open
+
+Latest checkpoint from main worktree is the reducer self-heal/stale-replay
+repair stack. Local validation before commit:
+
+- `make -j$(nproc)` — clean / already up to date.
+- `make test_parallel` — clean / already up to date.
+- `build/bin/test_parallel` — **0/378 groups failed**.
+- `make lint` — **all 35 gates passed**.
+- `git diff --check` — clean.
+
+What is in this checkpoint:
+
+- `script_validate` no longer depends on `-txindex` for normal prevout
+  lookup. It resolves in-window prevouts through `created_outputs` and older
+  live coins through `coins_kv`, bounded by the physical coin frontier.
+- Reducer L1 refill now clamps stale `validate_headers`, `body_fetch`, and
+  `body_persist` cursors after clearing holes / hash-split rows, and caps
+  `tip_finalize` at the physical coin frontier.
+- Stale script replay repair is wired through the reducer repair path and can
+  rewind replay cursors back to the coin frontier, backfill `created_outputs`,
+  and replay under the fixed binary.
+- Owner-gated value-overflow one-shot repair is present in
+  `utxo_apply_delta_repair.c`; **`utxo_apply_delta.c` was not touched**.
+- Copy-proof isolation avoids seed discovery in connect-only mode so copy runs
+  stay isolated.
+- `reducer_frontier_reconcile_light` witness now accepts durable reducer cursor
+  movement as observable progress, so zero-peer copy repairs do not exhaust as
+  `unwitnessed`.
+
+Copy-proof status:
+
+- Last copy run:
+  `/home/rhett/.zclassic-c23-COPY-20260608-120105-l1-validate-refill-proof5`.
+- It successfully fired the value-overflow repair at **3,132,747**, stale
+  script replay repair at **3,132,720**, validate hash-split repair, and body
+  refetch clamp at **3,134,302**.
+- It then wedged at **3,135,517** with `script_validate_log ok=0
+  status='prevout_unresolved'`.
+- The missing prevout is
+  `bf8ae6840fd8c30fdcb968f60afa85b34bc51fc8e518d87d545a553316a9f6ff:0`.
+  Raw block scan found it created at **3,073,765** with no prior spend before
+  the failing block; it is absent from this copy's `coins_kv` and
+  `created_outputs`.
+
+Next developer:
+
+1. Do **not** cut over. The copy proof has not held through tip.
+2. Continue on a datadir COPY only. Do not touch the live service, live
+   datadirs, or live ports.
+3. The next real fix is a guarded repair for the old missing coin frontier
+   hole, most likely a targeted `utxo_apply` rewind/reapply from before the
+   creator height **3,073,765** using the existing inverse-delta/reorg
+   machinery. Do not make `script_validate` silently ignore this; `utxo_apply`
+   also needs the coin physically present.
+4. `tools/scripts/soak_assert.sh` is still dirty locally and was intentionally
+   left out of this checkpoint unless the owner explicitly wants it folded in.
+
+---
+
 ## ★ LIVE WEDGE — STILL OPEN; P2 (self-heal prerequisite) LANDED; next = L0/L1 H* self-heal (2026-06-07)
 
 **The live wedge is NOT resolved.** (The 2026-06-06 `validate_headers` recheck

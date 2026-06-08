@@ -198,9 +198,23 @@ static bool read_frontier_snapshot(sqlite3 *db,
         return false;
     }
 
+    int validate_headers_cursor = -1;
+    if (!stage_repair_cursor_at_unlocked(db, "validate_headers",
+                                         &validate_headers_cursor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
     int body_fetch_cursor = -1;
     if (!stage_repair_cursor_at_unlocked(db, "body_fetch",
                                          &body_fetch_cursor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    int body_persist_cursor = -1;
+    if (!stage_repair_cursor_at_unlocked(db, "body_persist",
+                                         &body_persist_cursor)) {
         progress_store_tx_unlock();
         return false;
     }
@@ -238,17 +252,25 @@ static bool read_frontier_snapshot(sqlite3 *db,
 
     out->hstar = hstar;
     out->served_floor = served_floor;
+    out->validate_headers_cursor_before = validate_headers_cursor;
+    out->validate_headers_cursor_after = validate_headers_cursor;
     out->body_fetch_cursor_before = body_fetch_cursor;
     out->body_fetch_cursor_after = body_fetch_cursor;
+    out->body_persist_cursor_before = body_persist_cursor;
+    out->body_persist_cursor_after = body_persist_cursor;
     out->tip_finalize_cursor_before = tip_cursor;
     out->tip_finalize_cursor_after = tip_cursor;
     out->sweep_top = sweep_top;
     out->lowest_have_data_cleared = -1;
+    out->lowest_validate_headers_refill_hole = -1;
+    out->lowest_validate_headers_hash_split = -1;
+    out->lowest_body_fetch_refill_hole = -1;
+    out->lowest_body_persist_refill_hole = -1;
     out->coins_applied_found = coins_found;
     out->coins_applied_height = coins_found ? coins_applied : -1;
     if (!coins_found)
         out->refused_coin_unknown = true;
-    else if (coins_applied > hstar)
+    else if (coins_applied > hstar + 1)
         out->refused_coin_tear = true;
     return true;
 }
@@ -341,73 +363,16 @@ static bool reconcile_block_index_flags(
     return ok;
 }
 
-static bool reconcile_body_fetch_cursor(
-    sqlite3 *db,
-    bool apply,
-    struct stage_reducer_frontier_reconcile_result *out)
-{
-    int target = out->lowest_have_data_cleared;
-    if (target < 0) {
-        out->body_fetch_cursor_after = out->body_fetch_cursor_before;
-        return true;
-    }
-
-    if (out->body_fetch_cursor_before <= target) {
-        out->body_fetch_cursor_after = out->body_fetch_cursor_before;
-        return true;
-    }
-
-    out->clamped_body_fetch = true;
-    out->body_fetch_cursor_after = target;
-    if (!apply)
-        return true;
-
-    progress_store_tx_lock();
-
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier body_fetch BEGIN "
-                 "failed: %s",
-                 err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    if (!stage_repair_force_stage_cursor(db, "body_fetch", target)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier body_fetch COMMIT "
-                 "failed: %s",
-                 err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    progress_store_tx_unlock();
-    return true;
-}
-
 static bool reconcile_tip_finalize_cursor(
     sqlite3 *db,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    int capped = out->hstar;
+    int floor = out->hstar + 1;
     if (out->coins_applied_found &&
         out->coins_applied_height >= 0 &&
-        out->coins_applied_height < capped)
-        capped = out->coins_applied_height;
-
-    int floor = capped + 1;
+        out->coins_applied_height < floor)
+        floor = out->coins_applied_height;
     if (out->tip_finalize_cursor_before == floor) {
         out->tip_finalize_cursor_after = floor;
         return true;
@@ -418,36 +383,8 @@ static bool reconcile_tip_finalize_cursor(
     if (!apply)
         return true;
 
-    progress_store_tx_lock();
-
-    char *err = NULL;
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier L1 BEGIN failed: %s",
-                 err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    if (!stage_repair_force_stage_cursor(db, "tip_finalize", floor)) {
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] reducer_frontier L1 COMMIT failed: %s",
-                 err ? err : "(no message)");
-        if (err) sqlite3_free(err);
-        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-        progress_store_tx_unlock();
-        return false;
-    }
-
-    progress_store_tx_unlock();
-    return true;
+    return stage_reducer_frontier_force_stage_cursor_in_tx(
+        db, "tip_finalize", "L1", floor);
 }
 
 static bool reducer_frontier_reconcile_light_impl(
@@ -467,9 +404,17 @@ static bool reducer_frontier_reconcile_light_impl(
     memset(&local, 0, sizeof(local));
     local.tip_finalize_cursor_before = -1;
     local.tip_finalize_cursor_after = -1;
+    local.validate_headers_cursor_before = -1;
+    local.validate_headers_cursor_after = -1;
     local.body_fetch_cursor_before = -1;
     local.body_fetch_cursor_after = -1;
+    local.body_persist_cursor_before = -1;
+    local.body_persist_cursor_after = -1;
     local.lowest_have_data_cleared = -1;
+    local.lowest_validate_headers_refill_hole = -1;
+    local.lowest_validate_headers_hash_split = -1;
+    local.lowest_body_fetch_refill_hole = -1;
+    local.lowest_body_persist_refill_hole = -1;
     local.coins_applied_height = -1;
 
     if (!stage_table_ensure(db))
@@ -497,10 +442,34 @@ static bool reducer_frontier_reconcile_light_impl(
     }
 
     if (local.refused_coin_tear) {
+        if (!stage_reducer_frontier_reconcile_validate_hash_split_cursor(
+                db, apply, &local))
+            return false;
+        if (local.clamped_validate_headers) {
+            local.refused_coin_tear = false;
+            local.repaired = true;
+            if (apply) {
+                LOG_WARN("stage_repair",
+                         "[stage_repair] reducer_frontier repaired stale "
+                         "validate hash before coin-tear refusal "
+                         "hstar=%d coins_applied=%d validate_headers=%d->%d "
+                         "validate_hash_split=%d",
+                         local.hstar, local.coins_applied_height,
+                         local.validate_headers_cursor_before,
+                         local.validate_headers_cursor_after,
+                         local.lowest_validate_headers_hash_split);
+            }
+            if (out)
+                *out = local;
+            return true;
+        }
+    }
+
+    if (local.refused_coin_tear) {
         LOG_WARN("stage_repair",
                  "[stage_repair] reducer_frontier L1 refused: "
-                 "coins_applied_height=%d > hstar=%d (L2 required)",
-                 local.coins_applied_height, local.hstar);
+                 "coins_applied_height=%d > hstar_cursor=%d (L2 required)",
+                 local.coins_applied_height, local.hstar + 1);
         if (out)
             *out = local;
         return true;
@@ -510,7 +479,7 @@ static bool reducer_frontier_reconcile_light_impl(
         !reconcile_block_index_flags(db, ms, apply, &local))
         return false;
 
-    if (!reconcile_body_fetch_cursor(db, apply, &local))
+    if (!stage_reducer_frontier_reconcile_refill_cursors(db, apply, &local))
         return false;
 
     if (!reconcile_tip_finalize_cursor(db, apply, &local))
@@ -518,7 +487,9 @@ static bool reducer_frontier_reconcile_light_impl(
 
     local.repaired = local.repaired ||
                      local.clamped_tip_finalize ||
+                     local.clamped_validate_headers ||
                      local.clamped_body_fetch ||
+                     local.clamped_body_persist ||
                      local.scripts_set > 0 ||
                      local.have_data_set > 0 ||
                      local.have_data_cleared > 0 ||
@@ -528,15 +499,28 @@ static bool reducer_frontier_reconcile_light_impl(
         LOG_WARN("stage_repair",
                  "[stage_repair] reducer_frontier L1 repaired hstar=%d "
                  "served_floor=%d coins_applied=%d sweep_top=%d "
-                 "body_fetch=%d->%d tip_finalize=%d->%d scripts_set=%d "
+                 "validate_headers=%d->%d body_fetch=%d->%d "
+                 "body_persist=%d->%d tip_finalize=%d->%d scripts_set=%d "
                  "have_data_set=%d have_data_cleared=%d "
+                 "validate_refill_hole=%d body_refill_hole=%d "
+                 "validate_hash_split=%d body_persist_refill_hole=%d "
                  "failed_mask_cleared=%d",
                  local.hstar, local.served_floor, local.coins_applied_height,
-                 local.sweep_top, local.body_fetch_cursor_before,
-                 local.body_fetch_cursor_after, local.tip_finalize_cursor_before,
+                 local.sweep_top, local.validate_headers_cursor_before,
+                 local.validate_headers_cursor_after,
+                 local.body_fetch_cursor_before,
+                 local.body_fetch_cursor_after,
+                 local.body_persist_cursor_before,
+                 local.body_persist_cursor_after,
+                 local.tip_finalize_cursor_before,
                  local.tip_finalize_cursor_after,
                  local.scripts_set, local.have_data_set,
-                 local.have_data_cleared, local.failed_mask_cleared);
+                 local.have_data_cleared,
+                 local.lowest_validate_headers_refill_hole,
+                 local.lowest_body_fetch_refill_hole,
+                 local.lowest_validate_headers_hash_split,
+                 local.lowest_body_persist_refill_hole,
+                 local.failed_mask_cleared);
     }
 
     if (out)

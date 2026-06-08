@@ -191,6 +191,17 @@ static bool exec_sql(sqlite3 *db, const char *sql)
     return rc == SQLITE_OK;
 }
 
+static bool ensure_params_loaded_pv(void)
+{
+    if (sapling_params_loaded())
+        return true;
+    const char *home = getenv("HOME");
+    char params_dir[512];
+    snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params",
+             home ? home : ".");
+    return sapling_init_params(params_dir);
+}
+
 static bool seed_script_validate(sqlite3 *db, int n, int upstream_fail_height)
 {
     if (!exec_sql(db,
@@ -390,6 +401,28 @@ int test_proof_validate_stage(void)
                      proof_validate_stage_sprout_phgr13_failed_total);
     run_invalid_case(&failures, PV_FAIL_BINDING_SIG, "binding_sig",
                      proof_validate_stage_binding_sig_failed_total);
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_pv sc;
+        PV_CHECK("joinsplit_sig: setup",
+                 pv_setup("joinsplit_sig", 1, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        proof_validate_stage_set_tx_verifier(NULL, NULL);
+        PV_CHECK("joinsplit_sig: params loaded", ensure_params_loaded_pv());
+        PV_CHECK("joinsplit_sig: drains 1",
+                 proof_validate_stage_drain(100) == 1);
+        PV_CHECK("joinsplit_sig: proof_invalid_total == 1",
+                 proof_validate_stage_proof_invalid_total() == 1);
+        int ok = -1; char status[32]; char type[32];
+        log_row_at(progress_store_db(), 0, &ok, status, sizeof(status),
+                   type, sizeof(type));
+        PV_CHECK("joinsplit_sig: h=0 ok=0", ok == 0);
+        PV_CHECK("joinsplit_sig: h=0 status",
+                 strcmp(status, "proof_invalid") == 0);
+        PV_CHECK("joinsplit_sig: failure type",
+                 strcmp(type, "joinsplit_sig") == 0);
+        pv_teardown(dir, &ms, &sc);
+    }
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_pv sc;

@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct block_header;
+
 struct db_block {
     uint8_t hash[32];
     int height;
@@ -59,6 +61,15 @@ bool db_block_find_by_height(struct node_db *ndb, int height,
 bool db_block_load_solution_by_height(struct node_db *ndb, int height,
                                       unsigned char *out, size_t *out_len,
                                       size_t max);
+
+/* Load the complete canonical header for a connected (status>=3) block at
+ * exactly `(height, hash)`, including the Equihash solution. The loader
+ * recomputes the serialized header hash and returns false if the row's
+ * header fields do not hash back to `hash`; callers can therefore treat a
+ * true return as hash-bound source bytes, not merely a height match. */
+bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
+                                         const uint8_t hash[32],
+                                         struct block_header *out);
 
 bool db_block_delete(struct node_db *ndb, const uint8_t hash[32]);
 int db_block_max_height(struct node_db *ndb);

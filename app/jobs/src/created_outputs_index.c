@@ -114,6 +114,57 @@ bool created_outputs_index_get(sqlite3 *db, const uint8_t txid[32],
     return found;
 }
 
+bool created_outputs_index_get_bounded(sqlite3 *db, const uint8_t txid[32],
+                                       uint32_t vout, int min_height,
+                                       int max_height, int64_t *value_out,
+                                       uint8_t *script_out, size_t script_cap,
+                                       size_t *script_len_out,
+                                       int *height_out)
+{
+    if (!db || !txid || min_height > max_height)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT value, script, height FROM created_outputs "
+        "WHERE txid = ? AND vout = ? "
+        "  AND height >= ? AND height <= ?",
+        -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("created_outputs",
+                 "[created_outputs] bounded get prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_blob (st, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)vout);
+    sqlite3_bind_int  (st, 3, min_height);
+    sqlite3_bind_int  (st, 4, max_height);
+    bool found = false;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        if (value_out)
+            *value_out = (int64_t)sqlite3_column_int64(st, 0);
+        const void *blob = sqlite3_column_blob(st, 1);
+        int blen = sqlite3_column_bytes(st, 1);
+        size_t n = (blen < 0) ? 0 : (size_t)blen;
+        if (script_len_out)
+            *script_len_out = n;
+        if (script_out && script_cap) {
+            size_t copy = n < script_cap ? n : script_cap;
+            if (blob && copy)
+                memcpy(script_out, blob, copy);
+        }
+        if (height_out)
+            *height_out = sqlite3_column_int(st, 2);
+        found = true;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("created_outputs",
+                 "[created_outputs] bounded get step failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 bool created_outputs_index_prune_below(sqlite3 *db, int floor)
 {
     if (!db)

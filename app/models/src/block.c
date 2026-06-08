@@ -22,6 +22,7 @@
 #include "models/utxo.h"
 #include "chain/chain.h"
 #include "event/event.h"
+#include "primitives/block.h"
 #include "util/ar_step_readonly.h"
 #include <string.h>
 #include <stdio.h>
@@ -486,6 +487,63 @@ bool db_block_load_solution_by_height(struct node_db *ndb, int height,
     memcpy(out, bdata, (size_t)blen);
     *out_len = (size_t)blen;
     AR_FINALIZE(s);
+    return true;
+}
+
+bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
+                                         const uint8_t hash[32],
+                                         struct block_header *out)
+{
+    if (!ndb || !ndb->open || !hash || !out) {
+        LOG_WARN("block", "load_header: null arg / closed db (height=%d)",
+                 height);
+        return false;
+    }
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT version,prev_hash,merkle_root,sapling_root,time,bits,"
+        "nonce,solution FROM blocks "
+        "WHERE height=? AND hash=? AND status>=3 LIMIT 1",
+        false);
+    AR_BIND_INT(s, 1, height);
+    AR_BIND_BLOB(s, 2, hash, 32);
+
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+
+    int sol_len = AR_COL_BYTES(s, 7);
+    const void *sol = sqlite3_column_blob(s, 7);
+    if (!sol || sol_len <= 0 || sol_len > MAX_SOLUTION_SIZE) {
+        if (sol_len > MAX_SOLUTION_SIZE)
+            LOG_WARN("block", "load_header: oversize solution height=%d "
+                     "len=%d", height, sol_len);
+        AR_FINALIZE(s);
+        return false;
+    }
+
+    block_header_init(out);
+    out->nVersion = (int32_t)AR_COL_INT(s, 0);
+    AR_READ_BLOB(s, 1, out->hashPrevBlock.data, 32);
+    AR_READ_BLOB(s, 2, out->hashMerkleRoot.data, 32);
+    AR_READ_BLOB(s, 3, out->hashFinalSaplingRoot.data, 32);
+    out->nTime = (uint32_t)AR_COL_INT(s, 4);
+    out->nBits = (uint32_t)AR_COL_INT(s, 5);
+    AR_READ_BLOB(s, 6, out->nNonce.data, 32);
+    memcpy(out->nSolution, sol, (size_t)sol_len);
+    out->nSolutionSize = (size_t)sol_len;
+    AR_FINALIZE(s);
+
+    struct uint256 computed;
+    block_header_get_hash(out, &computed);
+    if (memcmp(computed.data, hash, 32) != 0) {
+        LOG_WARN("block", "load_header: stored row does not hash-bind "
+                 "height=%d", height);
+        block_header_init(out);
+        return false;
+    }
     return true;
 }
 

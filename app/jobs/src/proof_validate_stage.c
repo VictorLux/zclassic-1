@@ -14,6 +14,7 @@
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
+#include "crypto/ed25519.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "json/json.h"
@@ -133,6 +134,14 @@ static bool default_verify_tx(const struct transaction *tx, int height,
         out->ok = false;
         out->internal_error = true;
         out->first_failure_proof_type = "sighash";
+        return true;
+    }
+
+    if (tx->num_joinsplit > 0 &&
+        !ed25519_verify(tx->joinsplit_sig, sighash.data, 32,
+                        tx->joinsplit_pubkey.data)) {
+        out->ok = false;
+        out->first_failure_proof_type = "joinsplit_sig";
         return true;
     }
 

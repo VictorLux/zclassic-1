@@ -131,6 +131,7 @@ static void seed_from_fixed(struct connman *cm)
 void connman_kick_seed_discovery(struct connman *cm)
 {
     if (!cm || !cm->params || g_stop) return;
+    if (g_connect_only) return;
     seed_from_fixed(cm);
     dns_seed_resolve(cm);
 }
