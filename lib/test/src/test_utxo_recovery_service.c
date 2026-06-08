@@ -9,6 +9,7 @@
 #include "services/recovery_policy.h"
 #include "services/chain_state_service.h"
 #include "storage/utxo_reimport_flag.h"
+#include "storage/progress_store.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
 #include "models/database.h"
@@ -33,16 +34,21 @@
 } while (0)
 
 /* Build a minimal chain in main_state */
+static void urs_hash_for_height(int h, struct uint256 *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->data[0] = (uint8_t)(h & 0xFF);
+    out->data[1] = (uint8_t)((h >> 8) & 0xFF);
+    out->data[3] = 0xCC;  /* distinct from CSV tests */
+}
+
 static void urs_build_chain(struct main_state *ms, int n)
 {
     struct uint256 hashes[256];
     int limit = n < 256 ? n : 256;
 
     for (int h = 0; h < limit; h++) {
-        memset(&hashes[h], 0, sizeof(hashes[h]));
-        hashes[h].data[0] = (uint8_t)(h & 0xFF);
-        hashes[h].data[1] = (uint8_t)((h >> 8) & 0xFF);
-        hashes[h].data[3] = 0xCC;  /* distinct from CSV tests */
+        urs_hash_for_height(h, &hashes[h]);
 
         struct block_index *pi = chainstate_insert_block_index(
             (struct chainstate *)ms, &hashes[h]);
@@ -80,6 +86,43 @@ static int64_t urs_count_sql(struct node_db *ndb, const char *sql)
         sqlite3_finalize(st);
     }
     return count;
+}
+
+static bool urs_exec_progress(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        printf("progress SQL failed: %s\n", err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+static bool urs_seed_finalized_floor(int height, const struct uint256 *hash)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db || !hash)
+        return false;
+    if (!urs_exec_progress(db,
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "tip_hash BLOB)"))
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,tip_hash) "
+            "VALUES(?,'finalized',1,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 int test_utxo_recovery_service(void)
@@ -581,7 +624,88 @@ int test_utxo_recovery_service(void)
         unlink(db_path);
     }
 
-    /* ── 12b. Recovery entry points return rich status on invalid context ── */
+    /* ── 12b. scan_fallback cannot roll below finalized reducer floor ── */
+
+    {
+        char db_path[256];
+        snprintf(db_path, sizeof(db_path),
+                 "./test-tmp/%d_urs_scan_floor.db", getpid());
+        char progress_dir[256];
+        test_make_tmpdir(progress_dir, sizeof(progress_dir),
+                         "urs_scan_floor", "progress");
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        bool pdb_open = progress_store_open(progress_dir);
+        if (node_db_open(&ndb, db_path) && pdb_open) {
+            chain_params_select(CHAIN_MAIN);
+            const struct chain_params *params = chain_params_get();
+
+            struct main_state ms;
+            memset(&ms, 0, sizeof(ms));
+            block_map_init(&ms.map_block_index);
+            active_chain_init(&ms.chain_active);
+            urs_build_chain(&ms, 121);  /* active tip h=120 */
+
+            struct uint256 scan_hash;
+            urs_hash_for_height(80, &scan_hash);
+            struct block_index *scan_fallback =
+                block_map_find(&ms.map_block_index, &scan_hash);
+
+            struct coins_view_cache cache;
+            struct coins_view nv;
+            memset(&nv, 0, sizeof(nv));
+            coins_view_cache_init(&cache, &nv);
+
+            struct chain_state_repository *csr = csr_instance();
+            csr_init(csr, &ms.map_block_index, &ms.chain_active,
+                     &ms.pindex_best_header, &cache, &ndb, NULL);
+
+            struct utxo_recovery_ctx uctx = {
+                .state = &ms,
+                .coins_sqlite = NULL,
+                .coins_tip = &cache,
+                .ndb = &ndb,
+                .datadir = "/nonexistent",
+                .params = params,
+                .activation_ctl = NULL,
+                .db_service = NULL,
+            };
+
+            struct uint256 floor_hash;
+            urs_hash_for_height(120, &floor_hash);
+            bool seeded = urs_seed_finalized_floor(120, &floor_hash);
+            struct chain_restore_result rr =
+                utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
+
+            struct uint256 got_best;
+            coins_view_cache_get_best_block(&cache, &got_best);
+
+            URS_CHECK("urs: scan_fallback refuses finalized-floor rollback",
+                      seeded && rr.status.ok && rr.restored &&
+                      rr.restored_height == 120 &&
+                      uint256_eq(&rr.restored_hash, &floor_hash) &&
+                      rr.skip_activate &&
+                      active_chain_height(&ms.chain_active) == 120 &&
+                      uint256_is_null(&got_best));
+
+            csr_free(csr);
+            coins_view_cache_free(&cache);
+            active_chain_free(&ms.chain_active);
+            block_map_free(&ms.map_block_index);
+            node_db_close(&ndb);
+        } else {
+            URS_CHECK("urs: scan_fallback finalized-floor fixture", false);
+            if (ndb.open)
+                node_db_close(&ndb);
+        }
+        if (pdb_open)
+            progress_store_close();
+        test_cleanup_tmpdir(progress_dir);
+        unlink(db_path);
+    }
+
+    /* ── 12c. Recovery entry points return rich status on invalid context ── */
 
     {
         struct utxo_import_result ir = utxo_recovery_import_ldb(NULL);

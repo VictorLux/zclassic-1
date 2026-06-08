@@ -985,6 +985,44 @@ static int t_typed_rollback_authorization(void)
     return failures;
 }
 
+static int t_boot_repair_genesis_refuses_non_genesis_rollback(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+
+    struct block_index *g  = csr_fix_add(&f, 0x63);
+    struct block_index *b1 = csr_fix_add(&f, 0x64);
+    struct block_index *b2 = csr_fix_add(&f, 0x65);
+    (void)b1;
+
+    bool ok = false;
+    struct chain_state_commit c2 = csr_make_commit(b2, "advance");
+    if (csr_commit_tip(&csr, &c2) == CSR_OK &&
+        active_chain_height(&f.chain) == 2) {
+        struct chain_state_rollback_authorization auth = {
+            .source = CSR_ROLLBACK_SOURCE_BOOT_REPAIR,
+            .decision = POLICY_ALLOW,
+            .from_height = 2,
+            .to_height = 0,
+            .max_depth = INT64_MAX,
+            .evidence_class = "boot_repair_verified",
+            .reason = "genesis_init",
+        };
+        struct chain_state_commit cg = csr_make_commit(g, "genesis_init");
+        cg.rollback_auth = &auth;
+        ok = csr_commit_tip(&csr, &cg) == CSR_REJECTED_ROLLBACK_AUTH &&
+             active_chain_height(&f.chain) == 2 &&
+             active_chain_tip(&f.chain) == b2;
+    }
+    CSR_RUN("csr: boot genesis repair cannot roll back non-genesis tip", ok);
+
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
 static int t_expected_utxo_drift(void)
 {
     int failures = 0;
@@ -1444,6 +1482,7 @@ int test_chain_state_repo(void)
     failures += t_sql_stale_index_forward_step_bypass();
     failures += t_sql_hash_height_conflict();
     failures += t_typed_rollback_authorization();
+    failures += t_boot_repair_genesis_refuses_non_genesis_rollback();
     failures += t_expected_utxo_drift();
     failures += t_expected_utxo_close();
     failures += t_persist_coins_best_rejects_before_publish();

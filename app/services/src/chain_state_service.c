@@ -245,6 +245,16 @@ static enum csr_result csr_validate_locked(
     if (!new_tip->phashBlock) return CSR_REJECTED_NULL_INPUT;
     if (new_tip->nHeight < 0) return CSR_REJECTED_NULL_INPUT;
 
+    /* Boot repair may install genesis on a true fresh start, but it must never
+     * turn a durable non-genesis finalized floor into a rollback to h=0. That
+     * recovery shape belongs to the policy-gated UTXO repair path after a real
+     * wipe decision, not to genesis initialization. */
+    if (new_tip->nHeight == 0 && commit->rollback_auth &&
+        commit->rollback_auth->source == CSR_ROLLBACK_SOURCE_BOOT_REPAIR &&
+        csr->chain_active && active_chain_height(csr->chain_active) > 0) {
+        return CSR_REJECTED_ROLLBACK_AUTH;
+    }
+
     /* Step 1: the proposed coins_best_block must equal the tip hash.
      * If they disagree, the caller has a bug — refuse rather than
      * silently picking one. This is the fundamental invariant. */

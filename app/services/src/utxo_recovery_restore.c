@@ -26,6 +26,7 @@
 #include "chain/chainparams.h"
 #include "storage/coins_view_sqlite.h"
 #include "storage/coins_db.h"
+#include "storage/progress_store.h"
 #include "coins/coins_view.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
@@ -52,6 +53,68 @@ static struct zcl_result recovery_status_ok(void)
 /* MAX(height) over the utxos table; defined below, forward-declared here
  * so the LDB-import path above can share the single SELECT. */
 static int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx);
+
+static int utxo_recovery_finalized_served_floor(struct uint256 *hash_out,
+                                                bool *have_hash_out)
+{
+    if (hash_out)
+        memset(hash_out, 0, sizeof(*hash_out));
+    if (have_hash_out)
+        *have_hash_out = false;
+
+    sqlite3 *pdb = progress_store_db();
+    if (!pdb)
+        LOG_RETURN(-1, "utxo_recovery",
+                   "served_floor read skipped: progress_store not open");
+
+    sqlite3_stmt *st = NULL;
+    int floor = -1;
+    progress_store_tx_lock();
+    if (sqlite3_prepare_v2(
+            pdb,
+            "SELECT height, tip_hash FROM tip_finalize_log "
+            "WHERE ok=1 ORDER BY height DESC LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        progress_store_tx_unlock();
+        LOG_RETURN(-1, "utxo_recovery",
+                   "served_floor read prepare failed: %s",
+                   sqlite3_errmsg(pdb));
+    }
+    if (AR_STEP_ROW_READONLY(st) == SQLITE_ROW) {
+        floor = sqlite3_column_int(st, 0);
+        const void *blob = sqlite3_column_blob(st, 1);
+        int blob_len = sqlite3_column_bytes(st, 1);
+        if (hash_out && have_hash_out && blob && blob_len == 32) {
+            memcpy(hash_out->data, blob, 32);
+            *have_hash_out = true;
+        }
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return floor;
+}
+
+static bool utxo_recovery_scan_fallback_below_finalized_floor(
+    const struct block_index *scan_fallback,
+    int *floor_out,
+    struct uint256 *floor_hash_out,
+    bool *have_floor_hash_out)
+{
+    if (floor_out)
+        *floor_out = -1;
+    if (floor_hash_out)
+        memset(floor_hash_out, 0, sizeof(*floor_hash_out));
+    if (have_floor_hash_out)
+        *have_floor_hash_out = false;
+    if (!scan_fallback)
+        return false;
+
+    int floor = utxo_recovery_finalized_served_floor(floor_hash_out,
+                                                     have_floor_hash_out);
+    if (floor_out)
+        *floor_out = floor;
+    return floor > scan_fallback->nHeight;
+}
 
 /* ── LDB→SQLite UTXO import ─────────────────────────────────── */
 
@@ -437,6 +500,25 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     if (uint256_is_null(&best_hash)) {
         /* No best block — try fast rebuild if fallback available */
         if (scan_fallback) {
+            int served_floor = -1;
+            struct uint256 served_hash;
+            bool have_served_hash = false;
+            if (utxo_recovery_scan_fallback_below_finalized_floor(
+                    scan_fallback, &served_floor, &served_hash,
+                    &have_served_hash)) {
+                LOG_WARN("utxo_recovery",
+                         "scan_fallback h=%d below durable finalized floor "
+                         "h=%d; refusing active-tip rollback",
+                         scan_fallback->nHeight, served_floor);
+                res.restored = true;
+                res.restored_height = served_floor;
+                if (have_served_hash)
+                    res.restored_hash = served_hash;
+                res.skip_activate = true;
+                snprintf(res.anchor_reason, sizeof(res.anchor_reason),
+                         "finalized_floor_guard");
+                return res;
+            }
             if (utxo_recovery_commit_tip(
                     ctx, scan_fallback, "scan_fallback", false).ok) {
                 printf("WARNING: Chain tip at height %d but coins DB is empty!\n",
