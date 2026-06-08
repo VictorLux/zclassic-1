@@ -403,7 +403,7 @@ int test_chaos_harness(void)
                 file_contains_text(summary_path, "block_bytes=12") &&
                 file_contains_text(summary_path, "clock_advance_seconds=30") &&
                 file_contains_text(summary_path, "partition_drops=1") &&
-                file_contains_text(summary_path, "replay_command=./zclassic23-chaos") &&
+                file_contains_text(summary_path, "replay_command=build/bin/zclassic23-chaos") &&
                 file_contains_text(copied_path, "expect tip_height > 0"));
     unlink(summary_path);
     unlink(copied_path);

@@ -188,7 +188,7 @@ static int test_mcp_error_envelopes_clean(void)
 
 /* Resolve the path to tools/scripts/check_no_secret_printf.sh relative
  * to the current working directory. Test is invoked from the repo root
- * via ./test_zcl. */
+ * via build/bin/test_zcl. */
 static int test_check_no_secret_printf_script(void)
 {
     int failures = 0;

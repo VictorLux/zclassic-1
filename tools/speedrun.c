@@ -6,7 +6,7 @@
  * No source node shutdown required.
  *
  * Build: make speedrun
- * Usage: ./speedrun [peer_address]
+ * Usage: build/bin/speedrun [peer_address]
  *   Default peer: 127.0.0.1 (localhost power node)
  *
  * Phases:

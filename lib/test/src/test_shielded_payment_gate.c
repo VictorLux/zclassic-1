@@ -13,8 +13,8 @@
  *
  * This is an opt-in stress gate because it depends on real Sapling proving
  * params and builds a real proof. Run with:
- *   ZCL_STRESS_TESTS=1 ./test_zcl
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment ./test_zcl
+ *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment build/bin/test_zcl
  */
 
 #include "platform/time_compat.h"

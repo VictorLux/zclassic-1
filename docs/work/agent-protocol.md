@@ -153,9 +153,9 @@ When all tasks pass and acceptance criteria are met:
    LIVE node is a required gate, not optional:**
    ```bash
    # the C health gate reads live chain_advance state:
-   ./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'
+   build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'
    # for benchmark rows:
-   zclassic23 -bench-kill9
+   build/bin/zclassic23 -bench-kill9
    ```
    If you cannot show the live tip advancing past your change
    (e.g. past the cutover height), it is NOT done — report it, don't ship it.

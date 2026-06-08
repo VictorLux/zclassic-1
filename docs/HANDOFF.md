@@ -34,7 +34,7 @@ the consistent coins, never deleting a `tip_finalize_log` row.
   hide an interior hole. Proven by 2 independent workflow impls (agree) + 3
   adversarial verifiers + `test_parallel` **0/375** + `lint` 35-gate + **chaos 9/9**
   + a kill-9 copy-proof (`tools/copyproof_p2_frontier.sh`) holding the invariant on
-  the raw crash image. Offline checker: `make p2_invariant_check` → `./p2_invariant_check <datadir>`.
+  the raw crash image. Offline checker: `make p2_invariant_check` -> `build/bin/p2_invariant_check <datadir>`.
 - **L0 (task #11) `reducer_frontier_compute_hstar` — DONE** (on `main` `50dfd1753`):
   pure SELECT-only authority in `app/jobs/src/reducer_frontier.c` returning
   {hstar, served_floor}; anchored at the SHA3 checkpoint **3,056,758** (cold-import
@@ -92,7 +92,7 @@ this one). Full state + gotchas: memory
 **The proven method (repeat it):** read-only audit Workflow → ranked backlog →
 parallel **edit-only** adversarially-reviewed Workflows on **DISJOINT** file sets
 → ONE union gate I run myself (`make -j$(nproc) zclassic23` + `make lint` [35
-gates] + `./test_parallel` [expect `0/371`] + boot-smoke if the boot path changed)
+gates] + `build/bin/test_parallel` [expect `0/371`] + boot-smoke if the boot path changed)
 → commit per logical group → push. Redirect `make` output to a file and grep
 `error:|warning:` to save context. Mutating workflows on disjoint files may run
 concurrently; verify the union together.
@@ -225,8 +225,8 @@ recovery FSM design in `docs/work/service-state-machine.md`.
 ```bash
 git status --short --branch
 make lint
-touch lib/test/src/test_parallel.c && make test_parallel && ./test_parallel
-./tools/zcl-rpc getblockcount        # live tip — is it advancing?
+touch lib/test/src/test_parallel.c && make test_parallel && build/bin/test_parallel
+build/bin/zcl-rpc getblockcount        # live tip — is it advancing?
 ```
 
 If the node is not running, or the tip is not advancing, record that

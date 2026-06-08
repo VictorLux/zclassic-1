@@ -3,7 +3,7 @@
  * Regression test for no hardcoded `/home/rhett` in deployed
  * binaries, and the path helpers respect $HOME.
  *
- * Part 1: scan every built binary in the repo root (test_zcl itself,
+ * Part 1: scan every built binary under build/bin (test_zcl itself,
  * zclassic23, export_snapshot, zcl-nodectl, zcl-rpc, zclassic-cli) for
  * the literal byte string "/home/rhett". Expected: zero matches in
  * every binary. A hit means a contributor has hardcoded Rhett's home
@@ -69,11 +69,11 @@ int test_no_hardcoded_home(void)
      * compiled into test_zcl, so test_zcl will always match itself. The
      * production binaries below are what operators actually ship. */
     static const char *binaries[] = {
-        "./zclassic23",
-        "./export_snapshot",
-        "./zcl-nodectl",
-        "./zcl-rpc",
-        "./zclassic-cli",
+        "build/bin/zclassic23",
+        "build/bin/export_snapshot",
+        "build/bin/zcl-nodectl",
+        "build/bin/zcl-rpc",
+        "build/bin/zclassic-cli",
         NULL,
     };
 

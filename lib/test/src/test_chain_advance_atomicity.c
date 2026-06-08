@@ -49,7 +49,7 @@
  * the regression while that fixture lands.
  *
  * Gating: ZCL_STRESS_TESTS=1 — same convention as test_kill9_recovery.
- * Default `./test_zcl` reports PASS-skipped so CI runs are predictable. */
+ * Default `build/bin/test_zcl` reports PASS-skipped so CI runs are predictable. */
 
 #include "test/test_helpers.h"
 #include "validation/process_block.h"

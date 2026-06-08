@@ -23,7 +23,7 @@ WatchdogSec=120
 # back down to ~120s.
 TimeoutStartSec=900
 
-ExecStart=%h/zclassic23/zclassic23 \
+ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -datadir=%h/.zclassic-c23-test \
     -port=8035 \
     -rpcport=18234 \

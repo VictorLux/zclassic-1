@@ -5,10 +5,14 @@
 # ~900-block destabilization point, letting the separate monitor capture state.
 # Stops when tip >= TARGET, the node dies, or ROUNDS exhausted.
 set -u
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 DEST="$1"; RPCPORT="$2"
 TARGET="${3:-3136600}"
 ROUNDS="${4:-40}"
-rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" tools/zcl-rpc "$@" 2>/dev/null; }
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+[ -x "$RPC_BIN" ] || { echo "$RPC_BIN not built (make zcl-rpc)" >&2; exit 1; }
+rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null; }
 tip() { rpc getblockcount | tr -dc '0-9-'; }
 
 i=0

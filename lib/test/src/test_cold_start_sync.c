@@ -41,8 +41,8 @@
  *
  * Invocation
  * ----------
- *   ZCL_STRESS_TESTS=1 ./test_zcl
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=cold_start ./test_zcl  (focused)
+ *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=cold_start build/bin/test_zcl  (focused)
  *
  * MVP linkage
  * -----------

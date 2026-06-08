@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 """
-Generate MCP_REFERENCE.md from the live `./zclassic23 -mcp` tool surface.
+Generate MCP_REFERENCE.md from the live `build/bin/zclassic23 -mcp` tool surface.
 
 This is invoked by `make docs-mcp`, which pipes the JSON-RPC `tools/list`
 response through stdin.  Grouped by domain (ops / chain / net / wallet / app),
@@ -101,7 +101,7 @@ def render(tools: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     parts.append("# MCP Reference — ZClassic23\n")
     parts.append(
-        "Auto-generated from `./zclassic23 -mcp` via `make docs-mcp`. "
+        "Auto-generated from `build/bin/zclassic23 -mcp` via `make docs-mcp`. "
         "Do not edit by hand; regenerate after changing the router surface.\n"
     )
     parts.append(f"**Tool count:** {len(tools)}\n")

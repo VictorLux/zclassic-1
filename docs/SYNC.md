@@ -40,7 +40,7 @@ Activation is automatic — any peer advertising service bit `NODE_ZCL23`
 (`lib/net/include/net/fast_sync.h`) becomes a snapshot candidate.
 
 ```bash
-./zclassic23 -addnode=<zclassic23_peer>
+build/bin/zclassic23 -addnode=<zclassic23_peer>
 ```
 
 What happens:
@@ -79,7 +79,7 @@ store and file-service serving.
 Trustless sync from genesis over the standard P2P protocol. No snapshot.
 
 ```bash
-./zclassic23 -addnode=<any_peer>
+build/bin/zclassic23 -addnode=<any_peer>
 ```
 
 Headers → blocks → connect. Scripts/signatures below deferred proof validation height
@@ -110,12 +110,12 @@ Two one-liners, both safe on an empty datadir:
 # Preferred: empty-datadir → tip in ~60 s. Hardlinks blk*.dat, bulk-copies
 # block_index LevelDB, bulk-imports chainstate at legacy current tip,
 # skips per-block reducer intake entirely.
-./zclassic23 -cold-import=~/.zclassic
+build/bin/zclassic23 -cold-import=~/.zclassic
 
 # Alternate: streaming legacy reader. Reads block_index LevelDB + mmaps
 # blk*.dat directly (no zclassicd RPC), per-block I/O deferred via
 # g_body_pull_active. Auto wallet rescan at end.
-./zclassic23 -fastimport=~/.zclassic
+build/bin/zclassic23 -fastimport=~/.zclassic
 ```
 
 Implementation: `app/services/src/legacy_bootstrap_importer.c`
@@ -129,7 +129,7 @@ Rules:
   runtime windows, local consensus checks, or zclassic23 quorum before it
   elevates trust.
 - To force reimport after it's been run once:
-  `./zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
+  `build/bin/zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
 
 The legacy peer ships as the `zclassicd-rhett` systemd user service (see CLAUDE.md "Services").
 
@@ -235,7 +235,7 @@ file.
 
 ### Check sync status
 Use MCP: `zcl_status`, `zcl_kpi`, `zcl_syncstate`, `zcl_validationstatus`.
-(Or the `zcl-rpc` escape hatch if MCP is unavailable: `zcl-rpc getblockchaininfo`.)
+(Or the `zcl-rpc` escape hatch if MCP is unavailable: `build/bin/zcl-rpc getblockchaininfo`.)
 Status/dumpstate surfaces include sync phase, local/header/peer heights,
 immutable height, snapshot anchor, UTXO root, chainwork/quorum verdict,
 watchdog state, last recovery, and active acceleration source where available.

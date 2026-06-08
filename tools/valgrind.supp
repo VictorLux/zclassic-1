@@ -1,7 +1,7 @@
 # Valgrind suppression file for zclassic23 test suite.
 #
 # Usage:
-#   valgrind --suppressions=tools/valgrind.supp --leak-check=full ./test_zcl
+#   valgrind --suppressions=tools/valgrind.supp --leak-check=full build/bin/test_zcl
 #
 # Vendor code (OpenSSL, libevent, SQLite, LevelDB, secp256k1) may allocate
 # one-time buffers that are never freed (intentional — process lifetime).

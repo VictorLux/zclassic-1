@@ -2,7 +2,7 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
 # repro_on_copy.sh — snapshot the live datadir to a NEW labelled COPY and run
-# ./zclassic23 against the COPY on an isolated port, so consensus-critical and
+# build/bin/zclassic23 against the COPY on an isolated port, so consensus-critical and
 # recovery experiments are validated BEFORE they can touch the live chain.
 #
 # This is the guardrail that makes the catastrophic tail structurally
@@ -33,8 +33,13 @@
 #                     projections; skips the 14G blocks/ + 2.3G snapshot)
 #   --deadline=SECS   how long to watch the tip (default 180)
 #   --no-run          snapshot + manifest only; do not launch the node
-#   --                everything after is passed verbatim to ./zclassic23
+#   --                everything after is passed verbatim to build/bin/zclassic23
 set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 
 SLUG=""
 SRC="$HOME/.zclassic-c23"
@@ -64,7 +69,8 @@ done
 
 [ -n "$SLUG" ] || { echo "usage: tools/repro_on_copy.sh <slug> [--src=DIR] [--port=N] [--full] [-- <node args>]" >&2; exit 2; }
 [ -d "$SRC" ]  || { echo "repro_on_copy: source datadir not found: $SRC" >&2; exit 1; }
-[ -x ./zclassic23 ] || { echo "repro_on_copy: ./zclassic23 not built (run make)" >&2; exit 1; }
+[ -x "$NODE_BIN" ] || { echo "repro_on_copy: $NODE_BIN not built (run make)" >&2; exit 1; }
+[ -x "$RPC_BIN" ] || { echo "repro_on_copy: $RPC_BIN not built (run make zcl-rpc)" >&2; exit 1; }
 
 # Hard safety: never reuse the live ports.
 if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
@@ -138,14 +144,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "[repro] launching ./zclassic23 on the COPY (rpcport=$RPCPORT p2p=$P2PPORT) args: $PASS"
+echo "[repro] launching $NODE_BIN on the COPY (rpcport=$RPCPORT p2p=$P2PPORT) args: $PASS"
 # shellcheck disable=SC2086
-./zclassic23 -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" $PASS \
+"$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" $PASS \
     > "$DEST/repro_node.log" 2>&1 &
 NODE_PID=$!
 
 cookie="$DEST/.cookie"
-rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" tools/zcl-rpc "$@" 2>/dev/null || true; }
+rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null || true; }
 tip()  { rpc getblockcount | tr -dc '0-9-'; }
 
 # Wait for RPC, then watch the tip for regressions over the deadline window.

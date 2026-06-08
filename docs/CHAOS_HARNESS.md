@@ -5,7 +5,7 @@ There are **two distinct chaos tools**, for two different layers:
 | Tool | Layer | What it kills | Make target |
 |------|-------|---------------|-------------|
 | `zclassic23-chaos` | **Simulation engine** | Nothing real — a deterministic in-process state machine driven by `.scenario` files | `make chaos` |
-| `crash_recovery_test` | **Real process (C7)** | A real `./zclassic23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
+| `crash_recovery_test` | **Real process (C7)** | A real `build/bin/zclassic23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
 
 The sim engine (documented below, from "Chaos Harness" onward) is for
 fast, hermetic, seed-reproducible consensus/boot scenarios. The
@@ -17,7 +17,7 @@ recovery of a real node process under `SIGKILL`.
 ## Full-binary kill-9 (C7)
 
 `crash_recovery_test` (source: `tools/crash_recovery_test.c`) spawns a
-**real** `./zclassic23`, drives it briefly, `SIGKILL`s its whole process
+**real** `build/bin/zclassic23`, drives it briefly, `SIGKILL`s its whole process
 group, restarts it, and asserts the recovery invariants. It is the
 end-to-end counterpart to the in-process kill9 unit test
 (`lib/test/src/test_kill9_recovery.c`) — it asserts the *same* on-disk
@@ -114,7 +114,7 @@ Run one scenario with command-level progress:
 
 ```bash
 make zclassic23-chaos
-./zclassic23-chaos --scenario=tools/sim/scenarios/peer_churn.scenario --verbose
+build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/peer_churn.scenario --verbose
 ```
 
 Failed standalone runs write a summary and a copy of the scenario into
@@ -236,6 +236,6 @@ checked-in regression.
 Before committing a scenario, run:
 
 ```bash
-ZCL_TEST_ONLY=chaos_harness ./test_zcl
+ZCL_TEST_ONLY=chaos_harness build/bin/test_zcl
 make chaos
 ```

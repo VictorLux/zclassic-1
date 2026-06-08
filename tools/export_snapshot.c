@@ -1,6 +1,6 @@
 /* Minimal consensus snapshot exporter.
  * Copies only public tables from node.db to consensus_snapshot.db.
- * Usage: ./export_snapshot [datadir] */
+ * Usage: build/bin/export_snapshot [datadir] */
 
 #include "platform/time_compat.h"
 #include <sqlite3.h>

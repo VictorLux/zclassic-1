@@ -1,31 +1,11 @@
 # Build artifacts
-zclassic23
-zclassic23.old
-zclassic23-chaos
-p2_invariant_check
-test_zcl
-test_parallel
-zcl-rpc
-zcl-browser
-zcl-nodectl
-zclassic-cli
-bench_field
-rebuild_recent
-shadow_replay_proof
-hodlwave_chart
-hodlwave_svg
-hodlwave_view
-*.o
+build/
 
 # Vendor (built from source, not tracked)
 vendor/lib/
 vendor/zclassic-ref/
 vendor/sqlite3.c
 vendor/tor/
-
-# Tools (binary output)
-tools/hodl_chart
-tools/hodl_1yr_chart
 
 # Data / runtime
 *.db
@@ -42,38 +22,8 @@ zcl_persist_*/
 .zcl_test_*/
 .zcl_blog_*/
 
-# Build artifacts (additional)
-zclassic23-asan
-speedrun
-spec_zcl
-session
-bot
-wallet_dump
-wallet_sim
-wallet_check
-wallet-wireframes
-mock_rpc
-export_snapshot
-bench_fresh_sync
-zcl-watchdog
-tools/wal_checkpoint
-tools/check_observability_pairing
-crash_recovery_test
-fuzz_block
-fuzz_script
-fuzz_p2p
-tools/soak/soak_runner
 test-tmp/
 leak-*
-
-# Coverage (wave 5 #8)
-test_zcl_cov
-build/
-coverage.info
-coverage_html/
-*.gcda
-*.gcno
-*.gcov
 
 # Editor / OS
 .DS_Store
@@ -84,8 +34,6 @@ tags
 TAGS
 .idea/
 .zcl_test_render/
-tools/gen_templates
-tools/inspect_html
 
 # Claude Code agent worktrees (runtime)
 .claude/worktrees/

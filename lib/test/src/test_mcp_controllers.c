@@ -4,7 +4,7 @@
  * controller registers its tools with well-formed metadata, no
  * duplicate names, and consistent domain labels.  These tests touch
  * the real tool registration code (they link the same controller .c
- * files as the live zclassic23 -mcp binary).  Handler dispatch tests
+ * files as the live build/bin/zclassic23 -mcp binary).  Handler dispatch tests
  * use the ZCL_TESTING mcp_node_rpc hook instead of a running node.
  *
  * Coverage:

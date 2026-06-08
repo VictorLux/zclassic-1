@@ -29,8 +29,8 @@ set -eu
 SLUG="${1:-adhoc}"
 RPCPORT="${ZCL_RPCPORT:-18232}"
 DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
-RPC="${ZCL_RPC_TOOL:-tools/zcl-rpc}"
-[ -x "$RPC" ] || RPC="./tools/zcl-rpc"
+RPC="${ZCL_RPC_TOOL:-build/bin/zcl-rpc}"
+[ -x "$RPC" ] || RPC="./build/bin/zcl-rpc"
 
 export ZCL_RPCPORT="$RPCPORT" ZCL_DATADIR="$DATADIR"
 

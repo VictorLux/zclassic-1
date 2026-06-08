@@ -91,8 +91,8 @@ not operational:
 
 **Diagnose, read-only:**
 ```bash
-./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age + named blocker
-./tools/zcl-rpc getblockcount                              # is it climbing?
+build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age + named blocker
+build/bin/zcl-rpc getblockcount                              # is it climbing?
 ```
 
 If the tip is genuinely stuck, the live `chain_evidence` state names the precise
@@ -113,9 +113,9 @@ same-height self-write; a different-height duplicate is still a hard rejection.
 
 **Diagnose:**
 ```bash
-df -h $(zclassic23 -datadir 2>/dev/null || echo ~/.zclassic-c23)
+df -h $(build/bin/zclassic23 -datadir 2>/dev/null || echo ~/.zclassic-c23)
 du -sh ~/.zclassic-c23/*
-./tools/zcl-rpc healthcheck | jq '.disk'
+build/bin/zcl-rpc healthcheck | jq '.disk'
 ```
 
 **Fix:**
@@ -138,7 +138,7 @@ du -sh ~/.zclassic-c23/*
 
 **Diagnose:**
 ```bash
-./tools/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
+build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 # Via MCP:
 # zcl_peers → check banscore field
 # zcl_peer_report → offence breakdown by kind
@@ -148,11 +148,11 @@ du -sh ~/.zclassic-c23/*
 **Fix:**
 1. If a specific peer is spamming bad blocks/txs, disconnect:
    ```bash
-   ./tools/zcl-rpc addnode "IP:PORT" "remove"
+   build/bin/zcl-rpc addnode "IP:PORT" "remove"
    ```
 2. If legitimate peers are getting banned (false positive), check whether the node's chain is correct:
    ```bash
-   ./tools/zcl-rpc getblockchaininfo | jq '{blocks, bestblockhash}'
+   build/bin/zcl-rpc getblockchaininfo | jq '{blocks, bestblockhash}'
    # Compare height with a known-good explorer
    ```
 3. If your node is on a stale fork, see **Tip Regressed / Stuck on Wrong Fork** below.
@@ -167,7 +167,7 @@ du -sh ~/.zclassic-c23/*
 
 **Diagnose:**
 ```bash
-./tools/zcl-rpc getnetworkinfo | jq '{
+build/bin/zcl-rpc getnetworkinfo | jq '{
   connections, inbound_connections, outbound_connections,
   handshaked_connections, inbound_handshaked_connections,
   outbound_handshaked_connections, inbound_handshake_seen,
@@ -176,12 +176,12 @@ du -sh ~/.zclassic-c23/*
   peer_lifecycle
 }'
 
-./tools/zcl-rpc getpeerinfo | jq '.[] | {
+build/bin/zcl-rpc getpeerinfo | jq '.[] | {
   id, addr, state, inbound, subver, magicbean, zclassic_c23,
   startingheight, lifecycle
 }'
 
-./tools/zcl-rpc dumpstate peer_lifecycle | jq '{
+build/bin/zcl-rpc dumpstate peer_lifecycle | jq '{
   summary: .state.summary,
   sources: [.state.sources[] | {
     source, attempted, connected, handshake_complete,
@@ -189,8 +189,8 @@ du -sh ~/.zclassic-c23/*
     magicbean_handshakes, zclassic_c23_handshakes
   }]
 }'
-./tools/zcl-rpc healthcheck | jq '.checks.chain_advance'
-./tools/zcl-rpc dumpstate chain_advance_coordinator | jq '{
+build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'
+build/bin/zcl-rpc dumpstate chain_advance_coordinator | jq '{
   initialized, has_connman, has_main_state, has_node_db,
   authority, decision, selected_source, activation_allowed,
   mirror_fallback_allowed, local_height, target_height, reason,
@@ -204,7 +204,7 @@ du -sh ~/.zclassic-c23/*
     reason, blocker
   }]
 }'
-./tools/zcl-rpc dumpstate legacy_mirror | jq '{
+build/bin/zcl-rpc dumpstate legacy_mirror | jq '{
   state, lag, activation_blocker, last_blocker_code,
   stuck_reason, stuck_height, stalls_total,
   consensus_authority, candidate_source, candidate_trust, candidate_lag,
@@ -217,9 +217,9 @@ du -sh ~/.zclassic-c23/*
 1. **No completed handshakes:** check outbound reachability and peer quality before restarting.
    ```bash
    ss -tlnp | grep 8033
-   ./tools/zcl-rpc addnode "IP:8033" "onetry"
-   ./tools/zcl-rpc dumpstate peer_lifecycle | jq '.state.sources[] | select(.timeout>0 or .rejected>0 or .handshake_complete==0)'
-   ./tools/zcl-rpc dumpstate peer_lifecycle | jq '.state.peers[] | select(.timeout>0 or .rejected>0)'
+   build/bin/zcl-rpc addnode "IP:8033" "onetry"
+   build/bin/zcl-rpc dumpstate peer_lifecycle | jq '.state.sources[] | select(.timeout>0 or .rejected>0 or .handshake_complete==0)'
+   build/bin/zcl-rpc dumpstate peer_lifecycle | jq '.state.peers[] | select(.timeout>0 or .rejected>0)'
    ```
 2. **External IP missing or wrong:** set `-externalip=<public-ip>` in the service environment and verify it appears in `getnetworkinfo.localaddresses`. For public reachability, `inbound_handshake_seen=true` or `inbound_handshaked_connections > 0` is stronger evidence than outbound-only handshakes.
 3. **Only `connecting` peers:** prefer fresh addnodes from known ZClassic peers. `peer_lifecycle.sources[]` shows whether failures are concentrated in `addnode`, `addrman`, `manual`, `zcl23_db`, or `inbound`; the coordinator dump distinguishes TCP failures (`addnode_tcp_failures`) from post-connect protocol/handshake failures (`addnode_protocol_failures`).
@@ -237,7 +237,7 @@ du -sh ~/.zclassic-c23/*
 
 **Diagnose:**
 ```bash
-./tools/zcl-rpc healthcheck | jq '.wallet'
+build/bin/zcl-rpc healthcheck | jq '.wallet'
 ls -la ~/.zclassic-c23/node.db
 # Check if backup destination is writable
 ls -la ~/.zclassic-c23/backups/
@@ -262,8 +262,8 @@ ls -la ~/.zclassic-c23/backups/
 
 **Diagnose:**
 ```bash
-./tools/zcl-rpc getblockchaininfo | jq '{blocks, headers, bestblockhash, difficulty}'
-./tools/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced_headers}'
+build/bin/zcl-rpc getblockchaininfo | jq '{blocks, headers, bestblockhash, difficulty}'
+build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced_headers}'
 # Compare your tip hash against a trusted peer or explorer
 # Via MCP: zcl_syncstate, zcl_dataintegrity
 ```
@@ -274,7 +274,7 @@ ls -la ~/.zclassic-c23/backups/
    - Small reorg (<10 blocks): normal, node should recover automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
    - Large reorg (>10 blocks): investigate. Check if peers agree on the fork:
      ```bash
-     ./tools/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
+     build/bin/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
      ```
 3. If node is stuck on a dead fork (no peers agree), see the
    nuclear option below — invalidateblock / reconsiderblock RPCs are
@@ -298,9 +298,9 @@ ls -la ~/.zclassic-c23/backups/
 
 **Diagnose:**
 ```bash
-./tools/zcl-rpc getpeerinfo | jq 'length'        # Any peers?
-./tools/zcl-rpc getpeerinfo | jq '.[] | .addr'    # Who's connected?
-./tools/zcl-rpc getnetworkinfo | jq '{connections, localservices}'
+build/bin/zcl-rpc getpeerinfo | jq 'length'        # Any peers?
+build/bin/zcl-rpc getpeerinfo | jq '.[] | .addr'    # Who's connected?
+build/bin/zcl-rpc getnetworkinfo | jq '{connections, localservices}'
 # Via MCP: zcl_syncstate, zcl_peers
 ```
 
@@ -308,14 +308,14 @@ ls -la ~/.zclassic-c23/backups/
 1. **Zero peers:** Network issue or all seeds down.
    ```bash
    # Add a known peer manually
-   ./tools/zcl-rpc addnode "IP:PORT" "onetry"
+   build/bin/zcl-rpc addnode "IP:PORT" "onetry"
    # Check firewall — P2P port 8033 must be reachable
    ss -tlnp | grep 8033
    ```
 2. **Has peers but no blocks:** Peers may be stale or node is rejecting valid blocks.
    ```bash
    # Check recent events for reject reasons
-   ./tools/zcl-rpc eventlog | grep -i reject
+   build/bin/zcl-rpc eventlog | grep -i reject
    # Via MCP: zcl_events, zcl_consensus_report
    ```
 3. **Sync state is FAILED:**
@@ -406,7 +406,7 @@ cat /proc/$(pgrep zclassic23)/status | grep -E 'VmRSS|VmPeak'
 2. If UTXO cache is large: the node batches flushes. A restart forces a flush and reclaims memory.
 3. If mempool is bloated:
    ```bash
-   ./tools/zcl-rpc getmempoolinfo | jq '{size, bytes}'
+   build/bin/zcl-rpc getmempoolinfo | jq '{size, bytes}'
    # Mempool has configurable limits — check environment
    ```
 

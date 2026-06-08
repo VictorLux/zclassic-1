@@ -36,7 +36,7 @@
  *       minute as the node syncs), and
  *   (2) "[explorer] ... no such table: mempool_entries" noise whenever
  *       the live DB's projection tables weren't built yet — which
- *       masked real failures in ./test_parallel.
+ *       masked real failures in build/bin/test_parallel.
  *
  * Instead we build a private, deterministic node.db in a temp datadir
  * using the authoritative production schema (node_db_open applies

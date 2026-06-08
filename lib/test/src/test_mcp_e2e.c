@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * End-to-end MCP integration test.  Forks the real `zclassic23 -mcp`
+ * End-to-end MCP integration test.  Forks the real `build/bin/zclassic23 -mcp`
  * binary with a throwaway datadir, speaks JSON-RPC over its stdin/stdout,
  * and asserts on the wire-level envelope shapes that an MCP client
  * (Claude Code, a TypeScript type generator, an auto-test harness)
@@ -24,13 +24,13 @@
  *   - Tool counts are read live from `mcp_router_count()` in the
  *     test_zcl process, not hard-coded.  Adding a new MCP tool does
  *     not require touching this file.
- *   - The harness compares `./zclassic23` mtime against the MCP
+ *   - The harness compares `build/bin/zclassic23` mtime against the MCP
  *     source files.  If the binary is stale (older than any router
  *     or controller source) the test reports `SKIP (stale binary —
  *     run \`make test-e2e\` to rebuild)` instead of failing with a
  *     confusing tool-count mismatch.
- *   - If `./zclassic23` is not present at all (fresh checkout), the
- *     test reports `SKIP` and `./test_zcl` stays green.
+ *   - If `build/bin/zclassic23` is not present at all (fresh checkout), the
+ *     test reports `SKIP` and `build/bin/test_zcl` stays green.
  *
  * To always run the e2e suite against a fresh binary, use:
  *   $ make test-e2e
@@ -69,7 +69,7 @@ static long file_mtime(const char *path)
     return (long)st.st_mtime;
 }
 
-/* The MCP source files that, when newer than ./zclassic23, mean the
+/* The MCP source files that, when newer than build/bin/zclassic23, mean the
  * binary's tool surface has drifted from what test_zcl knows about.
  * If any of these is newer than the binary the e2e test will SKIP
  * with a clear message rather than fail with a confusing tool count
@@ -92,7 +92,7 @@ static const char *const stale_witnesses[] = {
     NULL,
 };
 
-/* Returns true when ./zclassic23 looks newer than every witness
+/* Returns true when build/bin/zclassic23 looks newer than every witness
  * source file we know about. */
 static bool zclassic23_is_fresh(const char *bin_path,
                                  const char **stale_path_out)
@@ -164,7 +164,7 @@ static bool child_start(struct mcp_child *ch)
         char datadir_arg[320];
         snprintf(datadir_arg, sizeof(datadir_arg),
                  "-datadir=%s", ch->datadir);
-        execl("./zclassic23", "zclassic23", "-mcp", datadir_arg,
+        execl("build/bin/zclassic23", "zclassic23", "-mcp", datadir_arg,
               "-rpcport=19999", NULL);
         _exit(127);
     }
@@ -434,8 +434,8 @@ int test_mcp_e2e(void)
 {
     int failures = 0;
 
-    if (!file_exists("./zclassic23")) {
-        printf("e2e: ./zclassic23 not built — SKIP "
+    if (!file_exists("build/bin/zclassic23")) {
+        printf("e2e: build/bin/zclassic23 not built — SKIP "
                "(run `make test-e2e` to rebuild and run)\n");
         return 0;
     }
@@ -445,8 +445,8 @@ int test_mcp_e2e(void)
      * a real regression but is in fact just an old build, which has
      * burned multiple sessions of debugging time. */
     const char *stale_path = NULL;
-    if (!zclassic23_is_fresh("./zclassic23", &stale_path)) {
-        printf("e2e: ./zclassic23 is stale — newer source: %s — SKIP "
+    if (!zclassic23_is_fresh("build/bin/zclassic23", &stale_path)) {
+        printf("e2e: build/bin/zclassic23 is stale — newer source: %s — SKIP "
                "(run `make test-e2e` to rebuild and run)\n",
                stale_path ? stale_path : "(unknown)");
         return 0;
@@ -467,7 +467,7 @@ int test_mcp_e2e(void)
 
     struct mcp_child ch;
     if (!child_start(&ch)) {
-        printf("e2e: failed to fork zclassic23 -mcp — SKIP\n");
+        printf("e2e: failed to fork build/bin/zclassic23 -mcp — SKIP\n");
         return 0;
     }
 

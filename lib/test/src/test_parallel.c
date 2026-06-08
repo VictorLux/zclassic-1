@@ -2,7 +2,7 @@
  *
  * Fork-parallel driver for the zclassic23 test suite.
  *
- * The sequential runner (`./test_zcl`, `main()` in test.c) executes
+ * The sequential runner (`build/bin/test_zcl`, `main()` in test.c) executes
  * ~170 test groups back-to-back on a single CPU. On a 32-core box we
  * barely use 3% of available compute and the suite takes 8-15 minutes.
  *

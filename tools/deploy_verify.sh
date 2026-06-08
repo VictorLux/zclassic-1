@@ -17,12 +17,12 @@
 # Usage: ./tools/deploy_verify.sh [rpc_tool] [timeout_seconds]
 set -eu
 
-RPC_TOOL="${1:-./zclassic-cli}"
+RPC_TOOL="${1:-./build/bin/zclassic-cli}"
 TIMEOUT="${2:-120}"
 INTERVAL=2
 
 if [ ! -x "$RPC_TOOL" ]; then
-    alt="./tools/zcl-rpc"
+    alt="./build/bin/zcl-rpc"
     if [ -x "$alt" ]; then
         RPC_TOOL="$alt"
     fi
@@ -75,7 +75,7 @@ rpc_dumpstate() {
         return 0
     fi
 
-    # tools/zcl-rpc wraps remaining argv directly into a JSON params array,
+    # build/bin/zcl-rpc wraps remaining argv directly into a JSON params array,
     # so string arguments need quotes. zclassic-cli accepts the unquoted
     # form above, but this fallback keeps deploy verification portable.
     out=$("$RPC_TOOL" dumpstate "\"$component\"" 2>&1 || true)
@@ -187,7 +187,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     attempt=$((attempt + 1))
     if out=$("$RPC_TOOL" getblockcount 2>&1); then
         # Accept either a plain integer (zclassic-cli) or a JSON
-        # envelope with "result":<integer> (tools/zcl-rpc). Any other
+        # envelope with "result":<integer> (build/bin/zcl-rpc). Any other
         # output keeps the loop polling.
         height=$(extract_height "$out")
         if [ -n "$height" ] && verify_contract "$height"; then

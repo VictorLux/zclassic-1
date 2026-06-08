@@ -26,8 +26,8 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="$REPO_DIR/zclassic23"
-CLI="$REPO_DIR/tools/zcl-rpc"
+BIN="$REPO_DIR/build/bin/zclassic23"
+CLI="$REPO_DIR/build/bin/zcl-rpc"
 SRC_SNAP_CANDIDATES=(
     "$HOME/.zclassic-c23-test/consensus_snapshot.db"
     "$HOME/.zclassic-c23/consensus_snapshot.db"

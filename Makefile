@@ -3,6 +3,21 @@
 
 CC = cc
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DIR = build
+BIN_DIR = $(BUILD_DIR)/bin
+OBJ_DIR = $(BUILD_DIR)/obj
+
+ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
+TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
+TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
+ZCLASSIC_CLI_BIN = $(BIN_DIR)/zclassic-cli
+ZCL_RPC_BIN = $(BIN_DIR)/zcl-rpc
+ZCL_NODECTL_BIN = $(BIN_DIR)/zcl-nodectl
+WAL_CHECKPOINT_BIN = $(BIN_DIR)/wal_checkpoint
+SOAK_RUNNER_BIN = $(BIN_DIR)/soak_runner
+CRASH_RECOVERY_TEST_BIN = $(BIN_DIR)/crash_recovery_test
+P2_INVARIANT_CHECK_BIN = $(BIN_DIR)/p2_invariant_check
+ZCLASSIC23_CHAOS_BIN = $(BIN_DIR)/zclassic23-chaos
 
 # App layer (MVC)
 APP_DIRS = models controllers views services supervisors conditions jobs events
@@ -50,7 +65,7 @@ MCP_SRCS = $(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 	$(wildcard tools/mcp/views/*.c)
 
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
-ALL_OBJS = $(ALL_SRCS:.c=.o)
+ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
@@ -109,19 +124,25 @@ TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
-TMPL_TOOL = tools/gen_templates
+TMPL_TOOL = $(BIN_DIR)/gen_templates
 
 $(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Ilib/util/include -o $@ $^
 
-tools/inspect_html: tools/inspect_html.c
+$(BIN_DIR)/inspect_html: tools/inspect_html.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -o $@ $<
 
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
-	./$(TMPL_TOOL) app/views/templates $@ app/views/css
+	$(TMPL_TOOL) app/views/templates $@ app/views/css
 
 .PHONY: templates
 templates: $(TMPL_GEN)
+
+.PHONY: tools/gen_templates tools/inspect_html
+tools/gen_templates: $(TMPL_TOOL)
+tools/inspect_html: $(BIN_DIR)/inspect_html
 
 # Build a tool/test binary that links against the full node library stack
 # (Tor, OpenSSL, libevent, GTK, WebKit). Used by 8 binaries to keep the
@@ -132,7 +153,10 @@ templates: $(TMPL_GEN)
 #   $(3) = extra link libs (e.g., -lm); empty by default
 #   $(4) = extra CFLAGS (e.g., -DZCL_TESTING); empty by default
 define BUILD_NODE_TOOL
-$(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
+.PHONY: $(1)
+$(1): $$(BIN_DIR)/$(1)
+$$(BIN_DIR)/$(1): $$(TMPL_GEN) $(2) $$(ALL_SRCS)
+	@mkdir -p $$(dir $$@)
 	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
@@ -143,14 +167,14 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/te
 
 .PHONY: test-parallel
 test-parallel: test_parallel
-	ulimit -s unlimited && ./test_parallel
+	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
 
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
-# NOT `make` + `./test_zcl` (8-15 min) and NOT a bare `./test_parallel`.
+# NOT `make` + `build/bin/test_zcl` (8-15 min) and NOT a bare `build/bin/test_parallel`.
 #
 # THE REBUILD TRAP: plain `make` does NOT rebuild test_parallel (it is not in
-# the default `all`), so running ./test_parallel directly after editing a test
+# the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
 .PHONY: t syntax-check build-only lint-fast
@@ -161,7 +185,7 @@ t: test_parallel
 	@if [ -z "$(ONLY)" ]; then \
 	  echo "usage: make t ONLY=<group-substr>   (e.g. make t ONLY=stage_reducer_unwedge)"; \
 	  exit 2; fi
-	ulimit -s unlimited && ./test_parallel --only=$(ONLY)
+	ulimit -s unlimited && $(TEST_PARALLEL_BIN) --only=$(ONLY)
 
 # Incremental compile-check of the whole node (no link). Only changed TUs
 # recompile — the fastest "does my change still build" signal. The
@@ -199,15 +223,23 @@ repro-on-copy:
 $(eval $(call BUILD_NODE_TOOL,spec_zcl,lib/test/spec_main.c $(SPEC_SRCS) lib/test/src/test_helpers.c))
 $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 
-session: $(TMPL_GEN) tools/session.c $(ALL_SRCS)
+$(BIN_DIR)/session: $(TMPL_GEN) tools/session.c $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
-	./session
 
-bot: $(TMPL_GEN) tools/bot.c $(ALL_SRCS)
+session: $(BIN_DIR)/session
+	$(BIN_DIR)/session
+
+$(BIN_DIR)/bot: $(TMPL_GEN) tools/bot.c $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm
-	./bot
 
-mock_rpc: tools/mock_rpc.c
+bot: $(BIN_DIR)/bot
+	$(BIN_DIR)/bot
+
+mock_rpc: $(BIN_DIR)/mock_rpc
+$(BIN_DIR)/mock_rpc: tools/mock_rpc.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread -o $@ $<
 
 $(eval $(call BUILD_NODE_TOOL,wallet_sim,tools/wallet_sim.c))
@@ -216,22 +248,28 @@ $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim
-	./wallet_sim
+	$(BIN_DIR)/wallet_sim
 dump: wallet_dump
-	./wallet_dump
+	$(BIN_DIR)/wallet_dump
 
 check-wallet: wallet_check
-	./wallet_check
+	$(BIN_DIR)/wallet_check
 
 .PHONY: spec
 spec: spec_zcl
-	ulimit -s unlimited && ./spec_zcl
+	ulimit -s unlimited && $(BIN_DIR)/spec_zcl
 
-zclassic23: $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
+.PHONY: zclassic23
+zclassic23: $(ZCLASSIC23_BIN)
+$(ZCLASSIC23_BIN): $(TMPL_GEN) main.c tools/mcp_server.c $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
 
-zclassic-cli: cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
+.PHONY: zclassic-cli
+zclassic-cli: $(ZCLASSIC_CLI_BIN)
+$(ZCLASSIC_CLI_BIN): cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # In-tree WAL checkpoint tool used by `deploy`.  Replaces a dependency on
@@ -240,24 +278,33 @@ zclassic-cli: cli.c $(CLI_SRCS) lib/util/src/safe_alloc.c
 # sqlite3_wal_checkpoint_v2(TRUNCATE) on the open DB and exits non-zero on
 # failure so `make deploy` halts loudly instead of silently skipping the
 # checkpoint.
-tools/wal_checkpoint: tools/wal_checkpoint.c
+.PHONY: tools/wal_checkpoint
+tools/wal_checkpoint: $(WAL_CHECKPOINT_BIN)
+$(WAL_CHECKPOINT_BIN): tools/wal_checkpoint.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
 
 $(eval $(call BUILD_NODE_TOOL,wallet-wireframes,tools/wallet_wireframes.c))
 $(eval $(call BUILD_NODE_TOOL,speedrun,tools/speedrun.c))
 
-zcl-rpc: tools/zcl-rpc.c
+.PHONY: zcl-rpc
+zcl-rpc: $(ZCL_RPC_BIN)
+$(ZCL_RPC_BIN): tools/zcl-rpc.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -o $@ $<
 
 # gen_sha3_windows: one-shot tool that queries a fully-synced reference
 # node and overwrites lib/chain/{include/chain,src}/sha3_windows.{h,c}
 # with SHA3-256 commitments over 1000-block windows. Standalone build:
 # only the libs it directly uses, no DB, no Tor.
-tools/gen_sha3_windows: tools/gen_sha3_windows.c \
+.PHONY: tools/gen_sha3_windows
+tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
+$(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
 		lib/crypto/src/sha3.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    -Wno-stringop-overflow -Wno-unused-result \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
@@ -272,16 +319,28 @@ tools/gen_sha3_windows: tools/gen_sha3_windows.c \
 # itself (avoids duplicating the dep tree); invoke via:
 #   zclassic23 --gen-utxo-snapshot <legacy_datadir> <out_path>
 
-zcl-nodectl: tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
+.PHONY: zcl-nodectl
+zcl-nodectl: $(ZCL_NODECTL_BIN)
+$(ZCL_NODECTL_BIN): tools/zcl-nodectl.c lib/util/include/util/rpc_paths.h
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ilib/util/include -o $@ $<
 
-export_snapshot: tools/export_snapshot.c
+.PHONY: export_snapshot
+export_snapshot: $(BIN_DIR)/export_snapshot
+$(BIN_DIR)/export_snapshot: tools/export_snapshot.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -Ivendor/include -o $@ $< -Lvendor/lib -l:libsqlite3.a -lpthread
 
-zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
+.PHONY: zcl-browser
+zcl-browser: $(BIN_DIR)/zcl-browser
+$(BIN_DIR)/zcl-browser: tools/zcl-browser.c $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $^ $(TOR_LIBS) $(LIBS) $$(pkg-config --libs webkit2gtk-4.1)
 
-zcl-blog: tools/zcl-blog
+.PHONY: zcl-blog
+zcl-blog: $(BIN_DIR)/zcl-blog
+$(BIN_DIR)/zcl-blog: tools/zcl-blog
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
 
 explorer-css: app/views/src/explorer_css.css
@@ -301,16 +360,19 @@ explorer-css: app/views/src/explorer_css.css
 # The slow single-process binary is still available as `make test-full`.
 # Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
 test: test_parallel
-	ulimit -s unlimited && ./test_parallel
+	ulimit -s unlimited && $(TEST_PARALLEL_BIN)
 
 test-full: test_zcl
-	ulimit -s unlimited && ./test_zcl
+	ulimit -s unlimited && $(TEST_ZCL_BIN)
 
-zclassic23-chaos: tools/sim/chaos.c tools/sim/sim_peer.c \
+.PHONY: zclassic23-chaos
+zclassic23-chaos: $(ZCLASSIC23_CHAOS_BIN)
+$(ZCLASSIC23_CHAOS_BIN): tools/sim/chaos.c tools/sim/sim_peer.c \
 	lib/util/src/safe_alloc.c \
 	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
 	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
 	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
 	    -Ilib/platform/include -Itools \
@@ -322,18 +384,21 @@ chaos: zclassic23-chaos
 	@set -eu; \
 	for s in tools/sim/scenarios/*.scenario; do \
 	    echo "==> $$s"; \
-	    ./zclassic23-chaos --scenario="$$s"; \
+	    $(ZCLASSIC23_CHAOS_BIN) --scenario="$$s"; \
 	done; \
 	echo "==> All chaos scenarios PASSED"
 
 chaos-clean:
-	rm -f zclassic23-chaos
-	rm -rf chaos-output/
+	rm -f $(ZCLASSIC23_CHAOS_BIN)
+	rm -rf build/chaos-output/ chaos-output/
 
 # Offline P2 self-heal invariant checker: coins_applied_height == utxo_apply
 # cursor, read read-only from a progress.kv (works while the node is down —
 # the kill-9 window). Self-contained against the vendored sqlite3 header.
-p2_invariant_check: tools/p2_invariant_check.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+.PHONY: p2_invariant_check
+p2_invariant_check: $(P2_INVARIANT_CHECK_BIN)
+$(P2_INVARIANT_CHECK_BIN): tools/p2_invariant_check.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
 	    -o $@ tools/p2_invariant_check.c \
@@ -343,7 +408,10 @@ p2_invariant_check: tools/p2_invariant_check.c vendor/include/sqlite3.h vendor/l
 # restart, and assert data-integrity invariants. Needs a pre-seeded
 # datadir (skips trivially if none exists — see tool header). Build
 # depends on the node binary and the CLI RPC helper.
-crash_recovery_test: tools/crash_recovery_test.c lib/platform/src/clock.c
+.PHONY: crash_recovery_test
+crash_recovery_test: $(CRASH_RECOVERY_TEST_BIN)
+$(CRASH_RECOVERY_TEST_BIN): tools/crash_recovery_test.c lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pthread \
 	    -Ilib/platform/include -Ilib/util/include -Ivendor/include -o $@ \
 	    tools/crash_recovery_test.c lib/platform/src/clock.c \
@@ -367,7 +435,7 @@ test-crash: crash_recovery_test zclassic23 zcl-rpc
 	 if [ -n "$${ZCL_CRASH_DATADIR:-}" ] && [ ! -d "$$dd" ]; then \
 	     echo "test-crash: ZCL_CRASH_DATADIR=$$dd does not exist — harness will SKIP"; \
 	 fi; \
-	 ZCL_CRASH_DATADIR="$$dd" ./crash_recovery_test --iterations=10
+	 ZCL_CRASH_DATADIR="$$dd" $(CRASH_RECOVERY_TEST_BIN) --iterations=10
 
 # ── Opt-in, node-spawning harnesses (NOT in `make ci`) ─────────────
 #
@@ -394,7 +462,7 @@ test-crash-bootstrap: crash_recovery_test zclassic23 zcl-rpc
 	 . tools/scripts/isolated_node_env.sh; \
 	 iso_init; \
 	 echo "test-crash-bootstrap: kill-9 cycles on $$ISO_DD (rpc=$$ISO_RPCPORT)"; \
-	 ./crash_recovery_test \
+	 $(CRASH_RECOVERY_TEST_BIN) \
 	     --bootstrap-regtest \
 	     --datadir="$$ISO_DD" \
 	     --rpc-port="$$ISO_RPCPORT" \
@@ -431,7 +499,7 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # Runs under bash for `set -o pipefail` (see test-crash-bootstrap note).
 # `set +e` around the runner so a non-zero verdict is reported (not
 # swallowed by errexit) before the false-green sentinel check.
-soak-ci: tools/soak/soak_runner zclassic23 zcl-rpc
+soak-ci: soak_runner zclassic23 zcl-rpc
 	@bash -c 'set -uo pipefail; \
 	 export ISO_KIND=soak ISO_PORT_BASE=39040; \
 	 . tools/scripts/isolated_node_env.sh; \
@@ -439,7 +507,7 @@ soak-ci: tools/soak/soak_runner zclassic23 zcl-rpc
 	 log="$$ISO_DD/soak-ci.log"; \
 	 echo "soak-ci: 180s compressed soak on $$ISO_DD (rpc=$$ISO_RPCPORT)"; \
 	 set +e; \
-	 out=$$(./tools/soak/soak_runner \
+	 out=$$($(SOAK_RUNNER_BIN) \
 	     --ci-proxy \
 	     --node-datadir="$$ISO_DD" \
 	     --rpcport="$$ISO_RPCPORT" \
@@ -449,7 +517,7 @@ soak-ci: tools/soak/soak_runner zclassic23 zcl-rpc
 	     --connect=127.0.0.1:"$$ISO_CONNECT_SINK" \
 	     --interval-sec=5 \
 	     --load=generate:5 \
-	     --rpc=./zcl-rpc \
+	     --rpc=$(ZCL_RPC_BIN) \
 	     --log="$$log" 2>&1); rc=$$?; set -e; \
 	 echo "$$out"; \
 	 if [ "$$rc" != "0" ]; then \
@@ -465,16 +533,16 @@ soak-ci: tools/soak/soak_runner zclassic23 zcl-rpc
 
 # Always-fresh end-to-end MCP test.
 #
-# `test_mcp_e2e` forks the real `./zclassic23 -mcp` binary and asserts
+# `test_mcp_e2e` forks the real `build/bin/zclassic23 -mcp` binary and asserts
 # wire-level envelope shapes.  If the binary is older than the MCP
 # source files the in-suite test SKIPs with a clear message rather
 # than failing with a confusing tool-count mismatch — but that means a
-# bare `./test_zcl` after editing MCP code can silently skip the e2e
+# bare `build/bin/test_zcl` after editing MCP code can silently skip the e2e
 # coverage.  Use `make test-e2e` to force a rebuild of zclassic23 (and
 # test_zcl) before running, so the e2e suite always runs against the
 # current source.
 test-e2e: zclassic23 test_zcl
-	ulimit -s unlimited && ./test_zcl
+	ulimit -s unlimited && $(TEST_ZCL_BIN)
 
 # P11.4 shielded-payment gate.
 #
@@ -491,7 +559,7 @@ test-shielded-payment: test_zcl
 			exit 0; \
 		fi; \
 	done; \
-	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment ./test_zcl
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=shielded_payment $(TEST_ZCL_BIN)
 
 # P11.5 store end-to-end gate.
 #
@@ -499,7 +567,7 @@ test-shielded-payment: test_zcl
 # test_zcl. This is deterministic and self-contained, but remains opt-in so
 # the default suite does not pay extra setup/runtime cost.
 test-store-e2e: test_zcl
-	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e ./test_zcl
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e $(TEST_ZCL_BIN)
 
 # ── MVP acceptance gates: hermetic vs fixture-bound ───────────
 #
@@ -534,7 +602,7 @@ test-store-e2e: test_zcl
 # fall-through into a loud failure. Redirect (not pipe) so the test's real exit
 # status survives on dash. $(1)=label $(2)=selector $(3)=unique sentinel.
 define mvp_gate
-@echo "══ $(1) ══"; l=$$(mktemp); if ! ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=$(2) ./test_zcl >"$$l" 2>&1; then cat "$$l"; rm -f "$$l"; echo "MVP GATE FAILED: $(1) (ZCL_TEST_ONLY=$(2) exited non-zero)"; exit 1; fi; cat "$$l"; if ! grep -qF "$(3)" "$$l"; then rm -f "$$l"; echo "MVP GATE FALSE-GREEN GUARD: $(1) — sentinel \"$(3)\" not printed; the ZCL_TEST_ONLY=$(2) selector likely no longer exists in lib/test/src/test.c so the full suite ran. Restore the selector or re-point this gate."; exit 1; fi; rm -f "$$l"
+@echo "══ $(1) ══"; l=$$(mktemp); if ! ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=$(2) $(TEST_ZCL_BIN) >"$$l" 2>&1; then cat "$$l"; rm -f "$$l"; echo "MVP GATE FAILED: $(1) (ZCL_TEST_ONLY=$(2) exited non-zero)"; exit 1; fi; cat "$$l"; if ! grep -qF "$(3)" "$$l"; then rm -f "$$l"; echo "MVP GATE FALSE-GREEN GUARD: $(1) — sentinel \"$(3)\" not printed; the ZCL_TEST_ONLY=$(2) selector likely no longer exists in lib/test/src/test.c so the full suite ran. Restore the selector or re-point this gate."; exit 1; fi; rm -f "$$l"
 endef
 
 .PHONY: ci-mvp-gates ci-stress
@@ -604,7 +672,7 @@ mvp-parity-slice: test_zcl
 # SKIPs cleanly instead of failing — do NOT call this from `make ci`.
 ci-stress: test_zcl
 	@echo "══ MVP gate #2: onion bootstrap (needs Tor network) ══"
-	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion ./test_zcl
+	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion $(TEST_ZCL_BIN)
 	@echo "══ MVP gate #4: shielded payment (needs ~/.zcash-params) ══"
 	$(MAKE) test-shielded-payment
 
@@ -650,12 +718,18 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = fuzz_block fuzz_script fuzz_p2p
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p
 
 .PHONY: fuzz fuzz-ci
 fuzz: $(FUZZ_TARGETS)
 
-fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
+.PHONY: fuzz_block fuzz_script fuzz_p2p
+fuzz_block: $(BIN_DIR)/fuzz_block
+fuzz_script: $(BIN_DIR)/fuzz_script
+fuzz_p2p: $(BIN_DIR)/fuzz_p2p
+
+$(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
 		echo "fuzz_block: $(FUZZ_CC) not found — SKIP (install clang for fuzzing)"; \
 		touch $@; \
@@ -664,7 +738,8 @@ fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_block.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
-fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
+$(BIN_DIR)/fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
 		echo "fuzz_script: $(FUZZ_CC) not found — SKIP"; \
 		touch $@; \
@@ -673,7 +748,8 @@ fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_script.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
-fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
+$(BIN_DIR)/fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
 		echo "fuzz_p2p: $(FUZZ_CC) not found — SKIP"; \
 		touch $@; \
@@ -690,10 +766,11 @@ fuzz-ci: $(FUZZ_TARGETS)
 	set -e; \
 	for t in $(FUZZ_TARGETS); do \
 		echo "=== $$t (60s) ==="; \
-		seed_dir="lib/test/fuzz_seeds/$${t#fuzz_}"; \
-		work_dir="/tmp/zcl_fuzz_$${t#fuzz_}"; \
+		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
+		seed_dir="lib/test/fuzz_seeds/$$kind"; \
+		work_dir="/tmp/zcl_fuzz_$$kind"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		ASAN_OPTIONS=detect_leaks=0 ./$$t -max_total_time=60 \
+		ASAN_OPTIONS=detect_leaks=0 $$t -max_total_time=60 \
 			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
@@ -709,10 +786,11 @@ fuzz-ci-leaks: $(FUZZ_TARGETS)
 	set -e; \
 	for t in $(FUZZ_TARGETS); do \
 		echo "=== $$t (60s, leak detection ON) ==="; \
-		seed_dir="lib/test/fuzz_seeds/$${t#fuzz_}"; \
-		work_dir="/tmp/zcl_fuzz_$${t#fuzz_}_leaks"; \
+		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
+		seed_dir="lib/test/fuzz_seeds/$$kind"; \
+		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		./$$t -max_total_time=60 -timeout=1 -print_final_stats=1 \
+		$$t -max_total_time=60 -timeout=1 -print_final_stats=1 \
 			"$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
@@ -735,42 +813,48 @@ fuzz-ci-leaks: $(FUZZ_TARGETS)
 # Neither target is wired into the default `ci` pipeline: 7 days
 # is obviously out of band, and the smoke target needs a live
 # node on the same host, which most CI workers don't provide.
-tools/soak/soak_runner: tools/soak/main.c lib/test/src/soak_harness.c \
+.PHONY: soak_runner
+soak_runner: $(SOAK_RUNNER_BIN)
+$(SOAK_RUNNER_BIN): tools/soak/main.c lib/test/src/soak_harness.c \
                         lib/platform/src/clock.c \
                         lib/test/include/test/soak_harness.h
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -Ilib/test/include -Ilib/platform/include -Ilib/util/include -o $@ \
 	    tools/soak/main.c lib/test/src/soak_harness.c lib/platform/src/clock.c
 
-soak-7day: tools/soak/soak_runner zcl-rpc
-	./tools/soak/soak_runner \
+soak-7day: soak_runner zcl-rpc
+	$(SOAK_RUNNER_BIN) \
 	    --duration-sec=604800 \
 	    --interval-sec=60 \
 	    --service=zclassic23 \
-	    --rpc=./zcl-rpc
+	    --rpc=$(ZCL_RPC_BIN)
 
-soak-smoke: tools/soak/soak_runner zcl-rpc
-	./tools/soak/soak_runner \
+soak-smoke: soak_runner zcl-rpc
+	$(SOAK_RUNNER_BIN) \
 	    --duration-sec=300 \
 	    --interval-sec=30 \
 	    --service=zclassic23 \
-	    --rpc=./zcl-rpc \
+	    --rpc=$(ZCL_RPC_BIN) \
 	    --stall-sec=600 \
 	    --warmup-sec=60
 
 .PHONY: bench-sync
 bench-sync: zclassic23 bench_fresh_sync
-	./bench_fresh_sync
+	$(BIN_DIR)/bench_fresh_sync
 
-bench_fresh_sync: tools/bench_fresh_sync.c
+.PHONY: bench_fresh_sync
+bench_fresh_sync: $(BIN_DIR)/bench_fresh_sync
+$(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c
+	@mkdir -p $(dir $@)
 	$(CC) -O2 -o $@ $<
 
 bench: zclassic23
-	@./zclassic23 -bench
+	@$(ZCLASSIC23_BIN) -bench
 
 bench-regress: zclassic23
-	@./zclassic23 -bench-regress
+	@$(ZCLASSIC23_BIN) -bench-regress
 
 # CI guard: fresh datadir, must reach tip-10 in <600s against a local
 # peer. Fails the build if sync regresses to the 9-hour stall the
@@ -792,11 +876,12 @@ ci-sync-smoke: zclassic23
 	    exit 0; \
 	fi
 	@echo "[ci-sync-smoke] recording C benchmark placeholders..."
-	@./zclassic23 -bench-coldstart
-	@./zclassic23 -bench-mtbf
+	@$(ZCLASSIC23_BIN) -bench-coldstart
+	@$(ZCLASSIC23_BIN) -bench-mtbf
 	@echo "[ci-sync-smoke] OK"
 
-%.o: %.c
+$(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
@@ -827,11 +912,11 @@ DESTDIR ?=
 .PHONY: install
 install: zclassic23 zcl-rpc
 	install -d "$(DESTDIR)$(PREFIX)/bin"
-	install -m 755 zclassic23 "$(DESTDIR)$(PREFIX)/bin/zclassic23"
-	install -m 755 zcl-rpc    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
+	install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"
+	install -m 755 $(ZCL_RPC_BIN)    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
 	@if [ -z "$(DESTDIR)" ]; then \
 	    install -d "$(HOME)/.config/systemd/user"; \
-	    sed 's|%h/zclassic23/zclassic23|$(PREFIX)/bin/zclassic23|' \
+	    sed 's|%h/zclassic23/build/bin/zclassic23|$(PREFIX)/bin/zclassic23|' \
 	        deploy/zclassic23.service \
 	        > "$(HOME)/.config/systemd/user/zclassic23.service"; \
 	    (systemctl --user daemon-reload 2>/dev/null || true); \
@@ -841,7 +926,7 @@ install: zclassic23 zcl-rpc
 
 deploy: lint zclassic23 zclassic-cli tools/wal_checkpoint
 	@if [ -f $(HOME)/.zclassic-c23/node.db ]; then \
-	    ./tools/wal_checkpoint $(HOME)/.zclassic-c23/node.db \
+	    $(WAL_CHECKPOINT_BIN) $(HOME)/.zclassic-c23/node.db \
 	        || { echo "WAL checkpoint failed"; exit 1; }; \
 	fi
 	@install -m 644 deploy/zclassic23.service $(HOME)/.config/systemd/user/zclassic23.service
@@ -853,7 +938,15 @@ release:
 	@./tools/release.sh
 
 clean:
-	rm -f test_zcl zclassic23 zclassic-cli $(ALL_OBJS)
+	rm -rf $(BUILD_DIR)
+	rm -f test_zcl test_parallel zclassic23 zclassic-cli zcl-rpc zcl-nodectl \
+	    zclassic23-chaos p2_invariant_check crash_recovery_test rebuild_recent \
+	    shadow_replay_proof wallet_check spec_zcl session bot wallet_dump \
+	    wallet_sim wallet-wireframes mock_rpc export_snapshot bench_fresh_sync \
+	    fuzz_block fuzz_script fuzz_p2p test_zcl_cov
+	rm -f tools/gen_templates tools/inspect_html tools/wal_checkpoint \
+	    tools/check_observability_pairing tools/gen_sha3_windows \
+	    tools/soak/soak_runner
 
 # ── Coverage (wave 5 #8) ──────────────────────────────────────
 #
@@ -896,10 +989,13 @@ clean:
 #    FIRST, then link — this way each .gcda lives next to its .o and
 #    the directory structure guarantees uniqueness.  Slower than the
 #    single-command build, but sound.
-COV_BUILD_DIR = build/cov
+COV_BUILD_DIR = $(BUILD_DIR)/cov
 COV_CFLAGS = $(filter-out -flto -O3 -march=native -Werror,$(CFLAGS)) \
              --coverage -O1 -g -DCOVERAGE_BUILD -DZCL_TESTING
 COV_LDFLAGS = $(filter-out -flto,$(LDFLAGS)) --coverage
+COV_TEST_BIN = $(BIN_DIR)/test_zcl_cov
+COV_INFO = $(BUILD_DIR)/coverage.info
+COV_HTML = $(BUILD_DIR)/coverage_html
 
 COV_TEST_SRCS := $(filter-out lib/test/src/test_parallel.c, $(TEST_SRCS))
 COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(COV_TEST_SRCS) $(SPEC_SRCS) $(ALL_SRCS))
@@ -908,7 +1004,10 @@ $(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)
 	@mkdir -p $(dir $@)
 	$(CC) $(COV_CFLAGS) -Wno-deprecated-declarations -c -o $@ $<
 
-test_zcl_cov: $(COV_OBJS)
+.PHONY: test_zcl_cov
+test_zcl_cov: $(COV_TEST_BIN)
+$(COV_TEST_BIN): $(COV_OBJS)
+	@mkdir -p $(dir $@)
 	$(CC) $(COV_CFLAGS) $(COV_LDFLAGS) -o $@ $(COV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 coverage: coverage-clean test_zcl_cov
@@ -920,18 +1019,18 @@ coverage: coverage-clean test_zcl_cov
 	@# anyway so the partial coverage data is still flushed for any
 	@# test that ran to completion before the crash (cov_flush.c
 	@# installs a SIGSEGV handler that calls __gcov_dump).
-	@ulimit -s unlimited && ./test_zcl_cov || true
+	@ulimit -s unlimited && $(COV_TEST_BIN) || true
 	@if command -v lcov >/dev/null 2>&1; then \
 		echo "== Rendering coverage via lcov =="; \
-		lcov --capture --directory $(COV_BUILD_DIR) --output-file coverage.info \
+		lcov --capture --directory $(COV_BUILD_DIR) --output-file $(COV_INFO) \
 		     --rc geninfo_unexecuted_blocks=1 --quiet || true; \
-		lcov --remove coverage.info \
+		lcov --remove $(COV_INFO) \
 		     '*/lib/test/*' '*/vendor/*' '*/tools/fuzz/*' '/usr/*' \
-		     --output-file coverage.info --quiet || true; \
-		lcov --summary coverage.info; \
+		     --output-file $(COV_INFO) --quiet || true; \
+		lcov --summary $(COV_INFO); \
 		if command -v genhtml >/dev/null 2>&1; then \
-			genhtml --quiet coverage.info --output-directory coverage_html; \
-			echo "== HTML report: coverage_html/index.html =="; \
+			genhtml --quiet $(COV_INFO) --output-directory $(COV_HTML); \
+			echo "== HTML report: $(COV_HTML)/index.html =="; \
 		else \
 			echo "(genhtml not installed — summary only)"; \
 		fi; \
@@ -975,7 +1074,7 @@ coverage: coverage-clean test_zcl_cov
 	fi
 
 coverage-clean:
-	@rm -rf $(COV_BUILD_DIR) coverage.info coverage_html test_zcl_cov
+	@rm -rf $(COV_BUILD_DIR) $(COV_INFO) $(COV_HTML) $(COV_TEST_BIN)
 	@find . \( -name '*.gcda' -o -name '*.gcno' \) -delete 2>/dev/null || true
 	@echo "Coverage artifacts removed."
 
@@ -988,7 +1087,7 @@ coverage-clean:
 docs-mcp: zclassic23
 	@echo "== Generating MCP_REFERENCE.md =="
 	@echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-		| ./zclassic23 -mcp 2>/dev/null \
+		| $(ZCLASSIC23_BIN) -mcp 2>/dev/null \
 		| python3 tools/gen_mcp_reference.py > MCP_REFERENCE.md
 	@wc -l MCP_REFERENCE.md
 
@@ -996,7 +1095,7 @@ docs-mcp-check: zclassic23
 	@echo "== Verifying MCP_REFERENCE.md is up to date =="
 	@tmp=$$(mktemp); \
 	 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-		| ./zclassic23 -mcp 2>/dev/null \
+		| $(ZCLASSIC23_BIN) -mcp 2>/dev/null \
 		| python3 tools/gen_mcp_reference.py > "$$tmp"; \
 	 if ! diff -q MCP_REFERENCE.md "$$tmp" >/dev/null; then \
 		echo "MCP_REFERENCE.md is STALE. Run: make docs-mcp"; \
@@ -1065,12 +1164,15 @@ check-coins-lookup-nullcheck:
 	@echo "══ LINT: guarded controller coin lookups ══"
 	@tools/scripts/check_coins_lookup_nullcheck.sh
 
-tools/check_observability_pairing: tools/check_observability_pairing.c
+.PHONY: tools/check_observability_pairing
+tools/check_observability_pairing: $(BIN_DIR)/check_observability_pairing
+$(BIN_DIR)/check_observability_pairing: tools/check_observability_pairing.c
+	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -o $@ $<
 
 check-observability-pairing: tools/check_observability_pairing
 	@echo "══ LINT: observable stderr diagnostics ══"
-	@./tools/check_observability_pairing
+	@$(BIN_DIR)/check_observability_pairing
 
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
@@ -1380,7 +1482,7 @@ lint: check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-c
 
 ci: lint bench-regress zclassic23 test_zcl
 	@echo "══ CI: test ══"
-	ulimit -s unlimited && ./test_zcl
+	ulimit -s unlimited && $(TEST_ZCL_BIN)
 	@echo ""
 	@echo "══ CI: mvp-gates (hermetic MVP acceptance #3/#5/#7) ══"
 	$(MAKE) ci-mvp-gates
@@ -1408,4 +1510,4 @@ audit:
 	@tools/dep_audit.sh
 
 check-restart-follow:
-	./zcl-nodectl verify-follow --restart
+	$(ZCL_NODECTL_BIN) verify-follow --restart

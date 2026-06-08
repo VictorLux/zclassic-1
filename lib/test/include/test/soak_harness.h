@@ -6,7 +6,7 @@
  * while it polls a running node every 60 s for 7 days. Split from
  * the runner so the verdict logic is testable from `test_zcl` —
  * the runner is just the I/O shell (pidof, /proc/<pid>/status,
- * ./tools/zcl-rpc getblockcount).
+ * build/bin/zcl-rpc getblockcount).
  *
  * Failure modes we gate on (in this priority order — soak_compute_verdict
  * returns the first one that matches, so the verdict is deterministic):

@@ -60,12 +60,12 @@ ZClassic23 has a built-in MCP server for AI development. Claude Code can query t
 ### Setup
 
 ```bash
-claude mcp add zcl23 -- zclassic23 -mcp
+claude mcp add zcl23 -- build/bin/zclassic23 -mcp
 ```
 
 Or with custom datadir/port:
 ```bash
-claude mcp add zcl23 -- zclassic23 -mcp -datadir=/path/to/data -rpcport=18232
+claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir=/path/to/data -rpcport=18232
 ```
 
 Restart Claude Code after adding. The tools appear automatically.
@@ -317,21 +317,21 @@ Progress via: `zcl_validationstatus`
 
 ### Build
 ```bash
-make -j$(nproc)     # Builds zclassic23, test_zcl, zclassic-cli
+make -j$(nproc)     # Builds build/bin/zclassic23, build/bin/test_zcl, build/bin/zclassic-cli
 make test           # Run 1500+ tests
 make deploy         # Build + setcap + restart service
 ```
 
 ### Test
 ```bash
-./test_zcl          # All tests
+build/bin/test_zcl  # All tests
 ```
 
 ### RPC (without MCP)
 ```bash
-./tools/zcl-rpc getblockcount
-./tools/zcl-rpc getpeerinfo
-./tools/zcl-rpc z_gettotalbalance
+build/bin/zcl-rpc getblockcount
+build/bin/zcl-rpc getpeerinfo
+build/bin/zcl-rpc z_gettotalbalance
 ```
 
 ### Services

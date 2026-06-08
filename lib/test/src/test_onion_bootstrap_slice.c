@@ -55,7 +55,7 @@
  * Tor thread is ever spawned and no network is ever touched.
  *
  * Invocation:
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion_slice ./test_zcl
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion_slice build/bin/test_zcl
  *   make mvp-onion-slice
  */
 

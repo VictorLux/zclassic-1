@@ -38,6 +38,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+
 # ── Live-port refuse-set (verbatim from isolated_node_env.sh) ──────
 TN_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
@@ -115,7 +120,7 @@ tn_cleanup() {
 # $1=datadir $2=rpcport $3.. = method/args
 tn_rpc() {
     local dd="$1" rp="$2"; shift 2
-    ZCL_DATADIR="$dd" ZCL_RPCPORT="$rp" ./zcl-rpc "$@" 2>/dev/null || true
+    ZCL_DATADIR="$dd" ZCL_RPCPORT="$rp" "$RPC_BIN" "$@" 2>/dev/null || true
 }
 a_rpc() { tn_rpc "$TN_DD_A" "$A_RPC" "$@"; }
 b_rpc() { tn_rpc "$TN_DD_B" "$B_RPC" "$@"; }
@@ -132,7 +137,7 @@ tn_blockcount() {
 # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
 tn_spawn() {
     local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" conn="$6"
-    setsid ./zclassic23 \
+    setsid "$NODE_BIN" \
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         -connect="$conn" \
@@ -181,8 +186,8 @@ tn_wait_height() {
 # ── Preflight + setup ──────────────────────────────────────────────
 command -v ss     >/dev/null 2>&1 || tn_die "ss(8) not found (need iproute2)"
 command -v mktemp >/dev/null 2>&1 || tn_die "mktemp not found"
-[ -x ./zclassic23 ] || tn_die "./zclassic23 not built — run make first"
-[ -x ./zcl-rpc ]    || tn_die "./zcl-rpc not built — run make zcl-rpc"
+[ -x "$NODE_BIN" ] || tn_die "$NODE_BIN not built — run make first"
+[ -x "$RPC_BIN" ]  || tn_die "$RPC_BIN not built — run make zcl-rpc"
 
 for p in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" \
          "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "$DEAD_SINK"; do

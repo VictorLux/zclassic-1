@@ -7,7 +7,7 @@
  * the user would see.
  *
  * Usage:
- *   make wallet_dump && ./wallet_dump [datadir]
+ *   make wallet_dump && build/bin/wallet_dump [datadir]
  *
  * Default datadir: ~/.zclassic-c23
  *

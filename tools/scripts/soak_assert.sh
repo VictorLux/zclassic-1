@@ -25,7 +25,7 @@ POLL_S="${2:-60}"
 MIN_PEERS="${MIN_PEERS:-3}"
 LAG_BREACH_BLOCKS="${LAG_BREACH_BLOCKS:-10}"
 UNIT="${SOAK_UNIT:-zclassic23}"
-ZCL_CLI="${ZCL_CLI:-./tools/zcl-rpc}"
+ZCL_CLI="${ZCL_CLI:-./build/bin/zcl-rpc}"
 HEALTH_URL="${HEALTH_URL:-https://127.0.0.1:8443/api/health}"
 
 start_ts=$(date +%s)

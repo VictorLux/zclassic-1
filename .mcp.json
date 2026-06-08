@@ -2,7 +2,7 @@
   "mcpServers": {
     "zcl23": {
       "type": "stdio",
-      "command": "/home/rhett/github/zclassic23/zclassic23",
+      "command": "/home/rhett/github/zclassic23/build/bin/zclassic23",
       "args": [
         "-mcp",
         "-datadir=/home/rhett/.zclassic-c23"

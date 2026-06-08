@@ -11,7 +11,7 @@
  * Intentionally minimal — no JSON parser, no libevent, no
  * threads. Every signal the verdict cares about comes from
  * either /proc (/proc/<pid>/status → VmRSS) or one-shot fork/exec
- * of `./zcl-rpc getblockcount` (integer result is trivial to
+ * of `build/bin/zcl-rpc getblockcount` (integer result is trivial to
  * extract by scanning for "result"). The runner doesn't try to
  * recover from a dead node — if the node goes down, the runner
  * keeps polling, records the crash sample, and lets the verdict
@@ -43,13 +43,13 @@
  * Usage:
  *     make soak-7day                   (7 days, against installed zclassic23)
  *     make soak-ci                     (compressed hermetic proxy)
- *     tools/soak/soak_runner --help
+ *     build/bin/soak_runner --help
  *
  * Flags:
  *     --duration-sec=N      total run length (default 7d = 604800)
  *     --interval-sec=N      poll interval (default 60)
  *     --service=NAME        process name to pidof (pidof mode, default zclassic23)
- *     --rpc=PATH            zcl-rpc binary (default ./zcl-rpc)
+ *     --rpc=PATH            zcl-rpc binary (default build/bin/zcl-rpc)
  *     --log=PATH            output log (default ./soak-YYYYMMDD-HHMM.log)
  *     --stall-sec=N         tip stall threshold (default 1800)
  *     --rss-growth-mib=N    RSS walk threshold (default 512)
@@ -224,7 +224,7 @@ static bool spawn_node(struct spawn_cfg *sp)
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        execl("./zclassic23", "zclassic23",
+        execl("build/bin/zclassic23", "zclassic23",
               dd, "-regtest", rpcp, p2p, fsp, httpsp, conn,
               "-nobgvalidation", "-nolegacyimport", "-showmetrics=0",
               (char *)NULL);
@@ -285,7 +285,7 @@ static void usage(const char *argv0)
         "  --duration-sec=N    total run length (default 604800 = 7d)\n"
         "  --interval-sec=N    poll interval (default 60)\n"
         "  --service=NAME      pidof target (pidof mode, default zclassic23)\n"
-        "  --rpc=PATH          zcl-rpc binary (default ./zcl-rpc)\n"
+        "  --rpc=PATH          zcl-rpc binary (default build/bin/zcl-rpc)\n"
         "  --log=PATH          output log (default soak-YYYYMMDD-HHMM.log)\n"
         "  --stall-sec=N       tip-stall threshold (default 1800)\n"
         "  --rss-growth-mib=N  RSS-walk threshold MiB (default 512)\n"
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
 
     uint64_t interval_sec = 60;
     const char *service   = "zclassic23";
-    const char *rpc_bin   = "./zcl-rpc";
+    const char *rpc_bin   = "build/bin/zcl-rpc";
     char log_path[256] = {0};
     default_log_path(log_path, sizeof(log_path));
 

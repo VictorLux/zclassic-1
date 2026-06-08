@@ -20,8 +20,8 @@
  *     exercises torrc generation + address propagation (test_tor.c).
  *
  * Invocation:
- *   ZCL_STRESS_TESTS=1 ./test_zcl
- *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion ./test_zcl  (focused run)
+ *   ZCL_STRESS_TESTS=1 build/bin/test_zcl
+ *   ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=onion build/bin/test_zcl  (focused run)
  *
  * MVP linkage: flips `MVP.md` criterion #2 from ☐ to ✅.  Forward-
  * looking CI gate — not RED-first (no failing branch existed when

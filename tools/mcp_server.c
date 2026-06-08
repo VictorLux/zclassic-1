@@ -2,11 +2,11 @@
  *
  * ZClassic23 MCP Server — Model Context Protocol for AI agents.
  *
- * Install:  claude mcp add zcl23 -- zclassic23 -mcp
+ * Install:  claude mcp add zcl23 -- build/bin/zclassic23 -mcp
  * Usage:    Claude calls tools like zcl_status, zcl_getblock, zcl_peers
  *
  * Architecture:
- *   Claude Code <--stdio--> zclassic23 -mcp <--HTTP--> zclassic23 RPC
+ *   Claude Code <--stdio--> build/bin/zclassic23 -mcp <--HTTP--> zclassic23 RPC
  *
  * This file owns the MCP wire protocol only.  It:
  *

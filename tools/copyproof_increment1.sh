@@ -25,6 +25,11 @@
 #                                      [--climb-rounds=15] [--watch=180]
 set -u
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
@@ -46,7 +51,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ -d "$SRC" ] || { echo "src datadir not found: $SRC" >&2; exit 1; }
-[ -x ./zclassic23 ] || { echo "./zclassic23 not built" >&2; exit 1; }
+[ -x "$NODE_BIN" ] || { echo "$NODE_BIN not built" >&2; exit 1; }
+[ -x "$RPC_BIN" ] || { echo "$RPC_BIN not built (make zcl-rpc)" >&2; exit 1; }
 if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
   echo "refusing to use the live port (18232/8033)" >&2; exit 1
 fi
@@ -56,7 +62,7 @@ DEST="$HOME/.zclassic-c23-COPY-$TS-cp1"
 [ ! -e "$DEST" ] || { echo "dest exists: $DEST" >&2; exit 1; }
 
 say() { echo "[cp1] $*"; }
-rpc()  { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" tools/zcl-rpc "$@" 2>/dev/null; }
+rpc()  { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null; }
 tip()  { rpc getblockcount | tr -dc '0-9-'; }
 nodepid() { cat "$DEST/zclassic23.pid" 2>/dev/null | tr -dc '0-9'; }
 
@@ -73,7 +79,7 @@ NODE_ARGS="-datadir=$DEST -rpcport=$RPCPORT -port=$P2PPORT -nobgvalidation -addn
 boot_node() {  # $1 = logfile
   local log="$1"
   rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null
-  setsid ./zclassic23 $NODE_ARGS > "$log" 2>&1 &
+  setsid "$NODE_BIN" $NODE_ARGS > "$log" 2>&1 &
   # wait for RPC up or death (max ~120s)
   local up=0 i=0
   while [ "$i" -lt 40 ]; do

@@ -127,7 +127,7 @@ static bool bench_history_ensure(const char *path)
     }
     fputs("# zclassic23 benchmark history.\n", f);
     fputs("# Columns: date, commit, bench, value, unit, notes.\n", f);
-    fputs("# Numeric value rows are regression-gated by zclassic23 -bench-regress.\n", f);
+    fputs("# Numeric value rows are regression-gated by build/bin/zclassic23 -bench-regress.\n", f);
     fputs("# Empty value rows are pending/skipped measurements and are ignored by the gate.\n", f);
     fputs("# Bench names follow docs/USER_BENCHMARKS.md primaries #1..#5.\n", f);
     fputs("# Append-only: do not rewrite old rows; add a correction row instead.\n", f);
@@ -1561,7 +1561,7 @@ int main(int argc, char **argv)
     }
 
     /* MCP server mode: speaks Model Context Protocol on stdio.
-     * Install: claude mcp add zcl23 -- zclassic23 -mcp */
+     * Install: claude mcp add zcl23 -- build/bin/zclassic23 -mcp */
     extern int mcp_server_main(const char *datadir, int rpc_port);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-mcp") == 0) {
@@ -1578,8 +1578,8 @@ int main(int argc, char **argv)
     }
 
     /* Default: headless node. GUI only with explicit --gui flag.
-     * ./zclassic23         → node (always)
-     * ./zclassic23 --gui   → wallet GUI (if display available) */
+     * build/bin/zclassic23         → node (always)
+     * build/bin/zclassic23 --gui   → wallet GUI (if display available) */
     {
         bool gui_mode = false;
         for (int i = 1; i < argc; i++) {

@@ -159,7 +159,7 @@ jobs:
         # cross-runner compare is independent of any path/name differences.
         run: |
           set -euo pipefail
-          sha3_file=$(ls release/*.sha3)
+          sha3_file=$(ls build/release/*.sha3)
           awk '{print $1}' "$sha3_file" | tr -d '[:space:]' > sha3-hash.txt
           echo "SHA3 for ${{ matrix.os }}: $(cat sha3-hash.txt)"
       - name: Upload SHA3 attestation

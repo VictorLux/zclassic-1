@@ -20,7 +20,7 @@
  * This is the offline counterpart to the node's own zcl_state introspection:
  * use it precisely in the kill-9 window when no node is running to ask.
  *
- * Usage:  p2_invariant_check <datadir-or-progress.kv> [--immutable] [--quiet]
+ * Usage:  build/bin/p2_invariant_check <datadir-or-progress.kv> [--immutable] [--quiet]
  * Exit:   0 = invariant HOLDS (both present and equal)
  *         1 = MISMATCH (drift, or malformed blob, or cursor missing)
  *         2 = coins_applied_height ABSENT (pre-P2 datadir — not a violation)

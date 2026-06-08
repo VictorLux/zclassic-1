@@ -4217,7 +4217,7 @@ skip_parallel_tests:
     /* ── connman snapshot-iterate stress (opt-in) ──────────
      * Exercise the refactored message-cycle + deferred-free-sweep
      * contract under concurrent disconnect pressure. Opt-in via
-     * ZCL_STRESS_TESTS=1 so the default ./test_zcl doesn't pay the
+     * ZCL_STRESS_TESTS=1 so the default build/bin/test_zcl doesn't pay the
      * ~1-second wall cost for a path that rarely regresses. */
     if (getenv("ZCL_STRESS_TESTS")) {
         printf("p25_connman: 50 peers × 1s concurrent "

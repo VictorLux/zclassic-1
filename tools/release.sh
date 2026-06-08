@@ -2,9 +2,9 @@
 # tools/release.sh — Build a tagged release of zclassic23.
 #
 # Creates:
-#   release/zclassic23-v{VERSION}-linux-x86_64.tar.gz
-#   release/zclassic23-v{VERSION}-linux-x86_64.sha3
-#   release/zclassic23-v{VERSION}-linux-x86_64.sha3.sig  (if GPG key available)
+#   build/release/zclassic23-v{VERSION}-linux-x86_64.tar.gz
+#   build/release/zclassic23-v{VERSION}-linux-x86_64.sha3
+#   build/release/zclassic23-v{VERSION}-linux-x86_64.sha3.sig  (if GPG key available)
 #
 # Usage:
 #   ./tools/release.sh              # auto-detect version from clientversion.h
@@ -123,8 +123,10 @@ info "Building release: $TAG"
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 RELEASE_NAME="zclassic23-${TAG}-${OS}-${ARCH}"
-RELEASE_DIR="$REPO_ROOT/release"
+RELEASE_DIR="$REPO_ROOT/build/release"
 STAGING="$RELEASE_DIR/$RELEASE_NAME"
+NODE_BIN="$REPO_ROOT/build/bin/zclassic23"
+CLI_BIN="$REPO_ROOT/build/bin/zclassic-cli"
 
 # ---------- reproducible build profile ---------------------------------------
 #
@@ -157,10 +159,6 @@ REL_LDFLAGS="$(make_var LDFLAGS) -Wl,--build-id=none"
 info "Release CFLAGS:  $REL_CFLAGS"
 info "Release LDFLAGS: $REL_LDFLAGS"
 
-# Clean previous staging
-rm -rf "$STAGING"
-mkdir -p "$STAGING"
-
 # Build from clean (deterministic flags overridden on the command line)
 info "Running: make clean && make zclassic23 zclassic-cli (reproducible flags)"
 make clean >/dev/null 2>&1 || true
@@ -168,8 +166,12 @@ make -j"$(nproc)" CFLAGS="$REL_CFLAGS" LDFLAGS="$REL_LDFLAGS" \
     zclassic23 zclassic-cli 2>&1 | tail -3
 
 # Verify binaries exist
-[ -f zclassic23 ]   || die "Build failed: zclassic23 not found"
-[ -f zclassic-cli ] || die "Build failed: zclassic-cli not found"
+[ -f "$NODE_BIN" ] || die "Build failed: $NODE_BIN not found"
+[ -f "$CLI_BIN" ]  || die "Build failed: $CLI_BIN not found"
+
+# Clean previous staging after make clean has removed build/.
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
 
 # Collect build metadata
 GIT_REV=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -196,15 +198,16 @@ Compiler:     $COMPILER
 CFLAGS:       $REL_CFLAGS
 LDFLAGS:      $REL_LDFLAGS
 Platform:     $(uname -srm)
-Binary size:  $(stat -c%s zclassic23 2>/dev/null || stat -f%z zclassic23) bytes
-CLI size:     $(stat -c%s zclassic-cli 2>/dev/null || stat -f%z zclassic-cli) bytes
+Binary size:  $(stat -c%s "$NODE_BIN" 2>/dev/null || stat -f%z "$NODE_BIN") bytes
+CLI size:     $(stat -c%s "$CLI_BIN" 2>/dev/null || stat -f%z "$CLI_BIN") bytes
 BUILDINFO
 
 info "BUILDINFO:"
 cat "$STAGING/BUILDINFO"
 
 # Copy binaries
-cp zclassic23 zclassic-cli "$STAGING/"
+cp "$NODE_BIN" "$STAGING/zclassic23"
+cp "$CLI_BIN" "$STAGING/zclassic-cli"
 
 # Strip debug symbols for release (keep a copy)
 if command -v strip >/dev/null 2>&1; then

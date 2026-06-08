@@ -33,7 +33,7 @@ Type=simple
 # deploy/zclassic23.env.example for the expected variable shape.
 EnvironmentFile=-%h/.config/zclassic23/env
 
-ExecStart=%h/zclassic23/zclassic23 \
+ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -datadir=%h/.zclassic-c23 \
     -port=8023 \
     -rpcport=18232 \

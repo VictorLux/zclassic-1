@@ -25,6 +25,12 @@
 #                                       [--climb=90] [--settle=20]
 set -u
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+P2_CHECK_BIN="${ZCL_P2_CHECK_BIN:-$REPO_ROOT/build/bin/p2_invariant_check}"
+
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
@@ -46,8 +52,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ -d "$SRC" ] || { echo "src datadir not found: $SRC" >&2; exit 1; }
-[ -x ./zclassic23 ] || { echo "./zclassic23 not built" >&2; exit 1; }
-[ -x ./p2_invariant_check ] || { echo "./p2_invariant_check not built (make p2_invariant_check)" >&2; exit 1; }
+[ -x "$NODE_BIN" ] || { echo "$NODE_BIN not built" >&2; exit 1; }
+[ -x "$P2_CHECK_BIN" ] || { echo "$P2_CHECK_BIN not built (make p2_invariant_check)" >&2; exit 1; }
+[ -x "$RPC_BIN" ] || { echo "$RPC_BIN not built (make zcl-rpc)" >&2; exit 1; }
 if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
   echo "refusing to use the live port (18232/8033)" >&2; exit 1
 fi
@@ -57,7 +64,7 @@ DEST="$HOME/.zclassic-c23-COPY-$TS-p2"
 [ ! -e "$DEST" ] || { echo "dest exists: $DEST" >&2; exit 1; }
 
 say() { echo "[p2cp] $*"; }
-rpc()  { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" tools/zcl-rpc "$@" 2>/dev/null; }
+rpc()  { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null; }
 tip()  { rpc getblockcount | tr -dc '0-9-'; }
 nodepid() { cat "$DEST/zclassic23.pid" 2>/dev/null | tr -dc '0-9'; }
 
@@ -67,7 +74,7 @@ nodepid() { cat "$DEST/zclassic23.pid" 2>/dev/null | tr -dc '0-9'; }
 # -wal), NOT --immutable.
 p2chk() {
   local label="$1" out rc
-  out="$(./p2_invariant_check "$DEST" 2>&1)"; rc=$?
+  out="$("$P2_CHECK_BIN" "$DEST" 2>&1)"; rc=$?
   { say "P2-INVARIANT [$label] (rc=$rc):"; echo "$out" | sed 's/^/    /'; } >&2
   echo "$rc"
 }
@@ -75,7 +82,7 @@ p2chk() {
 boot_node() {  # $1 = logfile -> echoes 1 if RPC came up, else 0
   local log="$1" up=0 i=0 t
   rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null
-  setsid ./zclassic23 -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
+  setsid "$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
       -nobgvalidation -addnode="$ORACLE_P2P" > "$log" 2>&1 &
   while [ "$i" -lt 40 ]; do
     i=$((i+1)); t="$(tip)"

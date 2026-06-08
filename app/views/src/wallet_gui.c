@@ -424,7 +424,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 
     if (!gtk_init_check(&argc, &argv)) {
         fprintf(stderr, "Cannot open display (DISPLAY=%s).\n"
-                "For headless testing: xvfb-run ./zclassic23 --self-test\n",
+                "For headless testing: xvfb-run build/bin/zclassic23 --self-test\n",
             getenv("DISPLAY") ? getenv("DISPLAY") : "unset");
         return 1;
     }
@@ -548,7 +548,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
         GTK_BUTTONS_OK,
         "ZClassic23 GUI requires WebKit2GTK.\n"
         "Install: pacman -S webkit2gtk-4.1\n\n"
-        "Run as node: ./zclassic23 -datadir=~/.zclassic-c23");
+        "Run as node: build/bin/zclassic23 -datadir=~/.zclassic-c23");
     gtk_dialog_run(GTK_DIALOG(d));
     gtk_widget_destroy(d);
     return 1;
@@ -559,7 +559,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
     (void)argc; (void)argv; (void)datadir;
     fprintf(stderr, "GUI not available — built without GTK3 + WebKit2.\n"
-            "Run as node: ./zclassic23 -datadir=~/.zclassic-c23\n");
+            "Run as node: build/bin/zclassic23 -datadir=~/.zclassic-c23\n");
     return 1;
 }
 #endif

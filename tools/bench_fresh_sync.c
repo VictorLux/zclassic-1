@@ -6,8 +6,8 @@
  * Spawns a fresh zclassic23 node, monitors RPC + log, reports
  * phase timing for each step of the fast sync pipeline.
  *
- * Build: cc -O2 -o bench_fresh_sync tools/bench_fresh_sync.c
- * Run:   ./bench_fresh_sync
+ * Build: make bench_fresh_sync
+ * Run:   build/bin/bench_fresh_sync
  */
 
 #include "platform/time_compat.h"
@@ -148,11 +148,11 @@ int main(void)
         tm->tm_hour, tm->tm_min, tm->tm_sec);
 
     char binary[256];
-    /* Find binary relative to this executable or in known locations */
-    if (access("./zclassic23", X_OK) == 0)
-        snprintf(binary, sizeof(binary), "./zclassic23");
+    /* Find binary relative to the repo root or in known locations. */
+    if (access("build/bin/zclassic23", X_OK) == 0)
+        snprintf(binary, sizeof(binary), "build/bin/zclassic23");
     else
-        snprintf(binary, sizeof(binary), "%s/zclassic23/zclassic23", getenv("HOME") ?: ".");
+        snprintf(binary, sizeof(binary), "%s/zclassic23/build/bin/zclassic23", getenv("HOME") ?: ".");
 
     if (access(binary, X_OK) != 0) {
         fprintf(stderr, "ERROR: Binary not found at %s\n", binary);

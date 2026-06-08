@@ -58,8 +58,8 @@ echo "ci-install: building zclassic23 + zcl-rpc"
 make -C "$REPO_ROOT" -j"$(nproc)" zclassic23 zcl-rpc >/dev/null \
     || gate_die "build failed (make zclassic23 zcl-rpc)"
 
-SRC_NODE="$REPO_ROOT/zclassic23"
-SRC_RPC="$REPO_ROOT/zcl-rpc"
+SRC_NODE="$REPO_ROOT/build/bin/zclassic23"
+SRC_RPC="$REPO_ROOT/build/bin/zcl-rpc"
 [ -x "$SRC_NODE" ] || gate_die "built node missing/!executable: $SRC_NODE"
 [ -x "$SRC_RPC" ]  || gate_die "built zcl-rpc missing/!executable: $SRC_RPC"
 
@@ -110,6 +110,7 @@ make -C "$REPO_ROOT" install DESTDIR="$PREFIX" PREFIX= >/dev/null \
 # port, and arms ITS datadir-cleanup trap (which gate_cleanup chains).
 cd "$PREFIX/bin"
 export ISO_KIND=install ISO_PORT_BASE
+export ISO_NODE_BIN=./zclassic23 ISO_RPC_BIN=./zcl-rpc
 # shellcheck source=tools/scripts/isolated_node_env.sh
 . "$HARNESS"
 

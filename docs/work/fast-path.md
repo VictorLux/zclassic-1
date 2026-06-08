@@ -45,7 +45,7 @@ classes structurally impossible.
 5. **VERIFY + commit.** `make t ONLY=<group>` (inner loop) → `make build-only`
    / `make syntax-check` (does it compile) → `make lint` (full gates) → commit.
 
-## The fast inner loop (use these, never `./test_zcl` in the loop)
+## The fast inner loop (use these, never `build/bin/test_zcl` in the loop)
 
 | command | what |
 |---|---|

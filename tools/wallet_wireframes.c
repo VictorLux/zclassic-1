@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Wallet wireframe renderer — generates static HTML for every wallet page.
- * Run: make wallet-wireframes && ./wallet-wireframes
+ * Run: make wallet-wireframes && build/bin/wallet-wireframes
  * Output: wireframes/ directory with one HTML file per screen.
  *
  * This is the UX review tool: open each file in a browser to see

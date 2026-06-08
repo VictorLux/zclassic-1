@@ -6,12 +6,18 @@
 #
 # Usage: tools/blocker8_drive_monitor.sh <DEST_DATADIR> <RPCPORT> <P2PPORT>
 set -u
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 DEST="$1"; RPCPORT="$2"; P2PPORT="$3"
-BIN=./zclassic23
+BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
+RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 CAP="$DEST/blocker8_capture.jsonl"
 LOG="$DEST/repro_node.log"
-rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" tools/zcl-rpc "$@" 2>/dev/null; }
+rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null; }
 tip() { rpc getblockcount | tr -dc '0-9-'; }
+
+[ -x "$BIN" ] || { echo "[drive] node binary not found: $BIN" >&2; exit 2; }
+[ -x "$RPC_BIN" ] || { echo "[drive] rpc binary not found: $RPC_BIN" >&2; exit 2; }
 
 echo "[drive] launching copy node on $RPCPORT/$P2PPORT"
 rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null

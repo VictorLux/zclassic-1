@@ -18,7 +18,7 @@
  * event_log_open and consumable by every projection.
  *
  * Usage:
- *   rebuild_recent [datadir] [N|all] [out_path]
+ *   build/bin/rebuild_recent [datadir] [N|all] [out_path]
  *     datadir   default $HOME/.zclassic
  *     N         number of most-recent blocks, or "all"/"0" = whole chain
  *     out_path  default ./rebuild_recent.evlog (removed unless you pass one)

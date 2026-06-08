@@ -64,6 +64,8 @@ ISO_CONNECT_SINK=39999
 ISO_NODE_PID=""
 ISO_PGID=""
 ISO_CLEANED=0
+ISO_NODE_BIN="${ISO_NODE_BIN:-./build/bin/zclassic23}"
+ISO_RPC_BIN="${ISO_RPC_BIN:-./build/bin/zcl-rpc}"
 
 iso_die() { echo "isolated_node_env: FATAL: $*" >&2; exit 1; }
 
@@ -135,8 +137,8 @@ iso_cleanup() {
 iso_init() {
     command -v ss   >/dev/null 2>&1 || iso_die "ss(8) not found (need iproute2 for the port preflight)"
     command -v mktemp >/dev/null 2>&1 || iso_die "mktemp not found"
-    [ -x ./zclassic23 ] || iso_die "./zclassic23 not built — run make first"
-    [ -x ./zcl-rpc ]    || iso_die "./zcl-rpc not built — run make zcl-rpc"
+    [ -x "$ISO_NODE_BIN" ] || iso_die "$ISO_NODE_BIN not built — run make first"
+    [ -x "$ISO_RPC_BIN" ]  || iso_die "$ISO_RPC_BIN not built — run make zcl-rpc"
 
     # 1) Derive + validate the 39xxx port quad FIRST (no datadir yet, so
     #    a bad base or a live-set member aborts before we create anything).
@@ -199,7 +201,7 @@ iso_spawn_node() {
     # setsid → new session+group led by the node; we record its PGID
     # (== its PID, since setsid makes it the group leader).
     # shellcheck disable=SC2086
-    setsid ./zclassic23 \
+    setsid "$ISO_NODE_BIN" \
         -datadir="$ISO_DD" -regtest \
         -port="$ISO_PORT" -rpcport="$ISO_RPCPORT" \
         -fsport="$ISO_FSPORT" -httpsport="$ISO_HTTPSPORT" \
@@ -215,7 +217,7 @@ iso_spawn_node() {
 # Threads ZCL_DATADIR + ZCL_RPCPORT on EVERY call so zcl-rpc can never
 # fall through to the live default RPC port (18232) / the live cookie.
 iso_rpc() {
-    ZCL_DATADIR="$ISO_DD" ZCL_RPCPORT="$ISO_RPCPORT" ./zcl-rpc "$@" 2>/dev/null || true
+    ZCL_DATADIR="$ISO_DD" ZCL_RPCPORT="$ISO_RPCPORT" "$ISO_RPC_BIN" "$@" 2>/dev/null || true
 }
 
 # Poll the isolated RPC until getblockcount answers, or timeout. $1=secs.

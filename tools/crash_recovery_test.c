@@ -3,7 +3,7 @@
  * Crash Recovery Test Harness
  * ===========================
  *
- * Starts `./zclassic23` with an isolated datadir, drives it for a
+ * Starts `build/bin/zclassic23` with an isolated datadir, drives it for a
  * random interval, SIGKILLs it, restarts it, and asserts the
  * recovery invariants all still hold:
  *
@@ -39,13 +39,14 @@
  *      know it is in bootstrap mode (so it self-seeds + self-spawns
  *      with the regtest flag set + leads its own process group).
  *
- * Prerequisites: `./zclassic23` and `./zcl-rpc` compiled in $PWD
+ * Prerequisites: `build/bin/zclassic23` and `build/bin/zcl-rpc`
+ * compiled in $PWD
  * (the default `make` target builds both).
  *
  * Usage
  * -----
  *
- *   crash_recovery_test [options]
+ *   build/bin/crash_recovery_test [options]
  *     --bootstrap-regtest   Self-seed a fresh isolated /tmp regtest
  *                           datadir (mine N blocks) before the loop.
  *     --datadir=DIR         Datadir to use (bootstrap mode mints one
@@ -71,7 +72,7 @@
  * Design notes
  * ------------
  *
- * The harness calls `./zcl-rpc <method>` via popen() rather than
+ * The harness calls `build/bin/zcl-rpc <method>` via popen() rather than
  * speaking HTTP directly. That keeps this tool small and avoids
  * duplicating cookie-auth logic — zcl-rpc already handles it.
  *
@@ -119,6 +120,9 @@ struct cr_config {
     bool     bootstrap;    /* self-seed a fresh /tmp regtest datadir */
     bool     regtest;      /* pass -regtest to the spawned node */
 };
+
+#define CR_NODE_BIN "build/bin/zclassic23"
+#define CR_RPC_BIN  "build/bin/zcl-rpc"
 
 static void cr_defaults(struct cr_config *cfg)
 {
@@ -252,7 +256,7 @@ static void sleep_ms(int ms)
 
 /* ── RPC via zcl-rpc subprocess ─────────────────────────────── */
 
-/* Invoke `./zcl-rpc <method>` with the crash datadir in the env so
+/* Invoke `build/bin/zcl-rpc <method>` with the crash datadir in the env so
  * zcl-rpc finds the right cookie file. Returns -1 on any exec or
  * read error, otherwise the number of bytes written to `out`. */
 static int cr_rpc(const struct cr_config *cfg, const char *method,
@@ -261,7 +265,7 @@ static int cr_rpc(const struct cr_config *cfg, const char *method,
     char cmd[1024];
     /* Quote is fine: method is a fixed string under caller control. */
     snprintf(cmd, sizeof(cmd),
-             "ZCL_DATADIR=%s ZCL_RPCPORT=%d ./zcl-rpc %s 2>/dev/null",
+             "ZCL_DATADIR=%s ZCL_RPCPORT=%d " CR_RPC_BIN " %s 2>/dev/null",
              cfg->datadir, cfg->rpc_port, method);
     FILE *p = popen(cmd, "r");
     if (!p) return -1;
@@ -522,7 +526,7 @@ static pid_t cr_spawn_node(const struct cr_config *cfg)
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        execv("./zclassic23", argv);
+        execv(CR_NODE_BIN, argv);
         _exit(127);  /* exec failed */
     }
     /* Parent: also set the child's pgid here to close the race window
@@ -600,13 +604,13 @@ int main(int argc, char **argv)
     printf("  rpc port:     %d\n", cfg.rpc_port);
     printf("  seed:         %" PRIu64 "\n", cfg.seed);
 
-    if (access("./zclassic23", X_OK) != 0) {
-        fprintf(stderr, "crash_recovery_test: ./zclassic23 not found or "
+    if (access(CR_NODE_BIN, X_OK) != 0) {
+        fprintf(stderr, "crash_recovery_test: " CR_NODE_BIN " not found or "
                         "not executable\n");
         return 2;
     }
-    if (access("./zcl-rpc", X_OK) != 0) {
-        fprintf(stderr, "crash_recovery_test: ./zcl-rpc not found — run "
+    if (access(CR_RPC_BIN, X_OK) != 0) {
+        fprintf(stderr, "crash_recovery_test: " CR_RPC_BIN " not found — run "
                         "`make zcl-rpc` first\n");
         return 2;
     }

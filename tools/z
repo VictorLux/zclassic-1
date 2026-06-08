@@ -30,8 +30,8 @@
 #   z rpc <method> [args...]      Raw RPC call
 
 set -e
-CLI="$(dirname "$0")/../zclassic-cli"
-[ -x "$CLI" ] || CLI="./zclassic-cli"
+CLI="$(dirname "$0")/../build/bin/zclassic-cli"
+[ -x "$CLI" ] || CLI="./build/bin/zclassic-cli"
 [ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
 
 rpc() { "$CLI" "$@" 2>/dev/null; }

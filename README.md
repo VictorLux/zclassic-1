@@ -16,10 +16,10 @@ make test          # run 1500+ tests
 ## Run
 
 ```bash
-./zclassic23                              # start node
-./zclassic23 -tor                         # start with .onion hidden service
-./zclassic23 -cold-import=~/.zclassic     # instant sync from legacy data
-./zclassic23 -addnode=74.50.74.102        # connect to seed node
+build/bin/zclassic23                              # start node
+build/bin/zclassic23 -tor                         # start with .onion hidden service
+build/bin/zclassic23 -cold-import=~/.zclassic     # instant sync from legacy data
+build/bin/zclassic23 -addnode=74.50.74.102        # connect to seed node
 ```
 
 Data directory: `~/.zclassic-c23/`
@@ -66,11 +66,11 @@ zclassic23 binary (15MB, statically linked)
 
 | Target | Description |
 |--------|-------------|
-| `make zclassic23` | Main binary (15MB, zero system deps) |
+| `make zclassic23` | Main binary at `build/bin/zclassic23` |
 | `make test` | Run 1500+ tests |
-| `make zcl-rpc` | Lightweight CLI RPC client |
-| `make zcl-nodectl` | Compiled node lifecycle + follow verifier |
-| `make zcl-browser` | GTK Tor-only browser |
+| `make zcl-rpc` | Lightweight CLI RPC client at `build/bin/zcl-rpc` |
+| `make zcl-nodectl` | Compiled node lifecycle + follow verifier at `build/bin/zcl-nodectl` |
+| `make zcl-browser` | GTK Tor-only browser at `build/bin/zcl-browser` |
 | `make deploy` | Install systemd user service |
 | `make check-restart-follow` | Restart `zclassic23` and verify it catches legacy `zclassicd` tip |
 
@@ -97,7 +97,8 @@ lib/
   test/               1500+ automated tests across 198 files
   [+ 13 more modules]
 vendor/               Static libs (secp256k1, leveldb, sqlite3, openssl, tor)
-tools/                zcl-browser, zcl-rpc, zcl-nodectl, hodl wave tools, utilities
+tools/                source for zcl-browser, zcl-rpc, zcl-nodectl, hodl wave tools, utilities
+build/bin/            compiled binaries
 deploy/               systemd service, setup script
 ```
 
@@ -138,38 +139,38 @@ Live at [zclnet.net/explorer](https://zclnet.net/explorer) — served by zclassi
 
 ```bash
 # Blockchain
-zcl-rpc getblockchaininfo
-zcl-rpc getblock <hash> [verbosity]
-zcl-rpc getblockhash <height>
+build/bin/zcl-rpc getblockchaininfo
+build/bin/zcl-rpc getblock <hash> [verbosity]
+build/bin/zcl-rpc getblockhash <height>
 
 # Wallet
-zcl-rpc getbalance
-zcl-rpc sendtoaddress <addr> <amount>
-zcl-rpc z_sendmany <from> '[{"address":"...","amount":0.1}]'
-zcl-rpc listunspent
+build/bin/zcl-rpc getbalance
+build/bin/zcl-rpc sendtoaddress <addr> <amount>
+build/bin/zcl-rpc z_sendmany <from> '[{"address":"...","amount":0.1}]'
+build/bin/zcl-rpc listunspent
 
 # Mining
-zcl-rpc getblocktemplate
-zcl-rpc getnetworkhashps
+build/bin/zcl-rpc getblocktemplate
+build/bin/zcl-rpc getnetworkhashps
 
 # Network
-zcl-rpc getpeerinfo
-zcl-rpc getnetworkinfo
-zcl-rpc addnode <ip:port> add
+build/bin/zcl-rpc getpeerinfo
+build/bin/zcl-rpc getnetworkinfo
+build/bin/zcl-rpc addnode <ip:port> add
 
 # Diagnostics
-zcl-rpc healthcheck
-zcl-rpc eventlog 100
-zcl-rpc syncstate
-zcl-rpc downloadstats
+build/bin/zcl-rpc healthcheck
+build/bin/zcl-rpc eventlog 100
+build/bin/zcl-rpc syncstate
+build/bin/zcl-rpc downloadstats
 
 # Node control
 make zcl-nodectl
-./zcl-nodectl status
-./zcl-nodectl stop
-./zcl-nodectl start
-./zcl-nodectl restart
-./zcl-nodectl verify-follow --restart
+build/bin/zcl-nodectl status
+build/bin/zcl-nodectl stop
+build/bin/zcl-nodectl start
+build/bin/zcl-nodectl restart
+build/bin/zcl-nodectl verify-follow --restart
 ```
 
 ## Environment variables

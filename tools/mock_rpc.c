@@ -4,7 +4,7 @@
  *
  * Listens on a configurable port (default 18232 to avoid conflict),
  * responds to all RPC methods the wallet uses, with controllable
- * test state. Run alongside zclassic23 --rpcport=18232 --self-test
+ * test state. Run alongside build/bin/zclassic23 on an isolated RPC port.
  * for full end-to-end testing with no real blockchain.
  *
  * Or: use as a library by calling mock_rpc_start() from test code.
@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
 
     printf("Press Ctrl+C to stop.\n\n");
     printf("In another terminal:\n");
-    printf("  ./zclassic23              (wallet connects to mock)\n");
+    printf("  build/bin/zclassic23      (wallet connects to mock)\n");
     printf("  make check-wallet         (automated verification)\n\n");
 
     pthread_join(t, NULL);
