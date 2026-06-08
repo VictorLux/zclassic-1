@@ -61,8 +61,9 @@ Next developer:
    creator height **3,073,765** using the existing inverse-delta/reorg
    machinery. Do not make `script_validate` silently ignore this; `utxo_apply`
    also needs the coin physically present.
-4. `tools/scripts/soak_assert.sh` is still dirty locally and was intentionally
-   left out of this checkpoint unless the owner explicitly wants it folded in.
+4. `tools/scripts/soak_assert.sh` now resolves `build/bin/zcl-rpc` from the
+   repository root, so the soak assertion script works when launched outside
+   the repo root.
 
 ---
 
