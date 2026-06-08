@@ -476,6 +476,53 @@ int test_reducer_frontier_reconcile_light(void)
         teardown_fixture(&fx);
     }
 
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup coin-tear condition fixture",
+                   setup_fixture(&fx, "cointear_condition"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("coin-tear condition: seed coins_applied above hstar",
+                   seed_coins_applied(db, A + 3));
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        for (int i = 0; i < 5; i++) {
+            reducer_frontier_reconcile_light_test_clear_backoff();
+            condition_engine_tick();
+        }
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        bool ok = got &&
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 5 &&
+                  snap.currently_active &&
+                  snap.attempts >= 5 &&
+                  snap.last_outcome == COND_REMEDY_FAILED &&
+                  snap.operator_needed_emitted &&
+                  cursor_value(db, "tip_finalize") == A + 4 &&
+                  cursor_value(db, "body_fetch") == A + 4 &&
+                  (fx.idx[2]->nStatus & BLOCK_VALID_MASK) == 0;
+
+        RFRL_CHECK("coin-tear condition escalates without mutation", ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
+        teardown_fixture(&fx);
+    }
+
     printf("reducer_frontier_reconcile_light: %d failures\n", failures);
     return failures;
 }

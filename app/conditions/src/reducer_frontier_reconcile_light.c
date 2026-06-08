@@ -55,14 +55,14 @@ static bool detect_reducer_frontier_reconcile_light(void)
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
         return false;
-    if (rr.refused_coin_tear || rr.refused_coin_unknown || !rr.repaired)
+    if (rr.refused_coin_unknown)
         return false;
 
     atomic_store(&g_local_height_at_detect,
                  active_chain_height(&ms->chain_active));
     atomic_store(&g_hstar_at_detect, rr.hstar);
     atomic_store(&g_sweep_top_at_detect, rr.sweep_top);
-    return true;
+    return rr.refused_coin_tear || rr.repaired;
 }
 
 static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void)
@@ -88,7 +88,7 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
                  "[condition:reducer_frontier_reconcile_light] refused "
                  "coins_applied_height=%d hstar=%d",
                  rr.coins_applied_height, rr.hstar);
-        return COND_REMEDY_SKIP;
+        return COND_REMEDY_FAILED;
     }
     if (!rr.repaired)
         return COND_REMEDY_SKIP;
@@ -142,11 +142,21 @@ void register_reducer_frontier_reconcile_light(void)
 #ifdef ZCL_TESTING
 void reducer_frontier_reconcile_light_test_reset(void)
 {
+    struct condition_state *s = &c_reducer_frontier_reconcile_light.state;
     atomic_store(&g_local_height_at_detect, -1);
     atomic_store(&g_hstar_at_detect, -1);
     atomic_store(&g_sweep_top_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     condition_reset_state(&c_reducer_frontier_reconcile_light);
+    atomic_store(&s->last_remedy_unix, (int64_t)0);
+    atomic_store(&s->last_operator_needed_unix, (int64_t)0);
+}
+
+void reducer_frontier_reconcile_light_test_clear_backoff(void);
+void reducer_frontier_reconcile_light_test_clear_backoff(void)
+{
+    struct condition_state *s = &c_reducer_frontier_reconcile_light.state;
+    atomic_store(&s->last_remedy_unix, (int64_t)0);
 }
 
 int reducer_frontier_reconcile_light_test_remedy_calls(void)
