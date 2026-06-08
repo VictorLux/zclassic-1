@@ -6,6 +6,7 @@
 #include "chain/chain.h"
 #include "json/json.h"
 #include "jobs/tip_finalize_stage.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/stage.h"
@@ -141,6 +142,24 @@ static bool seed_utxo_apply(sqlite3 *db, int n, int upstream_fail_height)
     sqlite3_bind_int(st, 1, n);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
+    return ok;
+}
+
+static bool seed_coins_applied_height(sqlite3 *db, int32_t height)
+{
+    if (!progress_meta_table_ensure(db))
+        return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = coins_kv_set_applied_height_in_tx(db, height);
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
     return ok;
 }
 
@@ -346,6 +365,8 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup &&
             active_chain_move_window_tip(&ms.chain_active, &sc.blocks[5]);
         ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
+        ok_setup = ok_setup &&
+            seed_coins_applied_height(progress_store_db(), 3);
         ok_setup = ok_setup && exec_sql(progress_store_db(),
             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
             "VALUES('tip_finalize', 2, 1)");
@@ -354,20 +375,20 @@ int test_tip_finalize_stage(void)
         TF_CHECK("stale_cursor: setup", ok_setup);
         TF_CHECK("stale_cursor: cursor anchored above restored tip",
                  tip_finalize_stage_cursor() == 6);
-        TF_CHECK("stale_cursor: header_admit anchored",
-                 cursor_at(progress_store_db(), "header_admit") == 6);
-        TF_CHECK("stale_cursor: validate_headers anchored",
-                 cursor_at(progress_store_db(), "validate_headers") == 6);
-        TF_CHECK("stale_cursor: body_fetch anchored",
-                 cursor_at(progress_store_db(), "body_fetch") == 6);
-        TF_CHECK("stale_cursor: body_persist anchored",
-                 cursor_at(progress_store_db(), "body_persist") == 6);
-        TF_CHECK("stale_cursor: script_validate anchored",
-                 cursor_at(progress_store_db(), "script_validate") == 6);
-        TF_CHECK("stale_cursor: proof_validate anchored",
-                 cursor_at(progress_store_db(), "proof_validate") == 6);
-        TF_CHECK("stale_cursor: utxo_apply anchored",
-                 cursor_at(progress_store_db(), "utxo_apply") == 6);
+        TF_CHECK("stale_cursor: header_admit not anchored from active tip",
+                 cursor_at(progress_store_db(), "header_admit") == 0);
+        TF_CHECK("stale_cursor: validate_headers not anchored from active tip",
+                 cursor_at(progress_store_db(), "validate_headers") == 0);
+        TF_CHECK("stale_cursor: body_fetch not anchored from active tip",
+                 cursor_at(progress_store_db(), "body_fetch") == 0);
+        TF_CHECK("stale_cursor: body_persist not anchored from active tip",
+                 cursor_at(progress_store_db(), "body_persist") == 0);
+        TF_CHECK("stale_cursor: script_validate not anchored from active tip",
+                 cursor_at(progress_store_db(), "script_validate") == 0);
+        TF_CHECK("stale_cursor: proof_validate not anchored from active tip",
+                 cursor_at(progress_store_db(), "proof_validate") == 0);
+        TF_CHECK("stale_cursor: utxo_apply remains at coins frontier",
+                 cursor_at(progress_store_db(), "utxo_apply") == 3);
         TF_CHECK("stale_cursor: public height remains restored tip",
                  active_chain_height(&ms.chain_active) == 5);
         int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];

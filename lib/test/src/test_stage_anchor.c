@@ -2,17 +2,20 @@
  *
  * Unit tests for stage_anchor (app/jobs/src/stage_anchor.c).
  *
- * stage_anchor_upstream_cursors_to() aligns the seven upstream reducer
- * stage cursors (header_admit .. utxo_apply) to a trusted anchor target.
+ * stage_anchor_upstream_cursors_to() aligns upstream reducer stage cursors
+ * (header_admit .. utxo_apply) to a trusted anchor target, with utxo_apply
+ * capped by coins_applied_height when that durable frontier is present.
  * It was recently churned (commit 392f7256d) and had zero coverage. The
  * load-bearing invariants this test pins:
  *
  *   - ATOMIC advance: every upstream cursor that is BEHIND the target ends
- *     up exactly AT the target after one anchor call.
+ *     up exactly AT the target after one anchor call, except utxo_apply when
+ *     coins_applied_height caps it lower.
  *   - FORWARD-ONLY monotonicity: a cursor already AT or ABOVE the target is
  *     NEVER rewound — anchoring to a lower value is a no-op for that cursor.
  *   - IDEMPOTENT re-anchor: anchoring twice to the same target leaves every
  *     cursor unchanged on the second call.
+ *   - P2 CAP: utxo_apply is never anchored above coins_applied_height.
  *
  * Only the real public API is used: stage_anchor_upstream_cursors_to() to
  * advance, stage_set_named_cursor_if_behind() to prime, and the public
@@ -25,11 +28,14 @@
 
 #include "jobs/stage_anchor.h"
 #include "jobs/stage_helpers.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "test/test_helpers.h"
 #include "util/stage.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 #define SA_CHECK(name, expr) do { \
@@ -66,6 +72,24 @@ static uint64_t sa_read(sqlite3 *db, const char *name)
 {
     /* Public read path used by every stage and by stage_anchor itself. */
     return stage_cursor_persisted(db, name, "test_stage_anchor");
+}
+
+static bool sa_set_coins_applied(sqlite3 *db, int32_t height)
+{
+    if (!progress_meta_table_ensure(db))
+        return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = coins_kv_set_applied_height_in_tx(db, height);
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return ok;
 }
 
 int test_stage_anchor(void)
@@ -168,6 +192,40 @@ int test_stage_anchor(void)
             if (sa_read(db, SA_UPSTREAM[i]) != 4242) unchanged = false;
         SA_CHECK("re-anchor to same target left cursors unchanged",
                  unchanged);
+
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── P2: utxo_apply never advances past coins_applied_height ──── */
+    {
+        const char *path = "test_stage_anchor_coins_cap.db";
+        sqlite3 *db = sa_open(path);
+        SA_CHECK("coins_cap: db open", db != NULL);
+
+        bool ok = true;
+        for (size_t i = 0; i < SA_N; i++)
+            ok = ok && stage_set_named_cursor_if_behind(
+                db, SA_UPSTREAM[i], (uint64_t)((i + 1) * 100));
+        SA_CHECK("coins_cap: prime cursors", ok);
+        SA_CHECK("coins_cap: stamp coins_applied_height=700",
+                 sa_set_coins_applied(db, 700));
+
+        ok = stage_anchor_upstream_cursors_to(db, 5000, "test",
+                                              "coins-cap");
+        SA_CHECK("coins_cap: anchor returns true", ok);
+
+        bool non_coin_stages_at_target = true;
+        for (size_t i = 0; i < SA_N; i++) {
+            if (strcmp(SA_UPSTREAM[i], "utxo_apply") == 0)
+                continue;
+            if (sa_read(db, SA_UPSTREAM[i]) != 5000)
+                non_coin_stages_at_target = false;
+        }
+        SA_CHECK("coins_cap: non-coin cursors advanced",
+                 non_coin_stages_at_target);
+        SA_CHECK("coins_cap: utxo_apply capped at coins frontier",
+                 sa_read(db, "utxo_apply") == 700);
 
         sqlite3_close(db);
         unlink(path);

@@ -97,6 +97,7 @@ static bool ensure_authority_anchor_row(sqlite3 *db, int height,
 
 static bool anchor_cursor_to_authority(sqlite3 *db, int height,
                                        const uint8_t hash[32],
+                                       bool anchor_upstream,
                                        bool require_prior_progress,
                                        const char *reason)
 {
@@ -110,7 +111,8 @@ static bool anchor_cursor_to_authority(sqlite3 *db, int height,
         return true;
     if (!ensure_authority_anchor_row(db, height, hash))
         return false;
-    if (!stage_anchor_upstream_cursors_to(db, target, STAGE_NAME, reason))
+    if (anchor_upstream &&
+        !stage_anchor_upstream_cursors_to(db, target, STAGE_NAME, reason))
         return false;
     if (cursor >= target)
         return true;
@@ -540,7 +542,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
         if (existing_tip && existing_tip->phashBlock &&
             !anchor_cursor_to_authority(
                 db, existing_tip->nHeight, existing_tip->phashBlock->data,
-                false, "init_existing_tip_reanchor")) {
+                false, false, "init_existing_tip_reanchor")) {
             pthread_mutex_unlock(&g_lock);
             return false;
         }
@@ -561,10 +563,15 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     g_ms = ms;
     g_stage = s;
+    /* The active-chain cache is a served-tip authority, not reducer progress.
+     * On recovered datadirs it may sit above H-star/coins while upstream stage
+     * cursors are deliberately clamped for repair. Publish the tip_finalize
+     * authority cursor, but only explicit seed anchors may align upstream
+     * reducer cursors. */
     if (existing_tip && existing_tip->phashBlock &&
         !anchor_cursor_to_authority(db, existing_tip->nHeight,
                                     existing_tip->phashBlock->data,
-                                    true, "init_existing_tip")) {
+                                    false, true, "init_existing_tip")) {
         stage_destroy(s);
         g_stage = NULL;
         pthread_mutex_unlock(&g_lock);
@@ -636,7 +643,7 @@ void tip_finalize_stage_set_authoritative_tip(int height,
     sqlite3 *db = progress_store_db();
     if (db && g_stage) {
         progress_store_tx_lock();
-        (void)anchor_cursor_to_authority(db, height, hash, false,
+        (void)anchor_cursor_to_authority(db, height, hash, false, false,
                                          "trusted_tip");
         progress_store_tx_unlock();
     }
