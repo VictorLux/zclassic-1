@@ -26,8 +26,17 @@ static bool peer_lag_allows_repair(struct main_state *ms)
         return true;
 
     int local = ms ? active_chain_height(&ms->chain_active) : -1;
+    if (local < 0)
+        return false;
+
     int peer_max = connman_max_peer_height(cm);
-    return local >= 0 && peer_max > local;
+    if (peer_max > local)
+        return true;
+
+    /* A zero-peer copy still needs the local flag/cursor repair so it can hold
+     * in repairing state and resume when a body source appears. Non-zero peers
+     * that are not ahead are not useful evidence of a stale local tip. */
+    return connman_get_node_count(cm) == 0;
 }
 
 static bool detect_reducer_frontier_reconcile_light(void)

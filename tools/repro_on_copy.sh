@@ -152,6 +152,11 @@ else
     cp -a "$SRC"/. "$DEST"/
 fi
 
+# Full copies inherit the live runtime identity and lock markers. They are not
+# chain state, and leaving them in the throwaway datadir makes the isolated
+# node correctly refuse to boot because it believes the live PID owns the copy.
+rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
+
 # Manifest for provenance.
 {
     echo "slug:        $SLUG"

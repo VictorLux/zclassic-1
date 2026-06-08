@@ -2,10 +2,14 @@
 
 #include "test/test_helpers.h"
 
+#include "conditions/reducer_frontier_reconcile_light.h"
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
+#include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
+#include "net/net.h"
+#include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -421,6 +425,54 @@ int test_reducer_frontier_reconcile_light(void)
                    cursor_value(db, "tip_finalize") == A + 4 &&
                    (fx.idx[2]->nStatus & BLOCK_VALID_MASK) == 0);
 
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup zero-peer condition fixture",
+                   setup_fixture(&fx, "zero_peer_condition"));
+
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        sync_monitor_init();
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sync_monitor_test_set_tip_advance_ts(1);
+        register_reducer_frontier_reconcile_light();
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        bool got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        sqlite3 *db = progress_store_db();
+        bool ok = got &&
+                  reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
+                  cursor_value(db, "body_fetch") == A + 2 &&
+                  cursor_value(db, "tip_finalize") == A + 2 &&
+                  snap.currently_active &&
+                  snap.attempts == 1 &&
+                  snap.last_outcome == COND_REMEDY_UNWITNESSED &&
+                  !snap.operator_needed_emitted;
+
+        condition_engine_tick();
+        got = condition_engine_get_registered_snapshot(
+            "reducer_frontier_reconcile_light", &snap);
+        ok = ok && got &&
+             reducer_frontier_reconcile_light_test_remedy_calls() == 1 &&
+             snap.attempts == 1 &&
+             !snap.operator_needed_emitted;
+        RFRL_CHECK("zero-peer condition repairs once without paging", ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        sync_monitor_test_set_tip_advance_ts(0);
+        condition_engine_reset_for_testing();
+        reducer_frontier_reconcile_light_test_reset();
+        net_manager_free(&cm.manager);
         teardown_fixture(&fx);
     }
 
