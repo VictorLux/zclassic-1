@@ -351,6 +351,28 @@ int test_reducer_frontier_reconcile_light(void)
 
     {
         struct rfrl_fixture fx;
+        RFRL_CHECK("setup served-floor fixture",
+                   setup_fixture(&fx, "served_floor"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("seed served floor above hstar without contiguous prefix",
+                   put_tip_log(db, A + 3, 1, &fx.hashes[3]));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("served-floor apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("served-floor cursor not lowered",
+                   rr.hstar == A + 1 &&
+                   rr.served_floor == A + 3 &&
+                   rr.tip_finalize_cursor_after == A + 4 &&
+                   cursor_value(db, "tip_finalize") == A + 4 &&
+                   !rr.clamped_tip_finalize);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
         RFRL_CHECK("setup unknown-coin fixture",
                    setup_fixture(&fx, "unknown"));
         sqlite3 *db = progress_store_db();

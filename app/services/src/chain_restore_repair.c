@@ -17,7 +17,9 @@
 #include "chain/pow.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "net/snapshot_sync_contract.h"
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -483,6 +485,47 @@ struct block_index *chain_restore_nearest_consensus_backed_ancestor_on_disk(
     return NULL;
 }
 
+static bool chain_restore_served_floor(int *out)
+{
+    *out = -1;
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        return true;
+
+    progress_store_tx_lock();
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(MAX(height), -1) "
+            "FROM tip_finalize_log WHERE ok=1",
+            -1, &st, NULL) != SQLITE_OK) {
+        const char *msg = sqlite3_errmsg(db);
+        if (msg && strstr(msg, "no such table") != NULL) {
+            progress_store_tx_unlock();
+            return true;
+        }
+        LOG_WARN("chain",
+                 "[chain-restore] served floor prepare failed: %s",
+                 msg ? msg : "(no message)");
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("chain",
+                 "[chain-restore] served floor step failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        progress_store_tx_unlock();
+        return false;
+    }
+    sqlite3_finalize(st);
+    progress_store_tx_unlock();
+    return true;
+}
+
 static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
                                                    const char *datadir)
 {
@@ -504,6 +547,18 @@ static void chain_restore_quarantine_synthetic_tip(struct main_state *ms,
         : chain_restore_nearest_consensus_backed_ancestor(tip);
     if (!replacement || replacement == tip)
         return;
+
+    int served_floor = -1;
+    if (!chain_restore_served_floor(&served_floor))
+        return;
+    if (served_floor >= 0 && replacement->nHeight < served_floor) {
+        LOG_WARN("chain",
+                 "[chain-restore] refusing synthetic-tip quarantine below "
+                 "durable finalized floor: replacement_h=%d served_floor=%d "
+                 "tip_h=%d; public tip remains floored at served finality",
+                 replacement->nHeight, served_floor, tip->nHeight);
+        return;
+    }
 
     char old_hash[65] = {0};
     char new_hash[65] = {0};

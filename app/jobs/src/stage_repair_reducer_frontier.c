@@ -332,8 +332,12 @@ static bool reconcile_tip_finalize_cursor(
     struct stage_reducer_frontier_reconcile_result *out)
 {
     int floor = out->hstar + 1;
-    if (out->tip_finalize_cursor_before <= floor)
+    if (out->served_floor >= 0 && out->served_floor + 1 > floor)
+        floor = out->served_floor + 1;
+    if (out->tip_finalize_cursor_before == floor) {
+        out->tip_finalize_cursor_after = floor;
         return true;
+    }
 
     out->clamped_tip_finalize = true;
     out->tip_finalize_cursor_after = floor;

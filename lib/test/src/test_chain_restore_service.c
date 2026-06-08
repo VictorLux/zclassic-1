@@ -17,7 +17,9 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/disk_block_io.h"
+#include "storage/progress_store.h"
 #include "core/amount.h"
+#include <sqlite3.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1247,6 +1249,77 @@ static int test_finalize_null_datadir_skips_disk(void) {
     return failures;
 }
 
+static int test_finalize_quarantine_preserves_served_floor(void) {
+    int failures = 0;
+    TEST("chain_restore_finalize: quarantine refuses below served finality") {
+        char tmpdir[256];
+        test_make_tmpdir(tmpdir, sizeof(tmpdir),
+                         "chain_restore", "served_floor_quarantine");
+
+        progress_store_close();
+        ASSERT(progress_store_open(tmpdir));
+        sqlite3 *db = progress_store_db();
+        ASSERT(db != NULL);
+        ASSERT(sqlite3_exec(db,
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log("
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)",
+            NULL, NULL, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_exec(db,
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok) VALUES(3,'finalized',1)",
+            NULL, NULL, NULL) == SQLITE_OK);
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct uint256 hashes[4];
+        struct block_index *idx[4] = {0};
+        for (int h = 0; h < 4; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(0x60 + h);
+            hashes[h].data[31] = 0xC3;
+            idx[h] = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            ASSERT(idx[h] != NULL);
+            idx[h]->nHeight = h;
+            idx[h]->pprev = h > 0 ? idx[h - 1] : NULL;
+            idx[h]->nBits = 0x1f07ffff;
+            idx[h]->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            idx[h]->nFile = 0;
+            idx[h]->nDataPos = 1;
+            idx[h]->nTx = 1;
+            idx[h]->nChainTx = (unsigned)(h + 1);
+            idx[h]->hashMerkleRoot.data[0] = (uint8_t)(0xA0 + h);
+            arith_uint256_set_u64(&idx[h]->nChainWork, (uint64_t)(h + 1));
+        }
+
+        /* The active tip is synthetic/not consensus-backed; the nearest backed
+         * ancestor is h=1. The served floor at h=3 must prevent publishing
+         * that lower replacement. */
+        idx[2]->nStatus = BLOCK_VALID_HEADER;
+        idx[2]->nDataPos = 0;
+        idx[2]->nTx = 0;
+        idx[2]->nChainTx = 0;
+        idx[3]->nStatus = BLOCK_VALID_HEADER;
+        idx[3]->nDataPos = 0;
+        idx[3]->nTx = 0;
+        idx[3]->nChainTx = 0;
+
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, idx[3]));
+        ASSERT(ms.chain_active.height == 3);
+
+        (void)chain_restore_finalize(&ms, NULL);
+        ASSERT(ms.chain_active.height == 3);
+        ASSERT(active_chain_cached_tip(&ms.chain_active) == idx[3]);
+
+        main_state_free(&ms);
+        progress_store_close();
+        test_cleanup_tmpdir(tmpdir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Registration ──────────────────────────────────────────────── */
 
 int test_chain_restore_service(void) {
@@ -1285,5 +1358,6 @@ int test_chain_restore_service(void) {
     failures += test_connect_tip_hydrates_placeholder_from_disk();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();
+    failures += test_finalize_quarantine_preserves_served_floor();
     return failures;
 }
