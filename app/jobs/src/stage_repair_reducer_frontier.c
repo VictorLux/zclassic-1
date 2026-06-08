@@ -2,8 +2,9 @@
  *
  * stage_repair_reducer_frontier — L1 reducer-frontier reconcile.
  *
- * This is deliberately limited to block_index mirror flags and the
- * tip_finalize cursor. It never deletes reducer logs and never mutates coins.
+ * This is deliberately limited to block_index mirror flags plus the
+ * body_fetch and tip_finalize cursors. It never deletes reducer logs and never
+ * mutates coins.
  */
 
 #include "jobs/stage_repair.h"
@@ -196,6 +197,13 @@ static bool read_frontier_snapshot(sqlite3 *db,
         return false;
     }
 
+    int body_fetch_cursor = -1;
+    if (!stage_repair_cursor_at_unlocked(db, "body_fetch",
+                                         &body_fetch_cursor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
     int32_t coins_applied = 0;
     bool coins_found = false;
     if (!coins_kv_get_applied_height(db, &coins_applied, &coins_found)) {
@@ -229,9 +237,12 @@ static bool read_frontier_snapshot(sqlite3 *db,
 
     out->hstar = hstar;
     out->served_floor = served_floor;
+    out->body_fetch_cursor_before = body_fetch_cursor;
+    out->body_fetch_cursor_after = body_fetch_cursor;
     out->tip_finalize_cursor_before = tip_cursor;
     out->tip_finalize_cursor_after = tip_cursor;
     out->sweep_top = sweep_top;
+    out->lowest_have_data_cleared = -1;
     out->coins_applied_found = coins_found;
     out->coins_applied_height = coins_found ? coins_applied : -1;
     if (!coins_found)
@@ -305,6 +316,9 @@ static bool reconcile_block_index_flags(
                 bi->nDataPos = 0;
             }
             out->have_data_cleared++;
+            if (out->lowest_have_data_cleared < 0 ||
+                bi->nHeight < out->lowest_have_data_cleared)
+                out->lowest_have_data_cleared = bi->nHeight;
             changed = true;
         }
 
@@ -326,14 +340,73 @@ static bool reconcile_block_index_flags(
     return ok;
 }
 
+static bool reconcile_body_fetch_cursor(
+    sqlite3 *db,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    int target = out->lowest_have_data_cleared;
+    if (target < 0) {
+        out->body_fetch_cursor_after = out->body_fetch_cursor_before;
+        return true;
+    }
+
+    if (out->body_fetch_cursor_before <= target) {
+        out->body_fetch_cursor_after = out->body_fetch_cursor_before;
+        return true;
+    }
+
+    out->clamped_body_fetch = true;
+    out->body_fetch_cursor_after = target;
+    if (!apply)
+        return true;
+
+    progress_store_tx_lock();
+
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier body_fetch BEGIN "
+                 "failed: %s",
+                 err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (!stage_repair_force_stage_cursor(db, "body_fetch", target)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier body_fetch COMMIT "
+                 "failed: %s",
+                 err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    progress_store_tx_unlock();
+    return true;
+}
+
 static bool reconcile_tip_finalize_cursor(
     sqlite3 *db,
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out)
 {
-    int floor = out->hstar + 1;
-    if (out->served_floor >= 0 && out->served_floor + 1 > floor)
-        floor = out->served_floor + 1;
+    int capped = out->hstar;
+    if (out->coins_applied_found &&
+        out->coins_applied_height >= 0 &&
+        out->coins_applied_height < capped)
+        capped = out->coins_applied_height;
+
+    int floor = capped + 1;
     if (out->tip_finalize_cursor_before == floor) {
         out->tip_finalize_cursor_after = floor;
         return true;
@@ -393,6 +466,9 @@ static bool reducer_frontier_reconcile_light_impl(
     memset(&local, 0, sizeof(local));
     local.tip_finalize_cursor_before = -1;
     local.tip_finalize_cursor_after = -1;
+    local.body_fetch_cursor_before = -1;
+    local.body_fetch_cursor_after = -1;
+    local.lowest_have_data_cleared = -1;
     local.coins_applied_height = -1;
 
     if (!stage_table_ensure(db))
@@ -423,10 +499,14 @@ static bool reducer_frontier_reconcile_light_impl(
         !reconcile_block_index_flags(db, ms, apply, &local))
         return false;
 
+    if (!reconcile_body_fetch_cursor(db, apply, &local))
+        return false;
+
     if (!reconcile_tip_finalize_cursor(db, apply, &local))
         return false;
 
     local.repaired = local.clamped_tip_finalize ||
+                     local.clamped_body_fetch ||
                      local.scripts_set > 0 ||
                      local.have_data_set > 0 ||
                      local.have_data_cleared > 0 ||
@@ -435,11 +515,13 @@ static bool reducer_frontier_reconcile_light_impl(
     if (apply && local.repaired) {
         LOG_WARN("stage_repair",
                  "[stage_repair] reducer_frontier L1 repaired hstar=%d "
-                 "served_floor=%d sweep_top=%d tip_finalize=%d->%d "
-                 "scripts_set=%d have_data_set=%d have_data_cleared=%d "
+                 "served_floor=%d coins_applied=%d sweep_top=%d "
+                 "body_fetch=%d->%d tip_finalize=%d->%d scripts_set=%d "
+                 "have_data_set=%d have_data_cleared=%d "
                  "failed_mask_cleared=%d",
-                 local.hstar, local.served_floor, local.sweep_top,
-                 local.tip_finalize_cursor_before,
+                 local.hstar, local.served_floor, local.coins_applied_height,
+                 local.sweep_top, local.body_fetch_cursor_before,
+                 local.body_fetch_cursor_after, local.tip_finalize_cursor_before,
                  local.tip_finalize_cursor_after,
                  local.scripts_set, local.have_data_set,
                  local.have_data_cleared, local.failed_mask_cleared);

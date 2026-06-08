@@ -298,19 +298,26 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("dry-run reports repair",
                    dry.repaired && dry.hstar == A + 1 &&
                    dry.sweep_top == A + 3 &&
+                   dry.lowest_have_data_cleared == A + 2 &&
+                   dry.body_fetch_cursor_before == A + 4 &&
+                   dry.body_fetch_cursor_after == A + 2 &&
+                   dry.clamped_body_fetch &&
                    dry.tip_finalize_cursor_after == A + 2);
         RFRL_CHECK("dry-run does not mutate",
                    fx.idx[2]->nStatus == before2 &&
                    fx.idx[3]->nStatus == before3 &&
+                   cursor_value(db, "body_fetch") == A + 4 &&
                    cursor_value(db, "tip_finalize") == A + 4);
 
         struct stage_reducer_frontier_reconcile_result applied;
         RFRL_CHECK("apply succeeds",
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &applied));
-        RFRL_CHECK("apply clamps only tip_finalize",
+        RFRL_CHECK("apply clamps body_fetch and tip_finalize",
                    cursor_value(db, "tip_finalize") == A + 2 &&
+                   cursor_value(db, "body_fetch") == A + 2 &&
                    cursor_value(db, "utxo_apply") == A + 4 &&
+                   applied.clamped_body_fetch &&
                    applied.clamped_tip_finalize);
         RFRL_CHECK("script bits restored",
                    (fx.idx[2]->nStatus & BLOCK_VALID_MASK) ==
@@ -361,12 +368,37 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("served-floor apply succeeds",
                    stage_reducer_frontier_reconcile_light(
                        db, &fx.ms, &rr));
-        RFRL_CHECK("served-floor cursor not lowered",
+        RFRL_CHECK("served-floor cannot override coins cap",
                    rr.hstar == A + 1 &&
                    rr.served_floor == A + 3 &&
-                   rr.tip_finalize_cursor_after == A + 4 &&
-                   cursor_value(db, "tip_finalize") == A + 4 &&
-                   !rr.clamped_tip_finalize);
+                   rr.coins_applied_height == A + 1 &&
+                   rr.tip_finalize_cursor_after == A + 2 &&
+                   cursor_value(db, "tip_finalize") == A + 2 &&
+                   rr.clamped_tip_finalize);
+
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("setup coin-lag fixture",
+                   setup_fixture(&fx, "coin_lag"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("seed contiguous hstar above coins_applied",
+                   put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                   put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                   seed_coins_applied(db, A + 2));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("coin-lag apply succeeds",
+                   stage_reducer_frontier_reconcile_light(
+                       db, &fx.ms, &rr));
+        RFRL_CHECK("coin-lag caps tip_finalize at coins_applied + 1",
+                   rr.hstar == A + 3 &&
+                   rr.coins_applied_height == A + 2 &&
+                   rr.tip_finalize_cursor_after == A + 3 &&
+                   cursor_value(db, "tip_finalize") == A + 3 &&
+                   rr.clamped_tip_finalize);
 
         teardown_fixture(&fx);
     }

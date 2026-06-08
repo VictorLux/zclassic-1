@@ -97,9 +97,13 @@ struct stage_reducer_frontier_reconcile_result {
     int hstar;
     int served_floor;
     int coins_applied_height;
+    bool clamped_body_fetch;
+    int body_fetch_cursor_before;
+    int body_fetch_cursor_after;
     int tip_finalize_cursor_before;
     int tip_finalize_cursor_after;
     int sweep_top;
+    int lowest_have_data_cleared;
     int scripts_set;
     int have_data_set;
     int have_data_cleared;
@@ -140,10 +144,12 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     struct stage_reconcile_result *out);
 
 /* L1 reducer-frontier reconcile: repair block_index mirror flags from
- * hash-bound durable reducer logs, then clamp ONLY the tip_finalize cursor to
- * H*+1 so tip_finalize can replay forward. This is a flag/cursor repair only:
- * it never deletes log rows and never mutates coins. If coins_applied_height is
- * absent or present above H*, the helper refuses (unknown/L2 coin-tear domain). */
+ * hash-bound durable reducer logs, rewind body_fetch to the lowest cleared
+ * HAVE_DATA hole so bodies can be re-requested, then clamp tip_finalize to the
+ * coin-capped H*+1 floor so tip_finalize can replay forward. This is a
+ * flag/cursor repair only: it never deletes log rows and never mutates coins.
+ * If coins_applied_height is absent or present above H*, the helper refuses
+ * (unknown/L2 coin-tear domain). */
 bool stage_reducer_frontier_reconcile_light_needed(
     struct sqlite3 *db,
     struct main_state *ms,

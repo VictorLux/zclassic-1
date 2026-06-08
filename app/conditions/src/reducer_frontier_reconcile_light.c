@@ -86,11 +86,13 @@ static enum condition_remedy_result remedy_reducer_frontier_reconcile_light(void
 
     LOG_WARN("condition",
              "[condition:reducer_frontier_reconcile_light] hstar=%d "
-             "sweep_top=%d tip_finalize=%d->%d scripts_set=%d "
-             "have_data_set=%d have_data_cleared=%d failed_mask_cleared=%d",
-             rr.hstar, rr.sweep_top, rr.tip_finalize_cursor_before,
-             rr.tip_finalize_cursor_after, rr.scripts_set,
-             rr.have_data_set, rr.have_data_cleared,
+             "coins_applied=%d sweep_top=%d body_fetch=%d->%d "
+             "tip_finalize=%d->%d scripts_set=%d have_data_set=%d "
+             "have_data_cleared=%d failed_mask_cleared=%d",
+             rr.hstar, rr.coins_applied_height, rr.sweep_top,
+             rr.body_fetch_cursor_before, rr.body_fetch_cursor_after,
+             rr.tip_finalize_cursor_before, rr.tip_finalize_cursor_after,
+             rr.scripts_set, rr.have_data_set, rr.have_data_cleared,
              rr.failed_mask_cleared);
     return COND_REMEDY_OK;
 }
