@@ -795,18 +795,18 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened scaffold-label guard.
 - Focused filtered tests passed after the revalidation/supervisor cleanup:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`
   (`0/1` failed in 11s),
-  `./test_parallel --only=revalidate --timeout=120 --verbose`
+  `build/bin/test_parallel --only=revalidate --timeout=120 --verbose`
   (`0/1` failed in 1s),
-  `./test_parallel --only=chain_activation_controller --timeout=120 --verbose`
+  `build/bin/test_parallel --only=chain_activation_controller --timeout=120 --verbose`
   (`0/1` failed in 1s), and
-  `./test_parallel --only=supervisor --timeout=120 --verbose`
+  `build/bin/test_parallel --only=supervisor --timeout=120 --verbose`
   (`0/2` failed in 1s).
 - `make -j$(nproc)`: pass after the revalidation/supervisor cleanup.
 - `make lint`: pass after the revalidation/supervisor cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the revalidation/supervisor
+- `build/bin/test_parallel --timeout=180`: pass after the revalidation/supervisor
   cleanup, `0/279` groups failed in 57.0s.
 - Live sample attempt at 2026-06-01 18:10:29 UTC after the
   revalidation/supervisor cleanup: no continuity proof was available.
@@ -822,13 +822,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   the current status-board sections.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened scaffold-label guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
   after widening the guard to cover reducer-ingest/header-admit/mining/repair
   comments; `0/1` groups failed in 12.0s.
 - `make -j$(nproc)`: pass after the reducer-ingest terminology cleanup.
 - `make lint`: pass after the reducer-ingest terminology cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the reducer-ingest terminology
+- `build/bin/test_parallel --timeout=180`: pass after the reducer-ingest terminology
   cleanup, `0/279` groups failed in 56.0s.
 - Post-status doc/scans after the reducer-ingest terminology cleanup:
   `tools/scripts/check_doc_accuracy.sh` passed, `git diff --check` passed, the
@@ -850,18 +850,18 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   headers, stage sources, progress store, diagnostics registry, boot, and
   staged-sync supervisor files.
 - `git diff --check`: pass after the staged reducer label cleanup.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass
   after widening the production-comment guard to cover the stage/progress
   files; `0/1` groups failed in 11.0s.
-- `./test_parallel --only=staged_sync_supervisor --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=staged_sync_supervisor --timeout=120 --verbose`:
   no validation group exists for this exact filter; the harness reported that
   it matched no groups.
-- `./test_parallel --only=supervisor --timeout=120 --verbose`: pass; `0/2`
+- `build/bin/test_parallel --only=supervisor --timeout=120 --verbose`: pass; `0/2`
   supervisor groups failed in 1.0s.
 - `make -j$(nproc)`: pass after the staged reducer label cleanup.
 - `make lint`: pass after the staged reducer label cleanup; all zero-baseline
   ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the staged reducer label
+- `build/bin/test_parallel --timeout=180`: pass after the staged reducer label
   cleanup, `0/279` groups failed in 57.0s.
 - Live sample attempt at 2026-06-01 17:49:42 UTC after the staged reducer
   label cleanup: no continuity proof was available. `systemctl --user status
@@ -885,13 +885,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   one-write, service-result, supervisor, typed-blocker, raw allocation, file
   size, and doc gates stayed at zero grandfathered entries.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`
   (`0/1` failed in 12s),
-  `./test_parallel --only=event_log --timeout=120 --verbose`
+  `build/bin/test_parallel --only=event_log --timeout=120 --verbose`
   (`0/1` failed in 37s), and
-  `./test_parallel --only=projection --timeout=120 --verbose`
+  `build/bin/test_parallel --only=projection --timeout=120 --verbose`
   (`0/12` failed in 25s).
-- `./test_parallel --timeout=180`: pass after this projection-storage
+- `build/bin/test_parallel --timeout=180`: pass after this projection-storage
   comment/guard cleanup, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 17:36:22 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -906,10 +906,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   one-write, service-result, supervisor, typed-blocker, raw allocation, file
   size, and doc gates stayed at zero grandfathered entries.
 - Focused filtered test passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`
   (`0/1` failed in 11s) after widening the scaffold-label guard and clearing
   the newly surfaced labels.
-- `./test_parallel --timeout=180`: pass after this comment/guard cleanup,
+- `build/bin/test_parallel --timeout=180`: pass after this comment/guard cleanup,
   `0/279` groups failed in 57.0s.
 - `tools/scripts/check_doc_accuracy.sh`, `git diff --check`, the empty
   baseline scan, the production shadow/cutover scan, and the focused
@@ -927,20 +927,20 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened scaffold-label guard.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`
   (`0/1` failed in 11s),
-  `./test_parallel --only=explorer --timeout=120 --verbose`
+  `build/bin/test_parallel --only=explorer --timeout=120 --verbose`
   (`0/1` failed in 1s),
-  `./test_parallel --only=api --timeout=120 --verbose`
+  `build/bin/test_parallel --only=api --timeout=120 --verbose`
   (`0/1` failed in 1s),
-  `./test_parallel --only=domain_consensus_header_accept --timeout=120 --verbose`
+  `build/bin/test_parallel --only=domain_consensus_header_accept --timeout=120 --verbose`
   (`0/1` failed in 1s), and
-  `./test_parallel --only=supervisor --timeout=120 --verbose`
+  `build/bin/test_parallel --only=supervisor --timeout=120 --verbose`
   (`0/2` failed in 1s).
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after this shim deletion / comment
+- `build/bin/test_parallel --timeout=180`: pass after this shim deletion / comment
   cleanup, `0/279` groups failed in 57.0s.
 - `tools/scripts/check_doc_accuracy.sh`, `git diff --check`, the empty
   baseline scan, the deleted explorer-shim include scan, the focused
@@ -959,20 +959,20 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened scaffold-label guard.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`
   (`0/1` failed in 11s),
-  `./test_parallel --only=snapshot --timeout=120 --verbose`
+  `build/bin/test_parallel --only=snapshot --timeout=120 --verbose`
   (`0/8` failed in 7s),
-  `./test_parallel --only=bg_validation --timeout=120 --verbose`
+  `build/bin/test_parallel --only=bg_validation --timeout=120 --verbose`
   (`0/1` failed in 1s),
-  `./test_parallel --only=block_index_loader --timeout=120 --verbose`
+  `build/bin/test_parallel --only=block_index_loader --timeout=120 --verbose`
   (`0/1` failed in 1s), and
-  `./test_parallel --only=consensus_reject --timeout=120 --verbose`
+  `build/bin/test_parallel --only=consensus_reject --timeout=120 --verbose`
   (`0/2` failed in 1s).
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after this service-comment cleanup,
+- `build/bin/test_parallel --timeout=180`: pass after this service-comment cleanup,
   `0/279` groups failed in 56.0s.
 - `tools/scripts/check_doc_accuracy.sh`, `git diff --check`, the empty
   baseline scan, the production shadow/cutover scan, the service stale-scaffold
@@ -990,14 +990,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `storage/utxo_reimport_flag.h` includes at the actual reimport-flag call
   sites.
 - Focused filtered tests passed:
-  `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`,
-  `./test_parallel --only=utxo_reimport_flag --timeout=120 --verbose`,
-  `./test_parallel --only=orphan_utxo_above_tip --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=utxo_recovery_service --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=utxo_reimport_flag --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=orphan_utxo_above_tip --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after the reimport-flag include
+- `build/bin/test_parallel --timeout=180`: pass after the reimport-flag include
   boundary cleanup, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 15:26:24 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1011,15 +1011,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   direct util primitive includes.
 - Focused filtered tests passed:
-  `./test_parallel --only=mailbox --timeout=120 --verbose`,
-  `./test_parallel --only=mailbox_adoption --timeout=120 --verbose`,
-  `./test_parallel --only=projection_adoption --timeout=120 --verbose`,
-  `./test_parallel --only=header_admit_stage --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=mailbox --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=mailbox_adoption --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=projection_adoption --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_admit_stage --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after the framework re-export deletion,
+- `build/bin/test_parallel --timeout=180`: pass after the framework re-export deletion,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 15:19:45 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1034,18 +1034,18 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   direct sync-state include path.
 - Focused filtered tests passed:
-  `./test_parallel --only=event --timeout=120 --verbose`,
-  `./test_parallel --only=sync_state_fsm --timeout=120 --verbose`,
-  `./test_parallel --only=state_machine --timeout=120 --verbose`,
-  `./test_parallel --only=wallet_view --timeout=120 --verbose`,
-  `./test_parallel --only=node_health --timeout=120 --verbose`,
-  `./test_parallel --only=block_pruning --timeout=120 --verbose`,
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
-  `./test_parallel --only=net --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=event --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=sync_state_fsm --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=state_machine --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=wallet_view --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=node_health --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=block_pruning --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`.
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after the `event.h` re-export removal,
+- `build/bin/test_parallel --timeout=180`: pass after the `event.h` re-export removal,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 15:11:12 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1061,17 +1061,17 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with direct
   sync planner includes.
 - Focused filtered tests passed:
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=sync_service --timeout=120 --verbose`,
-  `./test_parallel --only=integrity --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=integrity --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the focused lint-gate test removed its temporary
   fixtures; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
 - Deleted sync wrapper include searches returned no matches across guarded
   app/lib/config/tools/docs C/H and Markdown surfaces.
-- `./test_parallel --timeout=180`: pass after the sync wrapper deletion,
+- `build/bin/test_parallel --timeout=180`: pass after the sync wrapper deletion,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 14:58:08 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1087,9 +1087,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   direct contract include path.
 - Focused filtered tests passed:
-  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`,
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
-  `./test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=snapshot_sync_service --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`.
 - `make lint`: pass after rerunning it outside the focused lint-gate test's
   temporary fixture window; all framework, layering, controller raw-SQL,
   one-write, service-result, supervisor, typed-blocker, raw allocation, and doc
@@ -1101,7 +1101,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   reported 0 non-comment entries for every tracked file.
 - Deleted wrapper include searches returned no matches across guarded
   app/lib/config/tools/docs C/H and Markdown surfaces.
-- `./test_parallel --timeout=180`: pass after the snapshot-sync wrapper
+- `build/bin/test_parallel --timeout=180`: pass after the snapshot-sync wrapper
   deletion, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 14:49:42 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1117,9 +1117,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with
   `sync_watchdog_conditions` and `peer_snapshot_conditions`.
 - Focused filtered tests passed:
-  `./test_parallel --only=sync_watchdog_conditions --timeout=120 --verbose`,
-  `./test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`,
-  and `./test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=sync_watchdog_conditions --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=peer_snapshot_conditions --timeout=120 --verbose`,
+  and `build/bin/test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`.
 - `make lint`: pass; all framework, layering, controller raw-SQL, one-write,
   service-result, supervisor, typed-blocker, raw allocation, and doc gates
   stayed at zero grandfathered entries.
@@ -1134,7 +1134,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `shadow`/`cutover`/`projection-diff`/`projection_diff` in the guarded
   production C/H surface, nor for deleted single-engine block-connection names
   across production C/H files.
-- `./test_parallel --timeout=180`: pass after the condition scaffold cleanup,
+- `build/bin/test_parallel --timeout=180`: pass after the condition scaffold cleanup,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 14:39:15 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1161,9 +1161,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the new
   `test_make_lint_gates` assertions.
 - Focused filtered test passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`, including
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`, including
   the new production-source guard for deleted engine names.
-- `./test_parallel --timeout=180`: pass after the deleted-engine terminology
+- `build/bin/test_parallel --timeout=180`: pass after the deleted-engine terminology
   cleanup, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 14:23:39 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1189,11 +1189,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates all report zero grandfathered entries.
 - Focused filtered tests passed:
-  `./test_parallel --only=process_block_revalidate --timeout=120 --verbose`,
-  `./test_parallel --only=invalidateblock --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=process_block_revalidate --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=invalidateblock --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make test_parallel`: pass after rebuilding the parallel runner.
-- `./test_parallel --timeout=180`: pass after the block-index snapshot cleanup,
+- `build/bin/test_parallel --timeout=180`: pass after the block-index snapshot cleanup,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 14:02:48 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1220,12 +1220,12 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   updated process-block split guard.
 - Focused filtered tests passed:
-  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
-  `./test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
-  `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
   and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the recovered-UTXO injection
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the recovered-UTXO injection
   split, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 13:50:18 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1253,12 +1253,12 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   updated process-block split guard.
 - Focused filtered tests passed:
-  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
-  `./test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
-  `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=connect_tip_hot_loop_exit --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=utxo_activation_paused --timeout=120 --verbose`,
   and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the self-heal scan-state /
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal scan-state /
   hot-loop split, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 13:41:39 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1285,10 +1285,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates all report zero grandfathered entries.
 - Focused filtered tests passed:
-  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
+  `build/bin/test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
   and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the self-heal SQLite tx-index
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal SQLite tx-index
   split, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 13:31:29 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1313,10 +1313,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates all report zero grandfathered entries.
 - Focused filtered tests passed:
-  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
+  `build/bin/test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
   and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the self-heal chain-scan split,
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal chain-scan split,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 13:22:26 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1341,10 +1341,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates all report zero grandfathered entries.
 - Focused filtered tests passed:
-  `./test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
+  `build/bin/test_parallel --only=self_heal_scan_fallback --timeout=120 --verbose`
   and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the self-heal legacy-RPC split,
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal legacy-RPC split,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 13:14:17 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1368,7 +1368,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   lib-layering, and raw-malloc gates all report zero grandfathered entries.
 - `make -j$(nproc)`: pass after adding
   `lib/validation/src/process_block_contextual_header.c`.
-- `./test_parallel --timeout=180`: pass after the contextual-header split,
+- `build/bin/test_parallel --timeout=180`: pass after the contextual-header split,
   `0/279` groups failed in 56.0s. This includes the
   `skip_contextual:*` chain tests and the process-block split guard in
   `test_make_lint_gates`.
@@ -1392,7 +1392,7 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make lint`: pass after emptying the E6 baseline; E1, E2, E6, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, lib-layering, and
   raw-malloc gates all report zero grandfathered entries.
-- `./test_parallel --timeout=180`: pass after emptying the E6 baseline,
+- `build/bin/test_parallel --timeout=180`: pass after emptying the E6 baseline,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 12:56:06 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1406,15 +1406,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 3 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=coins --timeout=120 --verbose`,
-  `./test_parallel --only=chain_stall_repro --timeout=120 --verbose`,
-  `./test_parallel --only=consensus_compat --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=coins --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=chain_stall_repro --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=consensus_compat --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the test-only cache flush shrink; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   3 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after the test-only cache flush shrink,
+- `build/bin/test_parallel --timeout=180`: pass after the test-only cache flush shrink,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 12:49:34 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1433,15 +1433,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 5 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `ZCL_TEST_ONLY=rpc_safety ./test_zcl`,
-  `./test_parallel --only=rpc --timeout=120 --verbose`,
-  `./test_parallel --only=chain --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `ZCL_TEST_ONLY=rpc_safety build/bin/test_zcl`,
+  `build/bin/test_parallel --only=rpc --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the runtime reindex/repair flush shrink; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   5 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after the runtime
+- `build/bin/test_parallel --timeout=180`: pass after the runtime
   reindex/repair-flush shrink, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 12:41:35 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1460,15 +1460,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 10 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=boot --timeout=120 --verbose`,
-  `./test_parallel --only=shutdown --timeout=120 --verbose`,
-  `./test_parallel --only=coins --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=boot --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=shutdown --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=coins --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the shutdown flush routing; E1, E2, supervisor, E7,
   typed-blocker, raw-sqlite-step, controller raw-SQL, lib-layering, and
   raw-malloc gates remain at zero active debt, while E6 is 10 grandfathered
   write surfaces.
-- `./test_parallel --timeout=180`: pass after the shutdown flush routing,
+- `build/bin/test_parallel --timeout=180`: pass after the shutdown flush routing,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 12:28:33 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1487,17 +1487,17 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 13 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=boot --timeout=120 --verbose`,
-  `./test_parallel --only=block_index --timeout=120 --verbose`,
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`,
-  `./test_parallel --only=coins --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=boot --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=block_index --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=coins --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`.
 - `make lint`: pass after the boot reindex flush routing; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   13 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after the boot reindex flush routing,
+- `build/bin/test_parallel --timeout=180`: pass after the boot reindex flush routing,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 12:20:19 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1517,18 +1517,18 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 16 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=chain --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`,
-  `./test_parallel --only=tip_finalize --timeout=120 --verbose`,
-  `./test_parallel --only=header_admit --timeout=120 --verbose`,
-  `./test_parallel --only=utxo_activation --timeout=120 --verbose`, and
-  `./test_parallel --only=reducer_stage --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=tip_finalize --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_admit --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=utxo_activation --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=reducer_stage --timeout=120 --verbose`.
 - `make lint`: pass after the active-chain alias deletion and process-block
   fallback tightening; E1, E2, supervisor, E7, typed-blocker,
   raw-sqlite-step, controller raw-SQL, lib-layering, and raw-malloc gates
   remain at zero active debt, while E6 is 16 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after the active-chain alias deletion
+- `build/bin/test_parallel --timeout=180`: pass after the active-chain alias deletion
   and process-block fallback tightening, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 12:11:24 UTC after this slice did
   not prove live-node health: no `zclassic23` process was running, `zcl-rpc`
@@ -1548,13 +1548,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 17 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=coins --timeout=120 --verbose` and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=coins --timeout=120 --verbose` and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the coins SQLite wrapper deletion; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   17 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after the coins SQLite wrapper
+- `build/bin/test_parallel --timeout=180`: pass after the coins SQLite wrapper
   deletion, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 12:02:56 UTC after the coins SQLite
   wrapper deletion did not prove live-node health: no `zclassic23` process was
@@ -1576,16 +1576,16 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 21 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=chain --timeout=120 --verbose`,
-  `./test_parallel --only=torn_index --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`, and
-  `./test_parallel --only=block_scan --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=torn_index --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=block_scan --timeout=120 --verbose`.
 - `make lint`: pass after the active-tip child split; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL,
   lib-layering, and raw-malloc gates remain at zero active debt, while E6 is
   21 grandfathered write surfaces.
-- `./test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
+- `build/bin/test_parallel --timeout=180`: pass after rebuilding `test_parallel`,
   `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 11:50:21 UTC after the
   active-tip child split did not prove live-node health: no `zclassic23`
@@ -1605,17 +1605,17 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `coins_view_cache_flush()` baseline line numbers shifted after adding the
   boot-owned callbacks.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=block_index_integrity --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=block_index_integrity --timeout=120 --verbose`.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - `make lint`: pass after the header activation/index callback injection; E1,
   E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 12 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the header activation/index
+- `build/bin/test_parallel --timeout=180`: pass after the header activation/index
   callback injection, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 09:49:59 UTC after the header
   activation/index callback injection did not prove live-node health: no
@@ -1639,15 +1639,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=snapshot_sync_service --timeout=120 --verbose`.
 - `make lint`: pass after the header snapshot callback injection; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 14 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the header snapshot callback
+- `build/bin/test_parallel --timeout=180`: pass after the header snapshot callback
   injection, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 09:38:28 UTC after the header
   snapshot callback injection did not prove live-node health: no `zclassic23`
@@ -1669,15 +1669,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=fast_sync --timeout=120 --verbose`,
-  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`, and
-  `./test_parallel --only=net --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=fast_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=snapshot_sync_service --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`.
 - `make lint`: pass after the fast-sync serializer callback injection; E1,
   E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 15 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the fast-sync serializer
+- `build/bin/test_parallel --timeout=180`: pass after the fast-sync serializer
   callback injection, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 09:27:00 UTC after the fast-sync
   serializer callback injection did not prove live-node health: no
@@ -1699,14 +1699,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=fast_sync --timeout=120 --verbose`, and
-  `./test_parallel --only=net --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=fast_sync --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`.
 - `make lint`: pass after the fast-sync AR/DB include removal; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 16 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the fast-sync AR/DB include
+- `build/bin/test_parallel --timeout=180`: pass after the fast-sync AR/DB include
   removal, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 09:18:00 UTC after the fast-sync
   AR/DB include removal did not prove live-node health: no `zclassic23`
@@ -1727,15 +1727,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=self_heal --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=self_heal --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`.
 - `make lint`: pass after the self-heal tx-index/runtime boundary move; E1,
   E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 18 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the self-heal tx-index/runtime
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal tx-index/runtime
   boundary move, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 09:07:58 UTC after the
   self-heal tx-index/runtime boundary move did not prove live-node health: no
@@ -1756,15 +1756,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=self_heal --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=self_heal --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`.
 - `make lint`: pass after the self-heal/runtime boundary move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 19 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the self-heal/runtime boundary
+- `build/bin/test_parallel --timeout=180`: pass after the self-heal/runtime boundary
   move, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 08:58:37 UTC after the
   self-heal/runtime boundary move did not prove live-node health: no
@@ -1784,15 +1784,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations; only existing `process_block_flush_policy.c`
   baseline line numbers shifted after removing the DB model include.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`,
-  `./test_parallel --only=wallet_flush_rollback --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=wallet_flush_rollback --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`.
 - `make lint`: pass after the flush-policy/runtime boundary move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 20 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the flush-policy/runtime
+- `build/bin/test_parallel --timeout=180`: pass after the flush-policy/runtime
   boundary move, `0/279` groups failed in 57.0s.
 - Quick live sample attempt at 2026-06-01 08:47:50 UTC after the
   flush-policy/runtime boundary move did not prove live-node health: no
@@ -1813,14 +1813,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_doc_accuracy.sh`: pass with docs and Makefile agreeing
   on all 31 lint gates.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=validation --timeout=120 --verbose`, and
-  `./test_parallel --only=chain --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=validation --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain --timeout=120 --verbose`.
 - `make lint`: pass after the process-block/runtime boundary move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 21 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the process-block/runtime
+- `build/bin/test_parallel --timeout=180`: pass after the process-block/runtime
   boundary move, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 08:39:09 UTC after the
   process-block/runtime boundary move did not prove live-node health: no
@@ -1840,16 +1840,16 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations; only existing `boot_services.c` baseline line
   numbers shifted with the new boot-owned callback.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=sync_service --timeout=120 --verbose`, and
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`.
 - `make lint`: pass after the header-vote callback injection; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 22 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the header-vote callback
+- `build/bin/test_parallel --timeout=180`: pass after the header-vote callback
   injection, `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 08:29:36 UTC after the header-vote
   callback injection did not prove live-node health: no `zclassic23` process
@@ -1867,15 +1867,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=sync_service --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`.
 - `make lint`: pass after the chain-tip fallback isolation; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 23 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the chain-tip fallback
+- `build/bin/test_parallel --timeout=180`: pass after the chain-tip fallback
   isolation, `0/279` groups failed in 61.1s.
 - Quick live sample attempt at 2026-06-01 08:20:54 UTC after the chain-tip
   fallback isolation did not prove live-node health: no `zclassic23` process
@@ -1893,16 +1893,16 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=header_sync --timeout=120 --verbose`,
-  `./test_parallel --only=sync_service --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=integrity --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=header_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=integrity --timeout=120 --verbose`.
 - `make lint`: pass after the sync planner contract move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 24 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the sync planner contract move,
+- `build/bin/test_parallel --timeout=180`: pass after the sync planner contract move,
   `0/279` groups failed in 56.0s.
 - Quick live sample attempt at 2026-06-01 08:10:13 UTC after the sync planner
   contract move did not prove live-node health: `systemctl --user is-active
@@ -1920,15 +1920,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`, and
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=snapshot_sync_service --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`.
 - `make lint`: pass after the snapshot-sync accessor move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 28 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the snapshot-sync accessor move,
+- `build/bin/test_parallel --timeout=180`: pass after the snapshot-sync accessor move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 07:54:10 UTC after the snapshot-sync accessor
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -1949,15 +1949,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating the same three
   `boot_services.c` baseline line numbers shifted by the boot-owned callback.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=file_market --timeout=120 --verbose`, and
-  `./test_parallel --only=models --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=file_market --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=models --timeout=120 --verbose`.
 - `make lint`: pass after the P2P app-persistence callback move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 29 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the P2P app-persistence callback move,
+- `build/bin/test_parallel --timeout=180`: pass after the P2P app-persistence callback move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 07:44:34 UTC after the P2P app-persistence callback
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -1979,16 +1979,16 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=sync_service --timeout=120 --verbose` (2 matched
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=sync_service --timeout=120 --verbose` (2 matched
   groups).
 - `make lint`: pass after the block-sync planning helper move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 39 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the block-sync planning helper
+- `build/bin/test_parallel --timeout=180`: pass after the block-sync planning helper
   move, `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 07:06:19 UTC after the block-sync planning
   helper move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2010,15 +2010,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating the same three
   `boot_services.c` baseline line numbers shifted by the boot-owned callback.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=chain_activation_controller --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain_activation_controller --timeout=120 --verbose`.
 - `make lint`: pass after the block-connected observer callback move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 40 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the block-connected observer
+- `build/bin/test_parallel --timeout=180`: pass after the block-connected observer
   callback move, `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 06:54:50 UTC after the block-connected
   observer callback move: `systemctl --user is-active zclassic23` reported
@@ -2040,15 +2040,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating the same three
   `boot_services.c` baseline line numbers shifted by the boot-owned callback.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=chain_activation_controller --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=chain_activation_controller --timeout=120 --verbose`.
 - `make lint`: pass after the P2P block callback move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 41 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the P2P block callback move,
+- `build/bin/test_parallel --timeout=180`: pass after the P2P block callback move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 06:43:25 UTC after the P2P block callback
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2070,14 +2070,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating the same three
   `boot_services.c` baseline line numbers shifted by the boot-owned callbacks.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`, and
-  `./test_parallel --only=net --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`.
 - `make lint`: pass after the tx callback move; E1, E2, supervisor, E7,
   typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 46 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the tx callback move,
+- `build/bin/test_parallel --timeout=180`: pass after the tx callback move,
   `0/279` groups failed in 85.1s.
 - Quick live sample at 2026-06-01 06:32:22 UTC after the tx callback move:
   `systemctl --user is-active zclassic23` reported `active`,
@@ -2098,14 +2098,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating three `boot_services.c`
   baseline line numbers shifted by the boot-owned callbacks.
 - Focused filtered tests passed:
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=mcp_metrics --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=mcp_metrics --timeout=120 --verbose`.
 - `make lint`: pass after the metrics/connman callback move; E1, E2,
   supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 50 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the metrics/connman callback
+- `build/bin/test_parallel --timeout=180`: pass after the metrics/connman callback
   move, `0/279` groups failed in 87.1s.
 - Quick live sample at 2026-06-01 06:19:03 UTC after the metrics/connman
   callback move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2127,15 +2127,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating three `boot_services.c`
   baseline line numbers shifted by the boot-owned peer-save helper.
 - Focused filtered tests passed:
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=peer_lifecycle --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=peer_lifecycle --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
 - `make lint`: pass after the peer-save callback move; E1, E2, supervisor,
   E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and raw-malloc gates
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 55 grandfathered includes.
-- `./test_parallel --timeout=180`: pass after the peer-save callback move,
+- `build/bin/test_parallel --timeout=180`: pass after the peer-save callback move,
   `0/279` groups failed in 78.1s.
 - Quick live sample at 2026-06-01 06:05:55 UTC after the peer-save callback
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2161,11 +2161,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   surfaces and no new violations after updating three `boot_services.c`
   baseline line numbers shifted by the callback helper.
 - Focused filtered tests passed:
-  `./test_parallel --only=compact_blocks --timeout=120 --verbose`,
-  `./test_parallel --only=msg_handlers --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the compact-block callback move,
+  `build/bin/test_parallel --only=compact_blocks --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=msg_handlers --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the compact-block callback move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 05:49:27 UTC after the compact-block
   callback move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2184,10 +2184,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   E2, supervisor, E7, typed-blocker, raw-sqlite-step, controller raw-SQL, and
   raw-malloc gates remain at zero active debt, E6 is 24 grandfathered write
   surfaces, and lib-layering is 58 grandfathered includes.
-- `./test_parallel --only=small_projections --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=small_projections --timeout=120 --verbose`: pass
   with the parity checks comparing projection SQLite files directly against
   the legacy fixture DB.
-- `./test_parallel --timeout=180`: pass after the small-projection production
+- `build/bin/test_parallel --timeout=180`: pass after the small-projection production
   API cleanup, `0/279` groups failed in 77.1s.
 - Production stale-surface search:
   `rg -n "shadow|cutover|projection-diff|projection_diff" app lib/storage lib/validation tools/mcp --glob '*.[ch]'`
@@ -2215,10 +2215,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=blog --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the onion-service callback move,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=blog --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the onion-service callback move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 05:23:49 UTC after the onion-service
   callback move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2240,11 +2240,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=net --timeout=120 --verbose`,
-  `./test_parallel --only=blog --timeout=120 --verbose`,
-  `./test_parallel --only=connman_addnode_fallback --timeout=120 --verbose`,
-  and `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the connman callback move,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=blog --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=connman_addnode_fallback --timeout=120 --verbose`,
+  and `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the connman callback move,
   `0/279` groups failed in 58.0s.
 - Quick live sample at 2026-06-01 05:09:42 UTC after the connman callback move:
   `systemctl --user is-active zclassic23` reported `active`,
@@ -2266,9 +2266,9 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `tools/scripts/check_one_write_path.sh`: pass with 24 grandfathered write
   surfaces and no new violations.
 - Focused filtered tests passed:
-  `./test_parallel --only=mining --timeout=120 --verbose` and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the mining callback move,
+  `build/bin/test_parallel --only=mining --timeout=120 --verbose` and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the mining callback move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 04:59:05 UTC after the mining callback move:
   `systemctl --user is-active zclassic23` reported `active`,
@@ -2285,11 +2285,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the standalone parallel-test
   runner with the moved sidecar sources.
 - Focused filtered tests passed:
-  `./test_parallel --only=addrman_integrity --timeout=120 --verbose`,
-  `./test_parallel --only=block_index_integrity --timeout=120 --verbose`,
-  `./test_parallel --only=block_index_sidecar_port --timeout=120 --verbose`,
-  and `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the sidecar ownership move,
+  `build/bin/test_parallel --only=addrman_integrity --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=block_index_integrity --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=block_index_sidecar_port --timeout=120 --verbose`,
+  and `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the sidecar ownership move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 04:47:38 UTC after the sidecar ownership
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2308,12 +2308,12 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the standalone parallel-test
   runner with the moved SwapContract model persistence sources.
 - Focused filtered tests passed:
-  `./test_parallel --only=htlc --timeout=120 --verbose`,
-  `./test_parallel --only=protocols --timeout=120 --verbose`,
-  `./test_parallel --only=models --timeout=120 --verbose`,
-  `./test_parallel --only=db_validators --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the swap persistence move,
+  `build/bin/test_parallel --only=htlc --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=protocols --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=models --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=db_validators --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the swap persistence move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 04:38:22 UTC after the swap persistence
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2332,12 +2332,12 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the standalone parallel-test
   runner with the moved ZNAM model persistence sources.
 - Focused filtered tests passed:
-  `./test_parallel --only=znam --timeout=120 --verbose`,
-  `./test_parallel --only=protocols --timeout=120 --verbose`,
-  `./test_parallel --only=models --timeout=120 --verbose`,
-  `./test_parallel --only=db_validators --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the ZNAM persistence move,
+  `build/bin/test_parallel --only=znam --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=protocols --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=models --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=db_validators --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the ZNAM persistence move,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 04:28:58 UTC after the ZNAM persistence
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2354,11 +2354,11 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   remain at zero active debt, E6 is 24 grandfathered write surfaces, and
   lib-layering is 68 grandfathered includes.
 - Focused filtered tests passed:
-  `./test_parallel --only=protocols --timeout=120 --verbose`,
-  `./test_parallel --only=models --timeout=120 --verbose`,
-  `./test_parallel --only=db_validators --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the ZMSG persistence move,
+  `build/bin/test_parallel --only=protocols --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=models --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=db_validators --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the ZMSG persistence move,
   `0/279` groups failed in 58.0s.
 - Quick live sample at 2026-06-01 04:16:14 UTC after the ZMSG persistence
   move: `systemctl --user is-active zclassic23` reported `active`,
@@ -2378,10 +2378,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after rebuilding the suite binary with the moved
   schema migration and FileOffer model persistence sources.
 - Focused filtered tests passed:
-  `./test_parallel --only=schema_migration --timeout=120 --verbose`,
-  `./test_parallel --only=file_market --timeout=120 --verbose`, and
-  `./test_parallel --only=models --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the Model-shape persistence
+  `build/bin/test_parallel --only=schema_migration --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=file_market --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=models --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the Model-shape persistence
   move, `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 04:04:04 UTC after the Model-shape
   persistence move: `systemctl --user is-active zclassic23` reported
@@ -2403,14 +2403,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make test_parallel`: pass after adding direct coverage for
   `zcl_node_db_path()` and `utxo_classify_script()`.
 - Focused filtered tests passed:
-  `./test_parallel --only=path_check --timeout=120 --verbose`,
-  `./test_parallel --only=script --timeout=120 --verbose`,
-  `./test_parallel --only=coins_view --timeout=120 --verbose`,
-  `./test_parallel --only=fast_sync --timeout=120 --verbose`,
-  `./test_parallel --only=tor --timeout=120 --verbose`,
-  `./test_parallel --only=net --timeout=120 --verbose`, and
-  `./test_parallel --only=make_lint_gates --timeout=120 --verbose`.
-- `./test_parallel --timeout=180`: pass after the lib-layering shrink,
+  `build/bin/test_parallel --only=path_check --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=script --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=coins_view --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=fast_sync --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=tor --timeout=120 --verbose`,
+  `build/bin/test_parallel --only=net --timeout=120 --verbose`, and
+  `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`.
+- `build/bin/test_parallel --timeout=180`: pass after the lib-layering shrink,
   `0/279` groups failed in 58.0s.
 - Quick live sample at 2026-06-01 03:47:30 UTC after the lib-layering shrink:
   `systemctl --user is-active zclassic23` reported `active`,
@@ -2430,16 +2430,16 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with an empty baseline. WARN mode reports 0 direct raw controller SQL
   calls.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the controller raw-SQL baseline reached zero.
-- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
   moving the `zcl_sql` prepare path behind
   `node_db_prepare_readonly_query()`.
-- `./test_parallel --only=sqlite --timeout=120 --verbose`: pass, including the
+- `build/bin/test_parallel --only=sqlite --timeout=120 --verbose`: pass, including the
   snapshot tx-index job start/join path.
-- `./test_parallel --only=models --timeout=120 --verbose`: pass, including
+- `build/bin/test_parallel --only=models --timeout=120 --verbose`: pass, including
   tx-index bulk-load lifecycle coverage.
-- `./test_parallel --timeout=180`: pass after the controller raw-SQL baseline
+- `build/bin/test_parallel --timeout=180`: pass after the controller raw-SQL baseline
   reached zero, `0/279` groups failed in 59.0s.
 - Quick live sample at 2026-06-01 03:31:20 UTC after the controller raw-SQL
   baseline reached zero: `systemctl --user is-active zclassic23` reported
@@ -2464,10 +2464,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with 3 grandfathered controller files, no new ones. WARN mode now
   reports 12 direct raw controller SQL calls across those 3 files.
-- `./test_parallel --only=file_controller --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=file_controller --timeout=120 --verbose`: pass after
   moving consensus snapshot export to the service layer; `0/1` filtered groups
   failed in 2.0s.
-- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+- `build/bin/test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 03:08:22 UTC after the controller raw-SQL
   shrink: `systemctl --user is-active zclassic23` reported `active`,
@@ -2489,12 +2489,12 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with 5 grandfathered controller files, no new ones. WARN mode now
   reports 21 direct raw controller SQL calls across those 5 files.
-- `./test_parallel --only=wallet_persistence_cycle --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=wallet_persistence_cycle --timeout=120 --verbose`:
   pass, including the new `delete_key_r` persisted-key removal case.
-- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after moving
+- `build/bin/test_parallel --only=wallet --timeout=120 --verbose`: pass after moving
   wallet-key readback/rollback SQL into `wallet_sqlite`; `0/32` filtered groups
   failed in 7.0s.
-- `./test_parallel --timeout=180`: pass after the wallet/controller raw-SQL
+- `build/bin/test_parallel --timeout=180`: pass after the wallet/controller raw-SQL
   shrink, `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 02:50:33 UTC after the wallet/controller
   raw-SQL shrink: `systemctl --user is-active zclassic23` reported `active`,
@@ -2513,14 +2513,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with 6 grandfathered controller files, no new ones. WARN mode now
   reports 23 direct raw controller SQL calls across those 6 files.
-- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`: pass after
   moving sync-import UTXO cardinality validation into the UTXO model; filtered
   run covered both `test_sync_service` and `test_snapshot_sync_service`.
-- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=utxo_recovery_service --timeout=120 --verbose`:
   pass.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the controller raw-SQL baseline shrink.
-- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+- `build/bin/test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
   `0/279` groups failed in 58.0s.
 - Quick live sample at 2026-06-01 02:43:32 UTC after the controller raw-SQL
   shrink: `systemctl --user is-active zclassic23` reported `active`,
@@ -2543,15 +2543,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with 7 grandfathered controller files, no new ones. WARN mode now
   reports 24 direct raw controller SQL calls across those 7 files.
-- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`: pass after
   moving Sapling tree block persistence into the Block model; filtered run
   covered both `test_sync_service` and `test_snapshot_sync_service`.
-- `./test_parallel --only=sapling_tree --timeout=120 --verbose`: pass.
-- `./test_parallel --only=utxo_activation_paused --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=sapling_tree --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=utxo_activation_paused --timeout=120 --verbose`: pass
   after moving `repairutxos` transaction control to `node_db_*()`.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the controller raw-SQL baseline shrink.
-- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+- `build/bin/test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
   `0/279` groups failed in 57.0s.
 - Quick live sample at 2026-06-01 02:34:30–02:35:07 UTC after the follow-up
   controller raw-SQL shrink: `systemctl --user is-active zclassic23` reported
@@ -2572,15 +2572,15 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `ZCL_LINT_MODE=RATCHET tools/lint/check_no_raw_sqlite_in_controllers.sh`:
   pass with then-9 grandfathered controller files, no new ones. WARN mode then
   reported 28 direct raw controller SQL calls across those 9 files.
-- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after replacing
+- `build/bin/test_parallel --only=wallet --timeout=120 --verbose`: pass after replacing
   the shielded wallet height fallback with `db_block_max_height_any_status()`.
-- `./test_parallel --only=snapshot_sync_service --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=snapshot_sync_service --timeout=120 --verbose`: pass
   after routing snapshot checked exec helpers through `node_db_exec()`.
-- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
   after moving UTXO missing-height count/repair SQL into `models/utxo`.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the controller raw-SQL baseline shrink.
-- `./test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
+- `build/bin/test_parallel --timeout=180`: pass after the controller raw-SQL shrink,
   `0/279` groups failed in 58.0s.
 - Quick live sample at 2026-06-01 02:24:01–02:24:57 UTC after the controller
   raw-SQL shrink: `systemctl --user is-active zclassic23` reported `active`,
@@ -2606,19 +2606,19 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   pass with then-12 grandfathered controller files, no new ones.
 - `tools/scripts/check_raw_malloc.sh`: pass with no active production raw
   malloc/calloc/realloc allowlist entries.
-- `./test_parallel --only=file_controller --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=file_controller --timeout=120 --verbose`: pass after
   moving file manifest protocol declarations into `lib/net`.
-- `./test_parallel --only=file_market --timeout=120 --verbose`: pass.
-- `./test_parallel --only=wallet --timeout=120 --verbose`: pass after routing
+- `build/bin/test_parallel --only=file_market --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=wallet --timeout=120 --verbose`: pass after routing
   wallet scan / legacy import table clearing through `node_db_exec()`.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the lib-layering/controller-SQL/raw-malloc baseline shrink.
-- First full `./test_parallel --timeout=180` after the edits exposed the
+- First full `build/bin/test_parallel --timeout=180` after the edits exposed the
   existing timing-sensitive `test_body_fetch_stage` crash subcase
   (`zero-progress case is consistent`, `rows bounded by chain size`). The crash
   test now waits for a child-ready pipe after deterministic drain; focused
   rerun passed.
-- Second full `./test_parallel --timeout=180`: pass with `0/279` groups failed
+- Second full `build/bin/test_parallel --timeout=180`: pass with `0/279` groups failed
   in 121.0s.
 - Live-node sample at `2026-06-01 02:09:55 UTC`: not proven. `systemctl --user
   is-active zclassic23` could not connect to the user bus, `./tools/zcl-rpc
@@ -2635,14 +2635,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   `utxo_projection_set_author` grandfathered E6 line; E1, E2, supervisor, E7,
   and typed-blocker baselines remain at zero, E6 remains at 26, and
   lib-layering remains at 101.
-- `./test_parallel --only=utxo_apply_authorship --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=utxo_apply_authorship --timeout=120 --verbose`:
   pass after the UTXO projection emitter rename.
-- `./test_parallel --only=reorg_projection_parity --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=reorg_projection_parity --timeout=120 --verbose`:
   pass after the projection wording cleanup.
-- `./test_parallel --only=reorg_parity --timeout=120 --verbose`: pass.
-- `./test_parallel --only=block_index_backfill --timeout=120 --verbose`: pass.
-- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass.
-- `./test_parallel --timeout=180`: pass after the production wording cleanup,
+- `build/bin/test_parallel --only=reorg_parity --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=block_index_backfill --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --timeout=180`: pass after the production wording cleanup,
   `0/279` groups failed in 67.0s.
 - `git diff --check`: pass after the production wording cleanup and status
   update.
@@ -2658,49 +2658,49 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make lint`: pass; E1, E2, supervisor, E7, and typed-blocker baselines are at
   zero, E6 is down to 26 grandfathered write surfaces, and lib-layering remains
   at 101.
-- `./test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
   the active-chain cache/window API split.
-- `./test_parallel --only=chain_tip --timeout=120 --verbose`: pass.
-- `./test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
+- `build/bin/test_parallel --only=chain_tip --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
   includes the authority guard proving a raw low-level active-chain cache move
   does not lower public reducer height.
-- `./test_parallel --only=invalidateblock --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=invalidateblock --timeout=120 --verbose`: pass after
   migrating invalidate-path cache movement to `active_chain_move_window_tip()`.
-- `./test_parallel --only=process_block_revalidate --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=process_block_revalidate --timeout=120 --verbose`:
   pass.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass;
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass;
   includes the E6 fixture that proves a new writer still trips the ratchet.
-- `./test_parallel --timeout=180`: pass after the active-chain cache/window API
+- `build/bin/test_parallel --timeout=180`: pass after the active-chain cache/window API
   split, `0/279` groups failed in 69.0s.
 - `git diff --check`: pass after the active-chain cache/window API split and
   doc update.
 - `make -j$(nproc)`: pass after the projection-storage boot rename.
 - `make test_parallel`: pass.
-- `./test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
+- `build/bin/test_parallel --only=tip_finalize_stage --timeout=120 --verbose`: pass;
   includes `authority_guard` and `stale_cursor`, proving raw low-level
   active-chain cache moves do not lower public reducer height and stale low
   `tip_finalize` cursors anchor above a restored high tip instead of replaying.
-- `./test_parallel --only=reducer_ingest_e2e --timeout=120 --verbose`: pass.
-- `./test_parallel --only=chain_restore_service --timeout=120 --verbose`: pass.
-- `./test_parallel --only=supervisor --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=reducer_ingest_e2e --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=chain_restore_service --timeout=120 --verbose`: pass.
+- `build/bin/test_parallel --only=supervisor --timeout=120 --verbose`: pass after the
   staged-sync supervisor API/comment cleanup.
-- `./test_parallel --only=body_persist_stage --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=body_persist_stage --timeout=120 --verbose`: pass
   after the S-5 Job/test wording cleanup.
-- `./test_parallel --only=script_validate_stage --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=script_validate_stage --timeout=120 --verbose`: pass
   after the S-6 Job/test wording cleanup.
-- `./test_parallel --only=proof_validate_stage --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=proof_validate_stage --timeout=120 --verbose`: pass
   after the S-7 Job/test wording cleanup.
-- `./test_parallel --only=utxo_apply_stage --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=utxo_apply_stage --timeout=120 --verbose`: pass after
   the S-8 Job/test wording cleanup.
-- `./test_parallel --only=boot_phase --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=boot_phase --timeout=120 --verbose`: pass after the
   boot projection-storage wording/function rename.
-- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
   after rebuilding `test_parallel`; covers the new import/restore `zcl_result`
   status paths, including invalid-context errors. Re-run after the execution
   status/backfill split: pass.
-- `./test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=chain_state_repo --timeout=120 --verbose`: pass after
   adding `csr_commit_tip_result()`; covers the `zcl_result` failure wrapper.
-- `./test_parallel --timeout=180`: pass, `0/279` groups failed in 72.1s after
+- `build/bin/test_parallel --timeout=180`: pass, `0/279` groups failed in 72.1s after
   the recovery execution status/backfill split. Re-run after the CSR wrapper:
   pass, `0/279` groups failed in 70.0s.
 - `git diff --check`: pass after the S-5..S-8, health-comment, and
@@ -2716,47 +2716,47 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   The E6 baseline change only re-anchored the same three
   `config/src/boot_services.c` `coins_view_cache_flush` entries after comment
   cleanup shifted their line numbers.
-- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
   adding `legacy_mirror_sync_request_catchup_result()`; covers the non-OK
   `zcl_result` path carrying `hash-disagreement`.
-- `./test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
   pass after routing the remedy through the result-returning catchup API.
 - `make -j$(nproc)`: pass after the legacy mirror result wrapper.
-- `./test_parallel --timeout=180`: pass after the legacy mirror result wrapper,
+- `build/bin/test_parallel --timeout=180`: pass after the legacy mirror result wrapper,
   `0/279` groups failed in 79.1s.
 - `make -j$(nproc)`: pass after extracting `utxo_import_pipeline.c` from
   `sync_controller_import.c`.
-- `./test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
+- `build/bin/test_parallel --only=utxo_recovery_service --timeout=120 --verbose`: pass
   after the import-pipeline helper split.
-- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
   import-pipeline helper split.
 - `make lint`: pass after the import-pipeline helper split; E1 is down to 3
   grandfathered oversized app files, E2 remains at zero, E7 remains at zero,
   typed-blocker remains at 4, lib-layering remains at 101, and E6 remains at
   34.
-- `./test_parallel --timeout=180`: pass after the import-pipeline helper split,
+- `build/bin/test_parallel --timeout=180`: pass after the import-pipeline helper split,
   `0/279` groups failed in 78.0s.
 - `make -j$(nproc)`: pass after the `legacy_import.c`,
   `sync_controller_catchup.c`, and `legacy_mirror_sync_service.c` E1 splits.
 - `make lint`: pass after emptying the E1 baseline; E1 is at zero grandfathered
   oversized app files, E2 remains at zero, typed-blocker remains at 4,
   lib-layering remains at 101, and E6 remains at 34.
-- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
   the legacy mirror state split; covers catchup failure reporting and dump-state
   fields.
-- `./test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=legacy_mirror_stuck_condition --timeout=120 --verbose`:
   pass after the legacy mirror state split; covers condition remedy routing.
-- `./test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
   legacy mirror state split; covers the monitor contract dump shape.
-- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`: pass after the
   sync catchup/persistence split; filtered run covered both `test_sync_service`
   and `test_snapshot_sync_service`.
-- `./test_parallel --only=sqlite --timeout=120 --verbose`: pass after the sync
+- `build/bin/test_parallel --only=sqlite --timeout=120 --verbose`: pass after the sync
   persistence split; covers sync job wrappers, mempool persistence, and DB
   service writes.
-- `./test_parallel --only=sapling_tree --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=sapling_tree --timeout=120 --verbose`: pass after the
   Sapling tree rebuild split.
-- `./test_parallel --timeout=180`: pass after the E1 baseline reached zero,
+- `build/bin/test_parallel --timeout=180`: pass after the E1 baseline reached zero,
   `0/279` groups failed in 65.0s.
 - `git diff --check`: pass after the E1 baseline reached zero and docs were
   updated.
@@ -2766,21 +2766,21 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make lint`: pass after emptying `tools/scripts/typed_blocker_baseline.txt`;
   E1, E2, E7, supervisor, and typed-blocker baselines are at zero. E6 remains
   at 34 and lib-layering remains at 101.
-- `./test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`:
+- `build/bin/test_parallel --only=chain_advance_coordinator --timeout=120 --verbose`:
   pass after the source-policy `selection_reason` struct-field rename while
   preserving the legacy `selection_blocker` JSON key.
-- `./test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=zclassicd_oracle --timeout=120 --verbose`: pass after
   the legacy mirror and mirror-consensus typed blocker stats rename.
-- `./test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=lag_slo --timeout=120 --verbose`: pass after the
   legacy mirror typed blocker stats rename.
-- `./test_parallel --only=syncdiag_rpc --timeout=120 --verbose`: pass after the
+- `build/bin/test_parallel --only=syncdiag_rpc --timeout=120 --verbose`: pass after the
   diagnostics JSON compatibility check.
-- `./test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=mcp_controllers --timeout=120 --verbose`: pass after
   the MCP status compatibility check.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   the typed-blocker baseline became empty and `check_typed_blocker.sh` learned
   the empty-baseline count.
-- `./test_parallel --timeout=180`: pass after the typed-blocker baseline reached
+- `build/bin/test_parallel --timeout=180`: pass after the typed-blocker baseline reached
   zero, `0/279` groups failed in 70.0s.
 - Live node negative proof: the 2026-05-31 22:34 UTC restart initially
   restored RPC/UTXO height to `3130701`, then the old stale cursor path
@@ -2854,10 +2854,10 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   comments from production C/H files.
 - `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
   adding the scaffold-label lint-gate coverage.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   adding the guard that production comments name current purpose instead of old
   refactor scaffold labels.
-- `./test_parallel --timeout=180`: pass after the production scaffold-label
+- `build/bin/test_parallel --timeout=180`: pass after the production scaffold-label
   cleanup, `0/279` groups failed in 56.0s.
 - `make lint`: pass after the production scaffold-label cleanup; E1, E2, E6,
   E7, framework-shape, supervisor, typed-blocker, lib-layering, controller
@@ -2879,13 +2879,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   from the UTXO apply/recovery path and boot projection-storage wiring.
 - `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
   widening the scaffold-label guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the production-comment guard to cover the UTXO apply/recovery files.
-- `./test_parallel --only=utxo_apply --timeout=120 --verbose`: pass; covers
+- `build/bin/test_parallel --only=utxo_apply --timeout=120 --verbose`: pass; covers
   `test_utxo_apply_authorship` and `test_utxo_apply_stage`.
 - `make lint`: pass after the UTXO apply/recovery comment cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the UTXO apply/recovery comment
+- `build/bin/test_parallel --timeout=180`: pass after the UTXO apply/recovery comment
   cleanup, `0/279` groups failed in 57.0s.
 - Live sample attempt at 2026-06-01 15:47 UTC after the UTXO apply/recovery
   scaffold-label cleanup: no continuity proof was available. `systemctl --user`
@@ -2902,20 +2902,20 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make -j$(nproc)`: pass after the controller purpose-comment cleanup.
 - `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
   widening the scaffold-label guard to the controller files.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the production-comment guard to cover the controller files.
-- `./test_parallel --only=wallet --timeout=120 --verbose`: pass; `0/32`
+- `build/bin/test_parallel --only=wallet --timeout=120 --verbose`: pass; `0/32`
   wallet and wallet-view groups failed in 7.0s.
-- `./test_parallel --only=transaction --timeout=120 --verbose`: pass; `0/1`
+- `build/bin/test_parallel --only=transaction --timeout=120 --verbose`: pass; `0/1`
   transaction group failed in 1.0s.
-- `./test_parallel --only=repair --timeout=120 --verbose`: no validation group
+- `build/bin/test_parallel --only=repair --timeout=120 --verbose`: no validation group
   exists for this filter; the harness reported `--only=repair matched no
   groups`.
-- `./test_parallel --only=sync_service --timeout=120 --verbose`: pass; `0/2`
+- `build/bin/test_parallel --only=sync_service --timeout=120 --verbose`: pass; `0/2`
   sync and snapshot-sync groups failed in 6.0s.
 - `make lint`: pass after the controller purpose-comment cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the controller purpose-comment
+- `build/bin/test_parallel --timeout=180`: pass after the controller purpose-comment
   cleanup, `0/279` groups failed in 56.0s.
 - Live sample attempt at 2026-06-01 15:57 UTC after the controller
   purpose-comment cleanup: no continuity proof was available. `systemctl
@@ -2944,17 +2944,17 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
 - `make -j$(nproc)`: pass after the view/service purpose-comment cleanup.
 - `make test_parallel`: pass; rebuilt the updated `test_parallel` binary after
   widening the scaffold-label guard to view/service files.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the production-comment guard; `0/1` group failed in 11.0s.
 - Focused coverage after the view/service purpose-comment cleanup:
-  `./test_parallel --only=explorer --timeout=120 --verbose` passed (`0/1`,
+  `build/bin/test_parallel --only=explorer --timeout=120 --verbose` passed (`0/1`,
   1.0s), `--only=store` passed (`0/10`, 2.0s), `--only=wallet_view` passed
   (`0/2`, 1.0s), `--only=block_index` passed (`0/6`, 3.0s),
   `--only=chain_state_validator` passed (`0/1`, 1.0s), and
   `--only=bg_validation` passed (`0/1`, 1.0s).
 - `make lint`: pass after the view/service purpose-comment cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the view/service
+- `build/bin/test_parallel --timeout=180`: pass after the view/service
   purpose-comment cleanup, `0/279` groups failed in 56.0s.
 - Live sample attempt at 2026-06-01 16:11 UTC after the view/service
   purpose-comment cleanup: no continuity proof was available. `systemctl
@@ -2971,13 +2971,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   and missing-UTXO self-heal coordinator.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened process-block scaffold-label guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the process-block guard; `0/1` group failed in 11.0s.
 - `make -j$(nproc)`: pass after the process-block helper-boundary comment
   cleanup.
 - `make lint`: pass after the process-block helper-boundary comment cleanup;
   all zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the process-block
+- `build/bin/test_parallel --timeout=180`: pass after the process-block
   helper-boundary comment cleanup, `0/279` groups failed in 56.0s.
 - Post-status doc checks after the process-block helper-boundary comment
   cleanup: `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh`
@@ -2999,13 +2999,13 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   the adjacent explorer block controller, and `utxo_apply_stage.c`.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened generic parity-wording guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the view-template/parity-wording guard; `0/1` group failed in
   11.0s.
 - `make -j$(nproc)`: pass after the view-template purpose-comment cleanup.
 - `make lint`: pass after the view-template purpose-comment cleanup; all
   zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the view-template
+- `build/bin/test_parallel --timeout=180`: pass after the view-template
   purpose-comment cleanup, `0/279` groups failed in 57.0s.
 - Post-status doc checks after the view-template purpose-comment cleanup:
   `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh` passed, the
@@ -3030,14 +3030,14 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   forbidden term is kept only as lint-gate vocabulary.
 - `make test_parallel`: pass after rebuilding the parallel runner with the
   widened Job-stage/scaffold-label guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the Job-stage and generic `single-engine` guard; `0/1` group failed
   in 11.0s.
 - `make -j$(nproc)`: pass after the Job-stage and boot/projection terminology
   cleanup.
 - `make lint`: pass after the Job-stage and boot/projection terminology
   cleanup; all zero-baseline ratchets remain clean.
-- `./test_parallel --timeout=180`: pass after the Job-stage and
+- `build/bin/test_parallel --timeout=180`: pass after the Job-stage and
   boot/projection terminology cleanup, `0/279` groups failed in 56.0s.
 - Post-status doc/scans after the Job-stage cleanup: `git diff --check`
   passed, `tools/scripts/check_doc_accuracy.sh` passed, the zero-baseline /
@@ -3066,19 +3066,19 @@ and legacy blocker setters are not grandfathered; keep this gate at zero.
   out of `sapling_note.c`.
 - `make test_parallel`: pass after rebuilding the parallel runner with
   `wallet_tx_reads.c` and the widened scaffold-label guard.
-- `./test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
+- `build/bin/test_parallel --only=make_lint_gates --timeout=120 --verbose`: pass after
   widening the model/UTXO-recovery scaffold guard; `0/1` group failed in
   12.0s.
 - Focused filtered tests after the wallet-read ownership cleanup:
-  `./test_parallel --only=wallet --timeout=120 --verbose` passed (`0/32`,
-  7.0s) and `./test_parallel --only=models --timeout=120 --verbose` passed
+  `build/bin/test_parallel --only=wallet --timeout=120 --verbose` passed (`0/32`,
+  7.0s) and `build/bin/test_parallel --only=models --timeout=120 --verbose` passed
   (`0/1`, 2.0s). The attempted combined filter
   `--only='wallet|models'` matched no groups because the harness uses literal
   substring matching.
 - `make lint`: pass after the wallet-read ownership cleanup; all zero-baseline
   ratchets remain clean and the framework shape scan now covers 252 app `.c`
   files.
-- `./test_parallel --timeout=180`: pass after the wallet-read ownership
+- `build/bin/test_parallel --timeout=180`: pass after the wallet-read ownership
   cleanup, `0/279` groups failed in 57.0s.
 - Post-status doc/scans after the wallet-read ownership cleanup:
   `git diff --check` passed, `tools/scripts/check_doc_accuracy.sh` passed, the

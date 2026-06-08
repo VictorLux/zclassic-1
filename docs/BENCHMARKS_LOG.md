@@ -8,10 +8,10 @@ measurement. This is the source for the "now" column and the bars on the board
 
 1. Pull live gauges: `zcl_status` (RSS, height, peers, uptime) and `zcl_metrics`.
 2. For timing benchmarks, run the harness (only meaningful on a *healthy* node):
-   - `#1 cold`  → `zclassic23 -bench-coldstart`
-   - `#2 warm`  → `zclassic23 -bench-warmstart`
+   - `#1 cold`  → `build/bin/zclassic23 -bench-coldstart`
+   - `#2 warm`  → `build/bin/zclassic23 -bench-warmstart`
    - `#4 thru`  → `zcl_validationstatus` `blocks_per_sec` during bg-verify
-   - `#6 kill-9`→ `zclassic23 -bench-kill9`
+   - `#6 kill-9`→ `build/bin/zclassic23 -bench-kill9`
 3. Append rows below with today's date + `git rev-parse --short HEAD`.
 4. Leave a metric out rather than guess. `—` = not measured this run.
 5. Commit. Trend for any metric: `grep "RSS" docs/BENCHMARKS_LOG.md`.
@@ -30,8 +30,8 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | 2026-05-24 | be5e90b05 | #4 throughput | 0 blk/s | `zcl_validationstatus` — bg-verify idle/complete at local tip |
 | 2026-05-24 | be5e90b05 | #6 kill-9 recovery | — | not measured |
 | 2026-05-24 | 941b9803d | #1 cold sync (LDB→bootable tip) | ~180s | live cold-import recovery from wedge. **blk*.dat marking = 101s (THE bottleneck), single-threaded**; then wallet backfill + utxo + mmb ~80s. RPC up at tip 3,123,688. This is the path PR-3 (parallel io_uring import) must replace — cf. the 5.6s rebuild_recent prototype (reformat only, no validation, not bootable). |
-| 2026-05-24 | 6e0f6a82c | #1 cold import identity, serial worker | 48.9s | `ZCL_BLOCK_SCAN_WORKERS=1 ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 ./zclassic23 -datadir=/tmp/zcl-cold-serial -cold-import=/home/rhett/.zclassic -nofilesync -nobgvalidation`. Imported `legacy_tip=3123726`, `block_index=3124929`, `utxos=1345066`, `blk_files=50`; pending anchor published via CSR. Computed `utxo_sha3=981b7bbceb522f816e29e4adccf7f80fdcab75cd392ee7b438b55787385031f1`. No `Block file scan` line: current cold-import bulk-copies the legacy block index and bypasses `scan_block_files_mark_data`. |
-| 2026-05-24 | 6e0f6a82c | #1 cold import identity, default workers | 57.3s | `ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 ./zclassic23 -datadir=/tmp/zcl-cold-parallel -cold-import=/home/rhett/.zclassic -nofilesync -nobgvalidation`. Same `coins_best_block=acad56115a58a82ff18395591263a7ec881bd13603ec31e1e72adb12ea010000`, same UTXO stats `(1345066, min_h=1, max_h=3123726, sum_value=1038775293114532)`, same computed `utxo_sha3` as serial. The historical 101s `blk*.dat` marking baseline now applies to normal/file-sync boot scanning, not this cold-import path. |
+| 2026-05-24 | 6e0f6a82c | #1 cold import identity, serial worker | 48.9s | `ZCL_BLOCK_SCAN_WORKERS=1 ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 build/bin/zclassic23 -datadir=/tmp/zcl-cold-serial -cold-import=/home/rhett/.zclassic -nofilesync -nobgvalidation`. Imported `legacy_tip=3123726`, `block_index=3124929`, `utxos=1345066`, `blk_files=50`; pending anchor published via CSR. Computed `utxo_sha3=981b7bbceb522f816e29e4adccf7f80fdcab75cd392ee7b438b55787385031f1`. No `Block file scan` line: current cold-import bulk-copies the legacy block index and bypasses `scan_block_files_mark_data`. |
+| 2026-05-24 | 6e0f6a82c | #1 cold import identity, default workers | 57.3s | `ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 build/bin/zclassic23 -datadir=/tmp/zcl-cold-parallel -cold-import=/home/rhett/.zclassic -nofilesync -nobgvalidation`. Same `coins_best_block=acad56115a58a82ff18395591263a7ec881bd13603ec31e1e72adb12ea010000`, same UTXO stats `(1345066, min_h=1, max_h=3123726, sum_value=1038775293114532)`, same computed `utxo_sha3` as serial. The historical 101s `blk*.dat` marking baseline now applies to normal/file-sync boot scanning, not this cold-import path. |
 | 2026-05-24 | 941b9803d | #6 wedge recovery (cold-import) | ~180s + restart | a single stale BLOCK_FAILED_VALID wedged the tip; restart did NOT clear it; cold-import did. Target <60s via PR-0 in-place snapshot recovery. |
 | 2026-05-24 | 319596f0d | #3 RSS | 2.02 GB | `/proc/PID/VmRSS` after cold-import + warm restart, up ~10min, at tip. **Regression vs 1.5GB earlier today** — post-cold-import RSS higher; investigate. Target ≤1.0GB. |
 | 2026-05-24 | 319596f0d | #5 stay-at-tip | 0-block gap | `getblockchaininfo`: blocks==headers==3,123,688. Node fully synced. Latency-to-new-block not yet harnessed. |
@@ -68,4 +68,3 @@ Tried OpenMP parallel parse+CRC-framing with a single `ordered` writer feeding i
 | date | commit | height-behind | peers | uptime | errors_total | note |
 |---|---|---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | 1,905 | 2 | 990s | 16,396 | node stuck: chain-advance blocked, `block_failed_mask_at_tip` failing |
-

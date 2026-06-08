@@ -36,7 +36,7 @@ Note: the live node may be stuck (P24.18 stall at h=3,078,014 until Agent-2 land
 
 If `git log` shows a worker commit matching `P\d+[a-z]?:?\s*(GREEN|done|landed)`:
 1. `make -j$(nproc) test_zcl` in `/home/rhett/zclassic23`
-2. `./test_zcl 2>&1 | grep -E "FAIL|ALL TESTS|SOME TESTS"` — verify green
+2. `build/bin/test_zcl 2>&1 | grep -E "FAIL|ALL TESTS|SOME TESTS"` — verify green
 3. If touches live-node paths (lib/validation, app/services, app/controllers): `make deploy`
 4. Arm a Monitor (`until curl -sf ... 18232`) to await RPC-up; the 30s deploy_verify timeout is known-bad (fixed by P24.19).
 5. After RPC up: canary tools affected by the row (e.g. P24.14 → `zcl_listunspent`, `zcl_walletaudit`). Confirm no SIGABRT in `node.log`.
