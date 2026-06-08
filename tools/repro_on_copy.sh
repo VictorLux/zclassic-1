@@ -194,7 +194,21 @@ NODE_PID=$!
 
 cookie="$DEST/.cookie"
 rpc() { HOME="$ISO_HOME" ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null || true; }
-tip()  { rpc getblockcount | tr -dc '0-9-'; }
+tip()  {
+    resp="$(rpc getblockcount)"
+    case "$resp" in
+        *\"result\"*)
+            printf '%s\n' "$resp" |
+                sed -n 's/.*"result"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' |
+                head -1
+            ;;
+        *)
+            printf '%s\n' "$resp" |
+                sed -n 's/^[[:space:]]*\(-\{0,1\}[0-9][0-9]*\)[[:space:]]*$/\1/p' |
+                head -1
+            ;;
+    esac
+}
 
 # Wait for RPC, then watch the tip for regressions over the deadline window.
 deadline=$(( $(date +%s) + DEADLINE ))
