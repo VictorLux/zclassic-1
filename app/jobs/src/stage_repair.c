@@ -5,9 +5,9 @@
  *   - stage_repair_header_solution.c — header-solution backfill (save/load),
  *   - stage_repair_body_fetch.c      — body-fetch candidacy detection,
  *   - stage_repair_rewind.c          — the destructive poison rewind.
- * This TU owns the boot-time tip-finalize clamp (the SAFE, non-destructive
- * reconcile that floors the tip_finalize cursor to coins_best+1 without
- * deleting any log row). It reuses the shared progress.kv accessors from
+ * This TU owns the boot-time tip-finalize cursor reconcile (the SAFE,
+ * non-destructive repair that never writes the cursor below durable
+ * tip_finalize_log finality). It reuses the shared progress.kv accessors from
  * jobs/stage_repair_internal.h. */
 
 #include "jobs/stage_repair.h"
@@ -22,6 +22,36 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool tip_finalize_served_floor_unlocked(sqlite3 *db, int *out)
+{
+    *out = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(MAX(height), -1) FROM tip_finalize_log WHERE ok=1",
+            -1, &st, NULL) != SQLITE_OK) {
+        const char *msg = sqlite3_errmsg(db);
+        if (msg && strstr(msg, "no such table") != NULL)
+            return true;
+        LOG_WARN("stage_repair",
+                 "[stage_repair] served floor prepare failed: %s",
+                 msg ? msg : "(no message)");
+        return false;
+    }
+
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] served floor step failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
 bool stage_reconcile_clamp_tip_finalize_to_floor(
     sqlite3 *db, int coins_best, struct stage_reconcile_result *out)
 {
@@ -34,14 +64,22 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     if (coins_best < 0)
         return true;
 
-    int floor = coins_best + 1;
-    if (out)
-        out->floor = floor;
-
     if (!stage_table_ensure(db))
         return false;
 
     progress_store_tx_lock();
+
+    int served_floor = -1;
+    if (!tip_finalize_served_floor_unlocked(db, &served_floor)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    int floor = coins_best + 1;
+    if (served_floor >= 0 && served_floor + 1 > floor)
+        floor = served_floor + 1;
+    if (out)
+        out->floor = floor;
 
     int cur = -1;
     if (!stage_repair_cursor_at_unlocked(db, "tip_finalize", &cur)) {
@@ -49,11 +87,12 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
         return false;
     }
 
-    /* Only act on the wedge: tip_finalize cursor strictly AHEAD of the applied
-     * tip. A cursor at or below the floor is healthy (or behind, which is a
-     * different concern) — leave it untouched so we never disturb a node that
-     * is finalizing normally. */
-    if (cur <= floor) {
+    /* Cursor target is the stronger of the coins frontier and already-served
+     * finality. Never lowering below served_floor+1 prevents a boot-time public
+     * tip regression when stale coins_best metadata lags durable finalized rows.
+     * If the cursor is behind served finality, advancing it to the target only
+     * skips rows that tip_finalize_log already proved ok=1. */
+    if (cur == floor) {
         progress_store_tx_unlock();
         return true;   /* no-op, clamped=false */
     }
@@ -68,10 +107,9 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
         return false;
     }
 
-    /* Clamp ONLY the tip_finalize cursor. No log deletions, no upstream cursor
-     * changes — the upstream evidence stays intact so the re-finalize replays
-     * it forward, and the surviving tip_finalize_log rows keep the Tier-2
-     * public-tip floor at coins_best. */
+    /* Reconcile ONLY the tip_finalize cursor. No log deletions, no upstream
+     * cursor changes — the upstream evidence stays intact, and the surviving
+     * tip_finalize_log rows keep the public-tip floor at served_floor. */
     if (!stage_repair_force_stage_cursor(db, "tip_finalize", floor)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         progress_store_tx_unlock();
@@ -92,9 +130,9 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     if (out)
         out->clamped = true;
     LOG_WARN("stage_repair",
-             "[stage_repair] reducer cursor/coins desync: clamped tip_finalize "
-             "cursor %d -> %d (coins_best=%d) so the reducer re-finalizes "
-             "forward; no logs deleted, public tip floored at coins_best",
-             cur, floor, coins_best);
+             "[stage_repair] reducer cursor reconcile: tip_finalize cursor "
+             "%d -> %d (coins_best=%d served_floor=%d); no logs deleted, "
+             "public tip remains floored at served finality",
+             cur, floor, coins_best, served_floor);
     return true;
 }

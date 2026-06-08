@@ -724,6 +724,83 @@ static int test_rebuild_active_chain_scales_at_100k(void) {
     return failures;
 }
 
+static int test_rebuild_high_tip_prefers_pprev_lineage_over_height_guess(void) {
+    int failures = 0;
+    TEST("chain_restore_rebuild: high-tip repair follows pprev lineage before by-height guess") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int low = 999000;
+        const int tip_h = 1010500;
+        const int fork_h = 1000000;
+        const int count = tip_h - low + 1;
+        ASSERT(block_map_reserve(&ms.map_block_index, (size_t)(count + 8)));
+
+        struct uint256 *hashes = zcl_calloc(
+            (size_t)count, sizeof(struct uint256), "chain_restore_high_hashes");
+        ASSERT(hashes != NULL);
+
+        struct block_index *prev = NULL;
+        struct block_index *tip = NULL;
+        struct block_index *correct_fork_height = NULL;
+        struct block_index *correct_fork_prev = NULL;
+        for (int i = 0; i < count; i++) {
+            int h = low + i;
+            memcpy(hashes[i].data, &h, sizeof(h));
+            hashes[i].data[16] = 0xCC;
+            hashes[i].data[17] = 0x23;
+
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[i]);
+            ASSERT(pi != NULL);
+            pi->nHeight = h;
+            pi->nBits = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            pi->nTx = 1;
+            pi->pprev = prev;
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(i + 1));
+
+            if (h == fork_h) {
+                correct_fork_height = pi;
+                correct_fork_prev = prev;
+            }
+            prev = pi;
+            tip = pi;
+        }
+        ASSERT(tip != NULL);
+        ASSERT(correct_fork_height != NULL);
+        ASSERT(correct_fork_prev != NULL);
+
+        struct uint256 wrong_hash;
+        memset(&wrong_hash, 0, sizeof(wrong_hash));
+        memcpy(wrong_hash.data, &fork_h, sizeof(fork_h));
+        wrong_hash.data[16] = 0xFA;
+        wrong_hash.data[17] = 0x11;
+        struct block_index *wrong = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &wrong_hash);
+        ASSERT(wrong != NULL);
+        wrong->nHeight = fork_h;
+        wrong->nBits = 0x1f07ffff;
+        wrong->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        wrong->nTx = 1;
+        wrong->pprev = correct_fork_prev->pprev;
+        arith_uint256_set_u64(&wrong->nChainWork, (uint64_t)count + 1000u);
+
+        int populated = chain_restore_rebuild_active_chain(&ms, tip, NULL);
+        ASSERT(populated >= count);
+        ASSERT(active_chain_at(&ms.chain_active, fork_h) == correct_fork_height);
+        ASSERT(active_chain_at(&ms.chain_active, fork_h) != wrong);
+        ASSERT(active_chain_at(&ms.chain_active, fork_h - 1) == correct_fork_prev);
+        ASSERT(correct_fork_height->pprev == correct_fork_prev);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        free(hashes);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* Regression test: rebuild_active_chain must populate block_index.skipList
  * (pskip pointers) so post-restore ancestor walks are O(log N) not O(N).
  *
@@ -1201,6 +1278,7 @@ int test_chain_restore_service(void) {
     /* — post-restore repair tests */
     failures += test_rebuild_active_chain_fills_holes_from_block_map();
     failures += test_rebuild_active_chain_scales_at_100k();
+    failures += test_rebuild_high_tip_prefers_pprev_lineage_over_height_guess();
     failures += test_rebuild_populates_skiplist_for_log_n_ancestor();
     failures += test_rebuild_active_chain_scans_block_files_for_canonical_positions();
     failures += test_backfill_nbits_reads_from_block_file();

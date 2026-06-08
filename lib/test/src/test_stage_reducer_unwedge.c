@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Unit test for stage_reconcile_clamp_tip_finalize_to_floor — the SAFE reducer
- * cursor/coins desync reconcile that un-wedges the chain.
+ * cursor/coins/finality reconcile that un-wedges the chain.
  *
  * The wedge: after an unclean restart the durable tip_finalize cursor sits
  * AHEAD of the applied coins tip, so tip_finalize idles and the connect gate
@@ -12,9 +12,9 @@
  * (SELECT MAX(height) FROM tip_finalize_log WHERE ok=1) lost its evidence base
  * and the public tip COLLAPSED to an ancient surviving row (~47279) — a chain
  * reset. This test pins the corrected, reset-safe behavior:
- *   - clamps ONLY the tip_finalize cursor (upstream cursors untouched),
+ *   - reconciles ONLY the tip_finalize cursor (upstream cursors untouched),
  *   - deletes NO log rows (so MAX(ok=1) can never drop below coins_best),
- *   - no-ops unless the cursor is strictly ahead, and when coins_best < 0. */
+ *   - never writes the cursor below MAX(ok=1)+1, and no-ops when coins_best < 0. */
 
 #include "test/test_helpers.h"
 #include "jobs/stage_repair.h"
@@ -79,8 +79,9 @@ int test_stage_reducer_unwedge(void)
     }
     sqlite3 *db = progress_store_db();
 
-    const int APPLIED = 3;   /* coins_best — durably applied tip */
-    const int STALE   = 6;   /* cursors AHEAD of the applied tip (the wedge) */
+    const int APPLIED = 3;   /* coins_best — stale durably applied tip scan */
+    const int STALE   = 6;   /* durable served floor in tip_finalize_log */
+    const int CURSOR  = 8;   /* cursor drifted above both floors */
 
     uw_exec(db,
         "CREATE TABLE IF NOT EXISTS stage_cursor("
@@ -92,11 +93,11 @@ int test_stage_reducer_unwedge(void)
         "utxo_size_after INTEGER, reorg_depth INTEGER, finalized_at INTEGER,"
         "tip_hash BLOB)");
 
-    /* WEDGE: tip_finalize AND the upstream cursors are all at STALE, ahead of
-     * the applied tip. */
-    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',6,1)");
-    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('utxo_apply',6,1)");
-    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('body_fetch',6,1)");
+    /* WEDGE: tip_finalize is above the served floor, while the upstream cursors
+     * remain at the header high. */
+    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',8,1)");
+    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('utxo_apply',8,1)");
+    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('body_fetch',8,1)");
 
     /* Contiguous finalized rows 0..STALE (ok=1): rows 0..APPLIED are the
      * surviving authority; rows APPLIED+1..STALE model the pre-crash
@@ -122,15 +123,15 @@ int test_stage_reducer_unwedge(void)
     memset(&rr, 0, sizeof(rr));
     UW("reconcile runs",
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr));
-    UW("clamped (cursor was ahead)", rr.clamped == true);
-    UW("floor is coins_best+1", rr.floor == APPLIED + 1);
+    UW("reconciled (cursor was off target)", rr.clamped == true);
+    UW("floor preserves served finality", rr.floor == STALE + 1);
 
-    /* clamps ONLY tip_finalize, DOWN to floor */
-    UW("tip_finalize cursor clamped to floor",
-       uw_cursor(db, "tip_finalize") == APPLIED + 1);
+    /* reconciles ONLY tip_finalize, to the served-finality target */
+    UW("tip_finalize cursor reconciled to floor",
+       uw_cursor(db, "tip_finalize") == STALE + 1);
     /* upstream cursors UNCHANGED (this is what lets re-finalize replay forward) */
-    UW("utxo_apply cursor UNCHANGED", uw_cursor(db, "utxo_apply") == STALE);
-    UW("body_fetch cursor UNCHANGED", uw_cursor(db, "body_fetch") == STALE);
+    UW("utxo_apply cursor UNCHANGED", uw_cursor(db, "utxo_apply") == CURSOR);
+    UW("body_fetch cursor UNCHANGED", uw_cursor(db, "body_fetch") == CURSOR);
 
     /* NO log rows deleted — the reset-safety property */
     UW("no tip_finalize_log rows deleted",
@@ -141,23 +142,24 @@ int test_stage_reducer_unwedge(void)
     UW("Tier-2 MAX(ok=1) unchanged by reconcile",
        uw_query_int(db, SQL_TIP_FINALIZE_MAX_OK) == max_before);
 
-    /* ── no-op: cursor already at the floor ── */
-    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',4,1)");
+    /* ── no-op: cursor already at the served-finality floor ── */
+    uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',7,1)");
     struct stage_reconcile_result rr2;
     memset(&rr2, 0, sizeof(rr2));
     UW("no-op when cursor at floor (not ahead)",
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr2) &&
        rr2.clamped == false);
-    UW("cursor unchanged on no-op", uw_cursor(db, "tip_finalize") == 4);
+    UW("cursor unchanged on no-op", uw_cursor(db, "tip_finalize") == 7);
 
-    /* ── no-op: cursor behind the floor is left alone ── */
+    /* ── behind served finality: raise to MAX(ok=1)+1, never leave a lower
+     * cursor that would let public height regress. ── */
     uw_exec(db, "INSERT OR REPLACE INTO stage_cursor VALUES('tip_finalize',2,1)");
     struct stage_reconcile_result rr3;
     memset(&rr3, 0, sizeof(rr3));
-    UW("no-op when cursor behind floor",
+    UW("raises when cursor is behind served floor",
        stage_reconcile_clamp_tip_finalize_to_floor(db, APPLIED, &rr3) &&
-       rr3.clamped == false);
-    UW("cursor unchanged when behind", uw_cursor(db, "tip_finalize") == 2);
+       rr3.clamped == true);
+    UW("cursor raised to served floor", uw_cursor(db, "tip_finalize") == 7);
 
     /* ── refuse when no durable anchor (coins_best < 0) ── */
     struct stage_reconcile_result rr4;

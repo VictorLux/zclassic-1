@@ -139,7 +139,6 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     /* Fast path — walk pprev from tip and slot each ancestor. Covers
      * the happy case (real chain, pprev intact) in O(tip_h). */
     int deepest = tip_h + 1;
-    int pprev_walk_limit = tip_h > 1000000 ? 10000 : tip_h + 1;
     int pprev_walk_budget = tip_h + 1;
     for (struct block_index *p = tip; p != NULL; p = p->pprev) {
         if (--pprev_walk_budget < 0) {
@@ -161,12 +160,6 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
         }
         if (h < deepest) deepest = h;
         populated++;
-        if (populated >= pprev_walk_limit && deepest > 0) {
-            printf("[chain-restore] capped pprev walk during live boot: "
-                   "tip_h=%d deepest=%d populated=%d\n",
-                   tip_h, deepest, populated);
-            break;
-        }
     }
 
     /* If the pprev walk reached genesis, no residual slot work remains,

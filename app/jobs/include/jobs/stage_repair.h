@@ -114,23 +114,23 @@ struct stage_reducer_frontier_reconcile_result {
  * idles ("cursor says done") and never re-finalizes, so the connect gate
  * rejects every block at coins_best+1 with "block-not-finalized-by-reducer".
  *
- * This clamps ONLY the tip_finalize cursor DOWN to `coins_best + 1`, so on the
- * next stage init tip_finalize re-finalizes coins_best+1.. forward by replaying
- * the INTACT upstream logs (utxo_apply_log etc. are left untouched; their
- * cursors are left at the header high, so step_finalize's `next_h <
- * utxo_apply_cursor` precondition and `utxo_apply_log_at(next_h)` lookup both
- * succeed).
+ * This reconciles ONLY the tip_finalize cursor to the stronger of
+ * `coins_best + 1` and durable served finality
+ * (`MAX(tip_finalize_log.ok=1) + 1`). The second guard is mandatory because a
+ * stale coins_best scan can lag rows already served to RPC; boot must never
+ * lower the public tip below those finalized rows. Upstream logs/cursors are
+ * left untouched, so any re-finalize pass still has its evidence.
  *
  * SAFETY (proven in test_stage_reducer_unwedge):
- *   - It NEVER deletes any *_log row, so the Tier-2 public-tip authority
- *     (`SELECT MAX(height) FROM tip_finalize_log WHERE ok=1`) can never drop
- *     below coins_best — the surviving anchor row at coins_best holds the floor.
- *     The public tip can only move UPWARD from coins_best.
+ *   - It NEVER deletes any *_log row, and it never writes the tip_finalize
+ *     cursor below the Tier-2 public-tip authority
+ *     (`SELECT MAX(height) FROM tip_finalize_log WHERE ok=1`) plus one. The
+ *     public tip must not regress below served finality.
  *   - It touches ONLY the tip_finalize cursor — no upstream cursor or log — so
  *     the re-finalize cannot self-stall.
- *   - No-op (clamped=false) unless the tip_finalize cursor is strictly above
- *     `coins_best + 1`; refuses (returns true, clamped=false) when
- *     `coins_best < 0` (no durable anchor to floor on).
+ *   - No-op (clamped=false) when the tip_finalize cursor already equals the
+ *     target; refuses (returns true, clamped=false) when `coins_best < 0`
+ *     (no durable anchor to floor on).
  *
  * Must run at boot AFTER coins_best is durable and BEFORE the stages init (so
  * they load the clamped cursor). Single transaction. */
