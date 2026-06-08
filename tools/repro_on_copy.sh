@@ -16,7 +16,10 @@
 # SAFETY (enforced below):
 #   - copies to a brand-new $HOME/.zclassic-c23-COPY-<ts>-<slug> dir that must
 #     not exist and must not equal --src; the live datadir is never written.
-#   - runs the copy node on an isolated --rpcport / --p2p-port (never 18232/8033).
+#   - runs the copy node with an isolated HOME plus isolated --rpcport /
+#     --p2p-port / --fs-port / --https-port. It forces -connect to a dead sink,
+#     -nolegacyimport, and -nofilesync unless the peer is explicitly overridden
+#     with --connect. It never uses live ports or reads ~/.zclassic.
 #   - leaves the copy on disk afterwards for further analysis (print its path).
 #
 # Usage:
@@ -28,6 +31,9 @@
 #   --src=DIR         source datadir (default $HOME/.zclassic-c23)
 #   --port=N          isolated rpcport (default 18299)
 #   --p2p-port=N      isolated p2p port (default 18933)
+#   --fs-port=N       isolated file-service port (default 18934)
+#   --https-port=N    isolated HTTPS port (default 18935)
+#   --connect=ADDR    isolated -connect peer (default 127.0.0.1:39999 dead sink)
 #   --full            copy the WHOLE datadir incl. blocks/ + consensus_snapshot
 #                     (default is --light: node.db + progress.kv + block_index +
 #                     projections; skips the 14G blocks/ + 2.3G snapshot)
@@ -45,6 +51,9 @@ SLUG=""
 SRC="$HOME/.zclassic-c23"
 RPCPORT=18299
 P2PPORT=18933
+FSPORT=18934
+HTTPSPORT=18935
+CONNECT="127.0.0.1:39999"
 LIGHT=1
 DEADLINE=180
 RUN=1
@@ -55,6 +64,9 @@ while [ $# -gt 0 ]; do
         --src=*)       SRC="${1#--src=}" ;;
         --port=*)      RPCPORT="${1#--port=}" ;;
         --p2p-port=*)  P2PPORT="${1#--p2p-port=}" ;;
+        --fs-port=*)   FSPORT="${1#--fs-port=}" ;;
+        --https-port=*) HTTPSPORT="${1#--https-port=}" ;;
+        --connect=*)   CONNECT="${1#--connect=}" ;;
         --full)        LIGHT=0 ;;
         --light)       LIGHT=1 ;;
         --deadline=*)  DEADLINE="${1#--deadline=}" ;;
@@ -72,10 +84,31 @@ done
 [ -x "$NODE_BIN" ] || { echo "repro_on_copy: $NODE_BIN not built (run make)" >&2; exit 1; }
 [ -x "$RPC_BIN" ] || { echo "repro_on_copy: $RPC_BIN not built (run make zcl-rpc)" >&2; exit 1; }
 
-# Hard safety: never reuse the live ports.
-if [ "$RPCPORT" = "18232" ] || [ "$P2PPORT" = "8033" ]; then
-    echo "repro_on_copy: refusing to use the live port (18232/8033)" >&2; exit 1
-fi
+refuse_live_port() {
+    p="$1"
+    label="$2"
+    case "$p" in
+        8023|8033|8034|8232|8233|8443|18034|18232)
+            echo "repro_on_copy: refusing live $label port $p" >&2
+            exit 1
+            ;;
+    esac
+}
+
+refuse_live_port "$RPCPORT" "rpc"
+refuse_live_port "$P2PPORT" "p2p"
+refuse_live_port "$FSPORT" "file-service"
+refuse_live_port "$HTTPSPORT" "https"
+case "$CONNECT" in
+    *:*) refuse_live_port "${CONNECT##*:}" "connect" ;;
+esac
+
+case " $PASS " in
+    *" -addnode="*|*" -connect="*|*" -rpcport="*|*" -port="*|*" -fsport="*|*" -httpsport="*)
+        echo "repro_on_copy: pass-through may not override network ports/peers; use script options" >&2
+        exit 2
+        ;;
+esac
 
 TS="$(date +%Y%m%d-%H%M%S)"
 DEST="$HOME/.zclassic-c23-COPY-$TS-$SLUG"
@@ -129,6 +162,9 @@ fi
     echo "node_args:   $PASS"
     echo "rpcport:     $RPCPORT"
     echo "p2p_port:    $P2PPORT"
+    echo "fs_port:     $FSPORT"
+    echo "https_port:  $HTTPSPORT"
+    echo "connect:     $CONNECT"
 } > "$DEST/REPRO_MANIFEST.txt"
 echo "[repro] manifest: $DEST/REPRO_MANIFEST.txt"
 
@@ -144,14 +180,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "[repro] launching $NODE_BIN on the COPY (rpcport=$RPCPORT p2p=$P2PPORT) args: $PASS"
+ISO_HOME="$DEST/.isolated-home"
+mkdir -p "$ISO_HOME"
+NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=$CONNECT -nolegacyimport -nofilesync"
+
+echo "[repro] launching $NODE_BIN on the COPY (rpcport=$RPCPORT p2p=$P2PPORT fs=$FSPORT https=$HTTPSPORT connect=$CONNECT) args: $PASS"
 # shellcheck disable=SC2086
-"$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" $PASS \
+HOME="$ISO_HOME" ZCL_MIRROR_SYNC=0 \
+"$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
+    $NODE_ISO_ARGS $PASS \
     > "$DEST/repro_node.log" 2>&1 &
 NODE_PID=$!
 
 cookie="$DEST/.cookie"
-rpc() { ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null || true; }
+rpc() { HOME="$ISO_HOME" ZCL_DATADIR="$DEST" ZCL_RPCPORT="$RPCPORT" "$RPC_BIN" "$@" 2>/dev/null || true; }
 tip()  { rpc getblockcount | tr -dc '0-9-'; }
 
 # Wait for RPC, then watch the tip for regressions over the deadline window.
