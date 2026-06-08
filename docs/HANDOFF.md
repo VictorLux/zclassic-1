@@ -35,11 +35,16 @@ the consistent coins, never deleting a `tip_finalize_log` row.
   adversarial verifiers + `test_parallel` **0/375** + `lint` 35-gate + **chaos 9/9**
   + a kill-9 copy-proof (`tools/copyproof_p2_frontier.sh`) holding the invariant on
   the raw crash image. Offline checker: `make p2_invariant_check` → `./p2_invariant_check <datadir>`.
-- **NEXT — L0 (task #11) `reducer_frontier_compute_hstar`:** pure SELECT-only
-  authority returning {hstar, served_floor}; anchored at the SHA3 checkpoint
-  **3,056,758** (cold-import logs are sparse → contiguity-from-genesis is wrong).
-  Ships first with a regression test asserting H*==tip on a consistent set.
-- **then L1 (task #12) `reducer_frontier_reconcile_light`:** a Condition that
+- **L0 (task #11) `reducer_frontier_compute_hstar` — DONE** (on `main` `50dfd1753`):
+  pure SELECT-only authority in `app/jobs/src/reducer_frontier.c` returning
+  {hstar, served_floor}; anchored at the SHA3 checkpoint **3,056,758** (cold-import
+  logs are sparse → contiguity-from-genesis is wrong); C1–C6 of the plan, NULL-hash
+  = no-evidence, C4 coin-tear = WARN-only. PURE read-only (no mutation — heal is L1).
+  Adversarially reviewed (PASS: read-only purity, checkpoint floor, tear-correctness,
+  mutation-sensitivity via 2 revert-experiments); `test_reducer_frontier` 5 topologies;
+  build green, `test_parallel` **0/376**, `lint` 35-gate. Follow-up: convert the C2/C3
+  per-height query loop to set-based SQL before wiring into a hot/boot path.
+- **NEXT — L1 (task #12) `reducer_frontier_reconcile_light`:** a Condition that
   sweep-heals `block_index` flags + clears HAVE_DATA holes (so `body_fetch`
   re-requests) + clamps ONLY the `tip_finalize` cursor — never touches coins.
 - **L2/L3 (task #13):** forward-immunity for a *future genuine coin tear* +
