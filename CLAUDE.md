@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, encrypted P2P messaging, cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible signed releases. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels, on-chain via Sapling encrypted memo field), cross-chain atomic swaps (BTC/LTC/DOGE), a P2P game framework, and an MCP server. **Claude is a first-class operator via ~100 typed MCP tools** — not just an observer. Cold sync to tip in 30 seconds via FlyClient + SHA3 UTXO snapshots. Halts are unreachable by construction (chain progress is a stage cursor on disk). Bugs become 64-bit seeds in a deterministic simulator. Reproducible byte-identical builds with optional GPG signing (sign optional, can be waived with --unsigned). **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -270,31 +270,30 @@ Human-readable names registered on-chain via OP_RETURN. Inspired by ENS (Ethereu
 - Commands: REGISTER, UPDATE, TRANSFER, RENEW, SET_RECORD, SET_TEXT
 - RPC: `name_register`, `name_resolve`, `name_list`
 
-### ZCL Messaging (ZMSG) — Encrypted P2P Messages
+### ZCL Messaging (ZMSG) — P2P + On-Chain Messages
 
 Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded).
 
-- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes
-- **On-chain**: structured data in Sapling 512-byte encrypted memo field
+- **Off-chain**: P2P messages (`zmsg`/`zmsgack`) between connected nodes — **plaintext on the wire** (transport encryption not yet implemented)
+- **On-chain**: structured data in the Sapling 512-byte encrypted memo field (shielded)
 - Messages stored in SQLite, delivery acknowledgment
 - RPC: `msg_send`, `msg_inbox`, `msg_read`
 
 ### ZCL Market — Crypto-Incentivized File Sharing
 
-BitTorrent-style file distribution with shielded ZCL payments instead of ratio.
+File marketplace scaffolding: offer gossip with price metadata, proof-of-possession challenges. File transfer and payment settlement not yet implemented.
 
 - P2P gossip of file offers with price per MB
 - Chunk challenges for sybil resistance (prove you have the data)
-- Payment-gated downloads via Sapling shielded transactions
 - RPC: `zmarket_list`, `zmarket_offer`, `zmarket_buy`, `zmarket_status`
 
 ### Atomic Swaps (ZSWP) — Cross-Chain HTLC Trading
 
-P2SH-wrapped hash time-locked contracts. Compatible with dcrdex.
+HTLC contract scaffolding: swap initiation and participation with redeem script generation. Redemption, refund, and settlement not yet implemented.
 
 - **Chains**: ZCL, BTC, LTC, DOGE (same 97-byte contract as dcrdex)
 - Script: OP_IF/OP_SHA256/OP_CLTV with shared OP_CHECKSIG
-- Secret extraction from redeem transactions
+- Secret extraction / redeem + refund scriptSig builders exist as library primitives (`script/htlc.*`, tested), not yet wired to a node-broadcast/settlement path
 - RPC: `swap_chains`, `swap_initiate`, `swap_participate`, `swap_list`
 - Reference: `vendor/dcrdex/` (Blue Oak License 1.0.0)
 

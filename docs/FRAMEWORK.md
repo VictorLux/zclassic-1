@@ -347,6 +347,15 @@ legitimate (Models ARE storage; Jobs use the progress-kv kernel store; Views are
 read-only introspection), and `check_raw_sqlite.sh` stays CLEAN with an empty
 baseline. The `check-lib-layering` ratchet guards the write direction.
 
+### The `application/` tier — staged consensus logic
+
+When `application/` (the hexagonal application-level consensus boundary) is
+populated, it should contain domain-level consensus state predicates and
+use-case invariants that cross multiple models/services — checks that express
+business rules of the chain itself before they migrate to the pure `domain/`
+core. This keeps `application/` as the staged consensus-logic tier between
+orchestration (app/services, 77 files) and pure consensus (domain/, 21 modules).
+
 ---
 
 ## 7. What survives 50 years vs what gets rewritten
