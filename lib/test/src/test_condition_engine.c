@@ -316,6 +316,7 @@ int test_condition_engine(void)
             "tip_fork_stale",
             "tip_stall_oracle_rebuild",
             "stale_validate_headers_repair",
+            "reducer_frontier_reconcile_light",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));
@@ -329,6 +330,9 @@ int test_condition_engine(void)
              condition_engine_has_registered("have_data_unreadable");
         ok = ok &&
              condition_engine_has_registered("stale_validate_headers_repair");
+        ok = ok &&
+             condition_engine_has_registered(
+                 "reducer_frontier_reconcile_light");
         ok = ok && !condition_engine_has_registered("not_a_condition");
         json_free(&out);
         CE_CHECK("register_all exposes current self-heal set", ok);

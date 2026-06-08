@@ -165,6 +165,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(body_persist_stage) X(created_outputs_index) X(coins_kv) \
     X(script_validate_stage) X(proof_validate_stage) \
     X(utxo_apply_stage) X(tip_finalize_stage) X(reducer_frontier) \
+    X(reducer_frontier_reconcile_light) \
     X(reducer_stage_fuzz) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
     X(reducer_step_drain_harness) \

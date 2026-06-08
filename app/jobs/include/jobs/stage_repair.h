@@ -15,6 +15,7 @@
 #include <stdbool.h>
 
 struct sqlite3;
+struct main_state;
 
 enum stage_repair_header_solution_poison {
     STAGE_REPAIR_POISON_NONE = 0,
@@ -87,6 +88,25 @@ struct stage_reconcile_result {
     int  floor;     /* coins_best + 1 */
 };
 
+struct stage_reducer_frontier_reconcile_result {
+    bool repaired;
+    bool clamped_tip_finalize;
+    bool refused_coin_tear;
+    bool refused_coin_unknown;
+    bool coins_applied_found;
+    int hstar;
+    int served_floor;
+    int coins_applied_height;
+    int tip_finalize_cursor_before;
+    int tip_finalize_cursor_after;
+    int sweep_top;
+    int scripts_set;
+    int have_data_set;
+    int have_data_cleared;
+    int failed_mask_cleared;
+    int header_events_emitted;
+};
+
 /* Reconcile a reducer cursor/coins desync that wedges the chain.
  *
  * After an unclean restart (kill-9 + WAL) the durable tip_finalize cursor can
@@ -118,5 +138,20 @@ bool stage_reconcile_clamp_tip_finalize_to_floor(
     struct sqlite3 *db,
     int coins_best,
     struct stage_reconcile_result *out);
+
+/* L1 reducer-frontier reconcile: repair block_index mirror flags from
+ * hash-bound durable reducer logs, then clamp ONLY the tip_finalize cursor to
+ * H*+1 so tip_finalize can replay forward. This is a flag/cursor repair only:
+ * it never deletes log rows and never mutates coins. If coins_applied_height is
+ * absent or present above H*, the helper refuses (unknown/L2 coin-tear domain). */
+bool stage_reducer_frontier_reconcile_light_needed(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    struct stage_reducer_frontier_reconcile_result *out);
+
+bool stage_reducer_frontier_reconcile_light(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    struct stage_reducer_frontier_reconcile_result *out);
 
 #endif /* ZCL_JOBS_STAGE_REPAIR_H */

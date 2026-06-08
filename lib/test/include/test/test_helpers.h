@@ -403,6 +403,7 @@ int test_coins_applied_frontier(void);
 int test_reducer_ingest_e2e(void);
 int test_reducer_step_drain_harness(void);
 int test_stage_reducer_unwedge(void);
+int test_reducer_frontier_reconcile_light(void);
 int test_connect_block_self_write(void);
 int test_key_scrub(void);
 int test_block_index_loader(void);
