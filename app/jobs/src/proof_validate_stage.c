@@ -19,6 +19,7 @@
 #include "json/json.h"
 #include "primitives/block.h"
 #include "sapling/bn254.h"
+#include "sapling/params_init.h"
 #include "sapling/sapling.h"
 #include "sapling/sapling_prover.h"
 #include "sapling/sprout.h"
@@ -90,6 +91,13 @@ static void tx_report_init(struct proof_validate_tx_report *r)
     r->ok = true;
 }
 
+static bool tx_has_shielded_proofs(const struct transaction *tx)
+{
+    return tx && (tx->num_joinsplit > 0 ||
+                  tx->num_shielded_spend > 0 ||
+                  tx->num_shielded_output > 0);
+}
+
 static bool default_verify_tx(const struct transaction *tx, int height,
                               struct proof_validate_tx_report *out,
                               void *user)
@@ -103,11 +111,15 @@ static bool default_verify_tx(const struct transaction *tx, int height,
         return true;
     }
 
-    bool has_shielded = tx->num_joinsplit > 0 ||
-                        tx->num_shielded_spend > 0 ||
-                        tx->num_shielded_output > 0;
-    if (!has_shielded)
+    if (!tx_has_shielded_proofs(tx))
         return true;
+
+    if (!sapling_params_loaded()) {
+        out->ok = false;
+        out->internal_error = true;
+        out->first_failure_proof_type = "params_not_loaded";
+        return true;
+    }
 
     struct uint256 sighash;
     uint256_set_null(&sighash);
@@ -288,6 +300,17 @@ static void validate_block_proofs(const struct block *blk, int height,
     }
 }
 
+static bool block_has_shielded_proofs(const struct block *blk)
+{
+    if (!blk)
+        return false;
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        if (tx_has_shielded_proofs(&blk->vtx[i]))
+            return true;
+    }
+    return false;
+}
+
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
@@ -336,6 +359,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     proof_validate_reader_fn reader = g_reader ? g_reader
                                                : stage_default_block_reader;
     if (!reader(&blk, bi, g_datadir, g_reader_user)) {
+        block_free(&blk);
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
+    }
+
+    if (!g_tx_verifier && block_has_shielded_proofs(&blk) &&
+        !sapling_params_loaded()) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

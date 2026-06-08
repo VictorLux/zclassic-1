@@ -11,6 +11,7 @@
 #include "crypto/sha512.h"
 #include "encoding/utilstrencodings.h"
 #include "util/log_macros.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,7 +77,7 @@ static bool params_sha512_matches(const uint8_t *data, size_t len,
 static struct groth16_vk spend_vk;
 static struct groth16_vk output_vk;
 static struct groth16_vk sprout_groth16_vk;
-static bool params_loaded = false;
+static _Atomic bool params_loaded = false;
 
 static uint8_t *spend_pk_data = NULL;
 static size_t spend_pk_len = 0;
@@ -121,7 +122,7 @@ static uint8_t *read_file(const char *path, size_t *len)
 
 bool sapling_init_params(const char *params_dir)
 {
-    if (params_loaded) return true;
+    if (atomic_load(&params_loaded)) return true;
 
     char path[1024];
     size_t len;
@@ -196,12 +197,12 @@ bool sapling_init_params(const char *params_dir)
                        "(%zu IC points)\n", len, phgr_vk.ic_len);
                 phgr_ok = true;
             } else {
-                fprintf(stderr,
+                fprintf(stderr,  // obs-ok:params-load-operator-diagnostic
                     "ERROR: Failed to parse sprout-verifying.key\n");
             }
             free(phgr_data);
         } else {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:params-load-operator-diagnostic
                 "ERROR: sprout-verifying.key not found at %s\n", phgr_path);
         }
 
@@ -211,7 +212,7 @@ bool sapling_init_params(const char *params_dir)
         if (!phgr_ok) {
             const struct chain_params *cp = chain_params_get();
             if (cp && strcmp(cp->strNetworkID, "main") == 0) {
-                fprintf(stderr,
+                fprintf(stderr,  // obs-ok:params-load-fatal-return
                     "FATAL: Sprout PHGR13 verification key failed to load.\n"
                     "Mainnet requires this key to validate pre-Sapling blocks.\n"
                     "Ensure sprout-verifying.key exists in: %s\n", params_dir);
@@ -219,7 +220,7 @@ bool sapling_init_params(const char *params_dir)
                 free(sprout_groth16_vk.ic);
                 return false;
             }
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:params-load-nonmainnet-warning
                 "WARNING: PHGR13 VK not loaded (non-mainnet, continuing)\n");
         }
     }
@@ -264,8 +265,13 @@ bool sapling_init_params(const char *params_dir)
         printf("native C23 prover zkSNARK params initialized.\n");
     }
 
-    params_loaded = true;
+    atomic_store(&params_loaded, true);
     return true;
+}
+
+bool sapling_params_loaded(void)
+{
+    return atomic_load(&params_loaded);
 }
 
 const uint8_t *sapling_get_output_pk(size_t *len)
@@ -282,7 +288,7 @@ const uint8_t *sapling_get_spend_pk(size_t *len)
 
 void sapling_free_params(void)
 {
-    if (!params_loaded) return;
+    if (!atomic_load(&params_loaded)) return;
     free(spend_vk.ic);
     free(output_vk.ic);
     free(sprout_groth16_vk.ic);
@@ -296,5 +302,5 @@ void sapling_free_params(void)
     sapling_set_spend_vk(NULL);
     sapling_set_output_vk(NULL);
     sprout_set_vk(NULL);
-    params_loaded = false;
+    atomic_store(&params_loaded, false);
 }

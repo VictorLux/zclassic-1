@@ -9,6 +9,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/proof_validate_stage.h"
+#include "sapling/params_init.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -328,6 +329,24 @@ int test_proof_validate_stage(void)
     int failures = 0;
 
     blocker_module_init();
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_pv sc;
+        PV_CHECK("params_missing: setup",
+                 pv_setup("params_missing", 1, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        sapling_free_params();
+        proof_validate_stage_set_tx_verifier(NULL, NULL);
+        PV_CHECK("params_missing: shielded block idles",
+                 proof_validate_stage_step_once() == JOB_IDLE);
+        PV_CHECK("params_missing: cursor stays 0",
+                 proof_validate_stage_cursor() == 0);
+        int ok = -1; char status[32]; char type[32];
+        PV_CHECK("params_missing: no poisoned row",
+                 !log_row_at(progress_store_db(), 0, &ok, status,
+                             sizeof(status), type, sizeof(type)));
+        pv_teardown(dir, &ms, &sc);
+    }
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_pv sc;

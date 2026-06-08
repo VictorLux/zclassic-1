@@ -15,6 +15,11 @@
  * Returns false if any file cannot be read or parsed. */
 bool sapling_init_params(const char *params_dir);
 
+/* True only after all verification keys have loaded and been installed.
+ * Safe to read from reducer/validation threads while the boot loader thread is
+ * still parsing the large params files. */
+bool sapling_params_loaded(void);
+
 /* Get raw proving key data for Sapling output/spend proofs.
  * Returns pointer to mmap'd file data. NULL if not loaded. */
 const uint8_t *sapling_get_output_pk(size_t *len);
