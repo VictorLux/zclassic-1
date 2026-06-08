@@ -151,7 +151,6 @@ void utxo_apply_compute_block_delta(const struct block *blk,
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
         const struct transaction *tx = &blk->vtx[ti];
         int64_t tx_input_value = 0;
-        int64_t tx_output_value = 0;
 
         if (!transaction_is_coinbase(tx)) {
             for (size_t vi = 0; vi < tx->num_vin; vi++) {
@@ -288,14 +287,37 @@ void utxo_apply_compute_block_delta(const struct block *blk,
             added[out->added_count].is_coinbase = transaction_is_coinbase(tx);
             out->added_count++;
             out->total_value_delta += txo->value;
-            tx_output_value += txo->value;
         }
 
-        if (!transaction_is_coinbase(tx) && tx_output_value > tx_input_value) {
-            delta_fail(out, "value_overflow", "outputs_exceed_inputs",
-                       &tx->hash, 0);
-            free_delta(out);
-            return;
+        if (!transaction_is_coinbase(tx)) {
+            /* Full Zcash money rule. The canonical check (connect_block.c
+             * value_in<value_out -> "bad-txns-in-belowout") has NO production
+             * caller, so this is the ONLY no-inflation guard on the reducer
+             * path a connected block takes — it must be correct, not dropped.
+             *   value_in  = transparent_in + max(0, value_balance) + Σ vpub_new
+             *   value_out = transparent_out + max(0,-value_balance) + Σ vpub_old
+             * The prior transparent-only test (tx_output_value > tx_input_value)
+             * false-rejected a legitimate shielded->transparent unshield, where
+             * value_balance>0 funds transparent outputs so transparent_out can
+             * exceed transparent_in (the height-3,138,977 wedge). The two helpers
+             * already MoneyRange-guard every partial sum and return -1 on
+             * overflow. */
+            int64_t sh_in = transaction_get_shielded_value_in(tx);
+            int64_t value_out_full = transaction_get_value_out(tx);
+            if (sh_in < 0 || value_out_full < 0 ||
+                sh_in > MAX_MONEY_ZAT - tx_input_value) {
+                delta_fail(out, "value_overflow", "inputvalues_outofrange",
+                           &tx->hash, 0);
+                free_delta(out);
+                return;
+            }
+            int64_t value_in_full = tx_input_value + sh_in;
+            if (value_in_full < value_out_full) {
+                delta_fail(out, "value_overflow", "outputs_exceed_inputs",
+                           &tx->hash, 0);
+                free_delta(out);
+                return;
+            }
         }
     }
 
