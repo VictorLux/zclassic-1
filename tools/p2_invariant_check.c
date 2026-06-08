@@ -6,10 +6,11 @@
  *         ==  stage_cursor('utxo_apply').cursor
  *
  * coins_applied_height is the contiguous applied-coins frontier counter that P2
- * co-commits inside the SAME transaction as every utxo_apply cursor advance
- * (forward, upstream_failed, reorg-unwind), the boot backfill, and the
- * header-solution poison_rewind. If the two ever drift, the dual-authority
- * disease P2 exists to kill has returned.
+ * co-commits inside the SAME transaction as every utxo_apply cursor move
+ * (successful forward apply, reorg-unwind), the boot backfill, and the
+ * header-solution poison_rewind. Failed verdicts hold both cursor and frontier.
+ * If the two ever drift, the dual-authority disease P2 exists to kill has
+ * returned.
  *
  * READ-ONLY. Opens with SQLITE_OPEN_READONLY; on a COPY left by a kill-9'd node
  * the present -wal holds the true committed state and a read-only connection

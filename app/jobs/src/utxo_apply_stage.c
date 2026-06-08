@@ -22,6 +22,7 @@
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "coins/coins.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
@@ -101,6 +102,47 @@ static bool apply_coins_kv(sqlite3 *db, const struct delta_summary *s,
  * utxo_apply_compute_block_delta (it owns the delta structs + the
  * persistence/inversion of the same arrays). */
 
+static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
+                                        const char *status,
+                                        const char *kind,
+                                        const uint8_t detail[36])
+{
+    char reason[BLOCKER_REASON_MAX];
+    char txid_hex[65] = {0};
+    uint32_t vout = 0;
+
+    if (detail) {
+        struct uint256 txid;
+        memcpy(txid.data, detail, sizeof(txid.data));
+        uint256_get_hex(&txid, txid_hex);
+        vout = (uint32_t)detail[32] |
+               ((uint32_t)detail[33] << 8) |
+               ((uint32_t)detail[34] << 16) |
+               ((uint32_t)detail[35] << 24);
+    }
+
+    if (txid_hex[0]) {
+        snprintf(reason, sizeof(reason),
+                 "height=%d status=%s kind=%s txid=%s vout=%u; "
+                 "utxo_apply cursor held to prevent applying coins above "
+                 "an unresolved hole",
+                 height, status ? status : "unknown",
+                 kind ? kind : "", txid_hex, vout);
+    } else {
+        snprintf(reason, sizeof(reason),
+                 "height=%d status=%s kind=%s; utxo_apply cursor held to "
+                 "prevent applying coins above an unresolved hole",
+                 height, status ? status : "unknown", kind ? kind : "");
+    }
+
+    blocker_init(&c->blocker, "utxo_apply.apply_failed", STAGE_NAME,
+                 BLOCKER_TRANSIENT, reason);
+    c->blocker.escape_deadline_secs = 60;
+    c->blocker.retry_budget = 5;
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    return JOB_BLOCKED;
+}
+
 static job_result_t step_apply(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
@@ -129,23 +171,9 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     if (upstream.ok == 0) {
-        if (!utxo_apply_log_insert(db, next_h, "upstream_failed", false,
-                        0, 0, 0, NULL, NULL))
-            return JOB_FATAL;
-        /* Advance the contiguous frontier in lockstep with the cursor on the
-         * no-coin-mutation skip path: coins_applied_height == utxo_apply cursor
-         * by construction, so the frontier never holes past a skipped height.
-         * Compute next_cursor ONCE and write BOTH the frontier and cursor_out
-         * from it, so frontier == cursor is textually enforced (not two
-         * coincidental literals). In the SAME stage_run_once BEGIN IMMEDIATE →
-         * rolls back with the log row + cursor on failure. */
-        uint64_t next_cursor = c->cursor_in + 1;
-        if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
-            return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
-        atomic_store(&g_last_advance_height, (int64_t)next_h);
-        c->cursor_out = next_cursor;
-        return JOB_ADVANCED;
+        return block_apply_failure(c, next_h, "upstream_failed",
+                                   "proof_validate", NULL);
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
@@ -197,9 +225,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    free_delta(&summary);
-    block_free(&blk);
-
     if (summary.ok) {
         atomic_fetch_add(&g_verified_total, 1);
         atomic_fetch_add(&g_total_outputs_added,
@@ -227,18 +252,32 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     if (!utxo_apply_log_insert(db, next_h, summary.status, summary.ok,
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
-                    summary.ok ? NULL : summary.failure_detail))
+                    summary.ok ? NULL : summary.failure_detail)) {
+        free_delta(&summary);
+        block_free(&blk);
         return JOB_FATAL;
+    }
+
+    if (!summary.ok) {
+        const char *status = summary.status;
+        const char *kind = summary.failure_kind;
+        uint8_t detail[36];
+        memcpy(detail, summary.failure_detail, sizeof(detail));
+        free_delta(&summary);
+        block_free(&blk);
+        return block_apply_failure(c, next_h, status, kind, detail);
+    }
+
+    free_delta(&summary);
+    block_free(&blk);
 
     /* Co-commit the contiguous applied frontier = the SAME value written to the
      * stage cursor (cursor_in + 1), so coins_applied_height == utxo_apply cursor
-     * by construction on every advancing path that reaches here (a successful
-     * apply OR a non-fatal reject that still advances). Compute next_cursor ONCE
-     * and write BOTH the frontier and cursor_out from it, so frontier == cursor
-     * is textually enforced (not two coincidental literals). Written in the SAME
-     * stage_run_once BEGIN IMMEDIATE that commits the coins delta + cursor +
-     * inverse-delta + log row, so a meta-write failure rolls back the whole
-     * step exactly like the apply_coins_kv failure handling. */
+     * by construction on every successful apply. Failed verdicts return
+     * JOB_BLOCKED above, the framework rolls back their scratch log row, and
+     * the cursor/frontier stay at the unresolved height. That fail-closed
+     * policy prevents a mixed coins window where later heights are applied over
+     * an un-applied hole. */
     uint64_t next_cursor = c->cursor_in + 1;
     if (!coins_kv_set_applied_height_in_tx(db, (int32_t)next_cursor))
         return JOB_FATAL;

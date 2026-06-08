@@ -657,11 +657,12 @@ int test_reducer_ingest_e2e(void)
      * past it ──────────────────────────────────────────────────────────
      * Genesis h0 + valid h1 + INVALID h2 (h2 spends a coin in NO UTXO set).
      * The real UTXO delta (compute_block_delta inside utxo_apply) rejects
-     * h2 with spend_unknown (ok=0). tip_finalize must:
+     * h2 with spend_unknown and utxo_apply must:
      *   - FINALIZE the valid h1 (status "finalized"), but
-     *   - NEVER write a "finalized" row for the invalid h2 — it records
-     *     "upstream_failed" there (utxo_apply ok=0) and the chain does NOT
-     *     finalize beyond it.
+     *   - HOLD the utxo_apply cursor at invalid h2 with a typed blocker, so
+     *     no durable ok=0 row can let later heights apply above the hole.
+     * tip_finalize must never write a "finalized" row for h2 and the chain
+     * must not finalize beyond it.
      * The invalid block's spend output is never applied to the UTXO set.
      * No stubbed verification — the rejection is the real consensus UTXO
      * check. (Note: tip_finalize's one-block lookahead provisionally points
@@ -702,13 +703,12 @@ int test_reducer_ingest_e2e(void)
                       h1_row && strcmp(s1, "finalized") == 0);
             RIE_CHECK("invalid: invalid h2 NOT finalized (upstream_failed)",
                       (!h2_row) || strcmp(s2, "finalized") != 0);
-            RIE_CHECK("invalid: tip_finalize upstream_failed counter fired",
-                      tip_finalize_stage_upstream_failed_total() >= 1);
+            RIE_CHECK("invalid: utxo_apply cursor held at rejected h2",
+                      utxo_apply_stage_cursor() == 2);
+            RIE_CHECK("invalid: typed blocker records rejected h2",
+                      blocker_exists("utxo_apply.apply_failed"));
             /* The chain does not finalize beyond the rejection: the highest
-             * FINALIZED height is the valid h1, never the invalid h2. (Note:
-             * tip_finalize's g_last_advance_height also advances over the
-             * upstream_failed h2, so the finalized-row max is the honest
-             * "last finalized" witness, not last_height.) */
+             * FINALIZED height is the valid h1, never the invalid h2. */
             RIE_CHECK("invalid: highest finalized height is the valid h1",
                       tf_max_finalized_height(progress_store_db()) == 1);
 
@@ -724,6 +724,7 @@ int test_reducer_ingest_e2e(void)
             cb_txid(&bad_cb, 0x55, 2);
             RIE_CHECK("invalid: rejected block coinbase absent from coins_kv",
                       !coins_kv_exists(pdb, bad_cb.data, 0));
+            blocker_clear("utxo_apply.apply_failed");
 
             rie_env_close(&e);
         }

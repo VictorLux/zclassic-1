@@ -12,11 +12,11 @@
  * coin mutation so the frontier cannot hide an interior hole and gives the
  * self-heal a single non-divergent coins-frontier input. This test pins the
  * load-bearing invariant — coins_applied_height == stage_cursor('utxo_apply') —
- * on all four advancing/rewinding/seeding paths:
+ * on the advancing/rewinding/seeding/blocking paths:
  *
  *   (1) a forward apply advance   → frontier == cursor (== tip+1)
- *   (2) an upstream_failed advance → frontier == cursor (no coin mutation, the
- *       frontier still advances in lockstep so it never holes a skip)
+ *   (2) failed verdicts           → frontier == cursor because both stay held
+ *       at the unresolved height; later heights cannot apply over a hole
  *   (3) a reorg rewind            → frontier PULLED BACK to fork+1 == cursor
  *       (a PLAIN set: the decrease must NOT be blocked by a monotonic floor)
  *   (4) a virgin progress.kv      → get returns found=false (ABSENT, never
@@ -262,7 +262,7 @@ static bool caf_exec(sqlite3 *db, const char *sql)
 
 /* Seed proof_validate_log + its cursor. `ok_through` heights are ok=1; if
  * `fail_at >= 0` that single height is recorded ok=0 (drives the
- * upstream_failed advance path). */
+ * upstream_failed blocked path). */
 static bool seed_proof_validate(sqlite3 *db, int through_height, int fail_at)
 {
     if (!caf_exec(db,
@@ -346,8 +346,8 @@ int test_coins_applied_frontier(void)
     ext[1].script[0] = 0x76; ext[1].script[1] = 0xa9; ext[1].script[2] = 0xBC;
     ext[1].script_len = 3;
 
-    /* ── PART A: virgin datadir → ABSENT; forward apply; upstream_failed;
-     *           reorg rewind — frontier == cursor on every path. ──────── */
+    /* ── PART A: virgin datadir → ABSENT; forward apply; reorg rewind —
+     *           frontier == cursor on every path. ─────────────────────── */
     struct caf_branch L, W;
     bool built = branch_build(&L, 0x11, 4, 2, &ext[0]) &&
                  branch_build(&W, 0x22, 5, 2, &ext[1]);
@@ -503,7 +503,7 @@ int test_coins_applied_frontier(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── PART B: upstream_failed advance path (no coin mutation). ─────── */
+    /* ── PART B: upstream_failed blocked path (no coin mutation). ─────── */
     struct caf_branch F;
     bool fbuilt = branch_build(&F, 0x33, 4, -1, NULL);  /* no spends */
     CAF_CHECK("fail-branch builds", fbuilt);
@@ -533,23 +533,28 @@ int test_coins_applied_frontier(void)
             utxo_apply_stage_set_reader(caf_reader, &ctx);
             utxo_apply_stage_set_lookup(caf_lookup, &ctx);
 
-            /* Mark height 2 as upstream ok=0 → step_apply takes the
-             * upstream_failed advance path (no coin mutation, frontier still
-             * advances in lockstep with the cursor). */
+            blocker_clear("utxo_apply.apply_failed");
+            /* Mark height 2 as upstream ok=0 → step_apply blocks at h2. The
+             * prior successful h0/h1 applies leave cursor/frontier == 2, and
+             * the failed h2 row is rolled back so no later height can apply over
+             * the hole. */
             CAF_CHECK("upfail: seed proof_validate with ok=0 at h2",
                       seed_proof_validate(pdb, F.n - 1, 2));
             int adv = utxo_apply_stage_drain(100);
-            CAF_CHECK("upfail: drains all heights", adv == F.n);
-            CAF_CHECK("upfail: recorded an upstream_failed advance",
+            CAF_CHECK("upfail: drains until h2", adv == 2);
+            CAF_CHECK("upfail: recorded an upstream_failed block",
                       utxo_apply_stage_upstream_failed_total() >= 1);
-            CAF_CHECK("upstream_failed advance: frontier == cursor",
+            CAF_CHECK("upstream_failed blocked: frontier == cursor",
                       frontier_eq_cursor(pdb));
+            CAF_CHECK("upstream_failed blocked: typed blocker recorded",
+                      blocker_exists("utxo_apply.apply_failed"));
             {
                 int32_t fr = -1; bool fnd = false;
                 (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
-                CAF_CHECK("upstream_failed: frontier present && == tip+1 (no hole)",
-                          fnd && fr == F.n);
+                CAF_CHECK("upstream_failed: frontier present && == h2",
+                          fnd && fr == 2);
             }
+            blocker_clear("utxo_apply.apply_failed");
 
             utxo_apply_stage_shutdown();
             active_chain_free(&ms.chain_active);
@@ -731,11 +736,10 @@ int test_coins_applied_frontier(void)
         test_cleanup_tmpdir(dir);
     }
 
-    /* ── PART E: non-fatal reject (spend_unknown_utxo) advancing co-commit. ─
-     * step_apply's THIRD advancing caller: summary.ok==false (a spend whose
-     * lookup returns found=false → spend_unknown_utxo) leaves the coins
-     * UNMUTATED but still advances the cursor + co-writes the frontier. Pins
-     * that the frontier tracks the cursor on the reject-but-advance path. */
+    /* ── PART E: non-fatal reject (spend_unknown_utxo) blocks. ────────────
+     * A summary.ok==false spend_unknown_utxo leaves the coins UNMUTATED and
+     * holds the cursor/frontier at the unresolved height. This pins the
+     * fail-closed policy that prevents later heights applying above a hole. */
     {
         /* A branch that spends a coin NOT present in coins_kv and NOT resolvable
          * by the lookup (n_ext = 0 below) → spend_unknown_utxo at h2. */
@@ -774,22 +778,25 @@ int test_coins_applied_frontier(void)
                 CAF_CHECK("reject: stage init", utxo_apply_stage_init(&ms));
                 utxo_apply_stage_set_reader(caf_reader, &ctx);
                 utxo_apply_stage_set_lookup(caf_lookup, &ctx);
+                blocker_clear("utxo_apply.apply_failed");
 
                 CAF_CHECK("reject: seed proof_validate (all ok)",
                           seed_proof_validate(pdb, R.n - 1, -1));
                 int adv = utxo_apply_stage_drain(100);
-                CAF_CHECK("reject: drains all heights (advances past the reject)",
-                          adv == R.n);
+                CAF_CHECK("reject: drains until h2", adv == 2);
                 CAF_CHECK("reject: recorded a spend_unknown_utxo (coins not mutated)",
                           utxo_apply_stage_spend_unknown_total() >= 1);
-                CAF_CHECK("non-fatal reject advance: frontier == cursor",
+                CAF_CHECK("non-fatal reject blocked: frontier == cursor",
                           frontier_eq_cursor(pdb));
+                CAF_CHECK("reject: typed blocker recorded",
+                          blocker_exists("utxo_apply.apply_failed"));
                 {
                     int32_t fr = -1; bool fnd = false;
                     (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
-                    CAF_CHECK("reject: frontier present && == tip+1 (advanced)",
-                              fnd && fr == R.n);
+                    CAF_CHECK("reject: frontier present && == h2",
+                              fnd && fr == 2);
                 }
+                blocker_clear("utxo_apply.apply_failed");
 
                 utxo_apply_stage_shutdown();
                 active_chain_free(&ms.chain_active);

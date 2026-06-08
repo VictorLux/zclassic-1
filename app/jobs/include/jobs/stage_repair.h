@@ -109,6 +109,13 @@ struct stage_reducer_frontier_reconcile_result {
     int have_data_cleared;
     int failed_mask_cleared;
     int header_events_emitted;
+    bool value_overflow_repair_attempted;
+    bool value_overflow_repaired;
+    bool value_overflow_repair_marker_seen;
+    bool value_overflow_repair_genuinely_invalid;
+    int value_overflow_repair_height;
+    int value_overflow_cursor_before;
+    int value_overflow_cursor_after;
 };
 
 /* Reconcile a reducer cursor/coins desync that wedges the chain.

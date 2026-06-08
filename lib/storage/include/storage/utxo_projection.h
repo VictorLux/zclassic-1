@@ -96,6 +96,15 @@ int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
 int64_t utxo_projection_seed_from_snapshot(utxo_projection_t *p,
                                            struct sqlite3 *staging_db);
 
+/* Best-effort operator mirror: replace the rebuildable projection's live UTXO
+ * rows from the authoritative progress.kv `coins` table, then stamp the
+ * projection cursor to the current event-log head. This is non-consensus and
+ * intended for post-repair reseeds after coins_kv has already been repaired.
+ * Returns false on copy errors; callers must not use failure to roll back a
+ * consensus repair. */
+bool utxo_projection_reseed_from_coins_kv(utxo_projection_t *p,
+                                          struct sqlite3 *progress_db);
+
 /* Lookup a UTXO by (txid, vout). Returns true if present; fills
  * value/script if the corresponding out-pointer is non-NULL. If the
  * caller's `script_cap` is smaller than the stored script length, the

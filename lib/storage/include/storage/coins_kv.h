@@ -92,8 +92,9 @@ bool coins_kv_boot_rebuild_if_needed(struct sqlite3 *progress_db,
  * the most-recent surviving coin's creation height and cannot see an interior
  * hole. The complete set of utxo_apply cursor writers, each co-writing this
  * frontier in its own transaction:
- *   (a) forward apply (utxo_apply_stage.c step_apply): the apply-success /
- *       non-fatal-reject tail AND the upstream_failed skip — frontier = cursor+1;
+ *   (a) forward apply (utxo_apply_stage.c step_apply): successful applies only
+ *       write frontier = cursor+1. Failed verdicts return JOB_BLOCKED with the
+ *       cursor/frontier unchanged, so a later height cannot apply over a hole;
  *   (b) reorg unwind (utxo_apply_delta_reorg.c): pulls the frontier BACK to
  *       fork+1 (a PLAIN set — the decrease must not be blocked);
  *   (c) the poison_rewind cursor-mover (stage_repair_rewind.c

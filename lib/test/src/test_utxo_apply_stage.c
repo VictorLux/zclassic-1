@@ -317,22 +317,26 @@ static void run_fail_case(int *failures_out, enum uv_fail_kind kind,
 {
     int failures = 0;
     char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+    blocker_clear("utxo_apply.apply_failed");
     UV_CHECK("failure: setup",
              uv_setup(expected_status, 3, kind, -1, dir, sizeof(dir),
                       &ms, &sc) == 0);
-    UV_CHECK("failure: drains 3", utxo_apply_stage_drain(100) == 3);
+    UV_CHECK("failure: drains until failed height", utxo_apply_stage_drain(100) == 1);
     UV_CHECK("failure: counter == 1", counter() == 1);
     int ok = -1; char status[32]; char kindbuf[32];
-    log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
-               kindbuf, sizeof(kindbuf));
-    UV_CHECK("failure: h=1 ok=0", ok == 0);
-    UV_CHECK("failure: h=1 status",
-             strcmp(status, expected_status) == 0);
+    bool found = log_row_at(progress_store_db(), 1, &ok, status, sizeof(status),
+                            kindbuf, sizeof(kindbuf));
+    UV_CHECK("failure: h=1 row rolled back", !found && ok == -1);
+    UV_CHECK("failure: cursor held at h=1", utxo_apply_stage_cursor() == 1);
+    UV_CHECK("failure: typed blocker recorded",
+             blocker_exists("utxo_apply.apply_failed"));
     /* A block that FAILED utxo_apply must never report success: this is what
      * keeps reducer_pending_body_is_accepted from accepting a stateful-invalid
-     * block whose stages recorded ok=0 without setting BLOCK_FAILED_MASK. */
-    UV_CHECK("failure: succeeded_at(1) false (ok=0)",
+     * block. The failed verdict blocks and rolls back its scratch row, so no
+     * ok=0 row can masquerade as an applied height. */
+    UV_CHECK("failure: succeeded_at(1) false (no committed row)",
              !utxo_apply_stage_succeeded_at(1));
+    blocker_clear("utxo_apply.apply_failed");
     uv_teardown(dir, &ms, &sc);
     *failures_out += failures;
 }
@@ -395,16 +399,20 @@ int test_utxo_apply_stage(void)
         UV_CHECK("upstream_failed: setup",
                  uv_setup("upstream", 3, UV_FAIL_NONE, 2, dir, sizeof(dir),
                           &ms, &sc) == 0);
-        UV_CHECK("upstream_failed: drains 3",
-                 utxo_apply_stage_drain(100) == 3);
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("upstream_failed: drains until failed height",
+                 utxo_apply_stage_drain(100) == 2);
         UV_CHECK("upstream_failed: counter == 1",
                  utxo_apply_stage_upstream_failed_total() == 1);
         int ok = -1; char status[32]; char kind[32];
-        log_row_at(progress_store_db(), 2, &ok, status, sizeof(status),
-                   kind, sizeof(kind));
-        UV_CHECK("upstream_failed: h=2 ok=0", ok == 0);
-        UV_CHECK("upstream_failed: h=2 status",
-                 strcmp(status, "upstream_failed") == 0);
+        bool found = log_row_at(progress_store_db(), 2, &ok, status,
+                                sizeof(status), kind, sizeof(kind));
+        UV_CHECK("upstream_failed: h=2 row rolled back", !found && ok == -1);
+        UV_CHECK("upstream_failed: cursor held at h=2",
+                 utxo_apply_stage_cursor() == 2);
+        UV_CHECK("upstream_failed: typed blocker recorded",
+                 blocker_exists("utxo_apply.apply_failed"));
+        blocker_clear("utxo_apply.apply_failed");
         uv_teardown(dir, &ms, &sc);
     }
 

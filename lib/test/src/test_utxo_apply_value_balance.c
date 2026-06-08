@@ -36,13 +36,19 @@
 #include "test/test_helpers.h"
 
 #include "core/uint256.h"
+#include "jobs/stage_helpers.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_stage.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "script/script.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "util/safe_alloc.h"
+#include "util/stage.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -137,6 +143,125 @@ static bool uavb_add_joinsplit(struct transaction *tx, int64_t vpub_new)
     return true;
 }
 
+static bool uavb_exec(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (rc != SQLITE_OK)
+        printf("uavb SQL failed: %s\n", err ? err : "(no message)");
+    if (err) sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
+static bool uavb_set_cursor_and_frontier(sqlite3 *db, int cursor)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    sqlite3_stmt *st = NULL;
+    bool ok = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+        "VALUES('utxo_apply',?,1)",
+        -1, &st, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_int(st, 1, cursor);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_finalize(st);
+    if (ok)
+        ok = coins_kv_set_applied_height_in_tx(db, cursor);
+    if (!ok) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    return true;
+}
+
+static bool uavb_put_utxo_log(sqlite3 *db, int height, const char *status,
+                              int ok)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+        "VALUES(?,?,?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 3, ok);
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return done;
+}
+
+static bool uavb_row_exists(sqlite3 *db, const char *table, int height)
+{
+    char sql[96];
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM %s WHERE height=?", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool uavb_seed_future_delta(sqlite3 *db, int height,
+                                   const struct uint256 *txid,
+                                   const struct uint256 *branch_hash)
+{
+    if (!coins_kv_add(db, txid->data, 0, 777, height, false, NULL, 0))
+        return false;
+    struct delta_entry added;
+    memset(&added, 0, sizeof(added));
+    added.txid = *txid;
+    added.vout = 0;
+    added.value = 777;
+
+    struct delta_summary s;
+    memset(&s, 0, sizeof(s));
+    s.ok = true;
+    s.status = "verified";
+    s.added = &added;
+    s.added_count = 1;
+    return utxo_apply_delta_persist(db, height, branch_hash, &s);
+}
+
+static int uavb_repair_fixture_open(char dir[256], const char *tag,
+                                    const struct uavb_coin *coin)
+{
+    test_make_tmpdir(dir, 256, "utxo_apply_value_overflow_repair", tag);
+    if (!progress_store_open(dir))
+        return 1;
+    sqlite3 *db = progress_store_db();
+    if (!stage_table_ensure(db) ||
+        !coins_kv_ensure_schema(db) ||
+        !utxo_apply_ensure_delta_schema(db) ||
+        !uavb_exec(db, "CREATE TABLE IF NOT EXISTS utxo_apply_log("
+                       "height INTEGER PRIMARY KEY,"
+                       "status TEXT,"
+                       "ok INTEGER NOT NULL)"))
+        return 2;
+    if (!coins_kv_add(db, coin->txid.data, coin->vout, coin->value, 0,
+                      false, NULL, 0))
+        return 3;
+    return 0;
+}
+
+static void uavb_repair_fixture_close(char dir[256])
+{
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+}
+
 int test_utxo_apply_value_balance(void);
 int test_utxo_apply_value_balance(void)
 {
@@ -217,6 +342,120 @@ int test_utxo_apply_value_balance(void)
             }
         }
         block_free(&b);
+    }
+
+    /* (d) STALE value_overflow REPAIR.
+     * Seed a false value_overflow row at H=1 below cursor=3 and a future h=2
+     * inverse delta. The current binary dry-runs H successfully, so the one-shot
+     * rewinds cursor/frontier to H, deletes rows [H..cursor), and inverts h=2. */
+    {
+        char dir[256];
+        UAVB_CHECK("(d) repair fixture opens",
+                   uavb_repair_fixture_open(dir, "ok", &coin) == 0);
+        sqlite3 *db = progress_store_db();
+        struct block b;
+        bool built = uavb_build_block(&b, 0xD4, &coin, coin.value);
+        UAVB_CHECK("(d) repair block builds", built);
+        if (built) {
+            struct uint256 block_hash;
+            struct uint256 future_txid;
+            struct uint256 future_hash;
+            block_get_hash(&b, &block_hash);
+            uint256_set_null(&future_txid);
+            future_txid.data[0] = 0xF2;
+            uint256_set_null(&future_hash);
+            future_hash.data[0] = 0xA2;
+
+            bool seeded =
+                uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                uavb_put_utxo_log(db, 2, "verified", 1) &&
+                uavb_seed_future_delta(db, 2, &future_txid, &future_hash) &&
+                uavb_set_cursor_and_frontier(db, 3);
+            UAVB_CHECK("(d) repair stale rows seeded", seeded);
+
+            struct utxo_apply_value_overflow_repair_result rr;
+            bool ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            int32_t frontier = -1;
+            bool frontier_found = false;
+            (void)coins_kv_get_applied_height(db, &frontier, &frontier_found);
+            UAVB_CHECK("(d) repair call succeeds", ok);
+            UAVB_CHECK("(d) repair reports repaired",
+                       rr.attempted && rr.dry_run_ok && rr.repaired &&
+                       rr.cursor_before == 3 && rr.cursor_after == 1);
+            UAVB_CHECK("(d) cursor/frontier rewound to H",
+                       frontier_found && frontier == 1 &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 1);
+            UAVB_CHECK("(d) stale log rows deleted",
+                       !uavb_row_exists(db, "utxo_apply_log", 1) &&
+                       !uavb_row_exists(db, "utxo_apply_log", 2));
+            UAVB_CHECK("(d) future delta deleted and inverse applied",
+                       !uavb_row_exists(db, "utxo_apply_delta", 2) &&
+                       !coins_kv_exists(db, future_txid.data, 0));
+
+            /* Re-seed the stale row/cursor under the same block hash: the
+             * marker should stop a second mutation. */
+            bool reseeded = uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                            uavb_set_cursor_and_frontier(db, 3);
+            UAVB_CHECK("(d) marker guard reseed succeeds", reseeded);
+            memset(&rr, 0, sizeof(rr));
+            ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            UAVB_CHECK("(d) marker guard stops second attempt",
+                       ok && rr.marker_seen && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3);
+        }
+        block_free(&b);
+        uavb_repair_fixture_close(dir);
+    }
+
+    /* (e) REPAIR GUARDS.
+     * Wrong author refuses before mutation; a genuinely invalid current-binary
+     * dry-run logs the verdict and leaves the row/cursor untouched. */
+    {
+        char dir[256];
+        UAVB_CHECK("(e) guard fixture opens",
+                   uavb_repair_fixture_open(dir, "guards", &coin) == 0);
+        sqlite3 *db = progress_store_db();
+        struct block b;
+        bool built = uavb_build_block(&b, 0xE5, &coin, coin.value);
+        UAVB_CHECK("(e) guard block builds", built);
+        if (built) {
+            struct uint256 block_hash;
+            block_get_hash(&b, &block_hash);
+            bool seeded = uavb_put_utxo_log(db, 1, "value_overflow", 0) &&
+                          uavb_set_cursor_and_frontier(db, 3);
+            UAVB_CHECK("(e) author guard rows seeded", seeded);
+
+            utxo_projection_test_set_author(UTXO_AUTHOR_LEGACY);
+            struct utxo_apply_value_overflow_repair_result rr;
+            bool ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &block_hash, &b, &rr);
+            UAVB_CHECK("(e) non-stage author refused without mutation",
+                       ok && rr.author_refused && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
+                       uavb_row_exists(db, "utxo_apply_log", 1));
+            utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        }
+        block_free(&b);
+
+        struct block bad;
+        built = uavb_build_block(&bad, 0xE6, &coin, coin.value + 1);
+        UAVB_CHECK("(e) invalid dry-run block builds", built);
+        if (built) {
+            struct uint256 bad_hash;
+            block_get_hash(&bad, &bad_hash);
+            struct utxo_apply_value_overflow_repair_result rr;
+            bool ok = utxo_apply_repair_value_overflow_hole(
+                db, 1, 3, &bad_hash, &bad, &rr);
+            UAVB_CHECK("(e) genuinely invalid block refused without rewind",
+                       ok && rr.genuinely_invalid && !rr.repaired &&
+                       stage_cursor_persisted(db, "utxo_apply", "uavb") == 3 &&
+                       uavb_row_exists(db, "utxo_apply_log", 1));
+        }
+        block_free(&bad);
+        utxo_projection_test_set_author(UTXO_AUTHOR_STAGE);
+        uavb_repair_fixture_close(dir);
     }
 
     printf("=== utxo_apply value-balance money-rule: %d failures ===\n",

@@ -598,6 +598,116 @@ int64_t utxo_projection_seed_from_snapshot(utxo_projection_t *p,
     return rows;
 }
 
+bool utxo_projection_reseed_from_coins_kv(utxo_projection_t *p,
+                                          sqlite3 *progress_db)
+{
+    if (!p || !p->db || !progress_db)
+        return false;
+    if (!ensure_schema(p->db))
+        return false;
+
+    sqlite3_stmt *scan = NULL;
+    if (sqlite3_prepare_v2(progress_db,
+            "SELECT txid, vout, value, height, is_coinbase, script "
+            "FROM coins ORDER BY txid, vout",
+            -1, &scan, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:utxo-projection-reseed
+                "[utxo_projection] reseed scan prepare failed: %s\n",
+                sqlite3_errmsg(progress_db));
+        return false;
+    }
+
+    sqlite3_stmt *ins = NULL;
+    char *err = NULL;
+    bool ok = true;
+    int64_t copied = 0;
+    uint64_t log_head = event_log_size(p->log);
+
+    if (sqlite3_exec(p->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && sqlite3_exec(p->db, "DELETE FROM utxo", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (ok && sqlite3_prepare_v2(p->db,
+            "INSERT OR REPLACE INTO utxo"
+            "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
+            -1, &ins, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:utxo-projection-reseed
+                "[utxo_projection] reseed insert prepare failed: %s\n",
+                sqlite3_errmsg(p->db));
+        ok = false;
+    }
+
+    while (ok) {
+        int rc = sqlite3_step(scan);  // raw-sql-ok:projection-primitive
+        if (rc == SQLITE_DONE)
+            break;
+        if (rc != SQLITE_ROW) {
+            fprintf(stderr,  // obs-ok:utxo-projection-reseed
+                    "[utxo_projection] reseed scan step failed: %s\n",
+                    sqlite3_errmsg(progress_db));
+            ok = false;
+            break;
+        }
+
+        const void *txid = sqlite3_column_blob(scan, 0);
+        int txid_len = sqlite3_column_bytes(scan, 0);
+        const void *script = sqlite3_column_blob(scan, 5);
+        int script_len = sqlite3_column_bytes(scan, 5);
+        if (!txid || txid_len != 32 || script_len < 0) {
+            ok = false;
+            break;
+        }
+
+        sqlite3_bind_blob(ins, 1, txid, 32, SQLITE_TRANSIENT);
+        sqlite3_bind_int(ins, 2, sqlite3_column_int(scan, 1));
+        sqlite3_bind_int64(ins, 3, sqlite3_column_int64(scan, 2));
+        sqlite3_bind_int(ins, 4, sqlite3_column_int(scan, 3));
+        sqlite3_bind_int(ins, 5, sqlite3_column_int(scan, 4));
+        if (script && script_len > 0)
+            sqlite3_bind_blob(ins, 6, script, script_len, SQLITE_TRANSIENT);
+        else
+            sqlite3_bind_blob(ins, 6, "", 0, SQLITE_STATIC);
+
+        int wrc = sqlite3_step(ins);  // raw-sql-ok:projection-primitive
+        if (wrc != SQLITE_DONE) {
+            fprintf(stderr,  // obs-ok:utxo-projection-reseed
+                    "[utxo_projection] reseed insert failed: %s\n",
+                    sqlite3_errmsg(p->db));
+            ok = false;
+            break;
+        }
+        copied++;
+        sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
+    }
+
+    if (ok && !meta_set_u64(p->db, "last_consumed_offset", log_head))
+        ok = false;
+    if (ok && sqlite3_exec(p->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (!ok) {
+        fprintf(stderr,  // obs-ok:utxo-projection-reseed
+                "[utxo_projection] reseed from coins_kv failed: %s\n",
+                err ? err : sqlite3_errmsg(p->db));
+        sqlite3_exec(p->db, "ROLLBACK", NULL, NULL, NULL);
+    }
+
+    if (err)
+        sqlite3_free(err);
+    sqlite3_finalize(ins);
+    sqlite3_finalize(scan);
+
+    if (!ok)
+        return false;
+
+    p->last_consumed_offset = log_head;
+    fprintf(stderr,  // obs-ok:utxo-projection-reseed
+            "[utxo_projection] reseeded %lld UTXOs from coins_kv "
+            "(event_log_head=%llu)\n",
+            (long long)copied, (unsigned long long)log_head);
+    return true;
+}
+
 /* ── Reads ─────────────────────────────────────────────────────────── */
 
 bool utxo_projection_get(utxo_projection_t *p,

@@ -109,4 +109,33 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
                                        _Atomic uint64_t *unwound_counter,
                                        _Atomic int64_t *last_blocked_unix);
 
+struct utxo_apply_value_overflow_repair_result {
+    bool attempted;
+    bool repaired;
+    bool author_refused;
+    bool marker_seen;
+    bool genuinely_invalid;
+    bool dry_run_ok;
+    int height;
+    uint64_t cursor_before;
+    uint64_t cursor_after;
+};
+
+/* One-shot repair for a stale value_overflow utxo_apply_log hole below the
+ * current utxo_apply cursor. The caller supplies the exact hole height, the
+ * currently observed cursor, and the canonical block body/hash for that height.
+ * This function reasserts every consensus guard itself: STAGE author, row still
+ * ok=0/status=value_overflow below cursor, current-binary dry-run succeeds, and
+ * (height,block_hash) marker has not been attempted. On success it uses the
+ * same inverse-delta machinery as reorg unwind in one BEGIN IMMEDIATE, rewinds
+ * the cursor/frontier to `height` (stage cursor == next height to apply), and
+ * records the marker in the same transaction. */
+bool utxo_apply_repair_value_overflow_hole(
+    sqlite3 *db,
+    int height,
+    uint64_t cursor,
+    const struct uint256 *block_hash,
+    const struct block *blk,
+    struct utxo_apply_value_overflow_repair_result *out);
+
 #endif /* ZCL_JOBS_UTXO_APPLY_DELTA_H */

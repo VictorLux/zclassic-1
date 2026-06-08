@@ -15,9 +15,11 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "coins/coins.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -205,6 +207,303 @@ static bool delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
             return false;
         }
     }
+    return true;
+}
+
+static bool unwind_write_cursor(sqlite3 *db, uint64_t value);
+
+static int value_overflow_row_still_present(sqlite3 *db, int height)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok, status FROM utxo_apply_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair row prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return -1;  // raw-return-ok:tri-state-error-logged
+    }
+    sqlite3_bind_int(st, 1, height);
+
+    bool ok = false;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        const unsigned char *status = sqlite3_column_text(st, 1);
+        ok = sqlite3_column_int(st, 0) == 0 &&
+             status && strcmp((const char *)status, "value_overflow") == 0;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair row step failed h=%d "
+                 "rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;  // raw-return-ok:tri-state-error-logged
+    }
+    sqlite3_finalize(st);
+    return ok ? 1 : 0;
+}
+
+static bool repair_marker_key(char key[160], int height,
+                              const struct uint256 *block_hash)
+{
+    if (!key || !block_hash)
+        return false;
+    char hex[65];
+    uint256_get_hex(block_hash, hex);
+    int n = snprintf(key, 160, "utxo_apply.value_overflow_repair.%d.%s",
+                     height, hex);
+    return n > 0 && n < 160;
+}
+
+static bool repair_marker_seen(sqlite3 *db, const char *key, bool *seen)
+{
+    *seen = false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, seen)) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair marker read failed "
+                 "key=%s",
+                 key ? key : "(null)");
+        return false;
+    }
+    return true;
+}
+
+static bool repair_marker_record_in_tx(sqlite3 *db, const char *key)
+{
+    uint8_t one = 1;
+    if (!progress_meta_set_in_tx(db, key, &one, sizeof(one))) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair marker write failed "
+                 "key=%s",
+                 key ? key : "(null)");
+        return false;
+    }
+    return true;
+}
+
+static bool repair_live_lookup(const struct uint256 *txid, uint32_t vout,
+                               struct utxo_apply_lookup *out, void *user)
+{
+    sqlite3 *db = user;
+    if (!txid || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!db)
+        return true;
+
+    struct coins c;
+    coins_init(&c);
+    if (!coins_kv_get_coins(db, txid->data, &c)) {
+        coins_free(&c);
+        return true;
+    }
+
+    bool ok = true;
+    if (vout < c.num_vout && !tx_out_is_null(&c.vout[vout])) {
+        const struct tx_out *o = &c.vout[vout];
+        size_t slen = o->script_pub_key.size;
+        if (slen > UTXO_APPLY_SCRIPT_MAX) {
+            ok = false;
+        } else {
+            out->found = true;
+            out->value = o->value;
+            out->height = (uint32_t)(c.height < 0 ? 0 : c.height);
+            out->is_coinbase = c.is_coinbase;
+            out->script_len = (uint32_t)slen;
+            if (slen)
+                memcpy(out->script, o->script_pub_key.data, slen);
+        }
+    }
+    coins_free(&c);
+    return ok;
+}
+
+bool utxo_apply_repair_value_overflow_hole(
+    sqlite3 *db,
+    int height,
+    uint64_t cursor,
+    const struct uint256 *block_hash,
+    const struct block *blk,
+    struct utxo_apply_value_overflow_repair_result *out)
+{
+    struct utxo_apply_value_overflow_repair_result local;
+    memset(&local, 0, sizeof(local));
+    local.height = height;
+    local.cursor_before = cursor;
+    local.cursor_after = cursor;
+    if (out)
+        *out = local;
+
+    if (!db || !block_hash || !blk) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair refused: bad input "
+                 "db=%p block_hash=%p blk=%p",
+                 (void *)db, (const void *)block_hash, (const void *)blk);
+        return false;
+    }
+    if (height < 0 || cursor == 0 || (uint64_t)height >= cursor) {
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    local.attempted = true;
+
+    if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE) {
+        local.author_refused = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair refused h=%d: "
+                 "utxo author is not stage",
+                 height);
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    progress_store_tx_lock();
+
+    int row_present = value_overflow_row_still_present(db, height);
+    if (row_present < 0) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (row_present == 0) {
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    struct delta_summary dry;
+    utxo_apply_compute_block_delta(blk, (uint32_t)height,
+                                   repair_live_lookup, db, &dry);
+    local.dry_run_ok = dry.ok;
+    if (!dry.ok) {
+        local.genuinely_invalid = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair: H genuinely invalid "
+                 "height=%d status=%s kind=%s",
+                 height, dry.status ? dry.status : "(null)",
+                 dry.failure_kind ? dry.failure_kind : "(null)");
+        free_delta(&dry);
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+    free_delta(&dry);
+
+    char marker[160];
+    if (!repair_marker_key(marker, height, block_hash)) {
+        progress_store_tx_unlock();
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair marker key overflow h=%d",
+                 height);
+        return false;
+    }
+
+    bool marker_seen = false;
+    if (!repair_marker_seen(db, marker, &marker_seen)) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (marker_seen) {
+        local.marker_seen = true;
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair skipped h=%d: "
+                 "one-shot marker already present",
+                 height);
+        progress_store_tx_unlock();
+        if (out)
+            *out = local;
+        return true;
+    }
+
+    int C = (int)cursor;
+    if ((uint64_t)C != cursor || C <= height) {
+        progress_store_tx_unlock();
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair cursor invalid h=%d "
+                 "cursor=%llu",
+                 height, (unsigned long long)cursor);
+        return false;
+    }
+
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair BEGIN failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    /* `stage_cursor` stores the NEXT height to apply. The stale hole is at H,
+     * so the atomic rewind deletes [H, C-1], inverts [C-1, H], and writes both
+     * utxo_apply cursor and coins_applied_height to H so step_apply retries H. */
+    for (int h = C - 1; h >= height; h--) {
+        if (!emit_inverse_delta(db, h)) {
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            progress_store_tx_unlock();
+            return false;
+        }
+    }
+    if (!delete_rows_above(db, height, C - 1)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (!unwind_write_cursor(db, (uint64_t)height)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (!coins_kv_set_applied_height_in_tx(db, height)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (!repair_marker_record_in_tx(db, marker)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] value_overflow repair COMMIT failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    progress_store_tx_unlock();
+
+    local.repaired = true;
+    local.cursor_after = (uint64_t)height;
+    LOG_WARN("utxo_apply",
+             "[utxo_apply] value_overflow repair rewound cursor %llu -> %d "
+             "for stale hole h=%d",
+             (unsigned long long)cursor, height, height);
+
+    utxo_projection_t *proj = utxo_projection_get_global();
+    if (proj) {
+        progress_store_tx_lock();
+        bool reseeded = utxo_projection_reseed_from_coins_kv(proj, db);
+        progress_store_tx_unlock();
+        if (!reseeded) {
+            LOG_WARN("utxo_apply",
+                     "[utxo_apply] value_overflow repair: projection reseed "
+                     "from coins_kv failed after consensus rewind "
+                     "(non-blocking)");
+        }
+    }
+    if (out)
+        *out = local;
     return true;
 }
 
