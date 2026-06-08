@@ -207,6 +207,7 @@ static void validate_summary_init(struct validate_summary *s)
 }
 
 static void validate_block_scripts(const struct block *blk, int height,
+                                   bool count_counters,
                                    struct validate_summary *out)
 {
     validate_summary_init(out);
@@ -269,9 +270,11 @@ static void validate_block_scripts(const struct block *blk, int height,
                                     &prev.script_pub_key, flags, &checker,
                                     branch_id, &serror);
             if (ok) {
-                atomic_fetch_add(&g_inputs_verified_total, 1);
+                if (count_counters)
+                    atomic_fetch_add(&g_inputs_verified_total, 1);
             } else {
-                atomic_fetch_add(&g_inputs_failed_total, 1);
+                if (count_counters)
+                    atomic_fetch_add(&g_inputs_failed_total, 1);
                 out->ok = 0;
                 if (out->first_failure_vin < 0) {
                     out->first_failure_txid = tx->hash;
@@ -296,6 +299,39 @@ static void validate_block_scripts(const struct block *blk, int height,
             }
         }
     }
+}
+
+bool script_validate_stage_dry_run_block(
+    const struct block *blk,
+    int height,
+    struct script_validate_dry_run_report *out)
+{
+    if (!blk || !out)
+        LOG_FAIL("script_validate", "dry_run_block: bad input");
+
+    struct validate_summary summary;
+    validate_block_scripts(blk, height, false, &summary);
+
+    memset(out, 0, sizeof(*out));
+    out->ok = summary.ok != 0;
+    out->internal_error = summary.internal_error != 0;
+    out->tx_count = summary.tx_count;
+    out->input_count = summary.input_count;
+    out->first_failure_txid = summary.first_failure_txid;
+    out->first_failure_vin = summary.first_failure_vin;
+    out->first_failure_serror = summary.first_failure_serror;
+
+    const char *status = "verified";
+    if (!summary.ok && summary.internal_error) {
+        status = (summary.reason[0] != '\0' &&
+                  strncmp(summary.reason, "block_decode_failed", 19) == 0)
+                     ? "block_decode_failed"
+                     : "prevout_unresolved";
+    } else if (!summary.ok) {
+        status = "script_invalid";
+    }
+    snprintf(out->status, sizeof(out->status), "%s", status);
+    return true;
 }
 
 static job_result_t step_validate(struct stage_step_ctx *c)
@@ -352,7 +388,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct validate_summary summary;
-    validate_block_scripts(&blk, next_h, &summary);
+    validate_block_scripts(&blk, next_h, true, &summary);
     block_free(&blk);
 
     const char *status = "verified";

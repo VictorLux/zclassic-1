@@ -11,7 +11,7 @@ struct main_state;
 struct sqlite3;
 struct stage_reducer_frontier_reconcile_result;
 
-bool stage_reducer_frontier_try_coin_tear_repair(
+bool stage_reducer_frontier_try_replay_repairs(
     struct sqlite3 *db,
     struct main_state *ms,
     bool apply,

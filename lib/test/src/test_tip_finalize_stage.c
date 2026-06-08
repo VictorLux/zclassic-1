@@ -406,6 +406,37 @@ int test_tip_finalize_stage(void)
 
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("repair_replay: setup",
+                 tf_setup("repair_replay", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("repair_replay: public starts at restored tip",
+                 active_chain_height(&ms.chain_active) == 3);
+        TF_CHECK("repair_replay: force cursor below authority",
+                 exec_sql(progress_store_db(),
+                    "INSERT OR REPLACE INTO stage_cursor"
+                    "(name, cursor, updated_at) "
+                    "VALUES('tip_finalize', 1, 1)"));
+        TF_CHECK("repair_replay: lower row replays",
+                 tip_finalize_stage_step_once() == JOB_ADVANCED);
+        TF_CHECK("repair_replay: cursor advanced",
+                 tip_finalize_stage_cursor() == 2);
+        TF_CHECK("repair_replay: public height did not regress",
+                 active_chain_height(&ms.chain_active) == 3);
+        TF_CHECK("repair_replay: authority height did not regress",
+                 tip_finalize_stage_last_height() == 3);
+        TF_CHECK("repair_replay: local window may rewind for replay",
+                 active_chain_cached_tip(&ms.chain_active) == &sc.blocks[2]);
+        int row_ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+        TF_CHECK("repair_replay: replay row written",
+                 log_row_at(progress_store_db(), 1, &row_ok, status,
+                            sizeof(status), &depth, &utxos));
+        TF_CHECK("repair_replay: replay row finalized",
+                 row_ok == 1 && strcmp(status, "finalized") == 0);
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("happy: setup",
                  tf_setup("happy", 3, TF_FAIL_NONE, -1, dir, sizeof(dir),
                           &ms, &sc) == 0);

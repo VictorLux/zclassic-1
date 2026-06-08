@@ -10,9 +10,14 @@
 
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
+#include "jobs/created_outputs_index.h"
+#include "jobs/script_validate_stage.h"
 #include "jobs/utxo_apply_delta.h"
+#include "utxo_apply_delta_internal.h"
+#include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
+#include "storage/utxo_projection.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
 #include "util/util.h"
@@ -21,6 +26,7 @@
 
 #include <sqlite3.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
@@ -51,6 +57,43 @@ static bool hole_below_cursor_unlocked(sqlite3 *db, int cursor,
         LOG_WARN("stage_repair",
                  "[stage_repair] %s hole step failed rc=%d: %s",
                  status, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+static bool stale_script_hole_unlocked(sqlite3 *db, int cursor,
+                                       int *out_height)
+{
+    *out_height = -1;
+    if (cursor <= 0)
+        return true;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT height FROM script_validate_log "
+            "WHERE ok = 0 "
+            "  AND status IN ('internal_error', 'prevout_unresolved', "
+            "                 'block_decode_failed') "
+            "  AND height < ? "
+            "ORDER BY height LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script hole prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, cursor);
+
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *out_height = sqlite3_column_int(st, 0);
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script hole step failed rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);
         return false;
     }
@@ -103,6 +146,295 @@ static bool read_active_block_checked(struct main_state *ms, int height,
     return true;
 }
 
+static bool reducer_repair_marker_key(char key[192], const char *kind,
+                                      int height,
+                                      const struct uint256 *block_hash)
+{
+    if (!key || !kind || !block_hash)
+        return false;
+    char hex[65];
+    uint256_get_hex(block_hash, hex);
+    int n = snprintf(key, 192, "reducer_frontier.%s_repair.%d.%s",
+                     kind, height, hex);
+    return n > 0 && n < 192;
+}
+
+static bool reducer_repair_marker_seen(sqlite3 *db, const char *key,
+                                       bool *seen)
+{
+    *seen = false;
+    uint8_t blob[8] = {0};
+    size_t n = 0;
+    if (!progress_meta_get(db, key, blob, sizeof(blob), &n, seen)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] repair marker read failed key=%s",
+                 key ? key : "(null)");
+        return false;
+    }
+    return true;
+}
+
+static bool reducer_repair_marker_record_in_tx(sqlite3 *db, const char *key)
+{
+    uint8_t one = 1;
+    if (!progress_meta_set_in_tx(db, key, &one, sizeof(one))) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] repair marker write failed key=%s",
+                 key ? key : "(null)");
+        return false;
+    }
+    return true;
+}
+
+static bool delta_exists(sqlite3 *db, int height, bool *exists)
+{
+    *exists = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM utxo_apply_delta WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] delta presence prepare failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) {
+        *exists = true;
+        return true;
+    }
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] delta presence step failed h=%d rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool rewindable_utxo_row(sqlite3 *db, int height)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok FROM utxo_apply_log WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] utxo row prepare failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc != SQLITE_ROW) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused: missing "
+                 "utxo_apply_log row h=%d",
+                 height);
+        sqlite3_finalize(st);
+        return false;
+    }
+    bool ok_row = sqlite3_column_int(st, 0) == 1;
+    sqlite3_finalize(st);
+
+    bool have_delta = false;
+    if (!delta_exists(db, height, &have_delta))
+        return false;
+    if (ok_row && !have_delta) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused: ok=1 "
+                 "utxo row has no inverse delta h=%d",
+                 height);
+        return false;
+    }
+    if (!ok_row && have_delta) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused: failed "
+                 "utxo row unexpectedly has delta h=%d",
+                 height);
+        return false;
+    }
+    return true;
+}
+
+static bool inverse_checked(sqlite3 *db, int first_h, int cursor)
+{
+    for (int h = cursor - 1; h >= first_h; h--) {
+        if (!rewindable_utxo_row(db, h))
+            return false;
+        if (!utxo_apply_emit_inverse_delta(db, h))
+            return false;
+    }
+    return true;
+}
+
+static bool created_outputs_height_indexed(sqlite3 *db, int height,
+                                           bool *indexed)
+{
+    *indexed = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM created_outputs WHERE height = ? LIMIT 1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] created_outputs height prepare failed "
+                 "h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) {
+        *indexed = true;
+        return true;
+    }
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] created_outputs height step failed h=%d "
+                 "rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool backfill_created_outputs_range(sqlite3 *db, struct main_state *ms,
+                                           int first_h, int last_h)
+{
+    if (!created_outputs_index_ensure_schema(db))
+        return false;
+
+    for (int h = first_h; h <= last_h; h++) {
+        bool indexed = false;
+        if (!created_outputs_height_indexed(db, h, &indexed))
+            return false;
+        if (indexed)
+            continue;
+
+        struct block blk;
+        struct uint256 hash;
+        block_init(&blk);
+        bool ok = read_active_block_checked(ms, h, &blk, &hash);
+        if (ok)
+            ok = created_outputs_index_put_block(db, &blk, h);
+        block_free(&blk);
+        if (!ok) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] created_outputs backfill failed h=%d",
+                     h);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool delete_log_range(sqlite3 *db, const char *table,
+                             int first_h, int cursor)
+{
+    if (cursor <= first_h)
+        return true;
+
+    char sql[160];
+    int n = snprintf(sql, sizeof(sql),
+                     "DELETE FROM %s WHERE height >= ? AND height < ?",
+                     table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("stage_repair", "delete_log_range sql overflow table=%s",
+                 table);
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] delete %s prepare failed: %s",
+                 table, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, first_h);
+    sqlite3_bind_int(st, 2, cursor);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] delete %s rc=%d: %s",
+                 table, rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool dry_run_stale_script_replay(
+    sqlite3 *db,
+    struct main_state *ms,
+    int height,
+    int utxo_cursor,
+    int backfill_top,
+    const struct block *blk,
+    struct script_validate_dry_run_report *dry)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script dry-run BEGIN failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = backfill_created_outputs_range(db, ms, height, backfill_top) &&
+              inverse_checked(db, height, utxo_cursor) &&
+              script_validate_stage_dry_run_block(blk, height, dry);
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return ok;
+}
+
+static bool stale_script_replay_tx(
+    sqlite3 *db,
+    struct main_state *ms,
+    int height,
+    int script_cursor,
+    int proof_cursor,
+    int utxo_cursor,
+    int tip_cursor,
+    int backfill_top,
+    const char *marker)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair BEGIN failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+
+    if (!backfill_created_outputs_range(db, ms, height, backfill_top) ||
+        !inverse_checked(db, height, utxo_cursor) ||
+        !delete_log_range(db, "script_validate_log", height, script_cursor) ||
+        !delete_log_range(db, "proof_validate_log", height, proof_cursor) ||
+        !utxo_apply_delete_rows_above(db, height, utxo_cursor - 1) ||
+        !stage_repair_force_stage_cursor(db, "script_validate", height) ||
+        !stage_repair_force_stage_cursor(db, "proof_validate", height) ||
+        !stage_repair_force_stage_cursor(db, "tip_finalize", height) ||
+        !utxo_apply_unwind_write_cursor(db, (uint64_t)height) ||
+        !coins_kv_set_applied_height_in_tx(db, height) ||
+        !reducer_repair_marker_record_in_tx(db, marker)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair COMMIT failed h=%d: %s",
+                 height, err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return false;
+    }
+    (void)tip_cursor;
+    return true;
+}
+
 static bool maybe_repair_value_overflow(
     sqlite3 *db,
     struct main_state *ms,
@@ -125,8 +457,10 @@ static bool maybe_repair_value_overflow(
     out->value_overflow_cursor_after = cursor;
     if (height < 0 || cursor <= 0 || height >= cursor)
         return true;
-    if (!apply)
+    if (!apply) {
+        out->repaired = true;
         return true;
+    }
 
     struct block blk;
     struct uint256 block_hash;
@@ -159,7 +493,143 @@ static bool maybe_repair_value_overflow(
     return true;
 }
 
-bool stage_reducer_frontier_try_coin_tear_repair(
+static bool maybe_repair_stale_script(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    int script_cursor = -1;
+    int proof_cursor = -1;
+    int utxo_cursor = -1;
+    int tip_cursor = -1;
+    int body_cursor = -1;
+    int height = -1;
+
+    progress_store_tx_lock();
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "proof_validate",
+                                              &proof_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "utxo_apply",
+                                              &utxo_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "tip_finalize",
+                                              &tip_cursor) &&
+              stage_repair_cursor_at_unlocked(db, "body_persist",
+                                              &body_cursor) &&
+              stale_script_hole_unlocked(db, script_cursor, &height);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+
+    out->stale_script_repair_height = height;
+    out->stale_script_cursor_before = script_cursor;
+    out->stale_script_cursor_after = script_cursor;
+    out->stale_script_utxo_cursor_before = utxo_cursor;
+    out->stale_script_tip_cursor_before = tip_cursor;
+    out->stale_script_backfill_first = height;
+    out->stale_script_backfill_last = body_cursor > 0 ? body_cursor - 1 : -1;
+    if (height < 0 || script_cursor <= 0 || height >= script_cursor ||
+        proof_cursor <= height || utxo_cursor <= height ||
+        body_cursor <= height)
+        return true;
+    if (!apply) {
+        out->repaired = true;
+        return true;
+    }
+
+    struct block blk;
+    struct uint256 block_hash;
+    block_init(&blk);
+    if (!read_active_block_checked(ms, height, &blk, &block_hash)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused: cannot read "
+                 "canonical block h=%d",
+                 height);
+        block_free(&blk);
+        return true;
+    }
+
+    out->stale_script_repair_attempted = true;
+    if (utxo_projection_get_author() != UTXO_AUTHOR_STAGE) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused h=%d: "
+                 "utxo author is not stage",
+                 height);
+        block_free(&blk);
+        return true;
+    }
+
+    progress_store_tx_lock();
+
+    struct script_validate_dry_run_report dry;
+    int backfill_top = body_cursor - 1;
+    if (!dry_run_stale_script_replay(db, ms, height, utxo_cursor,
+                                     backfill_top, &blk, &dry)) {
+        progress_store_tx_unlock();
+        block_free(&blk);
+        return false;
+    }
+    if (!dry.ok) {
+        out->stale_script_repair_genuinely_invalid = true;
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair: H genuinely invalid "
+                 "height=%d status=%s",
+                 height, dry.status);
+        progress_store_tx_unlock();
+        block_free(&blk);
+        return true;
+    }
+
+    char marker[192];
+    if (!reducer_repair_marker_key(marker, "script_replay", height,
+                                   &block_hash)) {
+        progress_store_tx_unlock();
+        block_free(&blk);
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair marker overflow h=%d",
+                 height);
+        return false;
+    }
+    bool marker_seen = false;
+    if (!reducer_repair_marker_seen(db, marker, &marker_seen)) {
+        progress_store_tx_unlock();
+        block_free(&blk);
+        return false;
+    }
+    if (marker_seen) {
+        out->stale_script_repair_marker_seen = true;
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair skipped h=%d: "
+                 "one-shot marker already present",
+                 height);
+        progress_store_tx_unlock();
+        block_free(&blk);
+        return true;
+    }
+
+    ok = stale_script_replay_tx(db, ms, height, script_cursor, proof_cursor,
+                                utxo_cursor, tip_cursor, backfill_top,
+                                marker);
+    progress_store_tx_unlock();
+    block_free(&blk);
+    if (!ok)
+        return false;
+
+    out->stale_script_repaired = true;
+    out->stale_script_cursor_after = height;
+    out->refused_coin_tear = false;
+    out->repaired = true;
+    LOG_WARN("stage_repair",
+             "[stage_repair] stale script repair rewound replay cursors to "
+             "h=%d (script=%d proof=%d utxo=%d tip=%d; "
+             "created_outputs backfilled %d..%d)",
+             height, script_cursor, proof_cursor, utxo_cursor, tip_cursor,
+             height, backfill_top);
+    return true;
+}
+
+bool stage_reducer_frontier_try_replay_repairs(
     sqlite3 *db,
     struct main_state *ms,
     bool apply,
@@ -167,7 +637,7 @@ bool stage_reducer_frontier_try_coin_tear_repair(
     bool *handled)
 {
     if (!out || !handled)
-        LOG_FAIL("stage_repair", "coin tear repair: NULL output");
+        LOG_FAIL("stage_repair", "replay repair: NULL output");
     *handled = false;
 
     if (!maybe_repair_value_overflow(db, ms, apply, out))
@@ -180,6 +650,18 @@ bool stage_reducer_frontier_try_coin_tear_repair(
                  out->value_overflow_repair_height,
                  out->value_overflow_cursor_before,
                  out->value_overflow_cursor_after);
+        *handled = true;
+        return true;
+    }
+
+    if (!maybe_repair_stale_script(db, ms, apply, out))
+        return false;
+    if (out->stale_script_repaired) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier repaired stale script "
+                 "hole h=%d; forward stages must replay from the hole "
+                 "before L1 continues",
+                 out->stale_script_repair_height);
         *handled = true;
         return true;
     }

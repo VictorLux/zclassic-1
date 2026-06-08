@@ -486,16 +486,17 @@ static bool reducer_frontier_reconcile_light_impl(
         return true;
     }
 
+    bool handled_replay = false;
+    if (!stage_reducer_frontier_try_replay_repairs(
+            db, ms, apply, &local, &handled_replay))
+        return false;
+    if (handled_replay) {
+        if (out)
+            *out = local;
+        return true;
+    }
+
     if (local.refused_coin_tear) {
-        bool handled = false;
-        if (!stage_reducer_frontier_try_coin_tear_repair(
-                db, ms, apply, &local, &handled))
-            return false;
-        if (handled) {
-            if (out)
-                *out = local;
-            return true;
-        }
         LOG_WARN("stage_repair",
                  "[stage_repair] reducer_frontier L1 refused: "
                  "coins_applied_height=%d > hstar=%d (L2 required)",
@@ -515,7 +516,8 @@ static bool reducer_frontier_reconcile_light_impl(
     if (!reconcile_tip_finalize_cursor(db, apply, &local))
         return false;
 
-    local.repaired = local.clamped_tip_finalize ||
+    local.repaired = local.repaired ||
+                     local.clamped_tip_finalize ||
                      local.clamped_body_fetch ||
                      local.scripts_set > 0 ||
                      local.have_data_set > 0 ||

@@ -473,8 +473,11 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
                     utxo_size_after, 0, new_tip->phashBlock))
         return JOB_FATAL;
 
-    /* Durable row first; then move the local chain[] cache/window. Public
-     * authority is published explicitly below. */
+    int64_t published_before = atomic_load(&g_last_advance_height);
+    bool publish = published_before < 0 ||
+                   new_tip->nHeight >= (int)published_before;
+
+    /* Durable row first; then move the local chain[] cache/window. */
     if (!active_chain_move_window_tip(&ms->chain_active, new_tip)) { // one-write-path-ok:reducer-tip-authority
         LOG_WARN("tip_finalize",
             "[tip_finalize] chain_active set_tip failed height=%d",
@@ -482,15 +485,15 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         return JOB_FATAL;
     }
 
-    /* Run derived tip side effects after the local cache moves. */
-    tip_finalize_run_post_finalize(new_tip);
-
     atomic_fetch_add(&g_finalized_total, 1);
     atomic_fetch_add(&g_total_work_added_low,
                      arith_uint256_get_low64(&work_delta));
     atomic_fetch_add(&g_total_work_added_high,
                      ((uint64_t)work_delta.pn[3] << 32) | work_delta.pn[2]);
-    update_last_advance(next_h, new_tip->phashBlock->data);
+    if (publish) {
+        tip_finalize_run_post_finalize(new_tip);
+        update_last_advance(next_h, new_tip->phashBlock->data);
+    }
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }

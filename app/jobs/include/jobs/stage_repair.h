@@ -116,6 +116,17 @@ struct stage_reducer_frontier_reconcile_result {
     int value_overflow_repair_height;
     int value_overflow_cursor_before;
     int value_overflow_cursor_after;
+    bool stale_script_repair_attempted;
+    bool stale_script_repaired;
+    bool stale_script_repair_marker_seen;
+    bool stale_script_repair_genuinely_invalid;
+    int stale_script_repair_height;
+    int stale_script_cursor_before;
+    int stale_script_cursor_after;
+    int stale_script_backfill_first;
+    int stale_script_backfill_last;
+    int stale_script_utxo_cursor_before;
+    int stale_script_tip_cursor_before;
 };
 
 /* Reconcile a reducer cursor/coins desync that wedges the chain.
