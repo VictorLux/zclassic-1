@@ -580,6 +580,7 @@ int spec_render_audit(void);
 int spec_smoke(void);
 int spec_100_stories(void);
 int spec_consensus_compat(void);
+int spec_regression_gates_critical(void);
 
 /* ── DRY test macros ─────────────────────────────────────── */
 

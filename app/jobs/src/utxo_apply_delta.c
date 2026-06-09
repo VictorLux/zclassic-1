@@ -10,6 +10,8 @@
 #include "jobs/utxo_apply_delta.h"
 
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/subsidy.h"
 #include "core/uint256.h"
 #include "event/event.h"
 #include "primitives/block.h"
@@ -147,6 +149,10 @@ void utxo_apply_compute_block_delta(const struct block *blk,
      * AND any owned restore-scripts up to the running counts. */
     out->spent = spent;
     out->added = added;
+
+    /* Running Σ of transparent+shielded fees, for the coinbase subsidy
+     * ceiling enforced after the loop. */
+    int64_t total_fees = 0;
 
     for (size_t ti = 0; ti < blk->num_vtx; ti++) {
         const struct transaction *tx = &blk->vtx[ti];

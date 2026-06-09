@@ -193,6 +193,9 @@ static inline bool script_get_op(const struct script *s, size_t *pc,
         }
         if (*pc + nsize > s->size) return false;
         if (data && datalen) {
+            /* SAFETY: callers provide MAX_SCRIPT_ELEMENT_SIZE buffers; any
+             * element larger than the consensus limit is malformed script. */
+            if (nsize > MAX_SCRIPT_ELEMENT_SIZE) return false;
             memcpy(data, s->data + *pc, nsize);
             *datalen = nsize;
         }

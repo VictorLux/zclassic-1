@@ -74,8 +74,17 @@ WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
 
+# Platform-specific compiler flags.
+# -fstack-clash-protection: GCC/Linux-clang only; not supported by Apple clang.
+# -Wno-gnu-zero-variadic-macro-arguments: Apple clang pedantic warning for ##__VA_ARGS__
+#   extension used pervasively in the codebase; GCC accepts it silently.
+UNAME_S := $(shell uname -s)
+STACK_CLASH_FLAG := $(if $(filter Linux,$(UNAME_S)),-fstack-clash-protection,)
+GNU_VARIADIC_FLAG := $(if $(filter Darwin,$(UNAME_S)),-Wno-gnu-zero-variadic-macro-arguments,)
+
 CFLAGS = -std=c23 -O3 -march=native -flto=auto -Wall -Wextra -Werror -pedantic \
-	-Wno-stringop-overflow -Wno-unused-result \
+	-fstack-protector-strong $(STACK_CLASH_FLAG) -D_FORTIFY_SOURCE=2 \
+	$(GNU_VARIADIC_FLAG) -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \

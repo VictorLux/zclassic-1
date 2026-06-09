@@ -43,6 +43,9 @@ int main(void)
     failures += spec_wallet_flow();
     failures += spec_wallet_accessibility();
 
+    printf("\n=== Consensus Critical Regression Gates (5/5 bugs) ===\n");
+    failures += spec_regression_gates_critical();
+
     printf("\n=== MVC Data Layer & Event System ===\n");
     failures += spec_data_hooks();
     failures += spec_event_observers();
