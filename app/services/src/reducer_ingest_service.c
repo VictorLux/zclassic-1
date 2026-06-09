@@ -36,6 +36,7 @@
  * freshly-written stage log rows. */
 #include "consensus/validation.h"
 #include "validation/check_block.h"
+#include "validation/process_block.h"  /* process_block_should_skip_contextual_header */
 #include "primitives/block.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -272,6 +273,31 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
         LOG_FAIL("reducer", "check_block failed: %s",
                  out->reject_reason[0] ? out->reject_reason : "unknown");
         return false;
+    }
+
+    /* (1b) Contextual header gate on the SAME synchronous chokepoint every
+     * block — P2P included — passes through, BEFORE admit. The stateless
+     * check_block above cannot see ancestry; without this the live P2P block
+     * path accepts a header carrying trivially-easy nBits (retarget bypass,
+     * audit C-4) or an out-of-order timestamp (MTP). contextual_check_block_header
+     * runs GetNextWorkRequired (bad-diffbits) + median-time-past (time-too-old)
+     * + solution-size/checkpoint/version. Mirror accept_block_header's skip
+     * policy so IBD / post-snapshot sparse-window blocks — where
+     * GetNextWorkRequired cannot walk its averaging window contiguously — are
+     * not spuriously rejected; full ancestry-based validation reconverges as
+     * the window fills. Genesis is short-circuited inside the callee; an
+     * unknown prev (out-of-order arrival) defers the check to the stages. */
+    if (ctl->ms) {
+        struct block_index *prev =
+            block_map_find(&ctl->ms->map_block_index,
+                           &pblock->header.hashPrevBlock);
+        if (prev &&
+            !process_block_should_skip_contextual_header(
+                ctl->ms, prev, &ctl->params->consensus) &&
+            !contextual_check_block_header(&pblock->header, out, ctl->params,
+                                           prev, ctl->ms->fCheckpointsEnabled))
+            LOG_FAIL("reducer", "contextual header check failed: %s",
+                     out->reject_reason[0] ? out->reject_reason : "unknown");
     }
 
     /* (2) Push the header + raw bytes into the header_admit_inbox so the

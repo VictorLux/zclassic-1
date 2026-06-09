@@ -207,6 +207,22 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                     free_delta(out);
                     return;
                 }
+                /* Coinbase maturity (ports connect_block.c:367-380; the
+                 * canonical check has no production caller). A coinbase output
+                 * may not be spent until COINBASE_MATURITY (100) blocks deep —
+                 * without this the reducer path accepts a premature coinbase
+                 * spend (audit H-1). restore_coinbase/restore_height are the
+                 * spent coin's own flags, set above for both the intra-block
+                 * create and the persisted-UTXO lookup branches. */
+                if (restore_coinbase &&
+                    (int64_t)block_height - (int64_t)restore_height
+                        < COINBASE_MATURITY) {
+                    delta_fail(out, "premature_coinbase_spend",
+                               "bad-txns-premature-spend-of-coinbase",
+                               &op->hash, op->n);
+                    free_delta(out);
+                    return;
+                }
                 struct delta_entry *se = &spent[out->spent_count];
                 se->txid = op->hash;
                 se->vout = op->n;
@@ -324,6 +340,18 @@ void utxo_apply_compute_block_delta(const struct block *blk,
                 free_delta(out);
                 return;
             }
+            /* Accumulate this tx's fee (transparent+shielded) for the coinbase
+             * subsidy ceiling enforced after the loop. value_in_full >=
+             * value_out_full here, so tx_fee >= 0; MoneyRange-guard the running
+             * sum (bad-cb-reward-overflow protection, per connect_block). */
+            int64_t tx_fee = value_in_full - value_out_full;
+            if (tx_fee > MAX_MONEY_ZAT - total_fees) {
+                delta_fail(out, "value_overflow", "fees_out_of_range",
+                           &tx->hash, 0);
+                free_delta(out);
+                return;
+            }
+            total_fees += tx_fee;
         }
     }
 
@@ -334,6 +362,33 @@ void utxo_apply_compute_block_delta(const struct block *blk,
         out->failure_kind = "total_value_delta";
         free_delta(out);
         return;
+    }
+
+    /* Coinbase subsidy ceiling (ports connect_block.c:655-668 bad-cb-amount;
+     * the canonical check has no production caller — see the per-tx money-rule
+     * comment above). The coinbase (vtx[0]) may mint at most subsidy(height) +
+     * Σ fees. Without this the reducer bounds coinbase minting only by the
+     * loose 21B/block total_value_delta cap — a consensus inflation hole
+     * (audit C-2). get_block_subsidy returns the full miner+founders subsidy
+     * and fail-safes to 0 only on null params / negative height, neither
+     * reachable here (uint32_t height, live chain params). */
+    if (blk->num_vtx > 0 && transaction_is_coinbase(&blk->vtx[0])) {
+        int64_t subsidy = get_block_subsidy((int)block_height,
+                                            &chain_params_get()->consensus);
+        if (subsidy < 0 || total_fees > INT64_MAX - subsidy) {
+            delta_fail(out, "value_overflow", "bad-cb-reward-overflow",
+                       &blk->vtx[0].hash, 0);
+            free_delta(out);
+            return;
+        }
+        int64_t block_reward = subsidy + total_fees;
+        int64_t cb_value_out = transaction_get_value_out(&blk->vtx[0]);
+        if (cb_value_out < 0 || cb_value_out > block_reward) {
+            delta_fail(out, "value_overflow", "bad-cb-amount",
+                       &blk->vtx[0].hash, 0);
+            free_delta(out);
+            return;
+        }
     }
 
     /* Success: out->spent/out->added own the arrays (see header). */

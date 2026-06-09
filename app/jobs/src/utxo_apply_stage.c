@@ -60,6 +60,7 @@ static _Atomic uint64_t g_verified_total = 0;
 static _Atomic uint64_t g_spend_unknown_total = 0;
 static _Atomic uint64_t g_utxo_collision_total = 0;
 static _Atomic uint64_t g_value_overflow_total = 0;
+static _Atomic uint64_t g_premature_coinbase_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_internal_error_total = 0;
 static _Atomic uint64_t g_reorg_unwound_total = 0;
@@ -243,6 +244,10 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         atomic_fetch_add(&g_value_overflow_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "utxo_apply value_overflow height=%d", next_h);
+    } else if (strcmp(summary.status, "premature_coinbase_spend") == 0) {
+        atomic_fetch_add(&g_premature_coinbase_total, 1);
+        event_emitf(EV_BLOCK_REJECTED, 0,
+                    "utxo_apply premature_coinbase_spend height=%d", next_h);
     } else {
         atomic_fetch_add(&g_internal_error_total, 1);
         event_emitf(EV_BLOCK_REJECTED, 0,
@@ -474,6 +479,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_spend_unknown_total, (uint64_t)0);
     atomic_store(&g_utxo_collision_total, (uint64_t)0);
     atomic_store(&g_value_overflow_total, (uint64_t)0);
+    atomic_store(&g_premature_coinbase_total, (uint64_t)0);
     atomic_store(&g_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_internal_error_total, (uint64_t)0);
     atomic_store(&g_reorg_unwound_total, (uint64_t)0);
@@ -635,6 +641,8 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_utxo_collision_total));
     json_push_kv_int (out, "value_overflow_total",
                       (int64_t)atomic_load(&g_value_overflow_total));
+    json_push_kv_int (out, "premature_coinbase_total",
+                      (int64_t)atomic_load(&g_premature_coinbase_total));
     json_push_kv_int (out, "upstream_failed_total",
                       (int64_t)atomic_load(&g_upstream_failed_total));
     json_push_kv_int (out, "internal_error_total",
