@@ -4,6 +4,10 @@ Pure C23 full node + decentralized web platform for ZClassic.
 
 One binary. Zero dependencies. 15MB.
 
+## Status Notice
+
+ZClassic23 is work in progress and is currently not syncing properly. Do not use this build as a reliable mainnet node until sync is fixed and the v1 acceptance criteria are met.
+
 ## Quick Start
 
 ```bash
