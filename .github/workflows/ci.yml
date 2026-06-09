@@ -51,8 +51,8 @@ jobs:
           # GCC 13 (Ubuntu 24.04 default) only recognises -std=c2x, not c23.
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-14 pkg-config libssl-dev openssl git
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14 \
-            --slave /usr/bin/cc cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
       - name: make ci (lint, tests, hermetic MVP gates #3/#5/#7)
         # `ci` chains: lint -> bench-regress -> test_zcl -> ci-mvp-gates
         # (the hermetic MVP acceptance gates) -> test-crash -> fuzz -> cov.
@@ -89,8 +89,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-14 pkg-config libssl-dev openssl git
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14 \
-            --slave /usr/bin/cc cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
       - name: build node + rpc
         run: make -j"$(nproc)" zclassic23 zcl-rpc
       - name: "#1 install proxy (ci-install)"
@@ -126,8 +126,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-14 pkg-config libssl-dev openssl git
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14 \
-            --slave /usr/bin/cc cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
       # NOTE: this default GitHub-hosted runner has neither Tor egress nor
       # ~/.zcash-params, so #2 will fail and #4 will SKIP here. Re-target this
       # job at a runner that provides both before treating it as a gate.
@@ -160,8 +160,8 @@ jobs:
           fi
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-14 pkg-config libssl-dev openssl git
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 14 \
-            --slave /usr/bin/cc cc /usr/bin/gcc-14
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
       - name: Build unsigned reproducible release
         # --unsigned waives the GPG hard-fail so no key is needed in CI; the
         # arch is pinned to x86-64-v3 and the build-id dropped inside the
