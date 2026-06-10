@@ -63,7 +63,7 @@ static _Atomic uint64_t g_spend_unknown_total = 0;
 static _Atomic uint64_t g_utxo_collision_total = 0;
 static _Atomic uint64_t g_value_overflow_total = 0;
 static _Atomic uint64_t g_premature_coinbase_total = 0;
-static _Atomic uint64_t g_nullifier_conflict_total __attribute__((unused)) = 0;
+static _Atomic uint64_t g_nullifier_conflict_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_internal_error_total = 0;
 static _Atomic uint64_t g_reorg_unwound_total = 0;
@@ -196,6 +196,40 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         return JOB_IDLE;
     }
 
+    /* C-3: Reject any block that reuses a Sprout joinsplit nullifier.
+     * Checked before the delta computation so an invalid block never
+     * touches the UTXO set. Fails open (passes) if node_db is unavailable. */
+    {
+        struct node_db *ndb = app_runtime_node_db();
+        if (ndb && ndb->open) {
+            for (size_t i = 0; i < blk.num_vtx; i++) {
+                const struct transaction *tx = &blk.vtx[i];
+                for (size_t j = 0; j < tx->num_joinsplit; j++) {
+                    const struct js_description *js = &tx->v_joinsplit[j];
+                    for (int k = 0; k < ZC_NUM_JS_INPUTS; k++) {
+                        if (node_db_sprout_nullifier_exists(
+                                ndb, js->nullifiers[k].data)) {
+                            atomic_fetch_add(&g_nullifier_conflict_total, 1);
+                            event_emitf(EV_BLOCK_REJECTED, 0,
+                                "utxo_apply nullifier_conflict height=%d",
+                                next_h);
+                            uint8_t detail[36] = {0};
+                            memcpy(detail, tx->hash.data, 32);
+                            utxo_apply_log_insert(db, next_h,
+                                "nullifier_conflict", false,
+                                0, 0, 0,
+                                "bad-joinsplit-nullifier-reused", NULL);
+                            block_free(&blk);
+                            return block_apply_failure(c, next_h,
+                                "nullifier_conflict",
+                                "bad-joinsplit-nullifier-reused", detail);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     struct delta_summary summary;
     utxo_apply_compute_block_delta(&blk, (uint32_t)next_h,
                                    g_lookup, g_lookup_user, &summary);
@@ -226,6 +260,27 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             free_delta(&summary);
             block_free(&blk);
             return JOB_FATAL;
+        }
+    }
+
+    /* C-3: Record all Sprout joinsplit nullifiers as spent so future blocks
+     * cannot reuse them. Written after a successful apply only; failed blocks
+     * don't commit any state. INSERT OR IGNORE for reorg idempotency. */
+    if (summary.ok) {
+        struct node_db *ndb = app_runtime_node_db();
+        if (ndb && ndb->open) {
+            for (size_t i = 0; i < blk.num_vtx; i++) {
+                const struct transaction *tx = &blk.vtx[i];
+                for (size_t j = 0; j < tx->num_joinsplit; j++) {
+                    const struct js_description *js = &tx->v_joinsplit[j];
+                    for (int k = 0; k < ZC_NUM_JS_INPUTS; k++) {
+                        node_db_sync_sprout_nullifier(ndb,
+                            js->nullifiers[k].data,
+                            tx->hash.data,
+                            (int64_t)next_h);
+                    }
+                }
+            }
         }
     }
 
@@ -483,6 +538,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_utxo_collision_total, (uint64_t)0);
     atomic_store(&g_value_overflow_total, (uint64_t)0);
     atomic_store(&g_premature_coinbase_total, (uint64_t)0);
+    atomic_store(&g_nullifier_conflict_total, (uint64_t)0);
     atomic_store(&g_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_internal_error_total, (uint64_t)0);
     atomic_store(&g_reorg_unwound_total, (uint64_t)0);
@@ -646,6 +702,8 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_value_overflow_total));
     json_push_kv_int (out, "premature_coinbase_total",
                       (int64_t)atomic_load(&g_premature_coinbase_total));
+    json_push_kv_int (out, "nullifier_conflict_total",
+                      (int64_t)atomic_load(&g_nullifier_conflict_total));
     json_push_kv_int (out, "upstream_failed_total",
                       (int64_t)atomic_load(&g_upstream_failed_total));
     json_push_kv_int (out, "internal_error_total",

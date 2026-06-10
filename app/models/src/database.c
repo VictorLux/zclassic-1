@@ -562,5 +562,39 @@ void node_db_get_status(struct node_db *ndb, struct node_db_status *out)
         zcl_mutex_unlock(&ndb->state_mutex);
 }
 
+bool node_db_sprout_nullifier_exists(struct node_db *ndb,
+                                     const uint8_t nullifier[32])
+{
+    if (!ndb || !ndb->open || !ndb->db || !nullifier) return false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT 1 FROM sprout_nullifiers WHERE nullifier=? LIMIT 1",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(stmt, 1, nullifier, 32, SQLITE_STATIC);
+    bool found = (sqlite3_step(stmt) == SQLITE_ROW);  /* raw-sql-ok:read-only */
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+void node_db_sync_sprout_nullifier(struct node_db *ndb,
+                                   const uint8_t nullifier[32],
+                                   const uint8_t txid[32],
+                                   int64_t block_height)
+{
+    if (!ndb || !ndb->open || !ndb->db || !nullifier || !txid) return;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR IGNORE INTO sprout_nullifiers"
+            " (nullifier, txid, block_height) VALUES (?,?,?)",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(stmt, 1, nullifier, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, txid,      32, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, block_height);
+    sqlite3_step(stmt);  /* INSERT OR IGNORE — raw-sql-ok:model-layer-only */
+    sqlite3_finalize(stmt);
+}
+
 /* node_db_state_*, node_db_schema_version, and node_db_migrate live
  * in database_migrate.c (the KV store + migration runner). */

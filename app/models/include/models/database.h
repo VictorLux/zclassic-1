@@ -157,4 +157,22 @@ int node_db_schema_version(struct node_db *ndb);
  * (downgrade attempted — fatal). */
 int node_db_migrate(struct node_db *ndb, const char *datadir);
 
+/* ── Sprout Nullifier Set ───────────────────────────────────────── */
+
+/* Returns true if `nullifier` (32-byte blob) is already recorded in the
+ * sprout_nullifiers table (i.e. the note was already spent). Returns false
+ * if absent or on any DB error (fail-open: a missing DB is a separate fatal
+ * path, not a false-accept gate here). */
+bool node_db_sprout_nullifier_exists(struct node_db *ndb,
+                                     const uint8_t nullifier[32]);
+
+/* Record `nullifier` as spent at `block_height` for transaction `txid`
+ * (both 32-byte blobs). INSERT OR IGNORE so reorgs replaying the same
+ * height are idempotent. Errors are silently ignored — the UTXO apply
+ * stage will surface them via the event counter. */
+void node_db_sync_sprout_nullifier(struct node_db *ndb,
+                                   const uint8_t nullifier[32],
+                                   const uint8_t txid[32],
+                                   int64_t block_height);
+
 #endif
