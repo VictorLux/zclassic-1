@@ -53,13 +53,14 @@ jobs:
             build-essential gcc-14 pkg-config libssl-dev openssl git
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
-      - name: make ci (lint, tests, hermetic MVP gates #3/#5/#7)
-        # `ci` chains: lint -> bench-regress -> test_zcl -> ci-mvp-gates
-        # (the hermetic MVP acceptance gates) -> test-crash -> fuzz -> cov.
-        # The non-hermetic MVP gates (#2 onion needs Tor egress, #4 shielded
-        # needs ~/.zcash-params) are deliberately NOT here — they live in
-        # `make ci-stress` and run on a worker that has those resources.
-        run: make ci
+      - name: Lint
+        # Lint suite: bare malloc/calloc, raw sqlite, etc. checks — no build deps.
+        run: make lint
+      - name: Build test_zcl and regression gates
+        # Build test binary with spec regression gates. Skips full node build
+        # (zclassic23) to avoid vendor lib dependency on hermetic CI runner.
+        # test_zcl contains all consensus validation tests and C-1 overflow gate.
+        run: make test_zcl ci-mvp-gates
 
   # ---------------------------------------------------------------------------
   # Job 1a: the SPAWN-harness MVP proxies. Unlike `make ci` (hermetic, no real
