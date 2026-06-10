@@ -28,6 +28,18 @@
 #include "script/script.h"
 #include "script/script_error.h"
 
+/* C-4 difficulty retarget bypass gate. */
+#include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "chain/pow.h"
+#include "consensus/params.h"
+#include "consensus/validation.h"
+#include "primitives/block.h"
+#include "validation/check_block.h"
+#include "validation/chainstate.h"
+#include "validation/main_state.h"
+#include "validation/process_block.h"
+
 /* ────────────────────────────────────────────────────────────────
    GATE C-1: Stack Overflow in script_get_op
    ────────────────────────────────────────────────────────────────
@@ -219,18 +231,125 @@ int gate_c3_shielded_double_spend(void)
 int gate_c4_difficulty_bypass(void)
 {
     printf("\n=== C-4 Regression Gate: Difficulty Retarget Bypass ===\n");
+    int failures = 0;
 
-    printf("  TODO: Wire header validation + retarget rule enforcement\n");
-    printf("  For now, this is a design placeholder.\n");
-    printf("  Test: Construct a fake header:\n");
-    printf("    - height: 101 (not a retarget boundary)\n");
-    printf("    - nBits: powLimit (0x1d00ffff, easiest difficulty)\n");
-    printf("    - equihash: valid solution\n");
-    printf("    - Expected nBits: much higher (harder)\n");
-    printf("    - Call: validate_headers_validator(header)\n");
-    printf("    - Expect: DIFFICULTY_WRONG or similar rejection\n");
-    printf("  C-4 Gate: SKIP (design phase)\n");
-    return 0;
+    const struct chain_params *params = chain_params_get();
+    const struct consensus_params *cp = &params->consensus;
+
+    /* Build a fake chain long enough for GetNextWorkRequired to walk:
+     * nPowAveragingWindow (17) + MEDIAN_TIME_SPAN (11) + 2 slack = 30 nodes.
+     * Every node has a plausible non-trivial nBits and 75-second block times. */
+    enum { CHAIN_LEN = 30 };
+    struct block_index chain[CHAIN_LEN];
+    for (int i = 0; i < CHAIN_LEN; i++) {
+        block_index_init(&chain[i]);
+        chain[i].nHeight = i;
+        chain[i].nTime   = 1500000000u + (uint32_t)(i * 75);
+        chain[i].nBits   = 0x1c1c9d6eu;  /* plausible mainnet-like difficulty */
+        chain[i].nVersion = 4;
+        if (i > 0) chain[i].pprev = &chain[i - 1];
+    }
+    struct block_index *pindex_prev = &chain[CHAIN_LEN - 1];
+
+    /* Compute what the next block's nBits should be. */
+    struct block_header probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.nVersion = 4;
+    probe.nTime    = pindex_prev->nTime + 75;
+
+    unsigned int expected_bits = GetNextWorkRequired(pindex_prev, &probe, cp);
+    printf("  Chain: %d nodes @ nBits=0x%08x, 75-sec spacing\n",
+           CHAIN_LEN, pindex_prev->nBits);
+    printf("  GetNextWorkRequired => 0x%08x\n", expected_bits);
+
+    /* ── REJECT CASE ──────────────────────────────────────────────── */
+    /* Header claims wrong difficulty (flipping the lowest bit guarantees
+     * a mismatch regardless of the exact computed difficulty). */
+    struct block_header bad_hdr;
+    memset(&bad_hdr, 0, sizeof(bad_hdr));
+    bad_hdr.nVersion = 4;
+    bad_hdr.nTime    = pindex_prev->nTime + 75;
+    bad_hdr.nBits    = expected_bits ^ 1u;  /* wrong: 1-bit deviation */
+
+    struct validation_state state;
+    memset(&state, 0, sizeof(state));
+
+    printf("\n  [REJECT CASE] bad_hdr.nBits=0x%08x (expected^1):\n",
+           bad_hdr.nBits);
+
+    bool accepted = contextual_check_block_header(&bad_hdr, &state, params,
+                                                  pindex_prev, false);
+    if (accepted) {
+        printf("  FAIL: contextual_check_block_header accepted wrong-nBits header\n");
+        printf("        C-4 enforcement is ABSENT — reducer would accept any difficulty\n");
+        failures++;
+    } else {
+        printf("  OK: rejected wrong-nBits (reason: \"%s\")\n",
+               state.reject_reason[0] ? state.reject_reason : "<no reason>");
+    }
+
+    /* ── CORRECT-BITS CASE (sanity): same header but right nBits ──── */
+    struct block_header good_hdr;
+    memset(&good_hdr, 0, sizeof(good_hdr));
+    good_hdr.nVersion = 4;
+    good_hdr.nTime    = pindex_prev->nTime + 75;
+    good_hdr.nBits    = expected_bits;  /* correct */
+
+    struct validation_state state2;
+    memset(&state2, 0, sizeof(state2));
+
+    /* Correct PoW hash isn't set so CheckProofOfWork will reject, but nBits
+     * check happens before PoW — use reject_reason to distinguish. */
+    bool accepted2 = contextual_check_block_header(&good_hdr, &state2, params,
+                                                   pindex_prev, false);
+    printf("\n  [CORRECT-BITS SANITY] good_hdr.nBits=0x%08x:\n", good_hdr.nBits);
+    if (!accepted2 &&
+        strstr(state2.reject_reason, "bad-diffbits")) {
+        printf("  FAIL: still rejected with bad-diffbits on correct nBits\n");
+        printf("        Sanity: expected nBits passes the nBits check\n");
+        failures++;
+    } else {
+        printf("  OK: correct nBits did not produce bad-diffbits rejection"
+               " (reason: \"%s\")\n",
+               state2.reject_reason[0] ? state2.reject_reason : "none");
+    }
+
+    /* ── SPARSE WINDOW PASS CASE ──────────────────────────────────── */
+    /* Post-snapshot tail: pindex_prev at height 500 with no pprev chain.
+     * process_block_pow_window_complete returns false → should_skip = true →
+     * contextual check is bypassed → sparse-tail blocks are accepted even if
+     * their nBits appears wrong for the missing window context. */
+    struct block_index sparse_prev;
+    block_index_init(&sparse_prev);
+    sparse_prev.nHeight = 500;
+    sparse_prev.nTime   = 1500000000u + 500u * 75u;
+    sparse_prev.nBits   = 0x1c1c9d6eu;
+    sparse_prev.pprev   = NULL;  /* broken chain — simulates sparse snapshot tail */
+
+    struct main_state ms;
+    memset(&ms, 0, sizeof(ms));
+    active_chain_init(&ms.chain_active);
+    /* chain_active.height == 0 → Case (a) (tip_h > 100000) does not fire.
+     * Case (b) fires because pprev=NULL breaks the pow window walk. */
+
+    bool should_skip = process_block_should_skip_contextual_header(&ms,
+                                                                    &sparse_prev,
+                                                                    cp);
+    printf("\n  [SPARSE WINDOW CASE] height=500, pprev=NULL:\n");
+    if (should_skip) {
+        printf("  OK: should_skip=true — sparse-tail bypass active\n");
+        printf("      reducer_ingest would skip contextual check for this "
+               "window\n");
+    } else {
+        printf("  FAIL: should_skip=false — sparse-tail bypass NOT active\n");
+        printf("        Post-snapshot tail blocks would be rejected bad-diffbits\n");
+        failures++;
+    }
+
+    active_chain_free(&ms.chain_active);
+
+    printf("\n  C-4 Gate: %s\n", failures ? "FAIL" : "PASS");
+    return failures;
 }
 
 /* ────────────────────────────────────────────────────────────────

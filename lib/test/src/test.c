@@ -1068,6 +1068,7 @@ int main(void)
     failures += spec_smoke();
     failures += spec_100_stories();
     failures += spec_consensus_compat();
+    failures += spec_regression_gates_critical();
 
     ecc_verify_destroy();
     ecc_stop();

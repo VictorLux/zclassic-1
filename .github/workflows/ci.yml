@@ -50,9 +50,16 @@ jobs:
           # gcc-14 required: -std=c23 is only accepted by GCC 14+.
           # GCC 13 (Ubuntu 24.04 default) only recognises -std=c2x, not c23.
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-14 pkg-config libssl-dev openssl git
+            build-essential gcc-14 pkg-config \
+            libssl-dev openssl git \
+            libleveldb-dev libevent-dev zlib1g-dev libsqlite3-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
+          # vendor/lib/tor_stub.a: built from source stub (real Tor not linked in CI).
+          gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
+          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          # vendor/lib/leveldb.a: copy from system libleveldb-dev (not tracked in git).
+          find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       - name: Lint
         # Lint suite: bare malloc/calloc, raw sqlite, etc. checks — no build deps.
         run: make lint
@@ -89,9 +96,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-14 pkg-config libssl-dev openssl git
+            build-essential gcc-14 pkg-config \
+            libssl-dev openssl git \
+            libleveldb-dev libevent-dev zlib1g-dev libsqlite3-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
+          gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
+          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       - name: build node + rpc
         run: make -j"$(nproc)" zclassic23 zcl-rpc
       - name: "#1 install proxy (ci-install)"
@@ -126,9 +138,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-14 pkg-config libssl-dev openssl git
+            build-essential gcc-14 pkg-config \
+            libssl-dev openssl git \
+            libleveldb-dev libevent-dev zlib1g-dev libsqlite3-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
+          gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
+          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       # NOTE: this default GitHub-hosted runner has neither Tor egress nor
       # ~/.zcash-params, so #2 will fail and #4 will SKIP here. Re-target this
       # job at a runner that provides both before treating it as a gate.
@@ -160,9 +177,14 @@ jobs:
             sudo apt-get update
           fi
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-14 pkg-config libssl-dev openssl git
+            build-essential gcc-14 pkg-config \
+            libssl-dev openssl git \
+            libleveldb-dev libevent-dev zlib1g-dev libsqlite3-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
+          gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
+          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       - name: Build unsigned reproducible release
         # --unsigned waives the GPG hard-fail so no key is needed in CI; the
         # arch is pinned to x86-64-v3 and the build-id dropped inside the
