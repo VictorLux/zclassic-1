@@ -194,7 +194,14 @@ void wallet_backup_config_defaults(struct wallet_backup_config *cfg)
     memset(cfg, 0, sizeof(*cfg));
     cfg->interval_seconds = WALLET_BACKUP_DEFAULT_INTERVAL_SEC;
     cfg->max_versions     = WALLET_BACKUP_DEFAULT_MAX_VERSIONS;
-    cfg->encrypt          = false;
+    /* Enable encryption automatically when the password env var is set. */
+    const char *env_pw = getenv("WALLET_BACKUP_PASSWORD");
+    if (env_pw && *env_pw) {
+        cfg->encrypt          = true;
+        cfg->encrypt_password = env_pw;
+    } else {
+        cfg->encrypt          = false;
+    }
 }
 
 void wallet_backup_status_snapshot(struct wallet_backup_status *out)
@@ -465,6 +472,43 @@ static struct zcl_result wbs_run_one_locked(void)
     bool ok = res.ok;
     int64_t elapsed = platform_time_monotonic_ms() - started_ms;
 
+    if (ok) {
+        /* C-5: encrypt the plaintext backup if requested. */
+        if (g_wbs.cfg.encrypt) {
+            const char *pw = g_wbs.cfg.encrypt_password
+                             ? g_wbs.cfg.encrypt_password
+                             : getenv("WALLET_BACKUP_PASSWORD");
+            if (pw && *pw) {
+                /* enc_path = path + ".enc"; path is declared [512] above, so
+                 * give enc_path enough room and copy back only what fits. */
+                char enc_path[516];
+                snprintf(enc_path, sizeof(enc_path), "%s.enc", path);
+                struct zcl_result enc_res =
+                    wallet_backup_encrypt_file(path, enc_path, pw);
+                if (enc_res.ok) {
+                    unlink(path);   /* remove plaintext after successful encrypt */
+                    snprintf(path, 512, "%s", enc_path);
+                } else {
+                    unlink(enc_path); /* partial output — remove */
+                    ok = false;
+                    res = enc_res;
+                    event_emitf(EV_WALLET_BACKUP_FAILED, 0,
+                                "encrypt failed: %s", enc_res.message);
+                }
+            } else {
+                /* encrypt=true but no password configured — warn loudly. */
+                event_emitf(EV_WALLET_BACKUP_FAILED, 0,
+                            "encrypt=true but WALLET_BACKUP_PASSWORD not set; "
+                            "backup written UNENCRYPTED to %s", path);
+            }
+        } else {
+            /* Plaintext backup — emit a security warning so operators notice. */
+            event_emitf(EV_WALLET_BACKUP, 0,
+                        "WARNING: backup written unencrypted (set "
+                        "WALLET_BACKUP_PASSWORD to enable AES-256-GCM encryption) "
+                        "path=%s", path);
+        }
+    }
     if (ok) {
         g_wbs.total_runs++;
         g_wbs.last_run_unix    = platform_time_wall_unix();
