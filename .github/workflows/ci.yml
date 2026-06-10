@@ -199,7 +199,16 @@ jobs:
         # --unsigned waives the GPG hard-fail so no key is needed in CI; the
         # arch is pinned to x86-64-v3 and the build-id dropped inside the
         # script, so the resulting .sha3 must not depend on the runner image.
-        run: ./tools/release.sh --unsigned ci-repro
+        # On failure, grep shows the first -Werror/-pedantic warnings from the
+        # build log (release.sh stdout is too large for GitHub to show in full).
+        run: |
+          ./tools/release.sh --unsigned ci-repro 2>&1 | tee /tmp/release.log
+          RC=${PIPESTATUS[0]}
+          if [ "$RC" != "0" ]; then
+            echo "=== Build warnings/errors ==="
+            grep -E "(warning:|error:|\.c:[0-9])" /tmp/release.log | head -40
+            exit "$RC"
+          fi
       - name: Extract bare SHA3 hash
         # The .sha3 file is "<hash>  <name>.tar.gz"; keep only the hash so the
         # cross-runner compare is independent of any path/name differences.
