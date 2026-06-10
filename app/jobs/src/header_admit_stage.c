@@ -10,6 +10,8 @@
 #include "jobs/header_admit_stage.h"
 
 #include "chain/chain.h"
+#include "chain/chainparams.h"
+#include "consensus/validation.h"
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
 #include "event/event.h"
@@ -28,6 +30,8 @@
 #include "util/safe_alloc.h"
 #include "util/stage.h"
 #include "validation/accept_block_header.h"
+#include "validation/check_block.h"        /* contextual_check_block_header */
+#include "validation/process_block.h"      /* process_block_should_skip_contextual_header */
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "primitives/block.h"
@@ -59,6 +63,10 @@ static _Atomic uint64_t g_header_event_emit_fail_total = 0;
 /* Reducer producer path: count of block_index entries CREATED by the
  * stage from raw header bytes (add_to_block_index). */
 static _Atomic uint64_t g_produced_total = 0;
+/* Out-of-order headers rejected at production by the gated contextual check
+ * (retarget/bad-diffbits + MTP/time-too-old) — closes the C-4 residual where
+ * a child-before-parent block skipped the reducer_ingest gate (parent absent). */
+static _Atomic uint64_t g_contextual_reject_total = 0;
 static _Atomic int64_t  g_last_admit_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
@@ -356,6 +364,36 @@ static struct block_index *produce_block_index(struct main_state *ms,
     if (!h)
         return NULL;
 
+    /* C-4 residual close: a child-before-parent (out-of-order) block skips the
+     * retarget/MTP gate in reducer_ingest_block because the parent is not yet
+     * in the index. This producer is the SOLE reducer creator of block_index
+     * entries and runs only once the parent IS linked (pending_header_take
+     * requires pprev for want_height>0), so it is the exact connect-eligibility
+     * point to run the SAME gated contextual check — bad-diffbits / time-too-old
+     * headers never enter the index, preserving zclassicd parity. Mirror
+     * accept_block_header's skip policy so IBD / post-snapshot sparse-window
+     * headers (PoW averaging window not contiguously walkable) are not
+     * spuriously rejected. Genesis (want_height==0) has no parent and is
+     * short-circuited inside contextual_check_block_header. */
+    if (want_height > 0) {
+        struct block_index *pprev =
+            block_map_find(&ms->map_block_index, &h->hashPrevBlock);
+        struct validation_state st;
+        validation_state_init(&st);
+        if (pprev &&
+            !process_block_should_skip_contextual_header(
+                ms, pprev, &chain_params_get()->consensus) &&
+            !contextual_check_block_header(h, &st, chain_params_get(),
+                                           pprev, ms->fCheckpointsEnabled)) {
+            LOG_WARN("header_admit",
+                     "[header_admit] contextual header reject height=%d: %s",
+                     want_height,
+                     st.reject_reason[0] ? st.reject_reason : "unknown");
+            atomic_fetch_add(&g_contextual_reject_total, 1);
+            return NULL;
+        }
+    }
+
     struct block_index *bi = add_to_block_index(ms, h);
     if (!bi || !bi->phashBlock) {
         LOG_WARN("header_admit", "[header_admit] produce add_to_block_index failed height=%d", want_height);
@@ -543,6 +581,7 @@ void header_admit_stage_shutdown(void)
     atomic_store(&g_header_event_emit_total, (uint64_t)0);
     atomic_store(&g_header_event_emit_fail_total, (uint64_t)0);
     atomic_store(&g_produced_total, (uint64_t)0);
+    atomic_store(&g_contextual_reject_total, (uint64_t)0);
     atomic_store(&g_last_admit_height, (int64_t)-1);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
@@ -631,6 +670,8 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       (int64_t)atomic_load(&g_header_event_emit_fail_total));
     json_push_kv_int (out, "produced_total",
                       (int64_t)atomic_load(&g_produced_total));
+    json_push_kv_int (out, "contextual_reject_total",
+                      (int64_t)atomic_load(&g_contextual_reject_total));
     json_push_kv_int (out, "last_admit_height",
                       atomic_load(&g_last_admit_height));
     json_push_kv_int (out, "last_step_unix",

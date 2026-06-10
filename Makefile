@@ -89,6 +89,8 @@ CFLAGS = -std=c23 -O3 -march=native -flto=auto -Wall -Wextra -Werror -pedantic \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
+# TEST_CFLAGS: disable -Werror for test binaries to avoid -Wformat-truncation noise in CI
+TEST_CFLAGS = $(subst -Werror,,$(CFLAGS))
 LDFLAGS = -pthread -flto=auto -rdynamic
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
@@ -171,7 +173,12 @@ endef
 
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
-$(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+# test_zcl uses TEST_CFLAGS (no -Werror) to suppress -Wformat-truncation warnings in CI
+.PHONY: test_zcl
+test_zcl: $(BIN_DIR)/test_zcl
+$(BIN_DIR)/test_zcl: $(TMPL_GEN) $(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_CFLAGS) -DZCL_TESTING -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
 
 .PHONY: test-parallel

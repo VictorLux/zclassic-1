@@ -28,6 +28,8 @@
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/main_state.h"
+#include "config/runtime.h"
+#include "models/database.h"
 
 #include <pthread.h>
 #include <sqlite3.h>
@@ -61,6 +63,7 @@ static _Atomic uint64_t g_spend_unknown_total = 0;
 static _Atomic uint64_t g_utxo_collision_total = 0;
 static _Atomic uint64_t g_value_overflow_total = 0;
 static _Atomic uint64_t g_premature_coinbase_total = 0;
+static _Atomic uint64_t g_nullifier_conflict_total = 0;
 static _Atomic uint64_t g_upstream_failed_total = 0;
 static _Atomic uint64_t g_internal_error_total = 0;
 static _Atomic uint64_t g_reorg_unwound_total = 0;
