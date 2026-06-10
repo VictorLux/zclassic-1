@@ -170,20 +170,24 @@ bool diag_rpc_getnodelog(const struct json_value *params, bool help,
         char buf[NODELOG_CHUNK_SIZE + 1];
         ssize_t got = pread(fd, buf, want, start);
         if (got <= 0) break;
-        buf[got] = '\0';
-        scanned += got;
+        /* got > 0 is proven above; cast to size_t so GCC 14 LTO does not
+         * infer the full ssize_t range inside the zcl_malloc inline and
+         * emit a false -Wstringop-overflow at the combined[] write below. */
+        size_t chunk = (size_t)got;
+        buf[chunk] = '\0';
+        scanned += chunk;
         pos = start;
 
         /* Combine `buf` (this chunk) with `carry` (partial line from
          * the previous-newer chunk). Process newline-separated lines
          * from the end. */
-        size_t combined_cap = (size_t)got + carry_len + 1;
+        size_t combined_cap = chunk + carry_len + 1;
         char *combined = zcl_malloc(combined_cap, "diagnostics.node_log.combined");
         if (!combined) break;
-        memcpy(combined, buf, got);
-        memcpy(combined + got, carry, carry_len);
-        combined[got + carry_len] = '\0';
-        size_t combined_len = (size_t)got + carry_len;
+        memcpy(combined, buf, chunk);
+        memcpy(combined + chunk, carry, carry_len);
+        combined[chunk + carry_len] = '\0';
+        size_t combined_len = chunk + carry_len;
 
         /* Walk backwards over `combined`, slicing at '\n'. */
         size_t line_end = combined_len;
