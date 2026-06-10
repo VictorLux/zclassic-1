@@ -55,9 +55,9 @@ jobs:
             libleveldb-dev libevent-dev zlib1g-dev libsqlite3-dev
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
-          # vendor/lib/tor_stub.a: built from source stub (real Tor not linked in CI).
+          # vendor/lib/libtor_stub.a: built from source stub (real Tor not linked in CI).
           gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
-          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          ar rcs vendor/lib/libtor_stub.a /tmp/tor_stub.o
           # vendor/lib/leveldb.a: copy from system libleveldb-dev (not tracked in git).
           find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       - name: Lint
@@ -102,7 +102,7 @@ jobs:
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
           gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
-          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          ar rcs vendor/lib/libtor_stub.a /tmp/tor_stub.o
           find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       - name: build node + rpc
         run: make -j"$(nproc)" zclassic23 zcl-rpc
@@ -144,7 +144,7 @@ jobs:
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
           gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
-          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          ar rcs vendor/lib/libtor_stub.a /tmp/tor_stub.o
           find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
       # NOTE: this default GitHub-hosted runner has neither Tor egress nor
       # ~/.zcash-params, so #2 will fail and #4 will SKIP here. Re-target this
@@ -183,8 +183,18 @@ jobs:
           sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 14
           sudo update-alternatives --set cc /usr/bin/gcc-14
           gcc-14 -c vendor/tor_stub.c -o /tmp/tor_stub.o
-          ar rcs vendor/lib/tor_stub.a /tmp/tor_stub.o
+          ar rcs vendor/lib/libtor_stub.a /tmp/tor_stub.o
           find /usr -name 'libleveldb.a' -exec cp {} vendor/lib/leveldb.a \;
+      - name: Probe pedantic warnings (pre-release diagnostic)
+        # Surface any -Werror/-pedantic warnings BEFORE the full release build
+        # so they are visible in the log (release.sh output is truncated in CI).
+        run: |
+          INC=$(find lib app -name 'include' -type d | sed 's/^/-I/' | tr '\n' ' ')
+          FLAGS="-std=c23 -O2 -Wall -Wextra -Werror -pedantic -fstack-protector-strong -fstack-clash-protection -D_FORTIFY_SOURCE=2 -Wno-unused-result -D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -Ivendor/include"
+          for f in app/jobs/src/header_admit_stage.c app/jobs/src/utxo_apply_stage.c app/jobs/src/utxo_apply_delta.c app/services/src/reducer_ingest_service.c; do
+            echo "==> $f"
+            cc $FLAGS $INC -c -o /dev/null "$f" 2>&1 || true
+          done
       - name: Build unsigned reproducible release
         # --unsigned waives the GPG hard-fail so no key is needed in CI; the
         # arch is pinned to x86-64-v3 and the build-id dropped inside the
